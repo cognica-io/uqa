@@ -247,6 +247,36 @@ def main() -> None:
         "ORDER BY _score DESC"
     ))
 
+    # ------------------------------------------------------------------
+    # 17. ANALYZE -- collect column statistics
+    # ------------------------------------------------------------------
+    print("\n--- 17. ANALYZE -- collect column statistics ---")
+    engine.sql("ANALYZE papers")
+    table = engine._tables["papers"]
+    for col_name, stats in table._stats.items():
+        print(
+            f"  {col_name:12s}  "
+            f"distinct={stats.distinct_count:3d}  "
+            f"nulls={stats.null_count}  "
+            f"min={stats.min_value!s:>8s}  "
+            f"max={stats.max_value!s:>8s}  "
+            f"sel={stats.selectivity:.4f}"
+        )
+
+    # ------------------------------------------------------------------
+    # 18. EXPLAIN -- show optimized query plan
+    # ------------------------------------------------------------------
+    print("\n--- 18. EXPLAIN SELECT with text_match + filter ---")
+    print(engine.sql(
+        "EXPLAIN SELECT title FROM papers "
+        "WHERE text_match(title, 'attention') AND year >= 2020"
+    ))
+
+    print("\n--- 18b. EXPLAIN SELECT with filter only ---")
+    print(engine.sql(
+        "EXPLAIN SELECT * FROM papers WHERE field = 'nlp'"
+    ))
+
     print("\n" + "=" * 70)
     print("All SQL examples completed successfully.")
     print("=" * 70)

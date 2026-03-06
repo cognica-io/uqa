@@ -403,6 +403,90 @@ class TestSQLResult:
 
 
 # ==================================================================
+# EXPLAIN / ANALYZE
+# ==================================================================
+
+class TestExplain:
+    def test_explain_select(self, engine: Engine) -> None:
+        result = engine.sql(
+            "EXPLAIN SELECT * FROM papers WHERE text_match(title, 'attention')"
+        )
+        assert len(result) >= 1
+        assert result.columns == ["plan"]
+        plan_text = "\n".join(r["plan"] for r in result)
+        assert "estimated cost" in plan_text
+
+    def test_explain_filter(self, engine: Engine) -> None:
+        result = engine.sql("EXPLAIN SELECT * FROM papers WHERE year > 2020")
+        assert len(result) >= 1
+        plan_text = "\n".join(r["plan"] for r in result)
+        assert "FilterOp" in plan_text
+
+    def test_explain_no_where(self, engine: Engine) -> None:
+        result = engine.sql("EXPLAIN SELECT * FROM papers")
+        assert len(result) >= 1
+        plan_text = "\n".join(r["plan"] for r in result)
+        assert "Seq Scan" in plan_text
+
+
+class TestAnalyze:
+    def test_analyze_table(self, engine: Engine) -> None:
+        engine.sql("ANALYZE papers")
+        table = engine._tables["papers"]
+        assert len(table._stats) > 0
+        year_stats = table.get_column_stats("year")
+        assert year_stats is not None
+        assert year_stats.min_value == 2017
+        assert year_stats.max_value == 2021
+        assert year_stats.row_count == 5
+        assert year_stats.null_count == 0
+        assert year_stats.distinct_count == 5
+
+    def test_analyze_all_tables(self) -> None:
+        e = Engine(vector_dimensions=8, max_elements=100)
+        e.sql("CREATE TABLE t1 (id SERIAL PRIMARY KEY, val INTEGER)")
+        e.sql("CREATE TABLE t2 (id SERIAL PRIMARY KEY, name TEXT)")
+        e.sql("INSERT INTO t1 (val) VALUES (1), (2), (3)")
+        e.sql("INSERT INTO t2 (name) VALUES ('a'), ('b')")
+        e.sql("ANALYZE")
+        assert len(e._tables["t1"]._stats) > 0
+        assert len(e._tables["t2"]._stats) > 0
+
+    def test_column_stats_selectivity(self, engine: Engine) -> None:
+        engine.sql("ANALYZE papers")
+        table = engine._tables["papers"]
+        field_stats = table.get_column_stats("field")
+        assert field_stats is not None
+        # 3 distinct fields: nlp, graph, cv
+        assert field_stats.distinct_count == 3
+        # Equality selectivity = 1/ndv
+        assert abs(field_stats.selectivity - 1.0 / 3.0) < 0.01
+
+    def test_analyze_improves_cardinality(self, engine: Engine) -> None:
+        """After ANALYZE, filter selectivity should use real statistics."""
+        from uqa.planner.cardinality import CardinalityEstimator
+        from uqa.operators.primitive import FilterOperator
+        from uqa.core.types import Equals, IndexStats
+
+        engine.sql("ANALYZE papers")
+        table = engine._tables["papers"]
+
+        # Without stats: default selectivity = 0.5
+        est_no_stats = CardinalityEstimator()
+        stats = IndexStats(total_docs=5)
+        op = FilterOperator("field", Equals("nlp"))
+        card_no_stats = est_no_stats.estimate(op, stats)
+
+        # With stats: selectivity = 1/3 (3 distinct values)
+        est_with_stats = CardinalityEstimator(table._stats)
+        card_with_stats = est_with_stats.estimate(op, stats)
+
+        # Stats-based estimate should be different (more precise)
+        assert card_no_stats == 5 * 0.5  # 2.5
+        assert abs(card_with_stats - 5 * (1.0 / 3.0)) < 0.01  # ~1.67
+
+
+# ==================================================================
 # Edge cases
 # ==================================================================
 

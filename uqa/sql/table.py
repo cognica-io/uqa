@@ -4,7 +4,12 @@
 # Copyright (c) 2023-2026 Cognica, Inc.
 #
 
-"""SQL table: a named, schema-validated collection backed by UQA storage."""
+"""SQL table: a named, schema-validated collection backed by UQA storage.
+
+Each table maintains per-column statistics (distinct values, min/max,
+null count) that drive the query optimizer's cardinality estimator.
+Statistics are refreshed via ``ANALYZE table_name``.
+"""
 
 from __future__ import annotations
 
@@ -28,6 +33,24 @@ _SQL_TYPE_MAP: dict[str, type] = {
 }
 
 _AUTO_INCREMENT_TYPES = frozenset({"serial", "bigserial"})
+
+
+@dataclass(slots=True)
+class ColumnStats:
+    """Per-column statistics for cardinality estimation (Definition 6.2.3, Paper 1)."""
+
+    distinct_count: int = 0
+    null_count: int = 0
+    min_value: Any = None
+    max_value: Any = None
+    row_count: int = 0
+
+    @property
+    def selectivity(self) -> float:
+        """Estimated selectivity for equality predicates: 1/ndv."""
+        if self.distinct_count <= 0:
+            return 1.0
+        return 1.0 / self.distinct_count
 
 
 @dataclass(slots=True)
@@ -61,6 +84,7 @@ class Table:
         self.document_store = DocumentStore()
         self.inverted_index = InvertedIndex()
         self._next_id = 1
+        self._stats: dict[str, ColumnStats] = {}
 
     def insert(self, row: dict[str, Any]) -> int:
         """Insert a row and return the assigned primary key (doc_id)."""
@@ -130,6 +154,45 @@ class Table:
     @property
     def row_count(self) -> int:
         return len(self.document_store.doc_ids)
+
+    def analyze(self) -> dict[str, ColumnStats]:
+        """Collect per-column statistics by scanning all rows.
+
+        Updates ``self._stats`` and returns it.  Called by ``ANALYZE table``.
+        """
+        doc_ids = sorted(self.document_store.doc_ids)
+        n = len(doc_ids)
+
+        stats: dict[str, ColumnStats] = {}
+        for col_name in self.columns:
+            values: list[Any] = []
+            null_count = 0
+            for doc_id in doc_ids:
+                val = self.document_store.get_field(doc_id, col_name)
+                if val is None:
+                    null_count += 1
+                else:
+                    values.append(val)
+
+            distinct = len(set(values))
+            comparable = [v for v in values if isinstance(v, (int, float, str))]
+            min_val = min(comparable) if comparable else None
+            max_val = max(comparable) if comparable else None
+
+            stats[col_name] = ColumnStats(
+                distinct_count=distinct,
+                null_count=null_count,
+                min_value=min_val,
+                max_value=max_val,
+                row_count=n,
+            )
+
+        self._stats = stats
+        return stats
+
+    def get_column_stats(self, col_name: str) -> ColumnStats | None:
+        """Return cached statistics for a column, or None if not analyzed."""
+        return self._stats.get(col_name)
 
 
 def resolve_type(type_names: tuple) -> tuple[str, type]:

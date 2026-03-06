@@ -24,9 +24,11 @@ class QueryOptimizer:
     - Intersect operand reordering by cardinality (cheapest first)
     """
 
-    def __init__(self, stats: IndexStats):
+    def __init__(
+        self, stats: IndexStats, column_stats: dict | None = None
+    ):
         self.stats = stats
-        self.estimator = CardinalityEstimator()
+        self.estimator = CardinalityEstimator(column_stats)
 
     def optimize(self, op: Operator) -> Operator:
         op = self._push_filters_down(op)

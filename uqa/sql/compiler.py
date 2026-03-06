@@ -6,15 +6,25 @@
 
 """SQL-to-UQA compiler using pglast (PostgreSQL parser).
 
-Supported DDL/DML:
-  CREATE TABLE name (col type [PRIMARY KEY] [NOT NULL] [DEFAULT val], ...)
-  DROP TABLE [IF EXISTS] name
-  INSERT INTO name (col, ...) VALUES (val, ...), ...
-  SELECT [* | col, ... | aggregates] FROM table
-    [WHERE comparisons / boolean / text_match() / knn_match()]
-    [GROUP BY col [HAVING ...]]
-    [ORDER BY col [ASC|DESC]]
-    [LIMIT n]
+Supported statements:
+  DDL:
+    CREATE TABLE name (col type [PRIMARY KEY] [NOT NULL] [DEFAULT val], ...)
+    DROP TABLE [IF EXISTS] name
+  DML:
+    INSERT INTO name (col, ...) VALUES (val, ...), ...
+  DQL:
+    SELECT [* | col, ... | aggregates] FROM table
+      [WHERE comparisons / boolean / text_match() / knn_match()]
+      [GROUP BY col [HAVING ...]]
+      [ORDER BY col [ASC|DESC]]
+      [LIMIT n]
+  Utility:
+    EXPLAIN SELECT ...                  -- show optimized query plan
+    ANALYZE [table]                     -- collect per-column statistics
+
+All SELECT queries pass through the QueryOptimizer (filter pushdown,
+vector threshold merge, intersect reordering) before execution via
+PlanExecutor with timing stats.
 
 Extended functions (WHERE clause):
   text_match(field, 'query')         -- full-text search with BM25 scoring
@@ -40,6 +50,7 @@ from pglast.ast import (
     ColumnRef,
     CreateStmt,
     DropStmt,
+    ExplainStmt,
     Float as PgFloat,
     FuncCall,
     InsertStmt,
@@ -50,6 +61,7 @@ from pglast.ast import (
     SelectStmt,
     SortBy,
     String as PgString,
+    VacuumStmt,
 )
 from pglast.enums.parsenodes import A_Expr_Kind, ConstrType, SortByDir
 from pglast.enums.primnodes import BoolExprType
@@ -159,6 +171,10 @@ class SQLCompiler:
             return self._compile_insert(stmt)
         if isinstance(stmt, DropStmt):
             return self._compile_drop_table(stmt)
+        if isinstance(stmt, ExplainStmt):
+            return self._compile_explain(stmt)
+        if isinstance(stmt, VacuumStmt):
+            return self._compile_analyze(stmt)
         raise ValueError(f"Unsupported statement: {type(stmt).__name__}")
 
     # ==================================================================
@@ -257,10 +273,76 @@ class SQLCompiler:
         return SQLResult(["inserted"], [{"inserted": inserted}])
 
     # ==================================================================
+    # EXPLAIN / ANALYZE
+    # ==================================================================
+
+    def _compile_explain(self, stmt: ExplainStmt) -> SQLResult:
+        """EXPLAIN SELECT ... -- show the optimized query plan."""
+        inner = stmt.query
+        if not isinstance(inner, SelectStmt):
+            raise ValueError("EXPLAIN only supports SELECT statements")
+        return self._compile_select(inner, explain=True)
+
+    def _compile_analyze(self, stmt: VacuumStmt) -> SQLResult:
+        """ANALYZE [table] -- collect per-column statistics."""
+        if stmt.rels:
+            for rel in stmt.rels:
+                table_name = rel.relation.relname
+                table = self._engine._tables.get(table_name)
+                if table is None:
+                    raise ValueError(f"Table '{table_name}' does not exist")
+                table.analyze()
+        else:
+            for table in self._engine._tables.values():
+                table.analyze()
+        return SQLResult([], [])
+
+    # ==================================================================
+    # Query optimizer + plan executor
+    # ==================================================================
+
+    def _optimize(
+        self, op: Any, ctx: ExecutionContext, table: Table | None = None
+    ) -> Any:
+        """Run the operator tree through the QueryOptimizer."""
+        from uqa.planner.optimizer import QueryOptimizer
+
+        stats = ctx.inverted_index.stats
+        column_stats = table._stats if table is not None else None
+        optimizer = QueryOptimizer(stats, column_stats)
+        return optimizer.optimize(op)
+
+    def _execute_plan(self, op: Any, ctx: ExecutionContext) -> PostingList:
+        """Execute an operator tree via PlanExecutor with timing stats."""
+        from uqa.planner.executor import PlanExecutor
+
+        executor = PlanExecutor(ctx)
+        return executor.execute(op)
+
+    def _explain_plan(self, op: Any, ctx: ExecutionContext) -> SQLResult:
+        """Format the optimized query plan as an EXPLAIN result."""
+        from uqa.planner.executor import PlanExecutor
+        from uqa.planner.cost_model import CostModel
+
+        executor = PlanExecutor(ctx)
+        plan_text = executor.explain(op)
+
+        stats = ctx.inverted_index.stats
+        cost_model = CostModel()
+        estimated_cost = cost_model.estimate(op, stats)
+
+        lines = plan_text.split("\n")
+        rows = [{"plan": line} for line in lines]
+        rows.append({"plan": f"  (estimated cost: {estimated_cost:.1f})"})
+        return SQLResult(["plan"], rows)
+
+    # ==================================================================
     # DQL: SELECT
     # ==================================================================
 
-    def _compile_select(self, stmt: SelectStmt) -> SQLResult:
+    def _compile_select(
+        self, stmt: SelectStmt, *, explain: bool = False
+    ) -> SQLResult:
         # 1. Resolve FROM clause -> (table | None, source_op | None)
         table, source_op = self._resolve_from(stmt.fromClause)
 
@@ -274,10 +356,15 @@ class SQLCompiler:
                 where_op = self._chain_on_source(where_op, source_op)
             source_op = where_op
 
-        # 4. Execute operator tree
+        # 4. Optimize and execute operator tree
         if source_op is not None:
-            pl = source_op.execute(ctx)
+            source_op = self._optimize(source_op, ctx, table)
+            if explain:
+                return self._explain_plan(source_op, ctx)
+            pl = self._execute_plan(source_op, ctx)
         else:
+            if explain:
+                return SQLResult(["plan"], [{"plan": "Seq Scan (full table)"}])
             pl = self._scan_all(ctx)
 
         # 5. GROUP BY + aggregates
