@@ -64,6 +64,8 @@ _SQL_KEYWORDS = [
     # UQA extensions
     "text_match", "bayesian_match", "knn_match",
     "traverse", "rpq", "text_search",
+    "traverse_match",
+    "fuse_log_odds", "fuse_prob_and", "fuse_prob_or", "fuse_prob_not",
 ]
 
 _STYLE = Style.from_dict({

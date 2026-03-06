@@ -30,6 +30,13 @@ Extended functions (WHERE clause):
   text_match(field, 'query')         -- full-text search with BM25 scoring
   bayesian_match(field, 'query')     -- Bayesian BM25 calibrated probability
   knn_match(k)                       -- KNN vector search (requires set_query_vector)
+  traverse_match(start, 'label', k)  -- graph reachability as a scored signal
+
+Fusion meta-functions (WHERE clause):
+  fuse_log_odds(sig1, sig2, ...[, alpha]) -- log-odds conjunction (Paper 4)
+  fuse_prob_and(sig1, sig2, ...)          -- probabilistic AND
+  fuse_prob_or(sig1, sig2, ...)           -- probabilistic OR
+  fuse_prob_not(signal)                   -- probabilistic NOT (complement)
 
 FROM-clause table functions:
   traverse(start_id, 'label', max_hops) -- graph traversal
@@ -640,6 +647,16 @@ class SQLCompiler:
             return self._make_text_search_op(field_name, query, ctx, bayesian=True)
         if name == "knn_match":
             return self._make_knn_op(self._extract_int_value(args[0]))
+        if name == "traverse_match":
+            return self._make_traverse_match_op(args)
+        if name == "fuse_log_odds":
+            return self._make_fusion_op(args, ctx, mode="log_odds")
+        if name == "fuse_prob_and":
+            return self._make_fusion_op(args, ctx, mode="prob_and")
+        if name == "fuse_prob_or":
+            return self._make_fusion_op(args, ctx, mode="prob_or")
+        if name == "fuse_prob_not":
+            return self._make_prob_not_op(args, ctx)
         raise ValueError(f"Unknown function: {name}")
 
     def _make_text_search_op(
@@ -668,6 +685,117 @@ class SQLCompiler:
                 "Call set_query_vector() before using knn_match()."
             )
         return KNNOperator(self._query_vector, k)
+
+    def _make_traverse_match_op(self, args: tuple) -> Any:
+        """traverse_match(start_id, 'label', max_hops) as a WHERE signal.
+
+        Returns a posting list of reachable vertices with score = 0.9.
+        """
+        from uqa.graph.operators import TraverseOperator
+
+        start = self._extract_int_value(args[0])
+        label = self._extract_string_value(args[1]) if len(args) > 1 else None
+        max_hops = self._extract_int_value(args[2]) if len(args) > 2 else 1
+        return TraverseOperator(start, label, max_hops)
+
+    def _compile_calibrated_signal(
+        self, node: FuncCall, ctx: ExecutionContext
+    ) -> Any:
+        """Compile a signal function into an operator that produces
+        calibrated probabilities in (0, 1).
+
+        - text_match -> Bayesian BM25 (not raw BM25)
+        - bayesian_match -> Bayesian BM25 (already calibrated)
+        - knn_match -> cosine similarity mapped via P = (1 + sim) / 2
+        - traverse_match -> graph reachability score 0.9 (already calibrated)
+        """
+        name = node.funcname[-1].sval.lower()
+        args = node.args or ()
+
+        if name == "text_match":
+            field_name = self._extract_column_name(args[0])
+            query = self._extract_string_value(args[1])
+            return self._make_text_search_op(field_name, query, ctx, bayesian=True)
+        if name == "bayesian_match":
+            field_name = self._extract_column_name(args[0])
+            query = self._extract_string_value(args[1])
+            return self._make_text_search_op(field_name, query, ctx, bayesian=True)
+        if name == "knn_match":
+            return self._make_calibrated_knn_op(self._extract_int_value(args[0]))
+        if name == "traverse_match":
+            return self._make_traverse_match_op(args)
+        raise ValueError(
+            f"Unknown signal function for fusion: {name}. "
+            f"Use text_match, bayesian_match, knn_match, or traverse_match."
+        )
+
+    def _make_calibrated_knn_op(self, k: int) -> Any:
+        """KNN search with scores calibrated to probabilities via
+        P_vector = (1 + cosine_similarity) / 2 (Definition 7.1.2, Paper 3).
+        """
+        from uqa.operators.primitive import KNNOperator
+
+        if self._query_vector is None:
+            raise ValueError(
+                "No query vector registered. "
+                "Call set_query_vector() before using knn_match()."
+            )
+        return _CalibratedKNNOperator(self._query_vector, k)
+
+    def _make_prob_not_op(self, args: tuple, ctx: ExecutionContext) -> Any:
+        """fuse_prob_not(signal) -- probabilistic complement of a single signal."""
+        from uqa.operators.hybrid import ProbNotOperator
+
+        if len(args) != 1 or not isinstance(args[0], FuncCall):
+            raise ValueError(
+                "fuse_prob_not() requires exactly 1 signal function argument"
+            )
+        signal = self._compile_calibrated_signal(args[0], ctx)
+        return ProbNotOperator(signal)
+
+    def _make_fusion_op(
+        self, args: tuple, ctx: ExecutionContext, *, mode: str
+    ) -> Any:
+        """Build a fusion operator from nested function calls.
+
+        fuse_log_odds(signal1, signal2, ...[, alpha])
+        fuse_prob_and(signal1, signal2, ...)
+        fuse_prob_or(signal1, signal2, ...)
+
+        Each signal argument must be a FuncCall (text_match, bayesian_match,
+        knn_match, traverse_match). For fuse_log_odds, the last argument may
+        be a numeric literal specifying the confidence alpha.
+
+        Signal scores are calibrated to probabilities in (0, 1):
+        - text_match is compiled as bayesian_match (Bayesian BM25)
+        - knn_match applies P_vector = (1 + cosine_sim) / 2
+        - traverse_match and bayesian_match are already calibrated
+        """
+        from uqa.operators.hybrid import LogOddsFusionOperator, ProbBoolFusionOperator
+
+        signals: list[Any] = []
+        alpha = 0.5
+
+        for arg in args:
+            if isinstance(arg, FuncCall):
+                signals.append(self._compile_calibrated_signal(arg, ctx))
+            elif isinstance(arg, A_Const) and mode == "log_odds":
+                # Trailing numeric argument = alpha
+                alpha = float(self._extract_const_value(arg))
+            else:
+                raise ValueError(
+                    f"Fusion function arguments must be signal functions "
+                    f"(text_match, knn_match, etc.), got {type(arg).__name__}"
+                )
+
+        if len(signals) < 2:
+            raise ValueError("Fusion requires at least 2 signal functions")
+
+        if mode == "log_odds":
+            return LogOddsFusionOperator(signals, alpha=alpha)
+        if mode == "prob_and":
+            return ProbBoolFusionOperator(signals, mode="and")
+        return ProbBoolFusionOperator(signals, mode="or")
 
     # -- Aggregation ---------------------------------------------------
 
@@ -916,6 +1044,40 @@ class _ScanOperator:
 
     def cost_estimate(self, stats: Any) -> float:
         return float(stats.total_docs)
+
+
+class _CalibratedKNNOperator:
+    """KNN search with scores calibrated to probabilities.
+
+    P_vector = (1 + cosine_similarity) / 2  (Definition 7.1.2, Paper 3)
+
+    Maps cosine similarity [-1, 1] to probability [0, 1]:
+    - similarity = 1.0  ->  P = 1.0  (identical)
+    - similarity = 0.0  ->  P = 0.5  (orthogonal, neutral)
+    - similarity = -1.0 ->  P = 0.0  (opposite)
+    """
+
+    def __init__(self, query_vector: Any, k: int) -> None:
+        self.query_vector = query_vector
+        self.k = k
+
+    def execute(self, context: Any) -> PostingList:
+        vec_idx = context.vector_index
+        if vec_idx is None:
+            return PostingList()
+        raw_pl = vec_idx.search_knn(self.query_vector, self.k)
+        entries = [
+            PostingEntry(
+                e.doc_id,
+                Payload(score=(1.0 + e.payload.score) / 2.0),
+            )
+            for e in raw_pl
+        ]
+        return PostingList(entries)
+
+    def cost_estimate(self, stats: Any) -> float:
+        import math
+        return float(stats.dimensions) * math.log2(stats.total_docs + 1)
 
 
 def _op_to_predicate(op_name: str, value: Any) -> Predicate:

@@ -277,6 +277,89 @@ def main() -> None:
         "EXPLAIN SELECT * FROM papers WHERE field = 'nlp'"
     ))
 
+    # ------------------------------------------------------------------
+    # 19. Hybrid: fuse_log_odds(text + graph)
+    # ------------------------------------------------------------------
+    print("\n--- 19. fuse_log_odds(text + graph) ---")
+    print(engine.sql(
+        "SELECT title, _score FROM papers "
+        "WHERE fuse_log_odds("
+        "    text_match(title, 'attention'), "
+        "    traverse_match(1, 'cited_by', 2)"
+        ") ORDER BY _score DESC"
+    ))
+
+    # ------------------------------------------------------------------
+    # 20. Hybrid: 3-signal fusion (text + vector + graph)
+    # ------------------------------------------------------------------
+    print("\n--- 20. fuse_log_odds(text + vector + graph) ---")
+    print(compiler.execute(
+        "SELECT title, _score FROM papers "
+        "WHERE fuse_log_odds("
+        "    text_match(title, 'attention'), "
+        "    knn_match(5), "
+        "    traverse_match(1, 'cited_by', 1)"
+        ") ORDER BY _score DESC"
+    ))
+
+    # ------------------------------------------------------------------
+    # 21. Hybrid fusion + relational filter
+    # ------------------------------------------------------------------
+    print("\n--- 21. fuse_log_odds + relational filter ---")
+    print(engine.sql(
+        "SELECT title, year, _score FROM papers "
+        "WHERE fuse_log_odds("
+        "    text_match(title, 'attention'), "
+        "    traverse_match(1, 'cited_by', 2)"
+        ") AND year >= 2018 "
+        "ORDER BY _score DESC"
+    ))
+
+    # ------------------------------------------------------------------
+    # 22. Probabilistic boolean fusion
+    # ------------------------------------------------------------------
+    print("\n--- 22a. fuse_prob_and(text + graph) ---")
+    print(engine.sql(
+        "SELECT title, _score FROM papers "
+        "WHERE fuse_prob_and("
+        "    text_match(title, 'attention'), "
+        "    traverse_match(1, 'cited_by', 2)"
+        ") ORDER BY _score DESC"
+    ))
+
+    print("\n--- 22b. fuse_prob_or(text + graph) ---")
+    print(engine.sql(
+        "SELECT title, _score FROM papers "
+        "WHERE fuse_prob_or("
+        "    text_match(title, 'attention'), "
+        "    traverse_match(1, 'cited_by', 2)"
+        ") ORDER BY _score DESC"
+    ))
+
+    # ------------------------------------------------------------------
+    # 23. Probabilistic NOT -- "papers NOT about attention"
+    # ------------------------------------------------------------------
+    print("\n--- 23. fuse_prob_not(text_match) ---")
+    print(engine.sql(
+        "SELECT title, _score FROM papers "
+        "WHERE fuse_prob_not("
+        "    text_match(title, 'attention')"
+        ") ORDER BY _score DESC"
+    ))
+
+    # ------------------------------------------------------------------
+    # 24. Custom confidence alpha
+    # ------------------------------------------------------------------
+    print("\n--- 24. fuse_log_odds with alpha=0.8 ---")
+    print(engine.sql(
+        "SELECT title, _score FROM papers "
+        "WHERE fuse_log_odds("
+        "    text_match(title, 'attention'), "
+        "    traverse_match(1, 'cited_by', 2), "
+        "    0.8"
+        ") ORDER BY _score DESC"
+    ))
+
     print("\n" + "=" * 70)
     print("All SQL examples completed successfully.")
     print("=" * 70)

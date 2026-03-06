@@ -514,3 +514,265 @@ class TestEdgeCases:
             engine.sql(
                 "SELECT * FROM papers WHERE unknown_func(title, 'test')"
             )
+
+
+# ==================================================================
+# Hybrid queries: fusion of text + vector + graph + filter
+# ==================================================================
+
+@pytest.fixture
+def hybrid_engine() -> Engine:
+    """Engine with table, graph, and vector data for hybrid queries."""
+    e = Engine(vector_dimensions=8, max_elements=100)
+    e.sql("""
+        CREATE TABLE papers (
+            id SERIAL PRIMARY KEY,
+            title TEXT NOT NULL,
+            year INTEGER NOT NULL,
+            field TEXT
+        )
+    """)
+    e.sql("""INSERT INTO papers (title, year, field) VALUES
+        ('attention is all you need', 2017, 'nlp'),
+        ('bert pre-training', 2019, 'nlp'),
+        ('graph attention networks', 2018, 'graph'),
+        ('vision transformer', 2021, 'cv'),
+        ('scaling language models', 2020, 'nlp')
+    """)
+    for i in range(1, 6):
+        e.add_graph_vertex(Vertex(i, {"title": f"paper_{i}"}))
+    e.add_graph_edge(Edge(1, 1, 2, "cited_by"))
+    e.add_graph_edge(Edge(2, 1, 3, "cited_by"))
+    e.add_graph_edge(Edge(3, 1, 4, "cited_by"))
+    e.add_graph_edge(Edge(4, 2, 4, "cited_by"))
+
+    rng = np.random.RandomState(42)
+    base = rng.randn(8).astype(np.float32)
+    base /= np.linalg.norm(base)
+    for i in range(1, 6):
+        emb = base + rng.randn(8).astype(np.float32) * 0.3
+        emb = (emb / np.linalg.norm(emb)).astype(np.float32)
+        e.vector_index.add(i, emb)
+
+    return e
+
+
+class TestTraverseMatch:
+    def test_traverse_match_basic(self, hybrid_engine: Engine) -> None:
+        result = hybrid_engine.sql("""
+            SELECT _doc_id, _score FROM papers
+            WHERE traverse_match(1, 'cited_by', 1)
+        """)
+        doc_ids = {r["_doc_id"] for r in result}
+        # 1-hop from vertex 1: reaches 1, 2, 3, 4
+        assert 1 in doc_ids
+        assert 2 in doc_ids
+        assert 3 in doc_ids
+
+    def test_traverse_match_score(self, hybrid_engine: Engine) -> None:
+        result = hybrid_engine.sql("""
+            SELECT _doc_id, _score FROM papers
+            WHERE traverse_match(1, 'cited_by', 1)
+        """)
+        for row in result:
+            assert row["_score"] == pytest.approx(0.9)
+
+
+class TestFusionLogOdds:
+    def test_fuse_two_signals(self, hybrid_engine: Engine) -> None:
+        result = hybrid_engine.sql("""
+            SELECT title, _score FROM papers
+            WHERE fuse_log_odds(
+                text_match(title, 'attention'),
+                traverse_match(1, 'cited_by', 2)
+            )
+            ORDER BY _score DESC
+        """)
+        assert len(result) > 0
+        # All scores must be calibrated probabilities in (0, 1)
+        for row in result:
+            assert 0.0 < row["_score"] < 1.0
+
+    def test_fuse_text_uses_bayesian(self, hybrid_engine: Engine) -> None:
+        """text_match inside fusion is compiled as bayesian_match."""
+        result = hybrid_engine.sql("""
+            SELECT title, _score FROM papers
+            WHERE fuse_log_odds(
+                text_match(title, 'attention'),
+                traverse_match(1, 'cited_by', 1)
+            )
+            ORDER BY _score DESC
+        """)
+        # Papers with "attention" AND reachable should score highest
+        titles = [r["title"] for r in result]
+        top = titles[0]
+        assert "attention" in top
+
+    def test_fuse_with_alpha(self, hybrid_engine: Engine) -> None:
+        r1 = hybrid_engine.sql("""
+            SELECT title, _score FROM papers
+            WHERE fuse_log_odds(
+                text_match(title, 'attention'),
+                traverse_match(1, 'cited_by', 2),
+                0.3
+            )
+            ORDER BY _score DESC
+        """)
+        r2 = hybrid_engine.sql("""
+            SELECT title, _score FROM papers
+            WHERE fuse_log_odds(
+                text_match(title, 'attention'),
+                traverse_match(1, 'cited_by', 2),
+                0.8
+            )
+            ORDER BY _score DESC
+        """)
+        # Different alpha should produce different scores
+        scores_1 = [r["_score"] for r in r1]
+        scores_2 = [r["_score"] for r in r2]
+        assert scores_1 != scores_2
+
+    def test_fuse_with_filter(self, hybrid_engine: Engine) -> None:
+        result = hybrid_engine.sql("""
+            SELECT title, year, _score FROM papers
+            WHERE fuse_log_odds(
+                text_match(title, 'attention'),
+                traverse_match(1, 'cited_by', 2)
+            ) AND year >= 2018
+            ORDER BY _score DESC
+        """)
+        for row in result:
+            assert row["year"] >= 2018
+
+    def test_fuse_three_signals(self, hybrid_engine: Engine) -> None:
+        compiler = SQLCompiler(hybrid_engine)
+        rng = np.random.RandomState(42)
+        qv = rng.randn(8).astype(np.float32)
+        qv /= np.linalg.norm(qv)
+        compiler.set_query_vector(qv)
+
+        result = compiler.execute("""
+            SELECT title, _score FROM papers
+            WHERE fuse_log_odds(
+                text_match(title, 'attention'),
+                knn_match(5),
+                traverse_match(1, 'cited_by', 1)
+            )
+            ORDER BY _score DESC
+        """)
+        assert len(result) > 0
+        for row in result:
+            assert 0.0 < row["_score"] < 1.0
+
+    def test_knn_calibrated_in_fusion(self, hybrid_engine: Engine) -> None:
+        """knn_match inside fusion applies P = (1 + cosine_sim) / 2."""
+        compiler = SQLCompiler(hybrid_engine)
+        rng = np.random.RandomState(42)
+        qv = rng.randn(8).astype(np.float32)
+        qv /= np.linalg.norm(qv)
+        compiler.set_query_vector(qv)
+
+        result = compiler.execute("""
+            SELECT title, _score FROM papers
+            WHERE fuse_log_odds(
+                bayesian_match(title, 'attention'),
+                knn_match(5)
+            )
+            ORDER BY _score DESC
+        """)
+        for row in result:
+            assert 0.0 < row["_score"] < 1.0
+
+
+class TestFusionProbBoolean:
+    def test_fuse_prob_and(self, hybrid_engine: Engine) -> None:
+        result = hybrid_engine.sql("""
+            SELECT title, _score FROM papers
+            WHERE fuse_prob_and(
+                text_match(title, 'attention'),
+                traverse_match(1, 'cited_by', 2)
+            )
+            ORDER BY _score DESC
+        """)
+        assert len(result) > 0
+        for row in result:
+            assert 0.0 <= row["_score"] <= 1.0
+
+    def test_fuse_prob_or(self, hybrid_engine: Engine) -> None:
+        result = hybrid_engine.sql("""
+            SELECT title, _score FROM papers
+            WHERE fuse_prob_or(
+                text_match(title, 'attention'),
+                traverse_match(1, 'cited_by', 2)
+            )
+            ORDER BY _score DESC
+        """)
+        assert len(result) > 0
+        for row in result:
+            assert 0.0 <= row["_score"] <= 1.0
+
+    def test_fuse_prob_not(self, hybrid_engine: Engine) -> None:
+        result = hybrid_engine.sql("""
+            SELECT title, _score FROM papers
+            WHERE fuse_prob_not(
+                text_match(title, 'attention')
+            )
+            ORDER BY _score DESC
+        """)
+        assert len(result) > 0
+        for row in result:
+            assert 0.0 <= row["_score"] <= 1.0
+        # Papers WITHOUT "attention" should score highest (close to 1.0)
+        scores = {r["title"]: r["_score"] for r in result}
+        assert scores["scaling language models"] > scores["attention is all you need"]
+
+    def test_prob_and_less_than_prob_or(self, hybrid_engine: Engine) -> None:
+        """P(A AND B) <= P(A OR B) for all documents."""
+        r_and = hybrid_engine.sql("""
+            SELECT _doc_id, _score FROM papers
+            WHERE fuse_prob_and(
+                text_match(title, 'attention'),
+                traverse_match(1, 'cited_by', 2)
+            )
+        """)
+        r_or = hybrid_engine.sql("""
+            SELECT _doc_id, _score FROM papers
+            WHERE fuse_prob_or(
+                text_match(title, 'attention'),
+                traverse_match(1, 'cited_by', 2)
+            )
+        """)
+        and_map = {r["_doc_id"]: r["_score"] for r in r_and}
+        or_map = {r["_doc_id"]: r["_score"] for r in r_or}
+        for doc_id in and_map:
+            if doc_id in or_map:
+                assert and_map[doc_id] <= or_map[doc_id] + 1e-9
+
+
+class TestFusionErrors:
+    def test_fusion_needs_two_signals(self, hybrid_engine: Engine) -> None:
+        with pytest.raises(ValueError, match="at least 2"):
+            hybrid_engine.sql("""
+                SELECT * FROM papers
+                WHERE fuse_log_odds(text_match(title, 'attention'))
+            """)
+
+    def test_prob_not_needs_one_signal(self, hybrid_engine: Engine) -> None:
+        with pytest.raises(ValueError, match="exactly 1"):
+            hybrid_engine.sql("""
+                SELECT * FROM papers
+                WHERE fuse_prob_not(
+                    text_match(title, 'attention'),
+                    traverse_match(1, 'cited_by', 1)
+                )
+            """)
+
+    def test_fusion_unknown_signal(self, hybrid_engine: Engine) -> None:
+        with pytest.raises(ValueError, match="Unknown signal function"):
+            hybrid_engine.sql("""
+                SELECT * FROM papers
+                WHERE fuse_log_odds(
+                    text_match(title, 'attention'),
+                    some_func(title, 'test')
+                )
+            """)
