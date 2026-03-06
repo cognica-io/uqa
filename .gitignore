@@ -7,3 +7,4 @@ build/
 .hypothesis/
 .pytest_cache/
 .claude/
+docs/
