@@ -1,3 +1,9 @@
+#
+# Unified Query Algebra
+#
+# Copyright (c) 2023-2026 Cognica, Inc.
+#
+
 from __future__ import annotations
 
 from typing import Any
@@ -31,6 +37,7 @@ class Engine:
         self.graph_store = GraphStore()
         self.block_max_index = BlockMaxIndex()
         self._vector_dimensions = vector_dimensions
+        self._tables: dict[str, Any] = {}
 
     def add_document(
         self,
@@ -58,6 +65,13 @@ class Engine:
 
     def query(self) -> QueryBuilder:
         return QueryBuilder(self)
+
+    def sql(self, query: str) -> Any:
+        """Execute a SQL query against the engine's storage."""
+        from uqa.sql.compiler import SQLCompiler
+
+        compiler = SQLCompiler(self)
+        return compiler.execute(query)
 
     def _build_context(self) -> Any:
         from uqa.operators.base import ExecutionContext
