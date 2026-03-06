@@ -1,3 +1,9 @@
+#
+# Unified Query Algebra
+#
+# Copyright (c) 2023-2026 Cognica, Inc.
+#
+
 def __getattr__(name: str):
     """Lazy imports to avoid circular / missing-module errors during parallel development."""
     _imports = {

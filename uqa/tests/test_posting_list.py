@@ -1,3 +1,9 @@
+#
+# Unified Query Algebra
+#
+# Copyright (c) 2023-2026 Cognica, Inc.
+#
+
 """Property-based tests for PostingList Boolean algebra axioms.
 
 Uses Hypothesis to verify the 5 Boolean algebra axioms from

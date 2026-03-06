@@ -1,3 +1,9 @@
+#
+# Unified Query Algebra
+#
+# Copyright (c) 2023-2026 Cognica, Inc.
+#
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
