@@ -7,4 +7,5 @@ build/
 .hypothesis/
 .pytest_cache/
 .claude/
-docs/
+docs/design/
+docs/papers/*.md
