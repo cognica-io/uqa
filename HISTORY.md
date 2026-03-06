@@ -31,13 +31,14 @@ Initial release of the UQA prototype.
 - GraphStore with adjacency lists and label index
 - TraverseOperator (BFS), PatternMatchOperator (backtracking)
 - RegularPathQueryOperator (Thompson NFA simulation)
-- Cross-paradigm operators (ToGraph, FromGraph, SemanticGraphSearch)
+- Cross-paradigm operators (ToGraph, FromGraph, SemanticGraphSearch, VertexEmbedding, VectorEnhancedMatch, TextToGraph)
 
 ### Joins
 
-- InnerJoinOperator (hash join)
+- InnerJoinOperator (hash join), SortMergeJoinOperator, IndexJoinOperator
 - LeftOuterJoinOperator
 - TextSimilarityJoinOperator (Jaccard), VectorSimilarityJoinOperator
+- GraphJoinOperator (edge connectivity), CrossParadigmJoinOperator (vertex-document)
 
 ### Operators
 
@@ -59,7 +60,7 @@ Initial release of the UQA prototype.
 - pglast-based compiler (PostgreSQL parser)
 - DDL: CREATE TABLE, DROP TABLE [IF EXISTS]
 - DML: INSERT INTO ... VALUES
-- DQL: SELECT with WHERE, GROUP BY, HAVING, ORDER BY, LIMIT, JOIN
+- DQL: SELECT [DISTINCT] with WHERE, GROUP BY, HAVING, ORDER BY, LIMIT, JOIN
 - EXPLAIN and ANALYZE support
 - Extended functions: text_match, bayesian_match, knn_match, traverse_match
 - Fusion meta-functions: fuse_log_odds, fuse_prob_and, fuse_prob_or, fuse_prob_not
@@ -77,5 +78,5 @@ Initial release of the UQA prototype.
 
 ### Tests
 
-- 240 tests covering all modules
+- 266 tests covering all modules
 - Property-based tests with Hypothesis (boolean algebra axioms, scoring monotonicity)

@@ -67,12 +67,12 @@ uqa/
   operators/      Operator algebra (boolean, primitive, hybrid, aggregation)
   scoring/        BM25, Bayesian BM25, VectorScorer, WAND
   fusion/         Log-odds conjunction, probabilistic boolean
-  graph/          GraphStore, traversal, pattern matching, RPQ
-  joins/          Inner join, left outer join, cross-paradigm similarity joins
+  graph/          GraphStore, traversal, pattern matching, RPQ, cross-paradigm
+  joins/          Hash, sort-merge, index, graph, cross-paradigm, similarity joins
   planner/        Cost model, cardinality estimator, query optimizer, executor
   sql/            SQL compiler (pglast), table DDL/DML, column statistics
   api/            Fluent QueryBuilder
-  tests/          240 tests (pytest + hypothesis)
+  tests/          266 tests (pytest + hypothesis)
 ```
 
 ## Key Features
@@ -83,7 +83,7 @@ uqa/
 |----------|--------|
 | DDL | `CREATE TABLE`, `DROP TABLE [IF EXISTS]` |
 | DML | `INSERT INTO ... VALUES` |
-| DQL | `SELECT ... FROM ... WHERE ... GROUP BY ... HAVING ... ORDER BY ... LIMIT` |
+| DQL | `SELECT [DISTINCT] ... FROM ... WHERE ... GROUP BY ... HAVING ... ORDER BY ... LIMIT` |
 | Utility | `EXPLAIN SELECT ...`, `ANALYZE [table]` |
 
 ### Extended WHERE Functions
