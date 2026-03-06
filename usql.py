@@ -7,8 +7,10 @@
 """usql -- interactive SQL shell for the UQA engine.
 
 Usage:
-    python usql.py              Start with an empty database
-    python usql.py script.sql   Execute a SQL script then enter interactive mode
+    python usql.py                        Start with an in-memory database
+    python usql.py --db mydata.db         Start with persistent SQLite storage
+    python usql.py script.sql             Execute a SQL script then enter REPL
+    python usql.py --db mydata.db s.sql   Persistent + script
 
 Special commands (backslash):
     \\dt             List tables
@@ -21,6 +23,7 @@ Special commands (backslash):
 
 from __future__ import annotations
 
+import argparse
 import sys
 import time
 from typing import Iterable
@@ -147,8 +150,11 @@ class SQLCompleter(Completer):
 class UQAShell:
     """Interactive SQL shell backed by a UQA Engine."""
 
-    def __init__(self) -> None:
-        self._engine = Engine(vector_dimensions=64, max_elements=10000)
+    def __init__(self, db_path: str | None = None) -> None:
+        self._db_path = db_path
+        self._engine = Engine(
+            db_path=db_path, vector_dimensions=64, max_elements=10000
+        )
         self._show_timing = False
         self._completer = SQLCompleter(self._engine)
         self._session: PromptSession = PromptSession(
@@ -267,7 +273,12 @@ class UQAShell:
             state = "on" if self._show_timing else "off"
             print(f"Timing is {state}.")
         elif verb == "\\reset":
-            self._engine = Engine(vector_dimensions=64, max_elements=10000)
+            self._engine.close()
+            self._engine = Engine(
+                db_path=self._db_path,
+                vector_dimensions=64,
+                max_elements=10000,
+            )
             self._completer._engine = self._engine
             print("Engine reset.")
         elif verb in ("\\h", "\\help", "\\?"):
@@ -359,11 +370,13 @@ class UQAShell:
     def _toolbar(self) -> str:
         n = len(self._engine._tables)
         timing = "on" if self._show_timing else "off"
-        return f" usql | tables: {n} | timing: {timing} | \\q to quit "
+        db = self._db_path or ":memory:"
+        return f" usql | db: {db} | tables: {n} | timing: {timing} | \\q to quit "
 
-    @staticmethod
-    def _print_banner() -> None:
+    def _print_banner(self) -> None:
+        db = self._db_path or ":memory:"
         print("usql -- UQA interactive SQL shell")
+        print(f"Database: {db}")
         print("Type SQL statements terminated by ';'")
         print("Use \\dt, \\d <table>, \\ds <table>, \\timing, \\reset, \\q")
         print()
@@ -374,17 +387,36 @@ class UQAShell:
 # ------------------------------------------------------------------
 
 def main() -> None:
-    shell = UQAShell()
+    parser = argparse.ArgumentParser(
+        description="usql -- UQA interactive SQL shell"
+    )
+    parser.add_argument(
+        "--db",
+        metavar="PATH",
+        default=None,
+        help="SQLite database file for persistent storage",
+    )
+    parser.add_argument(
+        "scripts",
+        nargs="*",
+        metavar="script.sql",
+        help="SQL script files to execute before entering REPL",
+    )
+    args = parser.parse_args()
 
-    # Execute script files from arguments
-    for path in sys.argv[1:]:
+    shell = UQAShell(db_path=args.db)
+
+    for path in args.scripts:
         try:
             shell.run_file(path)
         except FileNotFoundError:
             print(f"File not found: {path}", file=sys.stderr)
             sys.exit(1)
 
-    shell.repl()
+    try:
+        shell.repl()
+    finally:
+        shell._engine.close()
 
 
 if __name__ == "__main__":

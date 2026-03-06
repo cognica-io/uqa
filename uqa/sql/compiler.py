@@ -200,6 +200,23 @@ class SQLCompiler:
 
         table = Table(table_name, columns)
         self._engine._tables[table_name] = table
+
+        if self._engine._catalog is not None:
+            self._engine._catalog.save_table_schema(
+                table_name,
+                [
+                    {
+                        "name": col.name,
+                        "type_name": col.type_name,
+                        "primary_key": col.primary_key,
+                        "not_null": col.not_null,
+                        "auto_increment": col.auto_increment,
+                        "default": col.default,
+                    }
+                    for col in columns
+                ],
+            )
+
         return SQLResult([], [])
 
     def _parse_column_def(self, node: Any) -> ColumnDef:
@@ -239,6 +256,8 @@ class SQLCompiler:
             table_name = obj[-1].sval
             if table_name in self._engine._tables:
                 del self._engine._tables[table_name]
+                if self._engine._catalog is not None:
+                    self._engine._catalog.drop_table_schema(table_name)
             elif not stmt.missing_ok:
                 raise ValueError(f"Table '{table_name}' does not exist")
         return SQLResult([], [])
@@ -274,8 +293,15 @@ class SQLCompiler:
             row: dict[str, Any] = {}
             for i, val_node in enumerate(row_values):
                 row[col_names[i]] = self._extract_const_value(val_node)
-            table.insert(row)
+            doc_id = table.insert(row)
             inserted += 1
+
+            if self._engine._catalog is not None:
+                stored = table.document_store.get(doc_id)
+                if stored is not None:
+                    self._engine._catalog.save_document(
+                        table_name, doc_id, stored
+                    )
 
         return SQLResult(["inserted"], [{"inserted": inserted}])
 
