@@ -13,7 +13,7 @@ Supported statements:
   DML:
     INSERT INTO name (col, ...) VALUES (val, ...), ...
   DQL:
-    SELECT [* | col, ... | aggregates] FROM table
+    SELECT [DISTINCT] [* | col, ... | aggregates] FROM table
       [WHERE comparisons / boolean / text_match() / knn_match()]
       [GROUP BY col [HAVING ...]]
       [ORDER BY col [ASC|DESC]]
@@ -388,11 +388,15 @@ class SQLCompiler:
         # 8. Project
         columns, rows = self._project(stmt.targetList, rows)
 
-        # 9. ORDER BY
+        # 9. DISTINCT
+        if stmt.distinctClause is not None:
+            rows = self._apply_distinct(rows, columns)
+
+        # 10. ORDER BY
         if stmt.sortClause is not None:
             rows = self._apply_order_by(rows, stmt.sortClause)
 
-        # 10. LIMIT
+        # 11. LIMIT
         if stmt.limitCount is not None:
             rows = rows[: self._extract_int_value(stmt.limitCount)]
 
@@ -975,6 +979,22 @@ class SQLCompiler:
                     p_row[alias] = row.get(alias, row.get("_score"))
             projected.append(p_row)
         return columns, projected
+
+    # -- DISTINCT ------------------------------------------------------
+
+    @staticmethod
+    def _apply_distinct(
+        rows: list[dict[str, Any]], columns: list[str]
+    ) -> list[dict[str, Any]]:
+        """Remove duplicate rows based on projected columns."""
+        seen: set[tuple] = set()
+        unique: list[dict[str, Any]] = []
+        for row in rows:
+            key = tuple(row.get(c) for c in columns)
+            if key not in seen:
+                seen.add(key)
+                unique.append(row)
+        return unique
 
     # -- ORDER BY ------------------------------------------------------
 

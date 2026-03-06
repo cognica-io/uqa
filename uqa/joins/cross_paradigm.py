@@ -7,12 +7,16 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from uqa.core.posting_list import GeneralizedPostingList
 from uqa.core.types import GeneralizedPostingEntry, Payload, PostingEntry
 from uqa.joins.base import JoinCondition, JoinOperator
+
+if TYPE_CHECKING:
+    from uqa.graph.store import GraphStore
 
 
 class TextSimilarityJoinOperator:
@@ -221,6 +225,131 @@ class HybridJoinOperator:
                             ),
                         )
                     )
+
+        return GeneralizedPostingList(result)
+
+    @staticmethod
+    def _get_entries(source: object, context: object) -> list[PostingEntry]:
+        if hasattr(source, "execute"):
+            pl = source.execute(context)  # type: ignore[attr-defined]
+            return list(pl)
+        return list(source)  # type: ignore[arg-type]
+
+
+class GraphJoinOperator:
+    """Join two posting lists based on graph edge connectivity.
+
+    For each (left_entry, right_entry) pair, checks whether a directed
+    edge from left_entry.doc_id to right_entry.doc_id exists in the
+    graph store (optionally filtered by label). Matched pairs are emitted.
+    """
+
+    def __init__(
+        self,
+        left: object,
+        right: object,
+        label: str | None = None,
+    ) -> None:
+        self.left = left
+        self.right = right
+        self.label = label
+
+    def execute(self, context: object) -> GeneralizedPostingList:
+        from uqa.graph.store import GraphStore
+
+        graph: GraphStore = context.graph_store  # type: ignore[attr-defined]
+        left_entries = self._get_entries(self.left, context)
+        right_entries = self._get_entries(self.right, context)
+
+        right_set = {e.doc_id: e for e in right_entries}
+
+        result: list[GeneralizedPostingEntry] = []
+        for left_entry in left_entries:
+            neighbors = graph.neighbors(
+                left_entry.doc_id, label=self.label, direction="out"
+            )
+            for neighbor_id in neighbors:
+                right_entry = right_set.get(neighbor_id)
+                if right_entry is None:
+                    continue
+                merged_fields = {
+                    **left_entry.payload.fields,
+                    **right_entry.payload.fields,
+                }
+                merged_score = left_entry.payload.score + right_entry.payload.score
+                result.append(
+                    GeneralizedPostingEntry(
+                        doc_ids=(left_entry.doc_id, right_entry.doc_id),
+                        payload=Payload(score=merged_score, fields=merged_fields),
+                    )
+                )
+
+        return GeneralizedPostingList(result)
+
+    @staticmethod
+    def _get_entries(source: object, context: object) -> list[PostingEntry]:
+        if hasattr(source, "execute"):
+            pl = source.execute(context)  # type: ignore[attr-defined]
+            return list(pl)
+        return list(source)  # type: ignore[arg-type]
+
+
+class CrossParadigmJoinOperator:
+    """Join graph vertices with document posting lists.
+
+    Bridges the graph and relational paradigms: for each vertex in the
+    left (graph) posting list, looks up the corresponding document in
+    the right (document) posting list by matching vertex_field on the
+    vertex properties against doc_field on the document payload.
+    """
+
+    def __init__(
+        self,
+        left: object,
+        right: object,
+        vertex_field: str,
+        doc_field: str,
+    ) -> None:
+        self.left = left
+        self.right = right
+        self.vertex_field = vertex_field
+        self.doc_field = doc_field
+
+    def execute(self, context: object) -> GeneralizedPostingList:
+        from uqa.graph.store import GraphStore
+
+        graph: GraphStore = context.graph_store  # type: ignore[attr-defined]
+        left_entries = self._get_entries(self.left, context)
+        right_entries = self._get_entries(self.right, context)
+
+        right_index: dict[object, list[PostingEntry]] = defaultdict(list)
+        for entry in right_entries:
+            key = entry.payload.fields.get(self.doc_field)
+            if key is not None:
+                right_index[key].append(entry)
+
+        result: list[GeneralizedPostingEntry] = []
+        for left_entry in left_entries:
+            vertex = graph.get_vertex(left_entry.doc_id)
+            if vertex is None:
+                vertex_key = left_entry.payload.fields.get(self.vertex_field)
+            else:
+                vertex_key = vertex.properties.get(self.vertex_field)
+            if vertex_key is None:
+                continue
+            for right_entry in right_index.get(vertex_key, []):
+                merged_fields = {}
+                if vertex is not None:
+                    merged_fields.update(vertex.properties)
+                merged_fields.update(left_entry.payload.fields)
+                merged_fields.update(right_entry.payload.fields)
+                merged_score = left_entry.payload.score + right_entry.payload.score
+                result.append(
+                    GeneralizedPostingEntry(
+                        doc_ids=(left_entry.doc_id, right_entry.doc_id),
+                        payload=Payload(score=merged_score, fields=merged_fields),
+                    )
+                )
 
         return GeneralizedPostingList(result)
 

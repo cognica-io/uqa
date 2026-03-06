@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from uqa.core.types import Edge, Payload, PostingEntry, Vertex
@@ -25,6 +26,11 @@ from uqa.graph.operators import (
     PatternMatchOperator,
     RegularPathQueryOperator,
     TraverseOperator,
+)
+from uqa.graph.cross_paradigm import (
+    TextToGraphOperator,
+    VertexEmbeddingOperator,
+    VectorEnhancedMatchOperator,
 )
 
 
@@ -393,3 +399,149 @@ class TestGraphPostingListIsomorphism:
 
         # Both should have the same doc_ids
         assert pl_of_union.doc_ids == union_of_pl.doc_ids
+
+
+# -- VertexEmbeddingOperator tests --
+
+
+class TestVertexEmbeddingOperator:
+    def test_basic_embedding_search(self) -> None:
+        store = GraphStore()
+        v1 = np.array([1.0, 0.0, 0.0])
+        v2 = np.array([0.9, 0.1, 0.0])
+        v3 = np.array([0.0, 0.0, 1.0])
+        store.add_vertex(Vertex(1, {"embedding": v1}))
+        store.add_vertex(Vertex(2, {"embedding": v2}))
+        store.add_vertex(Vertex(3, {"embedding": v3}))
+        ctx = _ExecutionContext(store)
+
+        query = np.array([1.0, 0.0, 0.0])
+        op = VertexEmbeddingOperator(query, threshold=0.8)
+        result = op.execute(ctx)
+        doc_ids = {e.doc_id for e in result}
+        # v1 is identical (sim=1.0), v2 is close, v3 is orthogonal
+        assert 1 in doc_ids
+        assert 2 in doc_ids
+        assert 3 not in doc_ids
+
+    def test_no_embedding_field(self) -> None:
+        store = GraphStore()
+        store.add_vertex(Vertex(1, {"name": "Alice"}))
+        ctx = _ExecutionContext(store)
+
+        query = np.array([1.0, 0.0])
+        op = VertexEmbeddingOperator(query, threshold=0.0)
+        result = op.execute(ctx)
+        assert len(result) == 0
+
+    def test_sorted_output(self) -> None:
+        store = GraphStore()
+        for i in [5, 3, 1]:
+            store.add_vertex(Vertex(i, {"embedding": np.array([1.0, 0.0])}))
+        ctx = _ExecutionContext(store)
+
+        query = np.array([1.0, 0.0])
+        op = VertexEmbeddingOperator(query, threshold=0.0)
+        result = op.execute(ctx)
+        ids = [e.doc_id for e in result]
+        assert ids == sorted(ids)
+
+
+# -- VectorEnhancedMatchOperator tests --
+
+
+class TestVectorEnhancedMatchOperator:
+    def test_pattern_match_with_vector_scoring(self) -> None:
+        store = GraphStore()
+        v_embed = np.array([1.0, 0.0])
+        store.add_vertex(Vertex(1, {"embedding": v_embed}))
+        store.add_vertex(Vertex(2, {"embedding": np.array([0.9, 0.1])}))
+        store.add_vertex(Vertex(3, {"embedding": np.array([0.0, 1.0])}))
+        store.add_edge(Edge(1, 1, 2, "knows"))
+        store.add_edge(Edge(2, 1, 3, "knows"))
+        ctx = _ExecutionContext(store)
+
+        pattern = GraphPattern(
+            vertex_patterns=[VertexPattern("a"), VertexPattern("b")],
+            edge_patterns=[EdgePattern("a", "b", "knows")],
+        )
+        query = np.array([1.0, 0.0])
+        op = VectorEnhancedMatchOperator(
+            pattern, query, score_variable="b", threshold=0.5
+        )
+        result = op.execute(ctx)
+        # Matches: (a=1,b=2) with sim(v2, query) high
+        #          (a=1,b=3) with sim(v3, query)=0.0 < 0.5
+        scored_entries = [e for e in result if e.payload.score >= 0.5]
+        assert len(scored_entries) >= 1
+
+    def test_threshold_filtering(self) -> None:
+        store = GraphStore()
+        store.add_vertex(Vertex(1, {"embedding": np.array([1.0, 0.0])}))
+        store.add_vertex(Vertex(2, {"embedding": np.array([0.0, 1.0])}))
+        store.add_edge(Edge(1, 1, 2, "link"))
+        ctx = _ExecutionContext(store)
+
+        pattern = GraphPattern(
+            vertex_patterns=[VertexPattern("a"), VertexPattern("b")],
+            edge_patterns=[EdgePattern("a", "b", "link")],
+        )
+        query = np.array([1.0, 0.0])
+        # High threshold: v2 is orthogonal to query
+        op = VectorEnhancedMatchOperator(
+            pattern, query, score_variable="b", threshold=0.9
+        )
+        result = op.execute(ctx)
+        assert len(result) == 0
+
+
+# -- TextToGraphOperator tests --
+
+
+class TestTextToGraphOperator:
+    def test_basic_co_occurrence(self) -> None:
+        docs = [
+            {"text": "the quick brown fox"},
+            {"text": "the quick red fox"},
+        ]
+        op = TextToGraphOperator(docs, text_field="text")
+        graph = op.execute(None)
+
+        tokens = {v.properties["token"] for v in graph._vertices.values()}
+        assert "the" in tokens
+        assert "quick" in tokens
+        assert "fox" in tokens
+        assert "brown" in tokens
+        assert "red" in tokens
+        # "the" and "quick" co-occur in both documents
+        assert len(graph._edges) > 0
+
+    def test_window_size(self) -> None:
+        docs = [{"text": "a b c d e"}]
+        op_full = TextToGraphOperator(docs, text_field="text", window_size=0)
+        graph_full = op_full.execute(None)
+
+        op_window = TextToGraphOperator(docs, text_field="text", window_size=1)
+        graph_window = op_window.execute(None)
+
+        # Window=1 should produce fewer edges than full co-occurrence
+        assert len(graph_window._edges) <= len(graph_full._edges)
+
+    def test_empty_input(self) -> None:
+        op = TextToGraphOperator([], text_field="text")
+        graph = op.execute(None)
+        assert len(graph._vertices) == 0
+        assert len(graph._edges) == 0
+
+    def test_edge_weights(self) -> None:
+        docs = [
+            {"text": "a b"},
+            {"text": "a b"},
+        ]
+        op = TextToGraphOperator(docs, text_field="text")
+        graph = op.execute(None)
+
+        for edge in graph._edges.values():
+            if edge.label == "co_occurs":
+                # "a" and "b" co-occur in 2 documents
+                assert edge.properties["weight"] == 2

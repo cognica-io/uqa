@@ -15,16 +15,23 @@ from uqa.joins.base import JoinCondition
 from uqa.joins.inner import InnerJoinOperator
 from uqa.joins.outer import LeftOuterJoinOperator
 from uqa.joins.cross_paradigm import (
+    CrossParadigmJoinOperator,
+    GraphJoinOperator,
     HybridJoinOperator,
     TextSimilarityJoinOperator,
     VectorSimilarityJoinOperator,
 )
+from uqa.joins.sort_merge import SortMergeJoinOperator
+from uqa.joins.index import IndexJoinOperator
+from uqa.core.types import Edge, Vertex
+from uqa.graph.store import GraphStore
 
 
 class _MockContext:
     """Minimal execution context for join tests."""
 
-    pass
+    def __init__(self, graph_store: GraphStore | None = None) -> None:
+        self.graph_store = graph_store
 
 
 @pytest.fixture
@@ -379,3 +386,246 @@ def _generalized_to_posting_list(
             )
         )
     return PostingList(entries)
+
+
+# -- SortMergeJoinOperator tests --
+
+
+class TestSortMergeJoinOperator:
+    def test_basic_sort_merge(
+        self,
+        context: _MockContext,
+        left_entries: PostingList,
+        right_entries: PostingList,
+    ) -> None:
+        condition = JoinCondition("dept", "department")
+        op = SortMergeJoinOperator(left_entries, right_entries, condition)
+        result = op.execute(context)
+
+        pairs = {e.doc_ids for e in result}
+        assert (1, 10) in pairs
+        assert (2, 10) in pairs
+        assert (3, 11) in pairs
+        assert all(e.doc_ids[0] != 4 for e in result)
+        assert len(result) == 3
+
+    def test_equivalent_to_hash_join(
+        self,
+        context: _MockContext,
+        left_entries: PostingList,
+        right_entries: PostingList,
+    ) -> None:
+        """Sort-merge join produces same results as hash join."""
+        condition = JoinCondition("dept", "department")
+        hash_result = InnerJoinOperator(left_entries, right_entries, condition).execute(context)
+        merge_result = SortMergeJoinOperator(left_entries, right_entries, condition).execute(context)
+
+        hash_pairs = {e.doc_ids for e in hash_result}
+        merge_pairs = {e.doc_ids for e in merge_result}
+        assert hash_pairs == merge_pairs
+
+    def test_no_matches(self, context: _MockContext) -> None:
+        left = PostingList([
+            PostingEntry(1, Payload(fields={"key": "a"})),
+        ])
+        right = PostingList([
+            PostingEntry(2, Payload(fields={"key": "b"})),
+        ])
+        condition = JoinCondition("key", "key")
+        op = SortMergeJoinOperator(left, right, condition)
+        result = op.execute(context)
+        assert len(result) == 0
+
+    def test_multiple_matches(self, context: _MockContext) -> None:
+        left = PostingList([
+            PostingEntry(1, Payload(fields={"key": "x"})),
+            PostingEntry(2, Payload(fields={"key": "x"})),
+        ])
+        right = PostingList([
+            PostingEntry(10, Payload(fields={"key": "x"})),
+            PostingEntry(11, Payload(fields={"key": "x"})),
+        ])
+        condition = JoinCondition("key", "key")
+        op = SortMergeJoinOperator(left, right, condition)
+        result = op.execute(context)
+        assert len(result) == 4
+
+
+# -- IndexJoinOperator tests --
+
+
+class TestIndexJoinOperator:
+    def test_basic_index_join(
+        self,
+        context: _MockContext,
+        left_entries: PostingList,
+        right_entries: PostingList,
+    ) -> None:
+        condition = JoinCondition("dept", "department")
+        op = IndexJoinOperator(left_entries, right_entries, condition)
+        result = op.execute(context)
+
+        pairs = {e.doc_ids for e in result}
+        assert (1, 10) in pairs
+        assert (2, 10) in pairs
+        assert (3, 11) in pairs
+        assert len(result) == 3
+
+    def test_equivalent_to_hash_join(
+        self,
+        context: _MockContext,
+        left_entries: PostingList,
+        right_entries: PostingList,
+    ) -> None:
+        """Index join produces same results as hash join."""
+        condition = JoinCondition("dept", "department")
+        hash_result = InnerJoinOperator(left_entries, right_entries, condition).execute(context)
+        index_result = IndexJoinOperator(left_entries, right_entries, condition).execute(context)
+
+        hash_pairs = {e.doc_ids for e in hash_result}
+        index_pairs = {e.doc_ids for e in index_result}
+        assert hash_pairs == index_pairs
+
+    def test_no_matches(self, context: _MockContext) -> None:
+        left = PostingList([
+            PostingEntry(1, Payload(fields={"key": "a"})),
+        ])
+        right = PostingList([
+            PostingEntry(2, Payload(fields={"key": "b"})),
+        ])
+        condition = JoinCondition("key", "key")
+        op = IndexJoinOperator(left, right, condition)
+        result = op.execute(context)
+        assert len(result) == 0
+
+
+# -- GraphJoinOperator tests --
+
+
+class TestGraphJoinOperator:
+    def test_basic_graph_join(self) -> None:
+        store = GraphStore()
+        store.add_vertex(Vertex(1, {"name": "A"}))
+        store.add_vertex(Vertex(2, {"name": "B"}))
+        store.add_vertex(Vertex(3, {"name": "C"}))
+        store.add_edge(Edge(1, 1, 2, "knows"))
+        store.add_edge(Edge(2, 1, 3, "knows"))
+        ctx = _MockContext(graph_store=store)
+
+        left = PostingList([
+            PostingEntry(1, Payload(score=1.0, fields={"role": "author"})),
+        ])
+        right = PostingList([
+            PostingEntry(2, Payload(score=0.5, fields={"role": "reviewer"})),
+            PostingEntry(3, Payload(score=0.3, fields={"role": "editor"})),
+            PostingEntry(4, Payload(score=0.1, fields={"role": "reader"})),
+        ])
+
+        op = GraphJoinOperator(left, right, label="knows")
+        result = op.execute(ctx)
+
+        pairs = {e.doc_ids for e in result}
+        assert (1, 2) in pairs
+        assert (1, 3) in pairs
+        assert (1, 4) not in pairs
+        assert len(result) == 2
+
+    def test_label_filter(self) -> None:
+        store = GraphStore()
+        store.add_vertex(Vertex(1, {}))
+        store.add_vertex(Vertex(2, {}))
+        store.add_vertex(Vertex(3, {}))
+        store.add_edge(Edge(1, 1, 2, "knows"))
+        store.add_edge(Edge(2, 1, 3, "works_with"))
+        ctx = _MockContext(graph_store=store)
+
+        left = PostingList([PostingEntry(1, Payload())])
+        right = PostingList([
+            PostingEntry(2, Payload()),
+            PostingEntry(3, Payload()),
+        ])
+
+        op = GraphJoinOperator(left, right, label="knows")
+        result = op.execute(ctx)
+        pairs = {e.doc_ids for e in result}
+        assert (1, 2) in pairs
+        assert (1, 3) not in pairs
+
+    def test_no_label_filter(self) -> None:
+        store = GraphStore()
+        store.add_vertex(Vertex(1, {}))
+        store.add_vertex(Vertex(2, {}))
+        store.add_vertex(Vertex(3, {}))
+        store.add_edge(Edge(1, 1, 2, "knows"))
+        store.add_edge(Edge(2, 1, 3, "works_with"))
+        ctx = _MockContext(graph_store=store)
+
+        left = PostingList([PostingEntry(1, Payload())])
+        right = PostingList([
+            PostingEntry(2, Payload()),
+            PostingEntry(3, Payload()),
+        ])
+
+        op = GraphJoinOperator(left, right, label=None)
+        result = op.execute(ctx)
+        assert len(result) == 2
+
+
+# -- CrossParadigmJoinOperator tests --
+
+
+class TestCrossParadigmJoinOperator:
+    def test_vertex_to_document_join(self) -> None:
+        store = GraphStore()
+        store.add_vertex(Vertex(1, {"department": "eng"}))
+        store.add_vertex(Vertex(2, {"department": "sales"}))
+        ctx = _MockContext(graph_store=store)
+
+        left = PostingList([
+            PostingEntry(1, Payload(score=0.9)),
+            PostingEntry(2, Payload(score=0.8)),
+        ])
+        right = PostingList([
+            PostingEntry(10, Payload(fields={"dept": "eng", "budget": 100})),
+            PostingEntry(11, Payload(fields={"dept": "sales", "budget": 50})),
+            PostingEntry(12, Payload(fields={"dept": "hr", "budget": 75})),
+        ])
+
+        op = CrossParadigmJoinOperator(left, right, "department", "dept")
+        result = op.execute(ctx)
+
+        pairs = {e.doc_ids for e in result}
+        assert (1, 10) in pairs
+        assert (2, 11) in pairs
+        assert len(result) == 2
+
+    def test_no_match(self) -> None:
+        store = GraphStore()
+        store.add_vertex(Vertex(1, {"category": "A"}))
+        ctx = _MockContext(graph_store=store)
+
+        left = PostingList([PostingEntry(1, Payload())])
+        right = PostingList([
+            PostingEntry(10, Payload(fields={"cat": "B"})),
+        ])
+
+        op = CrossParadigmJoinOperator(left, right, "category", "cat")
+        result = op.execute(ctx)
+        assert len(result) == 0
+
+    def test_merged_fields_include_vertex_properties(self) -> None:
+        store = GraphStore()
+        store.add_vertex(Vertex(1, {"name": "Alice", "dept": "eng"}))
+        ctx = _MockContext(graph_store=store)
+
+        left = PostingList([PostingEntry(1, Payload(score=1.0))])
+        right = PostingList([
+            PostingEntry(10, Payload(fields={"dept": "eng", "title": "Manager"})),
+        ])
+
+        op = CrossParadigmJoinOperator(left, right, "dept", "dept")
+        result = op.execute(ctx)
+        assert len(result) == 1
+        entry = list(result)[0]
+        assert entry.payload.fields["name"] == "Alice"
+        assert entry.payload.fields["title"] == "Manager"

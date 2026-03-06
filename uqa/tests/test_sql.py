@@ -490,6 +490,43 @@ class TestAnalyze:
 # Edge cases
 # ==================================================================
 
+# ==================================================================
+# DISTINCT
+# ==================================================================
+
+
+class TestDistinct:
+    def test_select_distinct(self, engine: Engine) -> None:
+        result = engine.sql("SELECT DISTINCT field FROM papers")
+        fields = [r["field"] for r in result]
+        assert len(fields) == len(set(fields))
+
+    def test_distinct_with_order_by(self, engine: Engine) -> None:
+        result = engine.sql(
+            "SELECT DISTINCT field FROM papers ORDER BY field"
+        )
+        fields = [r["field"] for r in result]
+        assert fields == sorted(fields)
+        assert len(fields) == len(set(fields))
+
+    def test_distinct_multiple_columns(self, engine: Engine) -> None:
+        result = engine.sql("SELECT DISTINCT field, year FROM papers")
+        pairs = [(r["field"], r["year"]) for r in result]
+        assert len(pairs) == len(set(pairs))
+
+    def test_distinct_preserves_all_unique_rows(self, engine: Engine) -> None:
+        all_result = engine.sql("SELECT year FROM papers")
+        distinct_result = engine.sql("SELECT DISTINCT year FROM papers")
+        all_years = {r["year"] for r in all_result}
+        distinct_years = {r["year"] for r in distinct_result}
+        assert all_years == distinct_years
+
+
+# ==================================================================
+# Edge cases
+# ==================================================================
+
+
 class TestEdgeCases:
     def test_no_where_clause(self, engine: Engine) -> None:
         result = engine.sql("SELECT * FROM papers")
