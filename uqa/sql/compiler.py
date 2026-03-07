@@ -283,25 +283,42 @@ class SQLCompiler:
         if values_stmt is None or values_stmt.valuesLists is None:
             raise ValueError("INSERT requires VALUES clause")
 
-        inserted = 0
-        for row_values in values_stmt.valuesLists:
-            if len(row_values) != len(col_names):
-                raise ValueError(
-                    f"VALUES has {len(row_values)} columns "
-                    f"but {len(col_names)} were specified"
-                )
-            row: dict[str, Any] = {}
-            for i, val_node in enumerate(row_values):
-                row[col_names[i]] = self._extract_const_value(val_node)
-            doc_id = table.insert(row)
-            inserted += 1
+        catalog = self._engine._catalog
+        if catalog is not None:
+            catalog.begin()
 
-            if self._engine._catalog is not None:
-                stored = table.document_store.get(doc_id)
-                if stored is not None:
-                    self._engine._catalog.save_document(
-                        table_name, doc_id, stored
+        inserted = 0
+        try:
+            for row_values in values_stmt.valuesLists:
+                if len(row_values) != len(col_names):
+                    raise ValueError(
+                        f"VALUES has {len(row_values)} columns "
+                        f"but {len(col_names)} were specified"
                     )
+                row: dict[str, Any] = {}
+                for i, val_node in enumerate(row_values):
+                    row[col_names[i]] = self._extract_const_value(val_node)
+                doc_id, indexed = table.insert(row)
+                inserted += 1
+
+                if catalog is not None:
+                    stored = table.document_store.get(doc_id)
+                    if stored is not None:
+                        catalog.save_document(
+                            table_name, doc_id, stored
+                        )
+                    if indexed is not None:
+                        catalog.save_postings(
+                            table_name, doc_id,
+                            indexed.field_lengths, indexed.postings,
+                        )
+        except Exception:
+            if catalog is not None:
+                catalog.rollback()
+            raise
+
+        if catalog is not None:
+            catalog.commit()
 
         return SQLResult(["inserted"], [{"inserted": inserted}])
 
@@ -318,16 +335,27 @@ class SQLCompiler:
 
     def _compile_analyze(self, stmt: VacuumStmt) -> SQLResult:
         """ANALYZE [table] -- collect per-column statistics."""
+        tables_to_analyze: list[Any] = []
         if stmt.rels:
             for rel in stmt.rels:
                 table_name = rel.relation.relname
                 table = self._engine._tables.get(table_name)
                 if table is None:
                     raise ValueError(f"Table '{table_name}' does not exist")
-                table.analyze()
+                tables_to_analyze.append(table)
         else:
-            for table in self._engine._tables.values():
-                table.analyze()
+            tables_to_analyze = list(self._engine._tables.values())
+
+        catalog = self._engine._catalog
+        for table in tables_to_analyze:
+            stats = table.analyze()
+            if catalog is not None:
+                for col_name, cs in stats.items():
+                    catalog.save_column_stats(
+                        table.name, col_name,
+                        cs.distinct_count, cs.null_count,
+                        cs.min_value, cs.max_value, cs.row_count,
+                    )
         return SQLResult([], [])
 
     # ==================================================================

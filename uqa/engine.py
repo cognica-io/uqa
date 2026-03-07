@@ -12,14 +12,14 @@ import numpy as np
 from numpy.typing import NDArray
 
 from uqa.api.query_builder import QueryBuilder
-from uqa.core.types import DocId, Edge, Vertex
+from uqa.core.types import DocId, Edge, Payload, PostingEntry, Vertex
 from uqa.storage.catalog import Catalog
 from uqa.storage.document_store import DocumentStore
 from uqa.storage.inverted_index import InvertedIndex
 from uqa.storage.vector_index import HNSWIndex
 from uqa.graph.store import GraphStore
 from uqa.storage.block_max_index import BlockMaxIndex
-from uqa.sql.table import ColumnDef, Table, _SQL_TYPE_MAP
+from uqa.sql.table import ColumnDef, ColumnStats, Table, _SQL_TYPE_MAP
 
 
 class Engine:
@@ -91,25 +91,44 @@ class Engine:
                             data[col_name]
                         )
                 table.document_store.put(doc_id, coerced)
-                text_fields = {
-                    k: v for k, v in coerced.items() if isinstance(v, str)
-                }
-                if text_fields:
-                    table.inverted_index.add_document(doc_id, text_fields)
+
+            # Restore inverted index from persisted postings
+            if not self._restore_inverted_index(
+                catalog, name, table.inverted_index
+            ):
+                # Backward compat: re-tokenize and persist for future
+                self._migrate_inverted_index(
+                    catalog, name, table.document_store, table.inverted_index
+                )
 
             if docs:
                 table._next_id = max(did for did, _ in docs) + 1
+
+            # Restore column statistics
+            for col_name, dc, nc, mn, mx, rc in catalog.load_column_stats(
+                name
+            ):
+                table._stats[col_name] = ColumnStats(
+                    distinct_count=dc,
+                    null_count=nc,
+                    min_value=mn,
+                    max_value=mx,
+                    row_count=rc,
+                )
 
             self._tables[name] = table
 
         # -- Global documents (programmatic API) -----------------------
         for doc_id, data in catalog.load_documents(""):
             self.document_store.put(doc_id, data)
-            text_fields = {
-                k: v for k, v in data.items() if isinstance(v, str)
-            }
-            if text_fields:
-                self.inverted_index.add_document(doc_id, text_fields)
+
+        # Restore global inverted index
+        if not self._restore_inverted_index(
+            catalog, "", self.inverted_index
+        ):
+            self._migrate_inverted_index(
+                catalog, "", self.document_store, self.inverted_index
+            )
 
         # -- Vectors ---------------------------------------------------
         for doc_id, embedding in catalog.load_vectors():
@@ -131,6 +150,78 @@ class Engine:
                 )
             )
 
+    @staticmethod
+    def _restore_inverted_index(
+        catalog: Catalog,
+        table_name: str,
+        inverted_index: InvertedIndex,
+    ) -> bool:
+        """Restore an inverted index from persisted postings.
+
+        Returns True if postings were found and restored, False otherwise.
+        """
+        postings = catalog.load_postings(table_name)
+        if not postings:
+            return False
+
+        doc_lengths_list = catalog.load_doc_lengths(table_name)
+
+        # Populate posting entries
+        for field, term, doc_id, positions in postings:
+            entry = PostingEntry(
+                doc_id, Payload(positions=positions, score=0.0)
+            )
+            inverted_index.add_posting(field, term, entry)
+
+        # Populate doc lengths and compute aggregate stats
+        inverted_index.set_doc_count(len(doc_lengths_list))
+        for doc_id, lengths in doc_lengths_list:
+            inverted_index.set_doc_length(doc_id, lengths)
+            for field, length in lengths.items():
+                inverted_index.add_total_length(field, length)
+
+        return True
+
+    @staticmethod
+    def _migrate_inverted_index(
+        catalog: Catalog,
+        table_name: str,
+        document_store: DocumentStore,
+        inverted_index: InvertedIndex,
+    ) -> None:
+        """Backward compat: re-tokenize documents and persist postings.
+
+        Called once when opening a database created before posting
+        persistence was added.  Subsequent restarts use the fast path.
+        """
+        doc_ids = sorted(document_store.doc_ids)
+        if not doc_ids:
+            return
+
+        catalog.begin()
+        try:
+            for doc_id in doc_ids:
+                data = document_store.get(doc_id)
+                if data is None:
+                    continue
+                text_fields = {
+                    k: v for k, v in data.items() if isinstance(v, str)
+                }
+                if text_fields:
+                    indexed = inverted_index.add_document(
+                        doc_id, text_fields
+                    )
+                    catalog.save_postings(
+                        table_name,
+                        doc_id,
+                        indexed.field_lengths,
+                        indexed.postings,
+                    )
+            catalog.commit()
+        except Exception:
+            catalog.rollback()
+            raise
+
     # -- Public API ----------------------------------------------------
 
     def add_document(
@@ -145,16 +236,42 @@ class Engine:
         text_fields = {
             k: v for k, v in document.items() if isinstance(v, str)
         }
+        indexed = None
         if text_fields:
-            self.inverted_index.add_document(doc_id, text_fields)
+            indexed = self.inverted_index.add_document(doc_id, text_fields)
 
         if embedding is not None:
             self.vector_index.add(doc_id, embedding)
 
         if self._catalog is not None:
-            self._catalog.save_document("", doc_id, document)
-            if embedding is not None:
-                self._catalog.save_vector(doc_id, embedding)
+            self._catalog.begin()
+            try:
+                self._catalog.save_document("", doc_id, document)
+                if indexed is not None:
+                    self._catalog.save_postings(
+                        "", doc_id,
+                        indexed.field_lengths, indexed.postings,
+                    )
+                if embedding is not None:
+                    self._catalog.save_vector(doc_id, embedding)
+                self._catalog.commit()
+            except Exception:
+                self._catalog.rollback()
+                raise
+
+    def delete_document(self, doc_id: DocId) -> None:
+        """Remove a document from all in-memory indexes and catalog."""
+        self.document_store.delete(doc_id)
+        self.inverted_index.remove_document(doc_id)
+        if self._catalog is not None:
+            self._catalog.begin()
+            try:
+                self._catalog.delete_document("", doc_id)
+                self._catalog.delete_vector(doc_id)
+                self._catalog.commit()
+            except Exception:
+                self._catalog.rollback()
+                raise
 
     def add_graph_vertex(self, vertex: Vertex) -> None:
         self.graph_store.add_vertex(vertex)
@@ -171,6 +288,33 @@ class Engine:
                 edge.label,
                 edge.properties,
             )
+
+    # -- Scoring parameters (Papers 3-4) -------------------------------
+
+    def save_scoring_params(
+        self, name: str, params: dict[str, Any]
+    ) -> None:
+        """Persist Bayesian calibration parameters for a named signal.
+
+        Parameters are stored as a JSON dict with keys such as:
+        alpha, beta, base_rate (Paper 3), confidence_alpha (Paper 4).
+        """
+        if self._catalog is not None:
+            self._catalog.save_scoring_params(name, params)
+
+    def load_scoring_params(self, name: str) -> dict[str, Any] | None:
+        """Load persisted calibration parameters for a named signal."""
+        if self._catalog is not None:
+            return self._catalog.load_scoring_params(name)
+        return None
+
+    def load_all_scoring_params(self) -> list[tuple[str, dict[str, Any]]]:
+        """Load all persisted scoring parameter sets."""
+        if self._catalog is not None:
+            return self._catalog.load_all_scoring_params()
+        return []
+
+    # -- Query interface -----------------------------------------------
 
     def query(self) -> QueryBuilder:
         return QueryBuilder(self)

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from uqa.storage.document_store import DocumentStore
-from uqa.storage.inverted_index import InvertedIndex
+from uqa.storage.inverted_index import IndexedTerms, InvertedIndex
 
 
 _SQL_TYPE_MAP: dict[str, type] = {
@@ -86,8 +86,12 @@ class Table:
         self._next_id = 1
         self._stats: dict[str, ColumnStats] = {}
 
-    def insert(self, row: dict[str, Any]) -> int:
-        """Insert a row and return the assigned primary key (doc_id)."""
+    def insert(self, row: dict[str, Any]) -> tuple[int, IndexedTerms | None]:
+        """Insert a row and return (doc_id, indexed_terms).
+
+        ``indexed_terms`` is non-None when text fields were indexed,
+        allowing the caller to persist posting entries to the catalog.
+        """
 
         # -- primary key / doc_id resolution --------------------------
         if self.primary_key is not None:
@@ -141,11 +145,12 @@ class Table:
         # -- persist ---------------------------------------------------
         self.document_store.put(doc_id, coerced)
 
+        indexed: IndexedTerms | None = None
         text_fields = {k: v for k, v in coerced.items() if isinstance(v, str)}
         if text_fields:
-            self.inverted_index.add_document(doc_id, text_fields)
+            indexed = self.inverted_index.add_document(doc_id, text_fields)
 
-        return doc_id
+        return doc_id, indexed
 
     @property
     def column_names(self) -> list[str]:

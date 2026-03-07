@@ -7,9 +7,22 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass, field
 
 from uqa.core.posting_list import PostingList
 from uqa.core.types import DocId, FieldName, IndexStats, Payload, PostingEntry
+
+
+@dataclass(frozen=True, slots=True)
+class IndexedTerms:
+    """Metadata returned from indexing a document.
+
+    Used by the persistence layer to store posting entries and per-field
+    token lengths without duplicating tokenization logic.
+    """
+
+    field_lengths: dict[str, int]
+    postings: dict[tuple[str, str], tuple[int, ...]]  # (field, term) -> positions
 
 
 class InvertedIndex:
@@ -21,15 +34,26 @@ class InvertedIndex:
         self._doc_count: int = 0
         self._total_length: dict[FieldName, int] = defaultdict(int)
 
-    def add_document(self, doc_id: DocId, fields: dict[FieldName, str]) -> None:
-        """Index a document by tokenizing each field."""
+    def add_document(
+        self, doc_id: DocId, fields: dict[FieldName, str]
+    ) -> IndexedTerms:
+        """Index a document by tokenizing each field.
+
+        Returns an IndexedTerms with per-field lengths and posting data
+        so the caller can persist them without re-tokenizing.
+        """
         self._doc_count += 1
         self._doc_lengths[doc_id] = {}
 
+        result_field_lengths: dict[str, int] = {}
+        result_postings: dict[tuple[str, str], tuple[int, ...]] = {}
+
         for field_name, text in fields.items():
             tokens = text.lower().split()
-            self._doc_lengths[doc_id][field_name] = len(tokens)
-            self._total_length[field_name] += len(tokens)
+            length = len(tokens)
+            self._doc_lengths[doc_id][field_name] = length
+            self._total_length[field_name] += length
+            result_field_lengths[field_name] = length
 
             # Build position index for each token
             term_positions: dict[str, list[int]] = defaultdict(list)
@@ -40,11 +64,60 @@ class InvertedIndex:
                 key = (field_name, term)
                 if key not in self._index:
                     self._index[key] = []
+                pos_tuple = tuple(positions)
                 entry = PostingEntry(
                     doc_id,
-                    Payload(positions=tuple(positions), score=0.0),
+                    Payload(positions=pos_tuple, score=0.0),
                 )
                 self._index[key].append(entry)
+                result_postings[key] = pos_tuple
+
+        return IndexedTerms(result_field_lengths, result_postings)
+
+    # -- Restore methods (used by catalog persistence) -----------------
+
+    def add_posting(
+        self, field: str, term: str, entry: PostingEntry
+    ) -> None:
+        """Add a single posting entry directly (for catalog restore)."""
+        key = (field, term)
+        if key not in self._index:
+            self._index[key] = []
+        self._index[key].append(entry)
+
+    def set_doc_length(
+        self, doc_id: DocId, lengths: dict[FieldName, int]
+    ) -> None:
+        """Set per-field token lengths for a document (for catalog restore)."""
+        self._doc_lengths[doc_id] = lengths
+
+    def set_doc_count(self, count: int) -> None:
+        """Set the indexed document count (for catalog restore)."""
+        self._doc_count = count
+
+    def add_total_length(self, field: FieldName, length: int) -> None:
+        """Accumulate total token length for a field (for catalog restore)."""
+        self._total_length[field] += length
+
+    # -- Remove method (for delete support) ----------------------------
+
+    def remove_document(self, doc_id: DocId) -> None:
+        """Remove all entries for a document from the index."""
+        keys_to_delete: list[tuple[str, str]] = []
+        for key, entries in self._index.items():
+            self._index[key] = [e for e in entries if e.doc_id != doc_id]
+            if not self._index[key]:
+                keys_to_delete.append(key)
+        for key in keys_to_delete:
+            del self._index[key]
+
+        if doc_id in self._doc_lengths:
+            for fld, length in self._doc_lengths[doc_id].items():
+                self._total_length[fld] -= length
+            del self._doc_lengths[doc_id]
+            self._doc_count -= 1
+
+    # -- Query methods -------------------------------------------------
 
     def get_posting_list(self, field: str, term: str) -> PostingList:
         entries = self._index.get((field, term))
