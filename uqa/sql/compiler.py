@@ -10,6 +10,8 @@ Supported statements:
   DDL:
     CREATE TABLE name (col type [PRIMARY KEY] [NOT NULL] [DEFAULT val], ...)
     DROP TABLE [IF EXISTS] name
+    CREATE VIEW name AS SELECT ...
+    DROP VIEW [IF EXISTS] name
   DML:
     INSERT INTO name (col, ...) VALUES (val, ...), ...
     UPDATE name SET col = expr, ... [WHERE ...]
@@ -93,6 +95,7 @@ from pglast.ast import (
     TypeCast,
     UpdateStmt,
     VacuumStmt,
+    ViewStmt,
 )
 from pglast.enums.parsenodes import A_Expr_Kind, ConstrType, SortByDir
 from pglast.enums.primnodes import BoolExprType, NullTestType, SubLinkType
@@ -183,6 +186,7 @@ class SQLCompiler:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
         self._query_vector: Any = None
+        self._expanded_views: list[str] = []
 
     def set_query_vector(self, vector: Any) -> None:
         """Register a query vector for knn_match() calls."""
@@ -206,6 +210,8 @@ class SQLCompiler:
             return self._compile_delete(stmt)
         if isinstance(stmt, DropStmt):
             return self._compile_drop(stmt)
+        if isinstance(stmt, ViewStmt):
+            return self._compile_create_view(stmt)
         if isinstance(stmt, IndexStmt):
             return self._compile_create_index(stmt)
         if isinstance(stmt, ExplainStmt):
@@ -286,10 +292,12 @@ class SQLCompiler:
         )
 
     def _compile_drop(self, stmt: DropStmt) -> SQLResult:
-        """Dispatch DROP TABLE / DROP INDEX based on removeType."""
-        # removeType 41 = OBJECT_TABLE, 20 = OBJECT_INDEX
+        """Dispatch DROP TABLE / DROP INDEX / DROP VIEW based on removeType."""
+        # removeType 41 = OBJECT_TABLE, 20 = OBJECT_INDEX, 51 = OBJECT_VIEW
         if stmt.removeType == 20:
             return self._compile_drop_index(stmt)
+        if stmt.removeType == 51:
+            return self._compile_drop_view(stmt)
         return self._compile_drop_table(stmt)
 
     def _compile_drop_table(self, stmt: DropStmt) -> SQLResult:
@@ -318,6 +326,30 @@ class SQLCompiler:
                 index_manager.drop_index_if_exists(index_name)
             else:
                 index_manager.drop_index(index_name)
+        return SQLResult([], [])
+
+    # ==================================================================
+    # DDL: CREATE VIEW / DROP VIEW
+    # ==================================================================
+
+    def _compile_create_view(self, stmt: ViewStmt) -> SQLResult:
+        view_name = stmt.view.relname
+        if view_name in self._engine._views:
+            raise ValueError(f"View '{view_name}' already exists")
+        if view_name in self._engine._tables:
+            raise ValueError(
+                f"'{view_name}' already exists as a table"
+            )
+        self._engine._views[view_name] = stmt.query
+        return SQLResult([], [])
+
+    def _compile_drop_view(self, stmt: DropStmt) -> SQLResult:
+        for obj in stmt.objects:
+            view_name = obj[-1].sval
+            if view_name in self._engine._views:
+                del self._engine._views[view_name]
+            elif not stmt.missing_ok:
+                raise ValueError(f"View '{view_name}' does not exist")
         return SQLResult([], [])
 
     # ==================================================================
@@ -970,6 +1002,10 @@ class SQLCompiler:
             # Clean up CTE temporary tables
             for name in cte_names:
                 self._engine._tables.pop(name, None)
+            # Clean up materialized view tables
+            for name in self._expanded_views:
+                self._engine._tables.pop(name, None)
+            self._expanded_views.clear()
 
     def _compile_select_body(
         self, stmt: SelectStmt, *, explain: bool = False
@@ -1052,6 +1088,54 @@ class SQLCompiler:
 
         return cte_names
 
+    # -- View expansion ------------------------------------------------
+
+    def _expand_view(
+        self, view_name: str, query: SelectStmt
+    ) -> tuple[Table, None]:
+        """Materialize a view's stored query into a temporary table.
+
+        The temporary table is registered in ``_engine._tables`` and
+        tracked in ``_expanded_views`` for cleanup after the enclosing
+        query completes.
+        """
+        result = self._compile_select(query)
+
+        _type_map = {int: "INTEGER", float: "REAL", str: "TEXT"}
+        col_defs: list[ColumnDef] = []
+        for col_name in result.columns:
+            py_type: type = str
+            if result.rows:
+                sample = result.rows[0].get(col_name)
+                if isinstance(sample, int):
+                    py_type = int
+                elif isinstance(sample, float):
+                    py_type = float
+            col_defs.append(ColumnDef(
+                name=col_name,
+                type_name=_type_map.get(py_type, "TEXT"),
+                python_type=py_type,
+            ))
+
+        table = Table(name=view_name, columns=col_defs)
+        for i, row in enumerate(result.rows):
+            doc_id = i + 1
+            doc = {"_id": doc_id}
+            doc.update(row)
+            table.document_store.put(doc_id, doc)
+            text_fields = {
+                cd.name: str(row[cd.name])
+                for cd in col_defs
+                if row.get(cd.name) is not None
+                and isinstance(row[cd.name], str)
+            }
+            if text_fields:
+                table.inverted_index.add_document(doc_id, text_fields)
+
+        self._engine._tables[view_name] = table
+        self._expanded_views.append(view_name)
+        return table, None
+
     # -- FROM clause ---------------------------------------------------
 
     def _resolve_from(
@@ -1074,6 +1158,11 @@ class SQLCompiler:
             table_name = node.relname
             table = self._engine._tables.get(table_name)
             if table is None:
+                # Check if it is a view -- expand by materializing the
+                # stored query into a temporary table.
+                view_query = self._engine._views.get(table_name)
+                if view_query is not None:
+                    return self._expand_view(table_name, view_query)
                 raise ValueError(f"Table '{table_name}' does not exist")
             return table, None
 
@@ -1200,6 +1289,9 @@ class SQLCompiler:
             table_name = node.relname
             table = self._engine._tables.get(table_name)
             if table is None:
+                view_query = self._engine._views.get(table_name)
+                if view_query is not None:
+                    return self._expand_view(table_name, view_query)
                 raise ValueError(f"Table '{table_name}' does not exist")
             return table, None
         if isinstance(node, RangeFunction):
