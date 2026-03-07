@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "uqa"
-version = "0.2.0"
+version = "0.2.1"
 description = "Unified Query Algebra database prototype"
 license = "AGPL-3.0-only"
 requires-python = ">=3.12"

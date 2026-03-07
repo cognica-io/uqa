@@ -1,5 +1,24 @@
 # History
 
+## 0.2.1 (2026-03-08)
+
+Apache Arrow columnar execution engine.
+
+### Execution Engine
+
+- Replaced custom `Batch`/`ColumnVector` with Apache Arrow `RecordBatch`/`Array`
+- `Batch` wraps `pyarrow.RecordBatch` with optional selection vector for lazy filtering
+- `ColumnVector` wraps `pyarrow.Array` with automatic null handling and Python type conversion
+- Zero-copy slicing via `RecordBatch.slice()` in `LimitOp`
+- Arrow `take()` kernel for selection vector materialization in `compact()`
+- Bulk row conversion via `RecordBatch.to_pydict()` in `to_rows()`
+- Arrow type enforcement exposed and fixed hidden bugs in CTE/View type name resolution, `A_Const` expression routing, and NULL-only column handling
+
+### Dependencies
+
+- Added `pyarrow >= 20.0` as a required dependency
+
+
 ## 0.2.0 (2026-03-07)
 
 Production-grade storage, execution engine, advanced SQL features, and query optimization.
@@ -18,7 +37,7 @@ Production-grade storage, execution engine, advanced SQL features, and query opt
 
 ### Execution Engine
 
-- Volcano iterator model with batch processing (`Batch`, `ColumnVector`, `PhysicalOperator`)
+- Volcano iterator model with columnar batch processing (`Batch`, `ColumnVector`, `PhysicalOperator`)
 - Physical operators: SeqScan, PostingListScan, Filter, Project, ExprProject, Sort, Limit, HashAgg, Distinct, Window
 - Expression evaluator: arithmetic, comparison, logical, string/math functions, CASE, CAST, COALESCE, IS NULL, concatenation
 - Parallel execution via `ThreadPoolExecutor` for independent operator branches (Union, Intersect, Fusion)

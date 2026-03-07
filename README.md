@@ -78,7 +78,7 @@ uqa/
   fusion/         Log-odds conjunction, probabilistic boolean
   graph/          GraphStore, traversal, pattern matching, RPQ, cross-paradigm
   joins/          Hash, sort-merge, index, graph, cross-paradigm, similarity joins
-  execution/      Volcano iterator engine: batch processing, physical operators
+  execution/      Volcano iterator engine: Apache Arrow columnar batches, physical operators
   planner/        Cost model, cardinality estimator, optimizer, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
@@ -165,6 +165,7 @@ engine = Engine(parallel_workers=0)                     # disable parallelism
 
 - Python 3.12+
 - numpy >= 1.26
+- pyarrow >= 20.0
 - hnswlib >= 0.8
 - pglast >= 7.0
 - prompt-toolkit >= 3.0
