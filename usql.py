@@ -157,15 +157,7 @@ class UQAShell:
         )
         self._show_timing = False
         self._completer = SQLCompleter(self._engine)
-        self._session: PromptSession = PromptSession(
-            history=FileHistory(".usql_history"),
-            auto_suggest=AutoSuggestFromHistory(),
-            lexer=PygmentsLexer(SqlLexer),
-            completer=self._completer,
-            style=_STYLE,
-            multiline=False,
-            complete_while_typing=True,
-        )
+        self._session: PromptSession | None = None
 
     # -- public API -------------------------------------------------
 
@@ -175,14 +167,29 @@ class UQAShell:
             text = f.read()
         self._execute_text(text)
 
+    def _ensure_session(self) -> PromptSession:
+        """Lazily create the PromptSession on first REPL use."""
+        if self._session is None:
+            self._session = PromptSession(
+                history=FileHistory(".usql_history"),
+                auto_suggest=AutoSuggestFromHistory(),
+                lexer=PygmentsLexer(SqlLexer),
+                completer=self._completer,
+                style=_STYLE,
+                multiline=False,
+                complete_while_typing=True,
+            )
+        return self._session
+
     def repl(self) -> None:
         """Enter the read-eval-print loop."""
+        session = self._ensure_session()
         self._print_banner()
         buf = ""
         while True:
             try:
                 prompt = "usql> " if not buf else "  ... "
-                line = self._session.prompt(
+                line = session.prompt(
                     HTML(f"<prompt>{prompt}</prompt>"),
                     bottom_toolbar=self._toolbar,
                 )
@@ -413,8 +420,13 @@ def main() -> None:
             print(f"File not found: {path}", file=sys.stderr)
             sys.exit(1)
 
+    # Enter REPL only when stdin is a terminal.
+    # When script files are given without a terminal, exit after execution.
     try:
-        shell.repl()
+        if sys.stdin.isatty():
+            shell.repl()
+        elif not args.scripts:
+            shell.repl()
     finally:
         shell._engine.close()
 
