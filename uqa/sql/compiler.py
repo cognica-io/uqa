@@ -15,6 +15,7 @@ Supported statements:
     UPDATE name SET col = expr, ... [WHERE ...]
     DELETE FROM name [WHERE ...]
   DQL:
+    WITH name AS (SELECT ...) [, ...]     -- common table expressions
     SELECT [DISTINCT] [* | col, ... | expr, ... | aggregates] FROM table
       [WHERE comparisons / boolean / IS [NOT] NULL /
              LIKE / NOT LIKE / ILIKE / NOT ILIKE /
@@ -928,6 +929,23 @@ class SQLCompiler:
     def _compile_select(
         self, stmt: SelectStmt, *, explain: bool = False
     ) -> SQLResult:
+        # 0. Materialize CTEs as temporary in-memory tables
+        cte_names: list[str] = []
+        if stmt.withClause is not None:
+            cte_names = self._materialize_ctes(stmt.withClause.ctes)
+
+        try:
+            return self._compile_select_body(
+                stmt, explain=explain
+            )
+        finally:
+            # Clean up CTE temporary tables
+            for name in cte_names:
+                self._engine._tables.pop(name, None)
+
+    def _compile_select_body(
+        self, stmt: SelectStmt, *, explain: bool = False
+    ) -> SQLResult:
         # 1. Resolve FROM clause -> (table | None, source_op | None)
         table, source_op = self._resolve_from(stmt.fromClause)
 
@@ -954,6 +972,57 @@ class SQLCompiler:
 
         # 5-11. Execute relational operations via physical operators
         return self._execute_relational(stmt, pl, ctx, table)
+
+    # -- CTE materialization -------------------------------------------
+
+    def _materialize_ctes(self, ctes: tuple) -> list[str]:
+        """Execute CTE queries and register results as temporary tables.
+
+        Returns the list of CTE names for cleanup after the main query.
+        """
+        _type_map = {int: "INTEGER", float: "REAL", str: "TEXT"}
+        cte_names: list[str] = []
+        for cte in ctes:
+            name = cte.ctename
+            result = self._compile_select(cte.ctequery)
+
+            # Infer column types from the first row
+            col_defs: list[ColumnDef] = []
+            for col_name in result.columns:
+                py_type: type = str
+                if result.rows:
+                    sample = result.rows[0].get(col_name)
+                    if isinstance(sample, int):
+                        py_type = int
+                    elif isinstance(sample, float):
+                        py_type = float
+                col_defs.append(ColumnDef(
+                    name=col_name,
+                    type_name=_type_map.get(py_type, "TEXT"),
+                    python_type=py_type,
+                ))
+
+            table = Table(name=name, columns=col_defs)
+            # Populate the table with CTE results
+            for i, row in enumerate(result.rows):
+                doc_id = i + 1
+                doc = {"_id": doc_id}
+                doc.update(row)
+                table.document_store.put(doc_id, doc)
+                # Index text fields for text_match support
+                text_fields = {
+                    col_def.name: str(row[col_def.name])
+                    for col_def in col_defs
+                    if row.get(col_def.name) is not None
+                    and isinstance(row[col_def.name], str)
+                }
+                if text_fields:
+                    table.inverted_index.add_document(doc_id, text_fields)
+
+            self._engine._tables[name] = table
+            cte_names.append(name)
+
+        return cte_names
 
     # -- FROM clause ---------------------------------------------------
 
