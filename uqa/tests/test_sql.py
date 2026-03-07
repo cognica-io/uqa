@@ -544,7 +544,7 @@ class TestEdgeCases:
 
     def test_unsupported_statement(self, engine: Engine) -> None:
         with pytest.raises(ValueError, match="Unsupported statement"):
-            engine.sql("UPDATE papers SET year = 2025")
+            engine.sql("ALTER TABLE papers ADD COLUMN extra TEXT")
 
     def test_unknown_function(self, engine: Engine) -> None:
         with pytest.raises(ValueError, match="Unknown function"):

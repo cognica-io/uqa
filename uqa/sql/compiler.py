@@ -12,9 +12,11 @@ Supported statements:
     DROP TABLE [IF EXISTS] name
   DML:
     INSERT INTO name (col, ...) VALUES (val, ...), ...
+    UPDATE name SET col = expr, ... [WHERE ...]
+    DELETE FROM name [WHERE ...]
   DQL:
-    SELECT [DISTINCT] [* | col, ... | aggregates] FROM table
-      [WHERE comparisons / boolean / text_match() / knn_match()]
+    SELECT [DISTINCT] [* | col, ... | expr, ... | aggregates] FROM table
+      [WHERE comparisons / boolean / IS [NOT] NULL / text_match() / ...]
       [GROUP BY col [HAVING ...]]
       [ORDER BY col [ASC|DESC]]
       [LIMIT n]
@@ -65,6 +67,7 @@ from pglast.ast import (
     CoalesceExpr,
     ColumnRef,
     CreateStmt,
+    DeleteStmt,
     DropStmt,
     ExplainStmt,
     Float as PgFloat,
@@ -81,6 +84,7 @@ from pglast.ast import (
     String as PgString,
     TransactionStmt,
     TypeCast,
+    UpdateStmt,
     VacuumStmt,
 )
 from pglast.enums.parsenodes import A_Expr_Kind, ConstrType, SortByDir
@@ -189,6 +193,10 @@ class SQLCompiler:
             return self._compile_create_table(stmt)
         if isinstance(stmt, InsertStmt):
             return self._compile_insert(stmt)
+        if isinstance(stmt, UpdateStmt):
+            return self._compile_update(stmt)
+        if isinstance(stmt, DeleteStmt):
+            return self._compile_delete(stmt)
         if isinstance(stmt, DropStmt):
             return self._compile_drop(stmt)
         if isinstance(stmt, IndexStmt):
@@ -381,6 +389,113 @@ class SQLCompiler:
             inserted += 1
 
         return SQLResult(["inserted"], [{"inserted": inserted}])
+
+    # ==================================================================
+    # DML: UPDATE
+    # ==================================================================
+
+    def _compile_update(self, stmt: UpdateStmt) -> SQLResult:
+        table_name = stmt.relation.relname
+        table = self._engine._tables.get(table_name)
+        if table is None:
+            raise ValueError(f"Table '{table_name}' does not exist")
+
+        # Find matching doc_ids via WHERE clause
+        ctx = self._context_for_table(table)
+        if stmt.whereClause is not None:
+            where_op = self._compile_where(stmt.whereClause, ctx)
+            where_op = self._optimize(where_op, ctx, table)
+            pl = self._execute_plan(where_op, ctx)
+        else:
+            pl = self._scan_all(ctx)
+
+        matching_ids = [entry.doc_id for entry in pl.entries]
+        if not matching_ids:
+            return SQLResult(["updated"], [{"updated": 0}])
+
+        # Parse SET clause into (column_name, ast_node) pairs
+        set_targets: list[tuple[str, Any]] = []
+        for target in stmt.targetList:
+            col_name = target.name
+            if col_name not in table.columns:
+                raise ValueError(
+                    f"Unknown column '{col_name}' "
+                    f"for table '{table_name}'"
+                )
+            set_targets.append((col_name, target.val))
+
+        from uqa.sql.expr_evaluator import ExprEvaluator
+        evaluator = ExprEvaluator()
+
+        updated = 0
+        for doc_id in matching_ids:
+            old_doc = table.document_store.get(doc_id)
+            if old_doc is None:
+                continue
+
+            # Evaluate SET expressions against the current row
+            new_doc = dict(old_doc)
+            for col_name, val_node in set_targets:
+                new_value = evaluator.evaluate(val_node, old_doc)
+                col_def = table.columns[col_name]
+                if new_value is not None:
+                    new_doc[col_name] = col_def.python_type(new_value)
+                elif col_def.not_null:
+                    raise ValueError(
+                        f"NOT NULL constraint violated: "
+                        f"column '{col_name}' in table '{table_name}'"
+                    )
+                else:
+                    new_doc.pop(col_name, None)
+
+            # Remove old inverted index entries
+            table.inverted_index.remove_document(doc_id)
+
+            # Write updated document
+            table.document_store.put(doc_id, new_doc)
+
+            # Re-index text fields
+            text_fields = {
+                k: v for k, v in new_doc.items()
+                if isinstance(v, str)
+            }
+            if text_fields:
+                table.inverted_index.add_document(doc_id, text_fields)
+
+            updated += 1
+
+        return SQLResult(["updated"], [{"updated": updated}])
+
+    # ==================================================================
+    # DML: DELETE
+    # ==================================================================
+
+    def _compile_delete(self, stmt: DeleteStmt) -> SQLResult:
+        table_name = stmt.relation.relname
+        table = self._engine._tables.get(table_name)
+        if table is None:
+            raise ValueError(f"Table '{table_name}' does not exist")
+
+        # Find matching doc_ids via WHERE clause
+        ctx = self._context_for_table(table)
+        if stmt.whereClause is not None:
+            where_op = self._compile_where(stmt.whereClause, ctx)
+            where_op = self._optimize(where_op, ctx, table)
+            pl = self._execute_plan(where_op, ctx)
+        else:
+            pl = self._scan_all(ctx)
+
+        matching_ids = [entry.doc_id for entry in pl.entries]
+        if not matching_ids:
+            return SQLResult(["deleted"], [{"deleted": 0}])
+
+        deleted = 0
+        for doc_id in matching_ids:
+            table.inverted_index.remove_document(doc_id)
+            table.document_store.delete(doc_id)
+            deleted += 1
+
+        return SQLResult(["deleted"], [{"deleted": deleted}])
 
     # ==================================================================
     # Transaction: BEGIN / COMMIT / ROLLBACK / SAVEPOINT
