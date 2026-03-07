@@ -22,6 +22,7 @@ Covers:
 from __future__ import annotations
 
 import numpy as np
+import pyarrow as pa
 import pytest
 
 from uqa.core.posting_list import PostingList
@@ -106,22 +107,22 @@ class TestColumnVector:
         assert cv[1] == 2
         assert cv[2] is None
         assert cv[3] == 4
-        assert isinstance(cv.data, np.ndarray)
-        assert cv.data.dtype == np.int64
+        assert isinstance(cv.array, pa.Array)
+        assert cv.array.type == pa.int64()
 
     def test_float_vector(self):
         cv = ColumnVector.from_values([1.5, None, 3.5], DataType.FLOAT)
         assert cv[0] == 1.5
         assert cv[1] is None
         assert cv[2] == 3.5
-        assert cv.data.dtype == np.float64
+        assert cv.array.type == pa.float64()
 
     def test_text_vector(self):
         cv = ColumnVector.from_values(["a", None, "c"], DataType.TEXT)
         assert cv[0] == "a"
         assert cv[1] is None
         assert cv[2] == "c"
-        assert isinstance(cv.data, list)
+        assert isinstance(cv.array, pa.Array)
 
     def test_boolean_vector(self):
         cv = ColumnVector.from_values([True, False, None], DataType.BOOLEAN)
@@ -178,11 +179,7 @@ class TestBatch:
     def test_selection_vector(self):
         rows = [{"x": i} for i in range(5)]
         batch = Batch.from_rows(rows)
-        batch = Batch(
-            columns=batch.columns,
-            selection=np.array([1, 3], dtype=np.intp),
-            size=batch.size,
-        )
+        batch = batch.with_selection(np.array([1, 3], dtype=np.intp))
         assert len(batch) == 2
         result = batch.to_rows()
         assert result == [{"x": 1}, {"x": 3}]
@@ -190,11 +187,7 @@ class TestBatch:
     def test_compact(self):
         rows = [{"x": i} for i in range(5)]
         batch = Batch.from_rows(rows)
-        batch = Batch(
-            columns=batch.columns,
-            selection=np.array([0, 2, 4], dtype=np.intp),
-            size=batch.size,
-        )
+        batch = batch.with_selection(np.array([0, 2, 4], dtype=np.intp))
         compacted = batch.compact()
         assert compacted.size == 3
         assert compacted.selection is None

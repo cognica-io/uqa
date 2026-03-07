@@ -4,25 +4,26 @@
 # Copyright (c) 2023-2026 Cognica, Inc.
 #
 
-"""Columnar batch data structures for vectorized query execution.
+"""Columnar batch data structures backed by Apache Arrow.
 
-A ``Batch`` holds a fixed number of rows in columnar format.  Each column
-is a ``ColumnVector`` backed by a NumPy array (numeric/boolean types) or
-a Python list (text/bytes).  A boolean null bitmap tracks NULL values.
+A ``Batch`` wraps a ``pyarrow.RecordBatch`` and provides the data exchange
+interface for the Volcano iterator engine.  An optional selection vector
+enables lazy filtering: downstream operators only process selected row
+indices, and ``compact()`` materializes the selection via Arrow's
+``take()`` kernel.
 
-Selection vectors enable lazy filtering: instead of materializing a new
-batch for every filter, the selection vector records which row indices
-are "active".  Downstream operators only process active rows.  Call
-``compact()`` to physically remove inactive rows when needed.
+``ColumnVector`` wraps a single ``pyarrow.Array`` and provides per-element
+access with automatic null handling and Python type conversion.
 """
 
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+import pyarrow as pa
+import pyarrow.compute as pc
 
 
 DEFAULT_BATCH_SIZE = 1024
@@ -38,7 +39,32 @@ class DataType(enum.Enum):
     BYTES = "bytes"
 
 
-# Map SQL type keywords to DataType.
+# DataType -> Arrow type mapping.
+_DTYPE_TO_ARROW: dict[DataType, pa.DataType] = {
+    DataType.INTEGER: pa.int64(),
+    DataType.FLOAT: pa.float64(),
+    DataType.TEXT: pa.utf8(),
+    DataType.BOOLEAN: pa.bool_(),
+    DataType.BYTES: pa.binary(),
+}
+
+
+def _arrow_type_to_dtype(arrow_type: pa.DataType) -> DataType:
+    """Convert an Arrow data type to the engine DataType enum."""
+    if pa.types.is_boolean(arrow_type):
+        return DataType.BOOLEAN
+    if pa.types.is_integer(arrow_type):
+        return DataType.INTEGER
+    if pa.types.is_floating(arrow_type):
+        return DataType.FLOAT
+    if pa.types.is_string(arrow_type) or pa.types.is_large_string(arrow_type):
+        return DataType.TEXT
+    if pa.types.is_binary(arrow_type) or pa.types.is_large_binary(arrow_type):
+        return DataType.BYTES
+    return DataType.TEXT
+
+
+# SQL type name -> DataType (used by scan operators and the SQL compiler).
 _SQL_TO_DTYPE: dict[str, DataType] = {
     "integer": DataType.INTEGER,
     "int": DataType.INTEGER,
@@ -67,82 +93,70 @@ _SQL_TO_DTYPE: dict[str, DataType] = {
 }
 
 
-@dataclass(slots=True)
 class ColumnVector:
-    """Typed column with null bitmap.
+    """Typed column backed by a PyArrow Array.
 
-    Numeric and boolean columns use NumPy arrays for vectorized
-    operations.  Text and bytes columns use Python lists.
+    Numeric, text, and boolean data are stored natively in Arrow's columnar
+    format with built-in null handling via validity bitmaps.
     """
 
-    data: np.ndarray | list
-    nulls: np.ndarray
-    dtype: DataType
+    __slots__ = ("_array", "dtype")
+
+    def __init__(self, array: pa.Array, dtype: DataType) -> None:
+        self._array = array
+        self.dtype = dtype
 
     def __len__(self) -> int:
-        return len(self.nulls)
+        return len(self._array)
 
     def __getitem__(self, idx: int) -> Any:
-        if self.nulls[idx]:
-            return None
-        val = self.data[idx]
-        if isinstance(val, np.integer):
-            return int(val)
-        if isinstance(val, np.floating):
-            return float(val)
-        if isinstance(val, np.bool_):
-            return bool(val)
-        return val
+        return self._array[idx].as_py()
+
+    @property
+    def array(self) -> pa.Array:
+        """The underlying PyArrow Array."""
+        return self._array
 
     @classmethod
     def from_values(cls, values: list[Any], dtype: DataType) -> ColumnVector:
         """Create a ColumnVector from a list of Python values."""
-        nulls = np.array([v is None for v in values], dtype=np.bool_)
-
-        if dtype == DataType.INTEGER:
-            data = np.array(
-                [v if v is not None else 0 for v in values], dtype=np.int64
-            )
-        elif dtype == DataType.FLOAT:
-            data = np.array(
-                [v if v is not None else 0.0 for v in values],
-                dtype=np.float64,
-            )
-        elif dtype == DataType.BOOLEAN:
-            data = np.array(
-                [v if v is not None else False for v in values],
-                dtype=np.bool_,
-            )
-        else:
-            data = [v if v is not None else "" for v in values]
-
-        return cls(data=data, nulls=nulls, dtype=dtype)
+        arrow_type = _DTYPE_TO_ARROW[dtype]
+        arr = pa.array(values, type=arrow_type)
+        return cls(arr, dtype)
 
     def select(self, indices: np.ndarray | list[int]) -> ColumnVector:
         """Return a new ColumnVector with only the selected rows."""
-        if isinstance(self.data, np.ndarray):
-            new_data = self.data[indices]
-        else:
-            new_data = [self.data[i] for i in indices]
-        return ColumnVector(
-            data=new_data,
-            nulls=self.nulls[indices],
-            dtype=self.dtype,
-        )
+        idx = pa.array(indices, type=pa.int64())
+        return ColumnVector(pc.take(self._array, idx), self.dtype)
 
 
-@dataclass
 class Batch:
-    """A batch of rows in columnar format.
+    """A batch of rows in columnar format backed by a PyArrow RecordBatch.
 
     Batches are the unit of data exchange in the Volcano iterator model.
-    Each batch contains up to ``DEFAULT_BATCH_SIZE`` rows stored as
-    ``ColumnVector`` instances keyed by column name.
+    Each batch wraps a ``pyarrow.RecordBatch`` and optionally carries a
+    selection vector of active row indices for lazy filtering.
     """
 
-    columns: dict[str, ColumnVector] = field(default_factory=dict)
-    selection: np.ndarray | None = None
-    size: int = 0
+    __slots__ = ("_rb", "selection")
+
+    def __init__(
+        self,
+        record_batch: pa.RecordBatch,
+        selection: list[int] | np.ndarray | None = None,
+    ) -> None:
+        self._rb = record_batch
+        self.selection = selection
+
+    @property
+    def record_batch(self) -> pa.RecordBatch:
+        """The underlying PyArrow RecordBatch."""
+        return self._rb
+
+    @property
+    def size(self) -> int:
+        """Total number of rows in the underlying RecordBatch."""
+        return self._rb.num_rows
 
     def __len__(self) -> int:
         if self.selection is not None:
@@ -150,37 +164,76 @@ class Batch:
         return self.size
 
     def column(self, name: str) -> ColumnVector:
-        return self.columns[name]
+        """Look up a column by name.  Raises ``KeyError`` if absent."""
+        arr = self._rb.column(name)
+        return ColumnVector(arr, _arrow_type_to_dtype(arr.type))
+
+    def get_column(self, name: str) -> ColumnVector | None:
+        """Look up a column by name, returning ``None`` if absent."""
+        try:
+            arr = self._rb.column(name)
+        except KeyError:
+            return None
+        return ColumnVector(arr, _arrow_type_to_dtype(arr.type))
 
     @property
     def column_names(self) -> list[str]:
-        return list(self.columns.keys())
+        return self._rb.schema.names
+
+    def with_selection(self, sel: list[int] | np.ndarray) -> Batch:
+        """Return a new Batch sharing the same data with a selection vector."""
+        return Batch(self._rb, sel)
 
     def compact(self) -> Batch:
-        """Apply selection vector, producing a dense batch."""
+        """Apply the selection vector, producing a dense batch."""
         if self.selection is None:
             return self
         if len(self.selection) == self.size:
-            return Batch(columns=self.columns, size=self.size)
-        new_cols = {
-            name: col.select(self.selection)
-            for name, col in self.columns.items()
-        }
-        return Batch(columns=new_cols, size=len(self.selection))
+            return Batch(self._rb)
+        idx = pa.array(self.selection, type=pa.int64())
+        return Batch(self._rb.take(idx))
+
+    def take(self, indices: list[int] | np.ndarray) -> Batch:
+        """Return a new Batch with only the rows at *indices*."""
+        idx = pa.array(indices, type=pa.int64())
+        return Batch(self._rb.take(idx))
+
+    def slice(self, offset: int, length: int) -> Batch:
+        """Zero-copy slice of the batch."""
+        return Batch(self._rb.slice(offset, length))
+
+    def select_columns(
+        self,
+        columns: list[str],
+        aliases: dict[str, str] | None = None,
+    ) -> Batch:
+        """Return a new Batch with only the specified columns.
+
+        Columns not present in the batch are silently skipped.
+        If *aliases* is provided, columns are renamed accordingly.
+        """
+        aliases = aliases or {}
+        schema_names = self._rb.schema.names
+        arrays: list[pa.Array] = []
+        names: list[str] = []
+        for col_name in columns:
+            if col_name in schema_names:
+                arrays.append(self._rb.column(col_name))
+                names.append(aliases.get(col_name, col_name))
+        return Batch(pa.RecordBatch.from_arrays(arrays, names=names))
 
     def to_rows(self) -> list[dict[str, Any]]:
         """Convert batch to a list of row dicts."""
         if self.selection is not None:
-            indices = self.selection
-        else:
-            indices = range(self.size)
-        rows: list[dict[str, Any]] = []
-        for i in indices:
-            row: dict[str, Any] = {}
-            for name, col in self.columns.items():
-                row[name] = col[i]
-            rows.append(row)
-        return rows
+            return self.compact().to_rows()
+
+        n = self.size
+        if n == 0:
+            return []
+
+        pydict = self._rb.to_pydict()
+        names = self._rb.schema.names
+        return [{name: pydict[name][i] for name in names} for i in range(n)]
 
     @classmethod
     def from_rows(
@@ -194,14 +247,24 @@ class Batch:
         non-null value in each column.
         """
         if not rows:
-            return cls(columns={}, size=0)
+            return cls(pa.RecordBatch.from_pylist([]))
 
         col_names = list(rows[0].keys())
-        n = len(rows)
 
         if schema is None:
             schema = {}
-            for name in col_names:
+
+        # Include schema columns that may be absent from rows (e.g.
+        # NULL-only columns stripped by the document store).
+        seen = set(col_names)
+        for name in schema:
+            if name not in seen:
+                col_names.append(name)
+                seen.add(name)
+
+        # Infer types for columns not covered by the explicit schema.
+        for name in col_names:
+            if name not in schema:
                 for row in rows:
                     val = row.get(name)
                     if val is not None:
@@ -210,13 +273,18 @@ class Batch:
                 if name not in schema:
                     schema[name] = DataType.TEXT
 
-        columns: dict[str, ColumnVector] = {}
+        arrays: list[pa.Array] = []
+        fields: list[pa.Field] = []
         for name in col_names:
             values = [row.get(name) for row in rows]
             dtype = schema.get(name, DataType.TEXT)
-            columns[name] = ColumnVector.from_values(values, dtype)
+            arrow_type = _DTYPE_TO_ARROW[dtype]
+            arrays.append(pa.array(values, type=arrow_type))
+            fields.append(pa.field(name, arrow_type))
 
-        return cls(columns=columns, size=n)
+        return cls(
+            pa.RecordBatch.from_arrays(arrays, schema=pa.schema(fields))
+        )
 
 
 def _infer_dtype(value: Any) -> DataType:

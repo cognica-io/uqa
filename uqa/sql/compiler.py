@@ -1007,8 +1007,8 @@ class SQLCompiler:
                           "traverse_match"):
                     continue
                 return True
-            if isinstance(val, (A_Expr, CaseExpr, TypeCast, CoalesceExpr,
-                                NullTest, SubLink)):
+            if isinstance(val, (A_Const, A_Expr, CaseExpr, TypeCast,
+                                CoalesceExpr, NullTest, SubLink)):
                 return True
         return False
 
@@ -1158,7 +1158,7 @@ class SQLCompiler:
 
         Returns the list of CTE names for cleanup after the main query.
         """
-        _type_map = {int: "INTEGER", float: "REAL", str: "TEXT"}
+        _type_map = {int: "integer", float: "real", str: "text"}
         cte_names: list[str] = []
         for cte in ctes:
             name = cte.ctename
@@ -1215,7 +1215,7 @@ class SQLCompiler:
         """
         result = self._compile_select(query)
 
-        _type_map = {int: "INTEGER", float: "REAL", str: "TEXT"}
+        _type_map = {int: "integer", float: "real", str: "text"}
         col_defs: list[ColumnDef] = []
         for col_name in result.columns:
             py_type: type = str

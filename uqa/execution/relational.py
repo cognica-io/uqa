@@ -20,8 +20,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import numpy as np
-
 from uqa.execution.batch import Batch, DEFAULT_BATCH_SIZE
 from uqa.execution.physical import PhysicalOperator
 
@@ -79,7 +77,7 @@ class FilterOp(PhysicalOperator):
             if batch is None:
                 return None
 
-            col = batch.columns.get(self._column)
+            col = batch.get_column(self._column)
             if col is None:
                 continue
 
@@ -102,11 +100,7 @@ class FilterOp(PhysicalOperator):
             if not active:
                 continue
 
-            return Batch(
-                columns=batch.columns,
-                selection=np.array(active, dtype=np.intp),
-                size=batch.size,
-            )
+            return batch.with_selection(active)
 
     def close(self) -> None:
         self._child.close()
@@ -137,14 +131,7 @@ class ProjectOp(PhysicalOperator):
         if batch is None:
             return None
 
-        batch = batch.compact()
-        projected = {}
-        for col in self._columns:
-            alias = self._aliases.get(col, col)
-            if col in batch.columns:
-                projected[alias] = batch.columns[col]
-
-        return Batch(columns=projected, size=batch.size)
+        return batch.compact().select_columns(self._columns, self._aliases)
 
     def close(self) -> None:
         self._child.close()
@@ -299,16 +286,8 @@ class LimitOp(PhysicalOperator):
                 if batch.size <= need_to_skip:
                     self._skipped += batch.size
                     continue
-                # Partial skip: drop first need_to_skip rows
-                indices = np.arange(
-                    need_to_skip, batch.size, dtype=np.intp
-                )
-                batch = Batch(
-                    columns={
-                        name: col.select(indices)
-                        for name, col in batch.columns.items()
-                    },
-                    size=batch.size - need_to_skip,
+                batch = batch.slice(
+                    need_to_skip, batch.size - need_to_skip
                 )
                 self._skipped = self._offset
 
@@ -318,13 +297,8 @@ class LimitOp(PhysicalOperator):
                 self._emitted += batch.size
                 return batch
 
-            indices = np.arange(remaining, dtype=np.intp)
-            truncated = {
-                name: col.select(indices)
-                for name, col in batch.columns.items()
-            }
             self._emitted += remaining
-            return Batch(columns=truncated, size=remaining)
+            return batch.slice(0, remaining)
 
     def close(self) -> None:
         self._child.close()
