@@ -511,6 +511,210 @@ class SQLCompiler:
         return SQLResult(["plan"], rows)
 
     # ==================================================================
+    # Physical execution (Volcano iterator model)
+    # ==================================================================
+
+    def _execute_relational(
+        self,
+        stmt: SelectStmt,
+        pl: PostingList,
+        ctx: ExecutionContext,
+        table: Table | None,
+    ) -> SQLResult:
+        """Execute relational operations via physical operators.
+
+        Builds a Volcano-model operator tree for GROUP BY, PROJECT,
+        DISTINCT, ORDER BY, and LIMIT, then executes it to produce
+        the final result.
+        """
+        from uqa.execution.batch import DataType, _SQL_TO_DTYPE
+        from uqa.execution.scan import PostingListScanOp
+        from uqa.execution.relational import (
+            DistinctOp,
+            FilterOp as PhysFilterOp,
+            HashAggOp,
+            LimitOp,
+            ProjectOp,
+            SortOp,
+        )
+
+        # Build table schema for typed ColumnVectors
+        schema: dict[str, DataType] = {}
+        if table is not None:
+            for name, col in table.columns.items():
+                schema[name] = _SQL_TO_DTYPE.get(
+                    col.type_name, DataType.TEXT
+                )
+
+        physical: Any = PostingListScanOp(
+            pl,
+            ctx.document_store,
+            schema,
+            graph_store=ctx.graph_store,
+        )
+
+        is_grouped = stmt.groupClause is not None
+        is_agg_only = not is_grouped and self._has_aggregates(
+            stmt.targetList
+        )
+        expected_cols: list[str] | None = None
+
+        if is_grouped:
+            group_cols = [
+                self._extract_column_name(g) for g in stmt.groupClause
+            ]
+            agg_specs = self._extract_agg_specs(stmt.targetList)
+            physical = HashAggOp(physical, group_cols, agg_specs)
+
+            if stmt.havingClause is not None:
+                col, pred = self._resolve_having_predicate(
+                    stmt.havingClause, stmt.targetList
+                )
+                physical = PhysFilterOp(physical, col, pred)
+
+            expected_cols = group_cols + [a for a, _, _ in agg_specs]
+
+        elif is_agg_only:
+            agg_specs = self._extract_agg_specs(stmt.targetList)
+            physical = HashAggOp(physical, [], agg_specs)
+            expected_cols = [a for a, _, _ in agg_specs]
+
+        else:
+            is_star = self._is_select_star(stmt.targetList)
+            if not is_star:
+                proj_cols, proj_aliases = self._resolve_projection_cols(
+                    stmt.targetList
+                )
+                physical = ProjectOp(physical, proj_cols, proj_aliases)
+                expected_cols = [
+                    proj_aliases.get(c, c) for c in proj_cols
+                ]
+
+        # DISTINCT
+        if stmt.distinctClause is not None:
+            distinct_cols = expected_cols
+            if distinct_cols is None:
+                distinct_cols = (
+                    list(table.columns.keys())
+                    if table is not None
+                    else []
+                )
+            physical = DistinctOp(physical, distinct_cols)
+
+        # ORDER BY
+        if stmt.sortClause is not None:
+            sort_keys = [
+                (
+                    self._extract_column_name(s.node),
+                    s.sortby_dir == SortByDir.SORTBY_DESC,
+                )
+                for s in stmt.sortClause
+            ]
+            physical = SortOp(physical, sort_keys)
+
+        # LIMIT
+        if stmt.limitCount is not None:
+            physical = LimitOp(
+                physical, self._extract_int_value(stmt.limitCount)
+            )
+
+        # Execute physical plan
+        physical.open()
+        rows: list[dict[str, Any]] = []
+        while True:
+            batch = physical.next()
+            if batch is None:
+                break
+            rows.extend(batch.to_rows())
+        physical.close()
+
+        # Determine column names
+        if expected_cols is not None:
+            columns = expected_cols
+        elif rows:
+            columns = list(rows[0].keys())
+        elif table is not None:
+            columns = list(table.columns.keys())
+        else:
+            columns = []
+
+        return SQLResult(columns, rows)
+
+    @staticmethod
+    def _is_select_star(target_list: tuple | None) -> bool:
+        """Check if the target list is SELECT * or equivalent."""
+        if target_list is None or len(target_list) == 0:
+            return True
+        for target in target_list:
+            if isinstance(target.val, A_Star):
+                return True
+            if isinstance(target.val, ColumnRef):
+                for field_node in target.val.fields:
+                    if isinstance(field_node, A_Star):
+                        return True
+        return False
+
+    def _resolve_projection_cols(
+        self, target_list: tuple
+    ) -> tuple[list[str], dict[str, str]]:
+        """Resolve target list columns and aliases for ProjectOp."""
+        proj_cols: list[str] = []
+        proj_aliases: dict[str, str] = {}
+        for target in target_list:
+            if isinstance(target.val, ColumnRef):
+                col = self._extract_column_name(target.val)
+                proj_cols.append(col)
+                if target.name and target.name != col:
+                    proj_aliases[col] = target.name
+            elif isinstance(target.val, FuncCall):
+                func = target.val
+                fn = func.funcname[-1].sval.lower()
+                if fn in ("count", "sum", "avg", "min", "max"):
+                    continue
+                alias = target.name or fn
+                if "_score" not in proj_cols:
+                    proj_cols.append("_score")
+                proj_aliases["_score"] = alias
+        return proj_cols, proj_aliases
+
+    def _resolve_having_predicate(
+        self, having_node: Any, target_list: tuple
+    ) -> tuple[str, Predicate]:
+        """Resolve HAVING clause into (column_name, predicate)."""
+        alias_map: dict[str, str] = {}
+        for target in target_list:
+            if isinstance(target.val, FuncCall):
+                func = target.val
+                fn = func.funcname[-1].sval.lower()
+                natural = (
+                    fn
+                    if func.agg_star
+                    else f"{fn}_{self._extract_column_name(func.args[0])}"
+                )
+                alias_map[natural] = target.name or natural
+
+        if isinstance(having_node, A_Expr) and isinstance(
+            having_node.lexpr, FuncCall
+        ):
+            func = having_node.lexpr
+            fn = func.funcname[-1].sval.lower()
+            natural = (
+                fn
+                if func.agg_star
+                else f"{fn}_{self._extract_column_name(func.args[0])}"
+            )
+            col_name = alias_map.get(natural, natural)
+            pred = _op_to_predicate(
+                having_node.name[0].sval,
+                self._extract_const_value(having_node.rexpr),
+            )
+            return col_name, pred
+
+        raise ValueError(
+            f"Unsupported HAVING clause: {type(having_node).__name__}"
+        )
+
+    # ==================================================================
     # DQL: SELECT
     # ==================================================================
 
@@ -541,33 +745,8 @@ class SQLCompiler:
                 return SQLResult(["plan"], [{"plan": "Seq Scan (full table)"}])
             pl = self._scan_all(ctx)
 
-        # 5. GROUP BY + aggregates
-        if stmt.groupClause is not None:
-            return self._handle_group_by(stmt, pl, ctx)
-
-        # 6. Aggregate-only query (no GROUP BY)
-        if self._has_aggregates(stmt.targetList):
-            return self._handle_aggregates(stmt.targetList, pl, ctx)
-
-        # 7. Convert to rows
-        rows = self._to_rows(pl, ctx)
-
-        # 8. Project
-        columns, rows = self._project(stmt.targetList, rows)
-
-        # 9. DISTINCT
-        if stmt.distinctClause is not None:
-            rows = self._apply_distinct(rows, columns)
-
-        # 10. ORDER BY
-        if stmt.sortClause is not None:
-            rows = self._apply_order_by(rows, stmt.sortClause)
-
-        # 11. LIMIT
-        if stmt.limitCount is not None:
-            rows = rows[: self._extract_int_value(stmt.limitCount)]
-
-        return SQLResult(columns, rows)
+        # 5-11. Execute relational operations via physical operators
+        return self._execute_relational(stmt, pl, ctx, table)
 
     # -- FROM clause ---------------------------------------------------
 
@@ -982,47 +1161,6 @@ class SQLCompiler:
             for t in target_list
         )
 
-    def _handle_group_by(
-        self, stmt: SelectStmt, pl: PostingList, ctx: ExecutionContext
-    ) -> SQLResult:
-        group_cols = [self._extract_column_name(g) for g in stmt.groupClause]
-        doc_store = ctx.document_store
-
-        groups: dict[tuple, list[int]] = {}
-        for entry in pl:
-            key = tuple(doc_store.get_field(entry.doc_id, c) for c in group_cols)
-            groups.setdefault(key, []).append(entry.doc_id)
-
-        agg_specs = self._extract_agg_specs(stmt.targetList)
-        rows: list[dict[str, Any]] = []
-        for key, doc_ids in groups.items():
-            row: dict[str, Any] = dict(zip(group_cols, key))
-            for alias, func_name, arg_col in agg_specs:
-                row[alias] = self._compute_aggregate(func_name, arg_col, doc_ids, doc_store)
-            rows.append(row)
-
-        if stmt.havingClause is not None:
-            rows = self._apply_having(rows, stmt.havingClause, stmt.targetList)
-        if stmt.sortClause is not None:
-            rows = self._apply_order_by(rows, stmt.sortClause)
-        if stmt.limitCount is not None:
-            rows = rows[: self._extract_int_value(stmt.limitCount)]
-
-        columns = list(rows[0].keys()) if rows else group_cols
-        return SQLResult(columns, rows)
-
-    def _handle_aggregates(
-        self, target_list: tuple, pl: PostingList, ctx: ExecutionContext
-    ) -> SQLResult:
-        doc_ids = [e.doc_id for e in pl]
-        agg_specs = self._extract_agg_specs(target_list)
-        row: dict[str, Any] = {}
-        for alias, func_name, arg_col in agg_specs:
-            row[alias] = self._compute_aggregate(
-                func_name, arg_col, doc_ids, ctx.document_store
-            )
-        return SQLResult(list(row.keys()), [row])
-
     def _extract_agg_specs(
         self, target_list: tuple
     ) -> list[tuple[str, str, str | None]]:
@@ -1039,147 +1177,11 @@ class SQLCompiler:
             specs.append((alias, func_name, arg_col))
         return specs
 
-    def _compute_aggregate(
-        self, func_name: str, arg_col: str | None,
-        doc_ids: list[int], doc_store: Any
-    ) -> Any:
-        if func_name == "count":
-            if arg_col is None:
-                return len(doc_ids)
-            return sum(1 for d in doc_ids if doc_store.get_field(d, arg_col) is not None)
-        values = [
-            doc_store.get_field(d, arg_col) for d in doc_ids
-            if isinstance(doc_store.get_field(d, arg_col), (int, float))
-        ]
-        if not values:
-            return None
-        if func_name == "sum":
-            return sum(values)
-        if func_name == "avg":
-            return sum(values) / len(values)
-        if func_name == "min":
-            return min(values)
-        if func_name == "max":
-            return max(values)
-        raise ValueError(f"Unknown aggregate: {func_name}")
-
-    def _apply_having(
-        self, rows: list[dict], having_node: Any, target_list: tuple
-    ) -> list[dict]:
-        alias_map: dict[str, str] = {}
-        for target in target_list:
-            if isinstance(target.val, FuncCall):
-                func = target.val
-                fn = func.funcname[-1].sval.lower()
-                natural = fn if func.agg_star else f"{fn}_{self._extract_column_name(func.args[0])}"
-                alias_map[natural] = target.name or natural
-
-        if isinstance(having_node, A_Expr) and isinstance(having_node.lexpr, FuncCall):
-            func = having_node.lexpr
-            fn = func.funcname[-1].sval.lower()
-            natural = fn if func.agg_star else f"{fn}_{self._extract_column_name(func.args[0])}"
-            col_name = alias_map.get(natural, natural)
-            pred = _op_to_predicate(having_node.name[0].sval, self._extract_const_value(having_node.rexpr))
-            return [r for r in rows if pred.evaluate(r.get(col_name))]
-        raise ValueError(f"Unsupported HAVING clause: {type(having_node).__name__}")
-
     # -- Result conversion ---------------------------------------------
 
     def _scan_all(self, ctx: ExecutionContext) -> PostingList:
         all_ids = sorted(ctx.document_store.doc_ids)
         return PostingList([PostingEntry(d, Payload(score=0.0)) for d in all_ids])
-
-    def _to_rows(self, pl: PostingList, ctx: ExecutionContext) -> list[dict[str, Any]]:
-        doc_store = ctx.document_store
-        graph_store = ctx.graph_store
-        rows: list[dict[str, Any]] = []
-        for entry in pl:
-            row: dict[str, Any] = {"_doc_id": entry.doc_id, "_score": entry.payload.score}
-            doc = doc_store.get(entry.doc_id) if doc_store else None
-            if doc is not None:
-                row.update(doc)
-            elif graph_store is not None:
-                vertex = graph_store.get_vertex(entry.doc_id)
-                if vertex is not None:
-                    row.update(vertex.properties)
-            if entry.payload.fields:
-                row.update(entry.payload.fields)
-            rows.append(row)
-        return rows
-
-    def _project(
-        self, target_list: tuple | None, rows: list[dict[str, Any]]
-    ) -> tuple[list[str], list[dict[str, Any]]]:
-        if target_list is None or len(target_list) == 0:
-            columns = list(rows[0].keys()) if rows else []
-            return columns, rows
-
-        # SELECT *
-        for target in target_list:
-            if isinstance(target.val, A_Star):
-                return (list(rows[0].keys()) if rows else []), rows
-            if isinstance(target.val, ColumnRef):
-                for field in target.val.fields:
-                    if isinstance(field, A_Star):
-                        return (list(rows[0].keys()) if rows else []), rows
-
-        # Explicit columns
-        columns: list[str] = []
-        for target in target_list:
-            if isinstance(target.val, ColumnRef):
-                columns.append(target.name or self._extract_column_name(target.val))
-            elif isinstance(target.val, FuncCall):
-                func = target.val
-                fn = func.funcname[-1].sval.lower()
-                arg = None if func.agg_star else self._extract_column_name(func.args[0])
-                columns.append(target.name or (fn if arg is None else f"{fn}_{arg}"))
-
-        projected: list[dict[str, Any]] = []
-        for row in rows:
-            p_row: dict[str, Any] = {}
-            for target in target_list:
-                if isinstance(target.val, ColumnRef):
-                    col = self._extract_column_name(target.val)
-                    p_row[target.name or col] = row.get(col)
-                elif isinstance(target.val, FuncCall):
-                    func = target.val
-                    fn = func.funcname[-1].sval.lower()
-                    arg = None if func.agg_star else self._extract_column_name(func.args[0])
-                    alias = target.name or (fn if arg is None else f"{fn}_{arg}")
-                    p_row[alias] = row.get(alias, row.get("_score"))
-            projected.append(p_row)
-        return columns, projected
-
-    # -- DISTINCT ------------------------------------------------------
-
-    @staticmethod
-    def _apply_distinct(
-        rows: list[dict[str, Any]], columns: list[str]
-    ) -> list[dict[str, Any]]:
-        """Remove duplicate rows based on projected columns."""
-        seen: set[tuple] = set()
-        unique: list[dict[str, Any]] = []
-        for row in rows:
-            key = tuple(row.get(c) for c in columns)
-            if key not in seen:
-                seen.add(key)
-                unique.append(row)
-        return unique
-
-    # -- ORDER BY ------------------------------------------------------
-
-    def _apply_order_by(
-        self, rows: list[dict[str, Any]], sort_clause: tuple
-    ) -> list[dict[str, Any]]:
-        for sort_by in reversed(sort_clause):
-            col_name = self._extract_column_name(sort_by.node)
-            desc = sort_by.sortby_dir == SortByDir.SORTBY_DESC
-            rows = sorted(
-                rows,
-                key=lambda r, c=col_name: (r.get(c) is None, r.get(c)),
-                reverse=desc,
-            )
-        return rows
 
     # -- Helpers -------------------------------------------------------
 
