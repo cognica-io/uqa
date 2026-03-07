@@ -25,6 +25,14 @@ SELECT _doc_id, title FROM traverse(1, 'cited_by', 2);
 
 -- Regular path query
 SELECT _doc_id, title FROM rpq('cited_by/cited_by', 1);
+
+-- Prepared statements
+PREPARE find_by_year AS SELECT title FROM papers WHERE year = $1;
+EXECUTE find_by_year(2024);
+
+-- Window functions
+SELECT title, year, ROW_NUMBER() OVER (PARTITION BY field ORDER BY year) AS rn
+FROM papers;
 ```
 
 ## Architecture
@@ -37,11 +45,12 @@ graph TD
     Compiler --> Optimizer[Query Optimizer]
     Optimizer --> Operators[Operator Tree]
     Operators --> Executor[Plan Executor]
+    Executor --> PAR[Parallel Executor<br/>ThreadPool]
 
-    Executor --> DS[Document Store]
-    Executor --> II[Inverted Index]
-    Executor --> VI[Vector Index<br/>HNSW]
-    Executor --> GS[Graph Store]
+    PAR --> DS[Document Store<br/>SQLite]
+    PAR --> II[Inverted Index<br/>SQLite]
+    PAR --> VI[Vector Index<br/>HNSW + SQLite]
+    PAR --> GS[Graph Store<br/>SQLite]
 
     subgraph Scoring
         BM25[BM25]
@@ -63,16 +72,17 @@ graph TD
 ```
 uqa/
   core/           PostingList, types, hierarchical documents
-  storage/        DocumentStore, InvertedIndex, HNSWIndex, BlockMaxIndex
+  storage/        SQLite-backed stores: documents, inverted index, vectors, graph
   operators/      Operator algebra (boolean, primitive, hybrid, aggregation)
-  scoring/        BM25, Bayesian BM25, VectorScorer, WAND
+  scoring/        BM25, Bayesian BM25, VectorScorer, WAND/BlockMaxWAND
   fusion/         Log-odds conjunction, probabilistic boolean
   graph/          GraphStore, traversal, pattern matching, RPQ, cross-paradigm
   joins/          Hash, sort-merge, index, graph, cross-paradigm, similarity joins
-  planner/        Cost model, cardinality estimator, query optimizer, executor
-  sql/            SQL compiler (pglast), table DDL/DML, column statistics
+  execution/      Volcano iterator engine: batch processing, physical operators
+  planner/        Cost model, cardinality estimator, optimizer, parallel executor
+  sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          266 tests (pytest + hypothesis)
+  tests/          899 tests across 29 test files
 ```
 
 ## Key Features
@@ -81,10 +91,17 @@ uqa/
 
 | Category | Syntax |
 |----------|--------|
-| DDL | `CREATE TABLE`, `DROP TABLE [IF EXISTS]` |
-| DML | `INSERT INTO ... VALUES` |
-| DQL | `SELECT [DISTINCT] ... FROM ... WHERE ... GROUP BY ... HAVING ... ORDER BY ... LIMIT` |
+| DDL | `CREATE TABLE`, `DROP TABLE [IF EXISTS]`, `CREATE INDEX`, `DROP INDEX` |
+| DML | `INSERT INTO ... VALUES`, `UPDATE ... SET ... WHERE`, `DELETE FROM ... WHERE` |
+| DQL | `SELECT [DISTINCT] ... FROM ... WHERE ... GROUP BY ... HAVING ... ORDER BY ... LIMIT ... OFFSET` |
+| Joins | `INNER JOIN`, `LEFT JOIN` with `ON` condition |
+| Subqueries | `IN (SELECT ...)`, `EXISTS (SELECT ...)`, scalar subqueries, correlated subqueries |
+| CTEs | `WITH name AS (SELECT ...) SELECT ...` |
+| Views | `CREATE VIEW`, `DROP VIEW` |
+| Window | `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `NTILE`, `LAG`, `LEAD`, aggregates `OVER (PARTITION BY ... ORDER BY ...)` |
+| Prepared | `PREPARE name AS ...`, `EXECUTE name(params)`, `DEALLOCATE name` |
 | Utility | `EXPLAIN SELECT ...`, `ANALYZE [table]` |
+| Transactions | `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVEPOINT` |
 
 ### Extended WHERE Functions
 
@@ -111,6 +128,38 @@ uqa/
 | `traverse(start, 'label', hops)` | BFS graph traversal |
 | `rpq('path_expr', start)` | Regular path query (NFA simulation) |
 | `text_search('query', 'field', 'table')` | Table-scoped full-text search |
+
+### Persistence
+
+All data is persisted to SQLite when an engine is created with `db_path`:
+
+| Store | SQLite Table | Description |
+|-------|-------------|-------------|
+| Documents | `_data_{table}` | Typed columns per table |
+| Inverted Index | `_inverted_{table}_{field}` | Per-field posting lists |
+| Vectors | `_vectors` | HNSW vectors (float32 blobs) |
+| Graph | `_graph_vertices`, `_graph_edges` | Adjacency-indexed graph |
+| B-tree Indexes | SQLite indexes on `_data_{table}` | `CREATE INDEX` support |
+| Statistics | `_column_stats` | Histograms, MCVs for optimizer |
+
+### Query Optimizer
+
+- Cost-based optimization with equi-depth histograms and Most Common Values (MCV)
+- Filter pushdown into intersections
+- Vector threshold merge (same query vector)
+- Intersect operand reordering by cardinality (cheapest first)
+- Fusion signal reordering by cost (cheapest first)
+- B-tree index scan substitution (replace full scans when profitable)
+- Cross-paradigm cardinality estimation for text, vector, graph, and fusion operators
+
+### Parallel Execution
+
+Independent operator branches (Union, Intersect, Fusion signals) execute concurrently via `ThreadPoolExecutor`. Configure with `parallel_workers` parameter:
+
+```python
+engine = Engine(db_path="my.db", parallel_workers=4)  # default: 4
+engine = Engine(parallel_workers=0)                     # disable parallelism
+```
 
 ## Requirements
 
@@ -139,6 +188,9 @@ python usql.py
 
 # Or with a script file
 python usql.py examples/demo.sql
+
+# Persistent database
+python usql.py --db mydata.db
 ```
 
 Shell commands:
@@ -148,6 +200,7 @@ Shell commands:
 | `\dt` | List tables |
 | `\d <table>` | Describe table schema |
 | `\ds <table>` | Show column statistics (requires `ANALYZE` first) |
+| `\di` | List indexes |
 | `\timing` | Toggle query timing display |
 | `\reset` | Reset the engine |
 | `\q` | Quit |
@@ -157,7 +210,11 @@ Shell commands:
 ```python
 from uqa.engine import Engine
 
+# In-memory engine
 engine = Engine(vector_dimensions=64, max_elements=10000)
+
+# Persistent engine (SQLite-backed)
+engine = Engine(db_path="research.db", vector_dimensions=64)
 
 engine.sql("""
     CREATE TABLE papers (
@@ -180,6 +237,8 @@ result = engine.sql("""
     WHERE text_match(title, 'attention') ORDER BY _score DESC
 """)
 print(result)
+
+engine.close()  # or use: with Engine(db_path="...") as engine:
 ```
 
 ### Fluent QueryBuilder API
@@ -200,6 +259,15 @@ result = (
 # SQL interface examples (DDL, DML, search, aggregation, graph, fusion)
 python examples/sql_queries.py
 
+# Academic paper search (text + vector + graph + fusion)
+python examples/academic_search.py
+
+# E-commerce product search (filters, facets, scoring)
+python examples/ecommerce_search.py
+
+# Biomedical knowledge graph (traversal, RPQ, pattern matching)
+python examples/knowledge_graph.py
+
 # Interactive demo script
 python usql.py examples/demo.sql
 ```
@@ -207,7 +275,11 @@ python usql.py examples/demo.sql
 ## Tests
 
 ```bash
+# Run all 899 tests
 python -m pytest uqa/tests/ -v
+
+# Run a specific test file
+python -m pytest uqa/tests/test_sql.py -v
 ```
 
 ## License

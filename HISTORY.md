@@ -1,5 +1,57 @@
 # History
 
+## 0.2.0 (2026-03-07)
+
+Production-grade storage, execution engine, advanced SQL features, and query optimization.
+
+### Storage Layer
+
+- SQLite-backed document store (`SQLiteDocumentStore`) with typed per-table columns
+- SQLite-backed inverted index (`SQLiteInvertedIndex`) with per-table-field posting lists
+- SQLite-backed vector index (`SQLiteVectorIndex`) with write-through HNSW persistence
+- SQLite-backed graph store (`SQLiteGraphStore`) with adjacency indexes
+- B-tree index infrastructure: `CREATE INDEX` / `DROP INDEX` with optimizer integration
+- Index manager with catalog persistence and automatic restoration on restart
+- Catalog schema migration for backward compatibility with old-format databases
+- `ManagedConnection` proxy for transaction-aware commit suppression
+- WAL mode with `check_same_thread=False` for safe concurrent reads
+
+### Execution Engine
+
+- Volcano iterator model with batch processing (`Batch`, `ColumnVector`, `PhysicalOperator`)
+- Physical operators: SeqScan, PostingListScan, Filter, Project, ExprProject, Sort, Limit, HashAgg, Distinct, Window
+- Expression evaluator: arithmetic, comparison, logical, string/math functions, CASE, CAST, COALESCE, IS NULL, concatenation
+- Parallel execution via `ThreadPoolExecutor` for independent operator branches (Union, Intersect, Fusion)
+- Configurable `parallel_workers` parameter (default 4, 0 to disable)
+
+### SQL Features
+
+- DML: `UPDATE ... SET ... WHERE`, `DELETE FROM ... WHERE` with expression support
+- `OFFSET` clause, `LIKE` / `ILIKE` / `NOT LIKE` / `NOT ILIKE` pattern matching
+- Subqueries: `IN (SELECT ...)`, `EXISTS (SELECT ...)`, scalar subqueries
+- Correlated subqueries: `WHERE inner.col = outer.col` with per-row substitution
+- Common Table Expressions: `WITH name AS (SELECT ...) SELECT ...`
+- Views: `CREATE VIEW` / `DROP VIEW [IF EXISTS]` / `SELECT` from views
+- Window functions: `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `NTILE`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`, aggregates `OVER (PARTITION BY ... ORDER BY ...)`
+- Prepared statements: `PREPARE name AS ...` / `EXECUTE name(params)` / `DEALLOCATE name`
+- Transactions: `BEGIN` / `COMMIT` / `ROLLBACK` / `SAVEPOINT` / `RELEASE SAVEPOINT`
+
+### Query Optimizer
+
+- Cost-based optimizer with equi-depth histograms and Most Common Values (MCV)
+- Histogram-aware selectivity estimation for range predicates (BETWEEN, >, <)
+- MCV lookup for equality predicates with exact frequency
+- Cross-paradigm cardinality estimation for Score, Traverse, PatternMatch, Fusion, Hybrid operators
+- Fusion signal reordering by ascending cost (cheapest first)
+- B-tree index scan substitution (replace full scans when index scan is cheaper)
+- `CostModel` covers all operator types including fusion, graph, and hybrid
+- `EXPLAIN` shows detailed plans for all operators (Score, Fusion, Graph, RPQ)
+
+### Tests
+
+- 899 tests across 29 test files (up from 266 in v0.1.0)
+
+
 ## 0.1.0 (2026-03-06)
 
 Initial release of the UQA prototype.
