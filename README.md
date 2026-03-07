@@ -216,7 +216,7 @@ AGPL-3.0 — see [LICENSE](LICENSE).
 
 ## References
 
-1. A Unified Mathematical Framework for Query Algebras Across Heterogeneous Data Paradigms
-2. Extending the Unified Mathematical Framework to Support Graph Data Structures
-3. Bayesian BM25: A Probabilistic Framework for Hybrid Text and Vector Search
-4. From Bayesian Inference to Neural Computation (Log-Odds Conjunction)
+1. [A Unified Mathematical Framework for Query Algebras Across Heterogeneous Data Paradigms](docs/papers/1.%20A%20Unified%20Mathematical%20Framework%20for%20Query%20Algebras%20Across%20Heterogeneous%20Data%20Paradigms.pdf)
+2. [Extending the Unified Mathematical Framework to Support Graph Data Structures](docs/papers/2.%20Extending%20the%20Unified%20Mathematical%20Framework%20to%20Support%20Graph%20Data%20Structures.pdf)
+3. [Bayesian BM25 - A Probabilistic Framework for Hybrid Text and Vector Search](docs/papers/3.%20Bayesian%20BM25%20-%20A%20Probabilistic%20Framework%20for%20Hybrid%20Text%20and%20Vector%20Search.pdf)
+4. [From Bayesian Inference to Neural Computation](docs/papers/4.%20From%20Bayesian%20Inference%20to%20Neural%20Computation.pdf)
