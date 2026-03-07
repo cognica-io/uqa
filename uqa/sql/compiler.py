@@ -16,10 +16,12 @@ Supported statements:
     DELETE FROM name [WHERE ...]
   DQL:
     SELECT [DISTINCT] [* | col, ... | expr, ... | aggregates] FROM table
-      [WHERE comparisons / boolean / IS [NOT] NULL / text_match() / ...]
+      [WHERE comparisons / boolean / IS [NOT] NULL /
+             LIKE / NOT LIKE / ILIKE / NOT ILIKE /
+             text_match() / ...]
       [GROUP BY col [HAVING ...]]
       [ORDER BY col [ASC|DESC]]
-      [LIMIT n]
+      [LIMIT n [OFFSET m]]
   Transaction:
     BEGIN                               -- start explicit transaction
     COMMIT                              -- commit transaction
@@ -739,10 +741,13 @@ class SQLCompiler:
             ]
             physical = SortOp(physical, sort_keys)
 
-        # LIMIT
+        # LIMIT / OFFSET
         if stmt.limitCount is not None:
+            offset = 0
+            if stmt.limitOffset is not None:
+                offset = self._extract_int_value(stmt.limitOffset)
             physical = LimitOp(
-                physical, self._extract_int_value(stmt.limitCount)
+                physical, self._extract_int_value(stmt.limitCount), offset
             )
 
         # Execute physical plan
@@ -1187,7 +1192,22 @@ class SQLCompiler:
             return ComplementOperator(FO(field_name, Between(low, high)))
 
         if kind == A_Expr_Kind.AEXPR_LIKE:
-            raise ValueError("LIKE not supported; use text_match() for full-text search")
+            from uqa.core.types import Like, NotLike
+            field_name = self._extract_column_name(node.lexpr)
+            pattern = self._extract_string_value(node.rexpr)
+            op_name = node.name[0].sval
+            if op_name == "!~~":
+                return FilterOperator(field_name, NotLike(pattern))
+            return FilterOperator(field_name, Like(pattern))
+
+        if kind == A_Expr_Kind.AEXPR_ILIKE:
+            from uqa.core.types import ILike, NotILike
+            field_name = self._extract_column_name(node.lexpr)
+            pattern = self._extract_string_value(node.rexpr)
+            op_name = node.name[0].sval
+            if op_name == "!~~*":
+                return FilterOperator(field_name, NotILike(pattern))
+            return FilterOperator(field_name, ILike(pattern))
 
         raise ValueError(f"Unsupported expression kind: {kind}")
 

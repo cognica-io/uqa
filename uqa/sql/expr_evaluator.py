@@ -129,6 +129,26 @@ class ExprEvaluator:
             high = self.evaluate(node.rexpr[1], row)
             return not (low <= val <= high)
 
+        if kind == A_Expr_Kind.AEXPR_LIKE:
+            val = self.evaluate(node.lexpr, row)
+            if val is None:
+                return False
+            pattern = self.evaluate(node.rexpr, row)
+            op_name = node.name[0].sval
+            from uqa.core.types import _like_match
+            matched = _like_match(str(val), pattern, case_sensitive=True)
+            return not matched if op_name == "!~~" else matched
+
+        if kind == A_Expr_Kind.AEXPR_ILIKE:
+            val = self.evaluate(node.lexpr, row)
+            if val is None:
+                return False
+            pattern = self.evaluate(node.rexpr, row)
+            op_name = node.name[0].sval
+            from uqa.core.types import _like_match
+            matched = _like_match(str(val), pattern, case_sensitive=False)
+            return not matched if op_name == "!~~*" else matched
+
         raise ValueError(f"Unsupported A_Expr kind: {kind}")
 
     def _eval_operator(self, node: A_Expr, row: dict[str, Any]) -> Any:

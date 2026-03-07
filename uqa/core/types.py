@@ -167,6 +167,68 @@ class IsNotNull(Predicate):
         return value is not None
 
 
+@dataclass(frozen=True, slots=True)
+class Like(Predicate):
+    """SQL LIKE pattern match (case-sensitive).
+
+    Translates SQL ``%`` and ``_`` wildcards into Python regex.
+    """
+    pattern: str
+
+    def evaluate(self, value: Any) -> bool:
+        return _like_match(str(value), self.pattern, case_sensitive=True)
+
+
+@dataclass(frozen=True, slots=True)
+class NotLike(Predicate):
+    """SQL NOT LIKE pattern match (case-sensitive)."""
+    pattern: str
+
+    def evaluate(self, value: Any) -> bool:
+        return not _like_match(str(value), self.pattern, case_sensitive=True)
+
+
+@dataclass(frozen=True, slots=True)
+class ILike(Predicate):
+    """SQL ILIKE pattern match (case-insensitive)."""
+    pattern: str
+
+    def evaluate(self, value: Any) -> bool:
+        return _like_match(str(value), self.pattern, case_sensitive=False)
+
+
+@dataclass(frozen=True, slots=True)
+class NotILike(Predicate):
+    """SQL NOT ILIKE pattern match (case-insensitive)."""
+    pattern: str
+
+    def evaluate(self, value: Any) -> bool:
+        return not _like_match(str(value), self.pattern, case_sensitive=False)
+
+
+def _like_match(value: str, pattern: str, *, case_sensitive: bool) -> bool:
+    """Match a SQL LIKE pattern against a string value."""
+    import re
+    # Escape regex special chars, then convert SQL wildcards
+    regex = ""
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "%":
+            regex += ".*"
+        elif ch == "_":
+            regex += "."
+        elif ch == "\\" and i + 1 < len(pattern):
+            # Escaped wildcard
+            i += 1
+            regex += re.escape(pattern[i])
+        else:
+            regex += re.escape(ch)
+        i += 1
+    flags = 0 if case_sensitive else re.IGNORECASE
+    return re.fullmatch(regex, value, flags) is not None
+
+
 def is_null_predicate(pred: Predicate) -> bool:
     """Return True if *pred* needs to see None values (IsNull or IsNotNull)."""
     return isinstance(pred, (IsNull, IsNotNull))

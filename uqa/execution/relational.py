@@ -231,47 +231,74 @@ class SortOp(PhysicalOperator):
 
 
 class LimitOp(PhysicalOperator):
-    """Limit output to at most *limit* rows.
+    """Limit output to at most *limit* rows, optionally skipping *offset*.
 
-    Streaming operator: passes through batches from the child, tracking
-    how many rows have been emitted.  Truncates the last batch if needed
-    and stops pulling once the limit is reached.
+    Streaming operator: skips the first *offset* rows, then passes
+    through up to *limit* rows from the child.  Truncates the last
+    batch if needed and stops pulling once the limit is reached.
     """
 
-    def __init__(self, child: PhysicalOperator, limit: int) -> None:
+    def __init__(
+        self, child: PhysicalOperator, limit: int, offset: int = 0
+    ) -> None:
         self._child = child
         self._limit = limit
+        self._offset = offset
+        self._skipped = 0
         self._emitted = 0
 
     def open(self) -> None:
         self._child.open()
+        self._skipped = 0
         self._emitted = 0
 
     def next(self) -> Batch | None:
         if self._emitted >= self._limit:
             return None
 
-        batch = self._child.next()
-        if batch is None:
-            return None
+        while True:
+            batch = self._child.next()
+            if batch is None:
+                return None
 
-        batch = batch.compact()
-        remaining = self._limit - self._emitted
+            batch = batch.compact()
 
-        if batch.size <= remaining:
-            self._emitted += batch.size
-            return batch
+            # Skip rows for OFFSET
+            if self._skipped < self._offset:
+                need_to_skip = self._offset - self._skipped
+                if batch.size <= need_to_skip:
+                    self._skipped += batch.size
+                    continue
+                # Partial skip: drop first need_to_skip rows
+                indices = np.arange(
+                    need_to_skip, batch.size, dtype=np.intp
+                )
+                batch = Batch(
+                    columns={
+                        name: col.select(indices)
+                        for name, col in batch.columns.items()
+                    },
+                    size=batch.size - need_to_skip,
+                )
+                self._skipped = self._offset
 
-        indices = np.arange(remaining, dtype=np.intp)
-        truncated = {
-            name: col.select(indices)
-            for name, col in batch.columns.items()
-        }
-        self._emitted += remaining
-        return Batch(columns=truncated, size=remaining)
+            # Apply LIMIT
+            remaining = self._limit - self._emitted
+            if batch.size <= remaining:
+                self._emitted += batch.size
+                return batch
+
+            indices = np.arange(remaining, dtype=np.intp)
+            truncated = {
+                name: col.select(indices)
+                for name, col in batch.columns.items()
+            }
+            self._emitted += remaining
+            return Batch(columns=truncated, size=remaining)
 
     def close(self) -> None:
         self._child.close()
+        self._skipped = 0
         self._emitted = 0
 
 
