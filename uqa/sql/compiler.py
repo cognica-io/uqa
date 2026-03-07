@@ -61,6 +61,8 @@ from pglast.ast import (
     A_Expr,
     A_Star,
     BoolExpr,
+    CaseExpr,
+    CoalesceExpr,
     ColumnRef,
     CreateStmt,
     DropStmt,
@@ -71,16 +73,18 @@ from pglast.ast import (
     InsertStmt,
     Integer as PgInteger,
     JoinExpr,
+    NullTest,
     RangeFunction,
     RangeVar,
     SelectStmt,
     SortBy,
     String as PgString,
     TransactionStmt,
+    TypeCast,
     VacuumStmt,
 )
 from pglast.enums.parsenodes import A_Expr_Kind, ConstrType, SortByDir
-from pglast.enums.primnodes import BoolExprType
+from pglast.enums.primnodes import BoolExprType, NullTestType
 from pglast.enums.nodes import JoinType
 
 from uqa.core.posting_list import PostingList
@@ -531,6 +535,7 @@ class SQLCompiler:
         from uqa.execution.scan import PostingListScanOp
         from uqa.execution.relational import (
             DistinctOp,
+            ExprProjectOp,
             FilterOp as PhysFilterOp,
             HashAggOp,
             LimitOp,
@@ -582,13 +587,20 @@ class SQLCompiler:
         else:
             is_star = self._is_select_star(stmt.targetList)
             if not is_star:
-                proj_cols, proj_aliases = self._resolve_projection_cols(
-                    stmt.targetList
-                )
-                physical = ProjectOp(physical, proj_cols, proj_aliases)
-                expected_cols = [
-                    proj_aliases.get(c, c) for c in proj_cols
-                ]
+                if self._has_computed_expressions(stmt.targetList):
+                    targets = self._build_expr_targets(stmt.targetList)
+                    physical = ExprProjectOp(physical, targets)
+                    expected_cols = [name for name, _ in targets]
+                else:
+                    proj_cols, proj_aliases = (
+                        self._resolve_projection_cols(stmt.targetList)
+                    )
+                    physical = ProjectOp(
+                        physical, proj_cols, proj_aliases
+                    )
+                    expected_cols = [
+                        proj_aliases.get(c, c) for c in proj_cols
+                    ]
 
         # DISTINCT
         if stmt.distinctClause is not None:
@@ -676,6 +688,73 @@ class SQLCompiler:
                     proj_cols.append("_score")
                 proj_aliases["_score"] = alias
         return proj_cols, proj_aliases
+
+    @staticmethod
+    def _has_computed_expressions(target_list: tuple | None) -> bool:
+        """Check if any target is a computed expression (not a simple column)."""
+        if target_list is None:
+            return False
+        for target in target_list:
+            val = target.val
+            if isinstance(val, ColumnRef):
+                continue
+            if isinstance(val, FuncCall):
+                fn = val.funcname[-1].sval.lower()
+                if fn in ("count", "sum", "avg", "min", "max"):
+                    continue
+                # Non-aggregate functions like UPPER(), LOWER() are computed
+                if fn in ("text_match", "bayesian_match", "knn_match",
+                          "traverse_match"):
+                    continue
+                return True
+            if isinstance(val, (A_Expr, CaseExpr, TypeCast, CoalesceExpr,
+                                NullTest)):
+                return True
+        return False
+
+    def _build_expr_targets(
+        self, target_list: tuple
+    ) -> list[tuple[str, Any]]:
+        """Build (output_name, ast_node) pairs for ExprProjectOp.
+
+        For text_match/bayesian_match function calls, wraps the node
+        so the ExprEvaluator reads ``_score`` from the row instead.
+        """
+        targets: list[tuple[str, Any]] = []
+        for target in target_list:
+            name = self._infer_target_name(target)
+            val = target.val
+            # text_match/bayesian_match -> read _score column
+            if isinstance(val, FuncCall):
+                fn = val.funcname[-1].sval.lower()
+                if fn in ("text_match", "bayesian_match"):
+                    from pglast.ast import ColumnRef, String as PgStr
+                    val = ColumnRef(fields=(PgStr(sval="_score"),))
+            targets.append((name, val))
+        return targets
+
+    def _infer_target_name(self, target: Any) -> str:
+        """Infer the output column name for a single SELECT target."""
+        if target.name:
+            return target.name
+        val = target.val
+        if isinstance(val, ColumnRef):
+            return self._extract_column_name(val)
+        if isinstance(val, FuncCall):
+            fn = val.funcname[-1].sval.lower()
+            if fn in ("count", "sum", "avg", "min", "max"):
+                arg_col = None if val.agg_star else (
+                    self._extract_column_name(val.args[0])
+                )
+                return fn if arg_col is None else f"{fn}_{arg_col}"
+            if fn in ("text_match", "bayesian_match"):
+                return "_score"
+            return fn
+        if isinstance(val, TypeCast):
+            if isinstance(val.arg, ColumnRef):
+                return self._extract_column_name(val.arg)
+            return val.typeName.names[-1].sval.lower()
+        return "?column?"
 
     def _resolve_having_predicate(
         self, having_node: Any, target_list: tuple
@@ -911,6 +990,8 @@ class SQLCompiler:
             return self._compile_comparison(node)
         if isinstance(node, FuncCall):
             return self._compile_func_in_where(node, ctx)
+        if isinstance(node, NullTest):
+            return self._compile_null_test(node)
         raise ValueError(f"Unsupported WHERE node: {type(node).__name__}")
 
     def _compile_bool_expr(self, node: BoolExpr, ctx: ExecutionContext) -> Any:
@@ -958,9 +1039,18 @@ class SQLCompiler:
         kind = A_Expr_Kind(node.kind)
 
         if kind == A_Expr_Kind.AEXPR_OP:
-            field_name = self._extract_column_name(node.lexpr)
-            value = self._extract_const_value(node.rexpr)
-            return FilterOperator(field_name, _op_to_predicate(node.name[0].sval, value))
+            # Simple case: column op constant
+            if isinstance(node.lexpr, ColumnRef) and isinstance(
+                node.rexpr, A_Const
+            ):
+                field_name = self._extract_column_name(node.lexpr)
+                value = self._extract_const_value(node.rexpr)
+                return FilterOperator(
+                    field_name,
+                    _op_to_predicate(node.name[0].sval, value),
+                )
+            # Expression-based comparison (e.g., price * 2 > 100)
+            return _ExprFilterOperator(node)
 
         if kind == A_Expr_Kind.AEXPR_IN:
             field_name = self._extract_column_name(node.lexpr)
@@ -985,6 +1075,15 @@ class SQLCompiler:
             raise ValueError("LIKE not supported; use text_match() for full-text search")
 
         raise ValueError(f"Unsupported expression kind: {kind}")
+
+    def _compile_null_test(self, node: NullTest) -> Any:
+        from uqa.core.types import IsNull, IsNotNull
+        from uqa.operators.primitive import FilterOperator
+
+        field_name = self._extract_column_name(node.arg)
+        if NullTestType(node.nulltesttype) == NullTestType.IS_NULL:
+            return FilterOperator(field_name, IsNull())
+        return FilterOperator(field_name, IsNotNull())
 
     def _compile_func_in_where(self, node: FuncCall, ctx: ExecutionContext) -> Any:
         name = node.funcname[-1].sval.lower()
@@ -1270,6 +1369,38 @@ class _CalibratedKNNOperator:
     def cost_estimate(self, stats: Any) -> float:
         import math
         return float(stats.dimensions) * math.log2(stats.total_docs + 1)
+
+
+class _ExprFilterOperator:
+    """Filter rows using an arbitrary expression via ExprEvaluator.
+
+    Used for WHERE clauses that cannot be reduced to a simple
+    ``FilterOperator(field, predicate)`` -- e.g. ``WHERE price * 2 > 100``.
+    """
+
+    def __init__(self, expr_node: Any) -> None:
+        self.expr_node = expr_node
+
+    def execute(self, context: Any) -> PostingList:
+        from uqa.sql.expr_evaluator import ExprEvaluator
+
+        evaluator = ExprEvaluator()
+        doc_store = context.document_store
+        if doc_store is None:
+            return PostingList()
+
+        entries: list[PostingEntry] = []
+        for doc_id in sorted(doc_store.doc_ids):
+            doc = doc_store.get(doc_id)
+            if doc is None:
+                continue
+            result = evaluator.evaluate(self.expr_node, doc)
+            if result:
+                entries.append(PostingEntry(doc_id, Payload(score=0.0)))
+        return PostingList(entries)
+
+    def cost_estimate(self, stats: Any) -> float:
+        return float(stats.total_docs)
 
 
 def _op_to_predicate(op_name: str, value: Any) -> Predicate:

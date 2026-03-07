@@ -41,6 +41,8 @@ class FilterOp(PhysicalOperator):
         self._child = child
         self._column = column
         self._predicate = predicate
+        from uqa.core.types import is_null_predicate
+        self._null_aware = is_null_predicate(predicate)
 
     def open(self) -> None:
         self._child.open()
@@ -61,9 +63,14 @@ class FilterOp(PhysicalOperator):
                 indices = range(batch.size)
 
             active: list[int] = []
+            null_aware = self._null_aware
             for i in indices:
                 val = col[i]
-                if val is not None and self._predicate.evaluate(val):
+                if null_aware:
+                    matched = self._predicate.evaluate(val)
+                else:
+                    matched = val is not None and self._predicate.evaluate(val)
+                if matched:
                     active.append(i)
 
             if not active:
@@ -112,6 +119,54 @@ class ProjectOp(PhysicalOperator):
                 projected[alias] = batch.columns[col]
 
         return Batch(columns=projected, size=batch.size)
+
+    def close(self) -> None:
+        self._child.close()
+
+
+class ExprProjectOp(PhysicalOperator):
+    """Evaluate SQL expression AST nodes to produce computed columns.
+
+    Streaming operator: evaluates each expression against every row in
+    the batch.  Unlike :class:`ProjectOp`, this operator handles arbitrary
+    expressions (arithmetic, CASE, CAST, function calls, etc.) via the
+    :class:`~uqa.sql.expr_evaluator.ExprEvaluator`.
+
+    *targets* is a list of ``(output_name, ast_node)`` pairs.
+    """
+
+    def __init__(
+        self,
+        child: PhysicalOperator,
+        targets: list[tuple[str, Any]],
+    ) -> None:
+        self._child = child
+        self._targets = targets
+
+    def open(self) -> None:
+        self._child.open()
+
+    def next(self) -> Batch | None:
+        from uqa.sql.expr_evaluator import ExprEvaluator
+
+        batch = self._child.next()
+        if batch is None:
+            return None
+
+        batch = batch.compact()
+        input_rows = batch.to_rows()
+
+        evaluator = ExprEvaluator()
+        output_rows: list[dict[str, Any]] = []
+        for row in input_rows:
+            out: dict[str, Any] = {}
+            for col_name, node in self._targets:
+                out[col_name] = evaluator.evaluate(node, row)
+            output_rows.append(out)
+
+        if not output_rows:
+            return None
+        return Batch.from_rows(output_rows)
 
     def close(self) -> None:
         self._child.close()

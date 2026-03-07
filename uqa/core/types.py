@@ -147,3 +147,26 @@ class Between(Predicate):
 
     def evaluate(self, value: Any) -> bool:
         return self.low <= value <= self.high
+
+
+@dataclass(frozen=True, slots=True)
+class IsNull(Predicate):
+    """Matches when value is None.
+
+    Note: FilterOperator must check ``is_null_predicate()`` and bypass the
+    ``value is not None`` guard for this predicate to work correctly.
+    """
+    def evaluate(self, value: Any) -> bool:
+        return value is None
+
+
+@dataclass(frozen=True, slots=True)
+class IsNotNull(Predicate):
+    """Matches when value is not None."""
+    def evaluate(self, value: Any) -> bool:
+        return value is not None
+
+
+def is_null_predicate(pred: Predicate) -> bool:
+    """Return True if *pred* needs to see None values (IsNull or IsNotNull)."""
+    return isinstance(pred, (IsNull, IsNotNull))

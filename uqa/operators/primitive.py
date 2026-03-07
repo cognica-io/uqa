@@ -126,10 +126,17 @@ class FilterOperator(Operator):
             source_entries = None
             candidate_ids = sorted(doc_store.doc_ids)
 
+        from uqa.core.types import is_null_predicate
+        null_aware = is_null_predicate(self.predicate)
+
         entries: list[PostingEntry] = []
         for doc_id in candidate_ids:
             value = doc_store.get_field(doc_id, self.field)
-            if value is not None and self.predicate.evaluate(value):
+            if null_aware:
+                matched = self.predicate.evaluate(value)
+            else:
+                matched = value is not None and self.predicate.evaluate(value)
+            if matched:
                 if source_entries is not None:
                     entries.append(source_entries[doc_id])
                 else:
