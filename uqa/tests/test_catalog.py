@@ -301,7 +301,7 @@ class TestCatalogColumnStats:
         cat.save_column_stats("t1", "name", 50, 0, "alice", "zoe", 100)
         loaded = cat.load_column_stats("t1")
         assert len(loaded) == 2
-        stats_dict = {col: (dc, nc, mn, mx, rc) for col, dc, nc, mn, mx, rc in loaded}
+        stats_dict = {row[0]: row[1:6] for row in loaded}
         assert stats_dict["age"] == (10, 2, 18, 65, 100)
         assert stats_dict["name"] == (50, 0, "alice", "zoe", 100)
         cat.close()
@@ -313,7 +313,7 @@ class TestCatalogColumnStats:
         cat.save_column_stats("t1", "x", 8, 1, 2, 15, 30)
         loaded = cat.load_column_stats("t1")
         assert len(loaded) == 1
-        assert loaded[0] == ("x", 8, 1, 2, 15, 30)
+        assert loaded[0][:6] == ("x", 8, 1, 2, 15, 30)
         cat.close()
 
     def test_delete(self, tmp_path):

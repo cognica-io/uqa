@@ -113,15 +113,20 @@ class Engine:
                 table._next_id = max_id + 1
 
             # Restore column statistics
-            for col_name, dc, nc, mn, mx, rc in catalog.load_column_stats(
-                name
-            ):
+            for row in catalog.load_column_stats(name):
+                col_name, dc, nc, mn, mx, rc = row[:6]
+                hist = row[6] if len(row) > 6 else []
+                mcv_v = row[7] if len(row) > 7 else []
+                mcv_f = row[8] if len(row) > 8 else []
                 table._stats[col_name] = ColumnStats(
                     distinct_count=dc,
                     null_count=nc,
                     min_value=mn,
                     max_value=mx,
                     row_count=rc,
+                    histogram=hist,
+                    mcv_values=mcv_v,
+                    mcv_frequencies=mcv_f,
                 )
 
             self._tables[name] = table

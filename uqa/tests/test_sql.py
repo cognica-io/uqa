@@ -477,13 +477,14 @@ class TestAnalyze:
         op = FilterOperator("field", Equals("nlp"))
         card_no_stats = est_no_stats.estimate(op, stats)
 
-        # With stats: selectivity = 1/3 (3 distinct values)
+        # With stats: MCV gives exact frequency for 'nlp' (3/5 = 0.6)
         est_with_stats = CardinalityEstimator(table._stats)
         card_with_stats = est_with_stats.estimate(op, stats)
 
         # Stats-based estimate should be different (more precise)
         assert card_no_stats == 5 * 0.5  # 2.5
-        assert abs(card_with_stats - 5 * (1.0 / 3.0)) < 0.01  # ~1.67
+        # MCV: nlp appears 3/5 = 0.6, so estimated cardinality = 5 * 0.6 = 3.0
+        assert abs(card_with_stats - 3.0) < 0.01
 
 
 # ==================================================================

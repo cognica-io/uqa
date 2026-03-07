@@ -733,6 +733,7 @@ class SQLCompiler:
                         table.name, col_name,
                         cs.distinct_count, cs.null_count,
                         cs.min_value, cs.max_value, cs.row_count,
+                        cs.histogram, cs.mcv_values, cs.mcv_frequencies,
                     )
         return SQLResult([], [])
 

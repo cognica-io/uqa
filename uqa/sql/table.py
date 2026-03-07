@@ -40,13 +40,30 @@ _AUTO_INCREMENT_TYPES = frozenset({"serial", "bigserial"})
 
 @dataclass(slots=True)
 class ColumnStats:
-    """Per-column statistics for cardinality estimation (Definition 6.2.3, Paper 1)."""
+    """Per-column statistics for cardinality estimation (Definition 6.2.3, Paper 1).
+
+    Attributes:
+        distinct_count: Number of distinct non-NULL values.
+        null_count: Number of NULL values.
+        min_value: Minimum value.
+        max_value: Maximum value.
+        row_count: Total number of rows.
+        histogram: Equi-depth histogram bucket boundaries (sorted).
+            For *b* buckets, this is a list of *b+1* boundary values.
+            Each bucket [boundary[i], boundary[i+1]) contains roughly
+            the same number of rows.
+        mcv_values: Most common values, sorted by descending frequency.
+        mcv_frequencies: Frequency (fraction) of each MCV value.
+    """
 
     distinct_count: int = 0
     null_count: int = 0
     min_value: Any = None
     max_value: Any = None
     row_count: int = 0
+    histogram: list[Any] = field(default_factory=list)
+    mcv_values: list[Any] = field(default_factory=list)
+    mcv_frequencies: list[float] = field(default_factory=list)
 
     @property
     def selectivity(self) -> float:
@@ -183,9 +200,14 @@ class Table:
     def row_count(self) -> int:
         return len(self.document_store.doc_ids)
 
+    _HISTOGRAM_BUCKETS = 100
+    _MCV_COUNT = 10
+
     def analyze(self) -> dict[str, ColumnStats]:
         """Collect per-column statistics by scanning all rows.
 
+        Computes distinct count, null count, min/max, equi-depth
+        histogram, and most-common-value (MCV) list for each column.
         Updates ``self._stats`` and returns it.  Called by ``ANALYZE table``.
         """
         doc_ids = sorted(self.document_store.doc_ids)
@@ -203,9 +225,16 @@ class Table:
                     values.append(val)
 
             distinct = len(set(values))
-            comparable = [v for v in values if isinstance(v, (int, float, str))]
+            comparable = [
+                v for v in values if isinstance(v, (int, float, str))
+            ]
             min_val = min(comparable) if comparable else None
             max_val = max(comparable) if comparable else None
+
+            histogram = self._build_histogram(comparable)
+            mcv_values, mcv_frequencies = self._build_mcv(
+                values, n
+            )
 
             stats[col_name] = ColumnStats(
                 distinct_count=distinct,
@@ -213,10 +242,75 @@ class Table:
                 min_value=min_val,
                 max_value=max_val,
                 row_count=n,
+                histogram=histogram,
+                mcv_values=mcv_values,
+                mcv_frequencies=mcv_frequencies,
             )
 
         self._stats = stats
         return stats
+
+    @classmethod
+    def _build_histogram(cls, values: list[Any]) -> list[Any]:
+        """Build equi-depth histogram boundaries from sorted values.
+
+        Returns a list of boundary values defining bucket edges.
+        For *b* buckets there are *b+1* boundaries.
+        """
+        if not values:
+            return []
+        try:
+            sorted_vals = sorted(values)
+        except TypeError:
+            return []
+
+        n = len(sorted_vals)
+        num_buckets = min(cls._HISTOGRAM_BUCKETS, n)
+        if num_buckets <= 1:
+            return [sorted_vals[0], sorted_vals[-1]]
+
+        boundaries: list[Any] = [sorted_vals[0]]
+        for i in range(1, num_buckets):
+            idx = (i * n) // num_buckets
+            val = sorted_vals[idx]
+            if val != boundaries[-1]:
+                boundaries.append(val)
+        if boundaries[-1] != sorted_vals[-1]:
+            boundaries.append(sorted_vals[-1])
+        return boundaries
+
+    @classmethod
+    def _build_mcv(
+        cls, values: list[Any], total: int
+    ) -> tuple[list[Any], list[float]]:
+        """Build most-common-value list with frequencies.
+
+        Returns (values, frequencies) where frequencies are fractions
+        of total row count.  Only values appearing more than 1/NDV
+        are included (i.e., above-average frequency).
+        """
+        if not values or total <= 0:
+            return [], []
+
+        from collections import Counter
+
+        counts = Counter(values)
+        ndv = len(counts)
+        if ndv <= 0:
+            return [], []
+
+        avg_freq = 1.0 / ndv
+        above_avg = [
+            (val, cnt)
+            for val, cnt in counts.most_common(cls._MCV_COUNT)
+            if cnt / total > avg_freq
+        ]
+        if not above_avg:
+            return [], []
+
+        mcv_values = [val for val, _ in above_avg]
+        mcv_frequencies = [cnt / total for _, cnt in above_avg]
+        return mcv_values, mcv_frequencies
 
     def get_column_stats(self, col_name: str) -> ColumnStats | None:
         """Return cached statistics for a column, or None if not analyzed."""

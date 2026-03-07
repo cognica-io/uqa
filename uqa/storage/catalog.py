@@ -83,13 +83,16 @@ CREATE TABLE IF NOT EXISTS _doc_lengths (
     PRIMARY KEY (table_name, doc_id)
 );
 CREATE TABLE IF NOT EXISTS _column_stats (
-    table_name     TEXT    NOT NULL,
-    column_name    TEXT    NOT NULL,
-    distinct_count INTEGER NOT NULL DEFAULT 0,
-    null_count     INTEGER NOT NULL DEFAULT 0,
-    min_value      TEXT,
-    max_value      TEXT,
-    row_count      INTEGER NOT NULL DEFAULT 0,
+    table_name      TEXT    NOT NULL,
+    column_name     TEXT    NOT NULL,
+    distinct_count  INTEGER NOT NULL DEFAULT 0,
+    null_count      INTEGER NOT NULL DEFAULT 0,
+    min_value       TEXT,
+    max_value       TEXT,
+    row_count       INTEGER NOT NULL DEFAULT 0,
+    histogram       TEXT    NOT NULL DEFAULT '[]',
+    mcv_values      TEXT    NOT NULL DEFAULT '[]',
+    mcv_frequencies TEXT    NOT NULL DEFAULT '[]',
     PRIMARY KEY (table_name, column_name)
 );
 CREATE TABLE IF NOT EXISTS _scoring_params (
@@ -113,9 +116,30 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         raw.execute("PRAGMA journal_mode=WAL")
         raw.execute("PRAGMA foreign_keys=ON")
         raw.executescript(self._SCHEMA_SQL)
+        self._migrate_column_stats(raw)
         raw.commit()
         self._conn = ManagedConnection(raw)
         self._in_transaction = False
+
+    @staticmethod
+    def _migrate_column_stats(conn: sqlite3.Connection) -> None:
+        """Add histogram/MCV columns to _column_stats if missing."""
+        cols = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(_column_stats)"
+            ).fetchall()
+        }
+        for col, default in [
+            ("histogram", "'[]'"),
+            ("mcv_values", "'[]'"),
+            ("mcv_frequencies", "'[]'"),
+        ]:
+            if col not in cols:
+                conn.execute(
+                    f"ALTER TABLE _column_stats "
+                    f"ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}"
+                )
 
     @property
     def conn(self) -> ManagedConnection:
@@ -431,11 +455,16 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         min_value: Any,
         max_value: Any,
         row_count: int,
+        histogram: list[Any] | None = None,
+        mcv_values: list[Any] | None = None,
+        mcv_frequencies: list[float] | None = None,
     ) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO _column_stats "
             "(table_name, column_name, distinct_count, null_count, "
-            "min_value, max_value, row_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "min_value, max_value, row_count, "
+            "histogram, mcv_values, mcv_frequencies) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 table_name,
                 column_name,
@@ -444,24 +473,35 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
                 json.dumps(min_value),
                 json.dumps(max_value),
                 row_count,
+                json.dumps(histogram or []),
+                json.dumps(mcv_values or []),
+                json.dumps(mcv_frequencies or []),
             ),
         )
         self._auto_commit()
 
     def load_column_stats(
         self, table_name: str
-    ) -> list[tuple[str, int, int, Any, Any, int]]:
-        """Return ``[(column_name, distinct, nulls, min, max, rows), ...]``."""
+    ) -> list[tuple[str, int, int, Any, Any, int, list, list, list]]:
+        """Return stats tuples including histogram and MCV data."""
         rows = self._conn.execute(
             "SELECT column_name, distinct_count, null_count, "
-            "min_value, max_value, row_count "
+            "min_value, max_value, row_count, "
+            "histogram, mcv_values, mcv_frequencies "
             "FROM _column_stats WHERE table_name = ?",
             (table_name,),
         ).fetchall()
-        return [
-            (col, dc, nc, json.loads(mn), json.loads(mx), rc)
-            for col, dc, nc, mn, mx, rc in rows
-        ]
+        result = []
+        for row in rows:
+            col, dc, nc, mn, mx, rc = row[:6]
+            hist = json.loads(row[6]) if len(row) > 6 else []
+            mcv_v = json.loads(row[7]) if len(row) > 7 else []
+            mcv_f = json.loads(row[8]) if len(row) > 8 else []
+            result.append(
+                (col, dc, nc, json.loads(mn), json.loads(mx), rc,
+                 hist, mcv_v, mcv_f)
+            )
+        return result
 
     def delete_column_stats(self, table_name: str) -> None:
         self._conn.execute(
