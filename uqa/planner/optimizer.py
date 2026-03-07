@@ -23,6 +23,7 @@ class QueryOptimizer:
     - Filter pushdown into intersections
     - Vector threshold merge (same query vector)
     - Intersect operand reordering by cardinality (cheapest first)
+    - Fusion signal reordering by cost (cheapest first)
     - Index scan substitution (replace full scans with index scans)
     """
 
@@ -42,6 +43,7 @@ class QueryOptimizer:
         op = self._push_filters_down(op)
         op = self._merge_vector_thresholds(op)
         op = self._reorder_intersect(op)
+        op = self._reorder_fusion_signals(op)
         op = self._apply_index_scan(op)
         return op
 
@@ -130,6 +132,73 @@ class QueryOptimizer:
         children.sort(key=lambda c: self.estimator.estimate(c, self.stats))
         return IntersectOperator(children)
 
+    def _reorder_fusion_signals(self, op: Operator) -> Operator:
+        """Reorder fusion signal inputs by ascending cost estimate.
+
+        For LogOddsFusionOperator and ProbBoolFusionOperator, evaluating
+        cheaper signals first enables earlier threshold checks and reduces
+        wasted computation on expensive signals whose contribution cannot
+        change the final ranking.
+        """
+        from uqa.operators.hybrid import (
+            LogOddsFusionOperator,
+            ProbBoolFusionOperator,
+        )
+
+        if isinstance(op, LogOddsFusionOperator):
+            signals = [self._reorder_fusion_signals(s) for s in op.signals]
+            signals.sort(
+                key=lambda s: self.estimator.estimate(s, self.stats)
+            )
+            return LogOddsFusionOperator(
+                signals, alpha=op.alpha, default_prob=op.default_prob
+            )
+
+        if isinstance(op, ProbBoolFusionOperator):
+            signals = [self._reorder_fusion_signals(s) for s in op.signals]
+            signals.sort(
+                key=lambda s: self.estimator.estimate(s, self.stats)
+            )
+            return ProbBoolFusionOperator(
+                signals, mode=op.mode, default_prob=op.default_prob
+            )
+
+        return self._recurse_fusion(op)
+
+    def _recurse_fusion(self, op: Operator) -> Operator:
+        """Recurse into composite operators for fusion signal reordering."""
+        from uqa.operators.boolean import (
+            IntersectOperator,
+            UnionOperator,
+            ComplementOperator,
+        )
+        from uqa.operators.primitive import FilterOperator
+        from uqa.operators.base import ComposedOperator
+
+        if isinstance(op, IntersectOperator):
+            return IntersectOperator(
+                [self._reorder_fusion_signals(o) for o in op.operands]
+            )
+        if isinstance(op, UnionOperator):
+            return UnionOperator(
+                [self._reorder_fusion_signals(o) for o in op.operands]
+            )
+        if isinstance(op, ComplementOperator):
+            return ComplementOperator(
+                self._reorder_fusion_signals(op.operand)
+            )
+        if isinstance(op, FilterOperator) and op.source is not None:
+            return FilterOperator(
+                op.field,
+                op.predicate,
+                self._reorder_fusion_signals(op.source),
+            )
+        if isinstance(op, ComposedOperator):
+            return ComposedOperator(
+                [self._reorder_fusion_signals(o) for o in op.operators]
+            )
+        return op
+
     def _apply_index_scan(self, op: Operator) -> Operator:
         """Replace full-scan FilterOperators with IndexScanOperators when profitable."""
         from uqa.operators.primitive import FilterOperator, IndexScanOperator
@@ -185,8 +254,13 @@ class QueryOptimizer:
     def _recurse_children(self, op: Operator) -> Operator:
         """Recursively optimize children of composite operators."""
         from uqa.operators.boolean import IntersectOperator, UnionOperator, ComplementOperator
-        from uqa.operators.primitive import FilterOperator
+        from uqa.operators.primitive import FilterOperator, ScoreOperator
         from uqa.operators.base import ComposedOperator
+        from uqa.operators.hybrid import (
+            LogOddsFusionOperator,
+            ProbBoolFusionOperator,
+            ProbNotOperator,
+        )
 
         match op:
             case IntersectOperator(operands=ops):
@@ -199,6 +273,25 @@ class QueryOptimizer:
                 return FilterOperator(f, p, self.optimize(s))
             case ComposedOperator(operators=ops):
                 return ComposedOperator([self.optimize(o) for o in ops])
+            case ScoreOperator(scorer=sc, source=src, query_terms=qt, field=f):
+                return ScoreOperator(sc, self.optimize(src), qt, f)
+            case LogOddsFusionOperator(signals=sigs):
+                return LogOddsFusionOperator(
+                    [self.optimize(s) for s in sigs],
+                    alpha=op.alpha,
+                    default_prob=op.default_prob,
+                )
+            case ProbBoolFusionOperator(signals=sigs):
+                return ProbBoolFusionOperator(
+                    [self.optimize(s) for s in sigs],
+                    mode=op.mode,
+                    default_prob=op.default_prob,
+                )
+            case ProbNotOperator(signal=sig):
+                return ProbNotOperator(
+                    self.optimize(sig),
+                    default_prob=op.default_prob,
+                )
             case _:
                 return op
 

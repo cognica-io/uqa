@@ -21,11 +21,20 @@ class CostModel:
         from uqa.operators.boolean import IntersectOperator, UnionOperator
         from uqa.operators.primitive import (
             FilterOperator,
+            IndexScanOperator,
             KNNOperator,
+            ScoreOperator,
             TermOperator,
             VectorSimilarityOperator,
         )
         from uqa.operators.aggregation import AggregateOperator, GroupByOperator
+        from uqa.operators.hybrid import (
+            HybridTextVectorOperator,
+            LogOddsFusionOperator,
+            ProbBoolFusionOperator,
+            ProbNotOperator,
+            SemanticFilterOperator,
+        )
         from uqa.graph.operators import (
             TraverseOperator,
             PatternMatchOperator,
@@ -40,8 +49,15 @@ class CostModel:
                 return stats.dimensions * math.log2(stats.total_docs + 1)
             case KNNOperator():
                 return stats.dimensions * math.log2(stats.total_docs + 1)
-            case FilterOperator():
-                return float(stats.total_docs)
+            case IndexScanOperator():
+                return op.cost_estimate(stats)
+            case ScoreOperator(source=src):
+                return self.estimate(src, stats) * 1.1
+            case FilterOperator(source=src):
+                base = float(stats.total_docs)
+                if src is not None:
+                    base = self.estimate(src, stats) + base * 0.1
+                return base
             case IntersectOperator(operands=ops):
                 child_costs = [self.estimate(o, stats) for o in ops]
                 return min(child_costs) if child_costs else 0.0
@@ -51,6 +67,22 @@ class CostModel:
                 return float(stats.total_docs)
             case GroupByOperator():
                 return float(stats.total_docs) * 1.5
+            case LogOddsFusionOperator(signals=sigs):
+                return sum(self.estimate(s, stats) for s in sigs)
+            case ProbBoolFusionOperator(signals=sigs):
+                return sum(self.estimate(s, stats) for s in sigs)
+            case ProbNotOperator(signal=sig):
+                return self.estimate(sig, stats) + float(stats.total_docs)
+            case HybridTextVectorOperator():
+                return (
+                    self.estimate(op.term_op, stats)
+                    + self.estimate(op.vector_op, stats)
+                )
+            case SemanticFilterOperator():
+                return (
+                    self.estimate(op.source, stats)
+                    + self.estimate(op.vector_op, stats)
+                )
             case TraverseOperator():
                 return float(stats.total_docs) * 0.1
             case PatternMatchOperator():

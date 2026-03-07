@@ -37,8 +37,21 @@ class CardinalityEstimator:
         from uqa.operators.primitive import (
             FilterOperator,
             KNNOperator,
+            ScoreOperator,
             TermOperator,
             VectorSimilarityOperator,
+        )
+        from uqa.operators.hybrid import (
+            HybridTextVectorOperator,
+            LogOddsFusionOperator,
+            ProbBoolFusionOperator,
+            ProbNotOperator,
+            SemanticFilterOperator,
+        )
+        from uqa.graph.operators import (
+            TraverseOperator,
+            PatternMatchOperator,
+            RegularPathQueryOperator,
         )
 
         n = float(stats.total_docs) if stats.total_docs > 0 else 1.0
@@ -53,6 +66,8 @@ class CardinalityEstimator:
                 return float(k)
             case FilterOperator(field=f, predicate=pred):
                 return n * self._filter_selectivity(f, pred, n)
+            case ScoreOperator(source=src):
+                return self.estimate(src, stats)
             case IntersectOperator(operands=ops):
                 child_cards = [self.estimate(o, stats) for o in ops]
                 result = child_cards[0] if child_cards else 0.0
@@ -66,7 +81,76 @@ class CardinalityEstimator:
                 inner_card = self.estimate(inner, stats)
                 return max(0.0, n - inner_card)
             case _:
-                return n
+                return self._estimate_cross_paradigm(op, stats, n)
+
+    def _estimate_cross_paradigm(
+        self, op: Operator, stats: IndexStats, n: float
+    ) -> float:
+        """Cardinality estimation for cross-paradigm operators.
+
+        Handles fusion, hybrid, graph, and other multi-paradigm operators
+        that combine signals from different query paradigms.
+        """
+        from uqa.operators.hybrid import (
+            HybridTextVectorOperator,
+            LogOddsFusionOperator,
+            ProbBoolFusionOperator,
+            ProbNotOperator,
+            SemanticFilterOperator,
+        )
+        from uqa.graph.operators import (
+            TraverseOperator,
+            PatternMatchOperator,
+            RegularPathQueryOperator,
+        )
+
+        # Fusion: union of all signal doc sets
+        if isinstance(op, LogOddsFusionOperator):
+            child_cards = [self.estimate(s, stats) for s in op.signals]
+            return min(n, sum(child_cards))
+
+        # Probabilistic AND -> product selectivity; OR -> union
+        if isinstance(op, ProbBoolFusionOperator):
+            child_cards = [self.estimate(s, stats) for s in op.signals]
+            if op.mode == "and":
+                result = child_cards[0] if child_cards else 0.0
+                for card in child_cards[1:]:
+                    result = (result * card) / n
+                return max(1.0, result)
+            return min(n, sum(child_cards))
+
+        # Probabilistic NOT -> complement
+        if isinstance(op, ProbNotOperator):
+            inner_card = self.estimate(op.signal, stats)
+            return max(0.0, n - inner_card)
+
+        # Hybrid text+vector -> intersection of text and vector
+        if isinstance(op, HybridTextVectorOperator):
+            text_card = self.estimate(op.term_op, stats)
+            vec_card = self.estimate(op.vector_op, stats)
+            return max(1.0, (text_card * vec_card) / n)
+
+        # SemanticFilter -> intersection of source and vector
+        if isinstance(op, SemanticFilterOperator):
+            src_card = self.estimate(op.source, stats)
+            vec_card = self.estimate(op.vector_op, stats)
+            return max(1.0, (src_card * vec_card) / n)
+
+        # Graph traversal: branching factor heuristic
+        if isinstance(op, TraverseOperator):
+            hops = op.max_hops
+            branching = min(n * 0.1, 10.0)
+            return min(n, branching ** hops)
+
+        # Pattern matching: worst-case quadratic
+        if isinstance(op, PatternMatchOperator):
+            return min(n, n ** 1.5)
+
+        # RPQ: similar to pattern matching
+        if isinstance(op, RegularPathQueryOperator):
+            return min(n, n ** 1.5)
+
+        return n
 
     def estimate_join(
         self,

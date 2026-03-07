@@ -40,7 +40,13 @@ class PlanExecutor:
 
     def _execute_with_stats(self, op: Operator) -> tuple[PostingList, ExecutionStats]:
         from uqa.operators.boolean import IntersectOperator, UnionOperator, ComplementOperator
+        from uqa.operators.primitive import FilterOperator, ScoreOperator
         from uqa.operators.base import ComposedOperator
+        from uqa.operators.hybrid import (
+            LogOddsFusionOperator,
+            ProbBoolFusionOperator,
+            ProbNotOperator,
+        )
 
         stats = ExecutionStats(operator_name=type(op).__name__)
         child_stats: list[ExecutionStats] = []
@@ -56,6 +62,19 @@ class PlanExecutor:
             for child in op.operators:
                 _, cs = self._execute_with_stats(child)
                 child_stats.append(cs)
+        elif isinstance(op, (LogOddsFusionOperator, ProbBoolFusionOperator)):
+            for sig in op.signals:
+                _, cs = self._execute_with_stats(sig)
+                child_stats.append(cs)
+        elif isinstance(op, ProbNotOperator):
+            _, cs = self._execute_with_stats(op.signal)
+            child_stats.append(cs)
+        elif isinstance(op, ScoreOperator):
+            _, cs = self._execute_with_stats(op.source)
+            child_stats.append(cs)
+        elif isinstance(op, FilterOperator) and op.source is not None:
+            _, cs = self._execute_with_stats(op.source)
+            child_stats.append(cs)
 
         start = time.perf_counter()
         result = op.execute(self.context)
@@ -85,6 +104,18 @@ class PlanExecutor:
             ScoreOperator,
         )
         from uqa.operators.base import ComposedOperator
+        from uqa.operators.hybrid import (
+            HybridTextVectorOperator,
+            LogOddsFusionOperator,
+            ProbBoolFusionOperator,
+            ProbNotOperator,
+            SemanticFilterOperator,
+        )
+        from uqa.graph.operators import (
+            TraverseOperator,
+            PatternMatchOperator,
+            RegularPathQueryOperator,
+        )
 
         prefix = "  " * indent
 
@@ -100,10 +131,50 @@ class PlanExecutor:
                     f"{prefix}IndexScanOp(field={f!r}, "
                     f"index={op.index.index_def.name!r})"
                 )
+            case ScoreOperator(query_terms=qt, field=f):
+                scorer_name = type(op.scorer).__name__
+                lines.append(
+                    f"{prefix}ScoreOp(scorer={scorer_name}, "
+                    f"terms={qt!r}, field={f!r})"
+                )
+                self._explain_recursive(op.source, lines, indent + 1)
             case FilterOperator(field=f):
                 lines.append(f"{prefix}FilterOp(field={f!r})")
                 if hasattr(op, "source") and op.source is not None:
                     self._explain_recursive(op.source, lines, indent + 1)
+            case LogOddsFusionOperator(signals=sigs):
+                lines.append(
+                    f"{prefix}LogOddsFusion(alpha={op.alpha}, "
+                    f"signals={len(sigs)})"
+                )
+                for sig in sigs:
+                    self._explain_recursive(sig, lines, indent + 1)
+            case ProbBoolFusionOperator(signals=sigs):
+                lines.append(
+                    f"{prefix}ProbBoolFusion(mode={op.mode!r}, "
+                    f"signals={len(sigs)})"
+                )
+                for sig in sigs:
+                    self._explain_recursive(sig, lines, indent + 1)
+            case ProbNotOperator(signal=sig):
+                lines.append(f"{prefix}ProbNot")
+                self._explain_recursive(sig, lines, indent + 1)
+            case TraverseOperator():
+                lines.append(
+                    f"{prefix}TraverseOp(start={op.start_vertex}, "
+                    f"label={op.label!r}, hops={op.max_hops})"
+                )
+            case PatternMatchOperator():
+                n_vp = len(op.pattern.vertex_patterns)
+                n_ep = len(op.pattern.edge_patterns)
+                lines.append(
+                    f"{prefix}PatternMatchOp(vertices={n_vp}, "
+                    f"edges={n_ep})"
+                )
+            case RegularPathQueryOperator():
+                lines.append(
+                    f"{prefix}RPQOp(start={op.start_vertex})"
+                )
             case IntersectOperator(operands=ops):
                 lines.append(f"{prefix}Intersect")
                 for child in ops:
