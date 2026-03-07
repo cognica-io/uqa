@@ -18,6 +18,13 @@ Supported statements:
       [GROUP BY col [HAVING ...]]
       [ORDER BY col [ASC|DESC]]
       [LIMIT n]
+  Transaction:
+    BEGIN                               -- start explicit transaction
+    COMMIT                              -- commit transaction
+    ROLLBACK                            -- rollback transaction
+    SAVEPOINT name                      -- create savepoint
+    RELEASE SAVEPOINT name              -- release savepoint
+    ROLLBACK TO SAVEPOINT name          -- rollback to savepoint
   Utility:
     EXPLAIN SELECT ...                  -- show optimized query plan
     ANALYZE [table]                     -- collect per-column statistics
@@ -60,6 +67,7 @@ from pglast.ast import (
     ExplainStmt,
     Float as PgFloat,
     FuncCall,
+    IndexStmt,
     InsertStmt,
     Integer as PgInteger,
     JoinExpr,
@@ -68,6 +76,7 @@ from pglast.ast import (
     SelectStmt,
     SortBy,
     String as PgString,
+    TransactionStmt,
     VacuumStmt,
 )
 from pglast.enums.parsenodes import A_Expr_Kind, ConstrType, SortByDir
@@ -177,11 +186,15 @@ class SQLCompiler:
         if isinstance(stmt, InsertStmt):
             return self._compile_insert(stmt)
         if isinstance(stmt, DropStmt):
-            return self._compile_drop_table(stmt)
+            return self._compile_drop(stmt)
+        if isinstance(stmt, IndexStmt):
+            return self._compile_create_index(stmt)
         if isinstance(stmt, ExplainStmt):
             return self._compile_explain(stmt)
         if isinstance(stmt, VacuumStmt):
             return self._compile_analyze(stmt)
+        if isinstance(stmt, TransactionStmt):
+            return self._compile_transaction(stmt)
         raise ValueError(f"Unsupported statement: {type(stmt).__name__}")
 
     # ==================================================================
@@ -198,11 +211,13 @@ class SQLCompiler:
             col = self._parse_column_def(elt)
             columns.append(col)
 
-        table = Table(table_name, columns)
+        catalog = self._engine._catalog
+        conn = catalog.conn if catalog is not None else None
+        table = Table(table_name, columns, conn=conn)
         self._engine._tables[table_name] = table
 
-        if self._engine._catalog is not None:
-            self._engine._catalog.save_table_schema(
+        if catalog is not None:
+            catalog.save_table_schema(
                 table_name,
                 [
                     {
@@ -251,15 +266,78 @@ class SQLCompiler:
             default=default,
         )
 
+    def _compile_drop(self, stmt: DropStmt) -> SQLResult:
+        """Dispatch DROP TABLE / DROP INDEX based on removeType."""
+        # removeType 41 = OBJECT_TABLE, 20 = OBJECT_INDEX
+        if stmt.removeType == 20:
+            return self._compile_drop_index(stmt)
+        return self._compile_drop_table(stmt)
+
     def _compile_drop_table(self, stmt: DropStmt) -> SQLResult:
         for obj in stmt.objects:
             table_name = obj[-1].sval
             if table_name in self._engine._tables:
+                index_manager = getattr(self._engine, "_index_manager", None)
+                if index_manager is not None:
+                    index_manager.drop_indexes_for_table(table_name)
                 del self._engine._tables[table_name]
                 if self._engine._catalog is not None:
                     self._engine._catalog.drop_table_schema(table_name)
             elif not stmt.missing_ok:
                 raise ValueError(f"Table '{table_name}' does not exist")
+        return SQLResult([], [])
+
+    def _compile_drop_index(self, stmt: DropStmt) -> SQLResult:
+        index_manager = getattr(self._engine, "_index_manager", None)
+        if index_manager is None:
+            raise ValueError(
+                "Index operations require a persistent engine (db_path)"
+            )
+        for obj in stmt.objects:
+            index_name = obj[-1].sval
+            if stmt.missing_ok:
+                index_manager.drop_index_if_exists(index_name)
+            else:
+                index_manager.drop_index(index_name)
+        return SQLResult([], [])
+
+    # ==================================================================
+    # DDL: CREATE INDEX / DROP INDEX
+    # ==================================================================
+
+    def _compile_create_index(self, stmt: IndexStmt) -> SQLResult:
+        from uqa.storage.index_types import IndexDef, IndexType
+
+        index_manager = getattr(self._engine, "_index_manager", None)
+        if index_manager is None:
+            raise ValueError(
+                "Index operations require a persistent engine (db_path)"
+            )
+
+        index_name = stmt.idxname
+        table_name = stmt.relation.relname
+
+        table = self._engine._tables.get(table_name)
+        if table is None:
+            raise ValueError(f"Table '{table_name}' does not exist")
+
+        columns: list[str] = []
+        for param in stmt.indexParams:
+            col_name = param.name
+            if col_name not in table.columns:
+                raise ValueError(
+                    f"Column '{col_name}' does not exist "
+                    f"in table '{table_name}'"
+                )
+            columns.append(col_name)
+
+        index_def = IndexDef(
+            name=index_name,
+            index_type=IndexType.BTREE,
+            table_name=table_name,
+            columns=tuple(columns),
+        )
+        index_manager.create_index(index_def)
         return SQLResult([], [])
 
     # ==================================================================
@@ -283,44 +361,73 @@ class SQLCompiler:
         if values_stmt is None or values_stmt.valuesLists is None:
             raise ValueError("INSERT requires VALUES clause")
 
-        catalog = self._engine._catalog
-        if catalog is not None:
-            catalog.begin()
-
+        # SQLite-backed stores auto-persist on each put/add_document,
+        # so no separate catalog persistence is needed.
         inserted = 0
-        try:
-            for row_values in values_stmt.valuesLists:
-                if len(row_values) != len(col_names):
-                    raise ValueError(
-                        f"VALUES has {len(row_values)} columns "
-                        f"but {len(col_names)} were specified"
-                    )
-                row: dict[str, Any] = {}
-                for i, val_node in enumerate(row_values):
-                    row[col_names[i]] = self._extract_const_value(val_node)
-                doc_id, indexed = table.insert(row)
-                inserted += 1
-
-                if catalog is not None:
-                    stored = table.document_store.get(doc_id)
-                    if stored is not None:
-                        catalog.save_document(
-                            table_name, doc_id, stored
-                        )
-                    if indexed is not None:
-                        catalog.save_postings(
-                            table_name, doc_id,
-                            indexed.field_lengths, indexed.postings,
-                        )
-        except Exception:
-            if catalog is not None:
-                catalog.rollback()
-            raise
-
-        if catalog is not None:
-            catalog.commit()
+        for row_values in values_stmt.valuesLists:
+            if len(row_values) != len(col_names):
+                raise ValueError(
+                    f"VALUES has {len(row_values)} columns "
+                    f"but {len(col_names)} were specified"
+                )
+            row: dict[str, Any] = {}
+            for i, val_node in enumerate(row_values):
+                row[col_names[i]] = self._extract_const_value(val_node)
+            table.insert(row)
+            inserted += 1
 
         return SQLResult(["inserted"], [{"inserted": inserted}])
+
+    # ==================================================================
+    # Transaction: BEGIN / COMMIT / ROLLBACK / SAVEPOINT
+    # ==================================================================
+
+    def _compile_transaction(self, stmt: TransactionStmt) -> SQLResult:
+        kind = stmt.kind.value
+        # 0 = BEGIN, 2 = COMMIT, 3 = ROLLBACK
+        # 4 = SAVEPOINT, 5 = RELEASE SAVEPOINT, 6 = ROLLBACK TO SAVEPOINT
+        if kind == 0:
+            self._engine.begin()
+            return SQLResult([], [])
+        if kind == 2:
+            txn = self._engine._transaction
+            if txn is None or not txn.active:
+                raise ValueError("No active transaction to commit")
+            txn.commit()
+            self._engine._transaction = None
+            return SQLResult([], [])
+        if kind == 3:
+            txn = self._engine._transaction
+            if txn is None or not txn.active:
+                raise ValueError("No active transaction to rollback")
+            txn.rollback()
+            self._engine._transaction = None
+            return SQLResult([], [])
+        if kind == 4:
+            txn = self._engine._transaction
+            if txn is None or not txn.active:
+                raise ValueError(
+                    "SAVEPOINT requires an active transaction"
+                )
+            txn.savepoint(stmt.savepoint_name)
+            return SQLResult([], [])
+        if kind == 5:
+            txn = self._engine._transaction
+            if txn is None or not txn.active:
+                raise ValueError(
+                    "RELEASE SAVEPOINT requires an active transaction"
+                )
+            txn.release_savepoint(stmt.savepoint_name)
+            return SQLResult([], [])
+        if kind == 6:
+            txn = self._engine._transaction
+            if txn is None or not txn.active:
+                raise ValueError(
+                    "ROLLBACK TO SAVEPOINT requires an active transaction"
+                )
+            txn.rollback_to(stmt.savepoint_name)
+            return SQLResult([], [])
+        raise ValueError(f"Unsupported transaction statement kind: {kind}")
 
     # ==================================================================
     # EXPLAIN / ANALYZE
@@ -370,7 +477,13 @@ class SQLCompiler:
 
         stats = ctx.inverted_index.stats
         column_stats = table._stats if table is not None else None
-        optimizer = QueryOptimizer(stats, column_stats)
+        table_name = table.name if table is not None else None
+        optimizer = QueryOptimizer(
+            stats,
+            column_stats,
+            index_manager=ctx.index_manager,
+            table_name=table_name,
+        )
         return optimizer.optimize(op)
 
     def _execute_plan(self, op: Any, ctx: ExecutionContext) -> PostingList:
@@ -493,6 +606,8 @@ class SQLCompiler:
         """Build an ExecutionContext scoped to a specific table."""
         from uqa.operators.base import ExecutionContext
 
+        index_manager = getattr(self._engine, "_index_manager", None)
+
         if table is None:
             return self._engine._build_context()
 
@@ -502,6 +617,7 @@ class SQLCompiler:
             vector_index=self._engine.vector_index,
             graph_store=self._engine.graph_store,
             block_max_index=self._engine.block_max_index,
+            index_manager=index_manager,
         )
 
     def _compile_from_function(

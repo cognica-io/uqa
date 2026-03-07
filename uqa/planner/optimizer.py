@@ -13,6 +13,7 @@ from uqa.planner.cardinality import CardinalityEstimator
 if TYPE_CHECKING:
     from uqa.core.types import IndexStats
     from uqa.operators.base import Operator
+    from uqa.storage.index_manager import IndexManager
 
 
 class QueryOptimizer:
@@ -22,18 +23,26 @@ class QueryOptimizer:
     - Filter pushdown into intersections
     - Vector threshold merge (same query vector)
     - Intersect operand reordering by cardinality (cheapest first)
+    - Index scan substitution (replace full scans with index scans)
     """
 
     def __init__(
-        self, stats: IndexStats, column_stats: dict | None = None
+        self,
+        stats: IndexStats,
+        column_stats: dict | None = None,
+        index_manager: IndexManager | None = None,
+        table_name: str | None = None,
     ):
         self.stats = stats
         self.estimator = CardinalityEstimator(column_stats)
+        self._index_manager = index_manager
+        self._table_name = table_name
 
     def optimize(self, op: Operator) -> Operator:
         op = self._push_filters_down(op)
         op = self._merge_vector_thresholds(op)
         op = self._reorder_intersect(op)
+        op = self._apply_index_scan(op)
         return op
 
     def _push_filters_down(self, op: Operator) -> Operator:
@@ -120,6 +129,58 @@ class QueryOptimizer:
         children = [self._recurse_children(c) for c in op.operands]
         children.sort(key=lambda c: self.estimator.estimate(c, self.stats))
         return IntersectOperator(children)
+
+    def _apply_index_scan(self, op: Operator) -> Operator:
+        """Replace full-scan FilterOperators with IndexScanOperators when profitable."""
+        from uqa.operators.primitive import FilterOperator, IndexScanOperator
+
+        if self._index_manager is None or self._table_name is None:
+            return op
+
+        if isinstance(op, FilterOperator) and op.source is None:
+            idx = self._index_manager.find_covering_index(
+                self._table_name, op.field, op.predicate
+            )
+            if idx is not None:
+                scan_cost = idx.scan_cost(op.predicate)
+                full_scan_cost = float(self.stats.total_docs)
+                if scan_cost < full_scan_cost:
+                    return IndexScanOperator(idx, op.field, op.predicate)
+
+        if isinstance(op, FilterOperator) and op.source is not None:
+            op = FilterOperator(
+                op.field,
+                op.predicate,
+                self._apply_index_scan(op.source),
+            )
+            return op
+
+        return self._recurse_index_scan(op)
+
+    def _recurse_index_scan(self, op: Operator) -> Operator:
+        """Recurse into composite operators for index scan rewriting."""
+        from uqa.operators.boolean import (
+            ComplementOperator,
+            IntersectOperator,
+            UnionOperator,
+        )
+        from uqa.operators.base import ComposedOperator
+
+        if isinstance(op, IntersectOperator):
+            return IntersectOperator(
+                [self._apply_index_scan(o) for o in op.operands]
+            )
+        if isinstance(op, UnionOperator):
+            return UnionOperator(
+                [self._apply_index_scan(o) for o in op.operands]
+            )
+        if isinstance(op, ComplementOperator):
+            return ComplementOperator(self._apply_index_scan(op.operand))
+        if isinstance(op, ComposedOperator):
+            return ComposedOperator(
+                [self._apply_index_scan(o) for o in op.operators]
+            )
+        return op
 
     def _recurse_children(self, op: Operator) -> Operator:
         """Recursively optimize children of composite operators."""

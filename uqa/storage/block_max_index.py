@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from typing import TYPE_CHECKING
 
 from uqa.core.posting_list import PostingList
@@ -64,3 +65,55 @@ class BlockMaxIndex:
         if maxes is None:
             return 0
         return len(maxes)
+
+    # -- SQLite persistence --------------------------------------------
+
+    def save_to_sqlite(self, conn: sqlite3.Connection) -> None:
+        """Persist all block-max scores to a ``_global_blockmax`` table."""
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS _global_blockmax ("
+            "    field     TEXT    NOT NULL,"
+            "    term      TEXT    NOT NULL,"
+            "    block_idx INTEGER NOT NULL,"
+            "    max_score REAL    NOT NULL,"
+            "    PRIMARY KEY (field, term, block_idx)"
+            ")"
+        )
+        conn.execute("DELETE FROM _global_blockmax")
+        for (field, term), maxes in self._block_maxes.items():
+            for block_idx, max_score in enumerate(maxes):
+                conn.execute(
+                    "INSERT INTO _global_blockmax "
+                    "(field, term, block_idx, max_score) "
+                    "VALUES (?, ?, ?, ?)",
+                    (field, term, block_idx, max_score),
+                )
+        conn.commit()
+
+    def load_from_sqlite(self, conn: sqlite3.Connection) -> None:
+        """Load block-max scores from the ``_global_blockmax`` table."""
+        # Check if table exists.
+        row = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='_global_blockmax'"
+        ).fetchone()
+        if row is None:
+            return
+
+        rows = conn.execute(
+            "SELECT field, term, block_idx, max_score "
+            "FROM _global_blockmax ORDER BY field, term, block_idx"
+        ).fetchall()
+
+        current_key: tuple[str, str] | None = None
+        scores: list[float] = []
+        for field, term, block_idx, max_score in rows:
+            key = (field, term)
+            if key != current_key:
+                if current_key is not None:
+                    self._block_maxes[current_key] = scores
+                current_key = key
+                scores = []
+            scores.append(max_score)
+        if current_key is not None:
+            self._block_maxes[current_key] = scores

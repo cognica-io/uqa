@@ -31,6 +31,8 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from uqa.storage.managed_connection import ManagedConnection
+
 
 class Catalog:
     """SQLite-backed system catalog for persistent storage."""
@@ -94,38 +96,58 @@ CREATE TABLE IF NOT EXISTS _scoring_params (
     name        TEXT PRIMARY KEY,
     params_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS _catalog_indexes (
+    name       TEXT PRIMARY KEY,
+    index_type TEXT NOT NULL,
+    table_name TEXT NOT NULL,
+    columns    TEXT NOT NULL,
+    parameters TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS _graph_edges_out ON _graph_edges (source_id, label);
+CREATE INDEX IF NOT EXISTS _graph_edges_in ON _graph_edges (target_id, label);
+CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
 """
 
     def __init__(self, db_path: str) -> None:
-        self._conn = sqlite3.connect(db_path)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        self._conn.executescript(self._SCHEMA_SQL)
-        self._conn.commit()
+        raw = sqlite3.connect(db_path)
+        raw.execute("PRAGMA journal_mode=WAL")
+        raw.execute("PRAGMA foreign_keys=ON")
+        raw.executescript(self._SCHEMA_SQL)
+        raw.commit()
+        self._conn = ManagedConnection(raw)
         self._in_transaction = False
+
+    @property
+    def conn(self) -> ManagedConnection:
+        """The managed connection (shared with per-table stores)."""
+        return self._conn
 
     # -- Transaction management ----------------------------------------
 
     def begin(self) -> None:
-        """Begin an explicit transaction.
+        """Begin an internal batch transaction.
 
         While active, individual writes do not auto-commit.
-        Call ``commit()`` or ``rollback()`` to end the transaction.
+        Call ``commit()`` or ``rollback()`` to end the batch.
+
+        Note: this is for internal batching (e.g. ``add_document``).
+        User-level transactions use :class:`Transaction` via
+        ``Engine.begin()``.
         """
         self._in_transaction = True
 
     def commit(self) -> None:
-        """Commit the current transaction."""
+        """Commit the current internal batch."""
         self._conn.commit()
         self._in_transaction = False
 
     def rollback(self) -> None:
-        """Rollback the current transaction."""
+        """Rollback the current internal batch."""
         self._conn.rollback()
         self._in_transaction = False
 
     def _auto_commit(self) -> None:
-        """Commit unless inside an explicit transaction."""
+        """Commit unless inside an internal batch."""
         if not self._in_transaction:
             self._conn.commit()
 
@@ -161,10 +183,36 @@ CREATE TABLE IF NOT EXISTS _scoring_params (
         self._auto_commit()
 
     def drop_table_schema(self, name: str) -> None:
-        """Remove a table schema and all associated data."""
+        """Remove a table schema and all associated data.
+
+        Drops both per-table SQLite tables (new format) and rows in
+        shared catalog tables (old format) for backward compatibility.
+        """
         self._conn.execute(
             "DELETE FROM _catalog_tables WHERE name = ?", (name,)
         )
+
+        # -- Drop per-table SQLite tables (new format) ---
+        self._conn.execute(f'DROP TABLE IF EXISTS "_data_{name}"')
+        self._conn.execute(f'DROP TABLE IF EXISTS "_field_stats_{name}"')
+        self._conn.execute(f'DROP TABLE IF EXISTS "_doc_lengths_{name}"')
+
+        # Drop all per-field inverted, skip, and block-max tables
+        for prefix in (f"_inverted_{name}_", f"_skip_{name}_", f"_blockmax_{name}_"):
+            rows = self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE ?",
+                (prefix + "%",),
+            ).fetchall()
+            for (tbl_name,) in rows:
+                self._conn.execute(f'DROP TABLE IF EXISTS "{tbl_name}"')
+
+        # -- Drop index catalog entries for this table ---
+        self._conn.execute(
+            "DELETE FROM _catalog_indexes WHERE table_name = ?", (name,)
+        )
+
+        # -- Clean shared catalog tables (old format / backward compat) ---
         self._conn.execute(
             "DELETE FROM _documents WHERE table_name = ?", (name,)
         )
@@ -452,6 +500,59 @@ CREATE TABLE IF NOT EXISTS _scoring_params (
             "DELETE FROM _scoring_params WHERE name = ?", (name,)
         )
         self._auto_commit()
+
+    # -- Indexes -------------------------------------------------------
+
+    def save_index(self, index_def: Any) -> None:
+        """Persist an index definition to the catalog."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO _catalog_indexes "
+            "(name, index_type, table_name, columns, parameters) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                index_def.name,
+                index_def.index_type.value,
+                index_def.table_name,
+                json.dumps(list(index_def.columns)),
+                json.dumps(index_def.parameters),
+            ),
+        )
+        self._auto_commit()
+
+    def drop_index(self, name: str) -> None:
+        """Remove an index definition from the catalog."""
+        self._conn.execute(
+            "DELETE FROM _catalog_indexes WHERE name = ?", (name,)
+        )
+        self._auto_commit()
+
+    def load_indexes(self) -> list[tuple[str, str, str, list[str], dict]]:
+        """Load all index definitions.
+
+        Returns ``[(name, index_type, table_name, columns, parameters), ...]``.
+        """
+        rows = self._conn.execute(
+            "SELECT name, index_type, table_name, columns, parameters "
+            "FROM _catalog_indexes"
+        ).fetchall()
+        return [
+            (name, idx_type, tbl, json.loads(cols), json.loads(params))
+            for name, idx_type, tbl, cols, params in rows
+        ]
+
+    def load_indexes_for_table(
+        self, table_name: str
+    ) -> list[tuple[str, str, str, list[str], dict]]:
+        """Load index definitions for a specific table."""
+        rows = self._conn.execute(
+            "SELECT name, index_type, table_name, columns, parameters "
+            "FROM _catalog_indexes WHERE table_name = ?",
+            (table_name,),
+        ).fetchall()
+        return [
+            (name, idx_type, tbl, json.loads(cols), json.loads(params))
+            for name, idx_type, tbl, cols, params in rows
+        ]
 
     # -- Lifecycle -----------------------------------------------------
 

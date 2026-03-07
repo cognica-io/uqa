@@ -16,6 +16,8 @@ from uqa.operators.base import ExecutionContext, Operator
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
+    from uqa.storage.index_abc import Index
+
 
 class TermOperator(Operator):
     """Definition 3.1.1: T(term) -> PostingList.
@@ -229,3 +231,20 @@ class ScoreOperator(Operator):
                 ),
             ))
         return PostingList(entries)
+
+
+class IndexScanOperator(Operator):
+    """Index-backed scan: uses a B-tree (or other) index instead of a full table scan."""
+
+    def __init__(
+        self, index: Index, field: str, predicate: Predicate
+    ) -> None:
+        self.index = index
+        self.field = field
+        self.predicate = predicate
+
+    def execute(self, context: ExecutionContext) -> PostingList:
+        return self.index.scan(self.predicate)
+
+    def cost_estimate(self, stats: IndexStats) -> float:
+        return self.index.scan_cost(self.predicate)

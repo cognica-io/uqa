@@ -13,12 +13,15 @@ Statistics are refreshed via ``ANALYZE table_name``.
 
 from __future__ import annotations
 
+import sqlite3
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
 from uqa.storage.document_store import DocumentStore
 from uqa.storage.inverted_index import IndexedTerms, InvertedIndex
+from uqa.storage.sqlite_document_store import SQLiteDocumentStore
+from uqa.storage.sqlite_inverted_index import SQLiteInvertedIndex
 
 
 _SQL_TYPE_MAP: dict[str, type] = {
@@ -71,9 +74,18 @@ class Table:
 
     Each table owns its own DocumentStore and InvertedIndex so that
     ``FROM table_name`` resolves to isolated storage.
+
+    When *conn* is provided the table uses SQLite-backed stores that
+    persist reads/writes directly to the database.  When *conn* is
+    ``None`` (the default) the table uses in-memory stores.
     """
 
-    def __init__(self, name: str, columns: list[ColumnDef]) -> None:
+    def __init__(
+        self,
+        name: str,
+        columns: list[ColumnDef],
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
         self.name = name
         self.columns: OrderedDict[str, ColumnDef] = OrderedDict(
             (col.name, col) for col in columns
@@ -81,8 +93,19 @@ class Table:
         self.primary_key: str | None = next(
             (col.name for col in columns if col.primary_key), None
         )
-        self.document_store = DocumentStore()
-        self.inverted_index = InvertedIndex()
+
+        if conn is not None:
+            col_pairs = [(col.name, col.type_name) for col in columns]
+            self.document_store: DocumentStore | SQLiteDocumentStore = (
+                SQLiteDocumentStore(conn, name, col_pairs)
+            )
+            self.inverted_index: InvertedIndex | SQLiteInvertedIndex = (
+                SQLiteInvertedIndex(conn, name)
+            )
+        else:
+            self.document_store = DocumentStore()
+            self.inverted_index = InvertedIndex()
+
         self._next_id = 1
         self._stats: dict[str, ColumnStats] = {}
 

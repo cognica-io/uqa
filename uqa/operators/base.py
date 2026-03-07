@@ -16,6 +16,7 @@ from uqa.core.types import IndexStats
 if TYPE_CHECKING:
     from uqa.storage.block_max_index import BlockMaxIndex
     from uqa.storage.document_store import DocumentStore
+    from uqa.storage.index_manager import IndexManager
     from uqa.storage.inverted_index import InvertedIndex
     from uqa.storage.vector_index import HNSWIndex
 
@@ -29,6 +30,7 @@ class ExecutionContext:
     vector_index: HNSWIndex | None = None
     graph_store: Any = None
     block_max_index: BlockMaxIndex | None = None
+    index_manager: IndexManager | None = None
 
 
 class Operator(ABC):

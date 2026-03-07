@@ -81,6 +81,7 @@ class PlanExecutor:
             KNNOperator,
             FilterOperator,
             FacetOperator,
+            IndexScanOperator,
             ScoreOperator,
         )
         from uqa.operators.base import ComposedOperator
@@ -94,6 +95,11 @@ class PlanExecutor:
                 lines.append(f"{prefix}VectorSimOp(threshold={th}, field={f!r})")
             case KNNOperator(k=k, field=f):
                 lines.append(f"{prefix}KNNOp(k={k}, field={f!r})")
+            case IndexScanOperator(field=f, predicate=p):
+                lines.append(
+                    f"{prefix}IndexScanOp(field={f!r}, "
+                    f"index={op.index.index_def.name!r})"
+                )
             case FilterOperator(field=f):
                 lines.append(f"{prefix}FilterOp(field={f!r})")
                 if hasattr(op, "source") and op.source is not None:
