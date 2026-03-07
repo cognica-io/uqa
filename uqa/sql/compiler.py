@@ -18,6 +18,7 @@ Supported statements:
     SELECT [DISTINCT] [* | col, ... | expr, ... | aggregates] FROM table
       [WHERE comparisons / boolean / IS [NOT] NULL /
              LIKE / NOT LIKE / ILIKE / NOT ILIKE /
+             IN (SELECT ...) / EXISTS (SELECT ...) /
              text_match() / ...]
       [GROUP BY col [HAVING ...]]
       [ORDER BY col [ASC|DESC]]
@@ -84,13 +85,14 @@ from pglast.ast import (
     SelectStmt,
     SortBy,
     String as PgString,
+    SubLink,
     TransactionStmt,
     TypeCast,
     UpdateStmt,
     VacuumStmt,
 )
 from pglast.enums.parsenodes import A_Expr_Kind, ConstrType, SortByDir
-from pglast.enums.primnodes import BoolExprType, NullTestType
+from pglast.enums.primnodes import BoolExprType, NullTestType, SubLinkType
 from pglast.enums.nodes import JoinType
 
 from uqa.core.posting_list import PostingList
@@ -427,7 +429,7 @@ class SQLCompiler:
             set_targets.append((col_name, target.val))
 
         from uqa.sql.expr_evaluator import ExprEvaluator
-        evaluator = ExprEvaluator()
+        evaluator = ExprEvaluator(subquery_executor=self._compile_select)
 
         updated = 0
         for doc_id in matching_ids:
@@ -706,7 +708,10 @@ class SQLCompiler:
             if not is_star:
                 if self._has_computed_expressions(stmt.targetList):
                     targets = self._build_expr_targets(stmt.targetList)
-                    physical = ExprProjectOp(physical, targets)
+                    physical = ExprProjectOp(
+                        physical, targets,
+                        subquery_executor=self._compile_select,
+                    )
                     expected_cols = [name for name, _ in targets]
                 else:
                     proj_cols, proj_aliases = (
@@ -828,7 +833,7 @@ class SQLCompiler:
                     continue
                 return True
             if isinstance(val, (A_Expr, CaseExpr, TypeCast, CoalesceExpr,
-                                NullTest)):
+                                NullTest, SubLink)):
                 return True
         return False
 
@@ -874,6 +879,9 @@ class SQLCompiler:
             if isinstance(val.arg, ColumnRef):
                 return self._extract_column_name(val.arg)
             return val.typeName.names[-1].sval.lower()
+        if isinstance(val, SubLink):
+            # Scalar subquery without alias
+            return "?column?"
         return "?column?"
 
     def _resolve_having_predicate(
@@ -1112,6 +1120,8 @@ class SQLCompiler:
             return self._compile_func_in_where(node, ctx)
         if isinstance(node, NullTest):
             return self._compile_null_test(node)
+        if isinstance(node, SubLink):
+            return self._compile_sublink_in_where(node, ctx)
         raise ValueError(f"Unsupported WHERE node: {type(node).__name__}")
 
     def _compile_bool_expr(self, node: BoolExpr, ctx: ExecutionContext) -> Any:
@@ -1170,7 +1180,9 @@ class SQLCompiler:
                     _op_to_predicate(node.name[0].sval, value),
                 )
             # Expression-based comparison (e.g., price * 2 > 100)
-            return _ExprFilterOperator(node)
+            return _ExprFilterOperator(
+                node, subquery_executor=self._compile_select
+            )
 
         if kind == A_Expr_Kind.AEXPR_IN:
             field_name = self._extract_column_name(node.lexpr)
@@ -1219,6 +1231,46 @@ class SQLCompiler:
         if NullTestType(node.nulltesttype) == NullTestType.IS_NULL:
             return FilterOperator(field_name, IsNull())
         return FilterOperator(field_name, IsNotNull())
+
+    def _compile_sublink_in_where(
+        self, node: SubLink, ctx: ExecutionContext
+    ) -> Any:
+        """Compile a SubLink (subquery) in WHERE position.
+
+        Supports:
+        - ANY_SUBLINK: ``WHERE col IN (SELECT ...)``
+        - EXISTS_SUBLINK: ``WHERE EXISTS (SELECT ...)``
+        """
+        from uqa.operators.primitive import FilterOperator
+
+        link_type = SubLinkType(node.subLinkType)
+
+        if link_type == SubLinkType.ANY_SUBLINK:
+            # IN (SELECT ...) -- execute subquery, collect values, use InSet
+            inner_result = self._compile_select(node.subselect)
+            if not inner_result.columns:
+                raise ValueError("Subquery must return at least one column")
+            sub_col = inner_result.columns[0]
+            values = frozenset(
+                row[sub_col] for row in inner_result.rows
+                if row.get(sub_col) is not None
+            )
+            field_name = self._extract_column_name(node.testexpr)
+            return FilterOperator(field_name, InSet(values))
+
+        if link_type == SubLinkType.EXISTS_SUBLINK:
+            # EXISTS (SELECT ...) -- execute subquery
+            inner_result = self._compile_select(node.subselect)
+            if inner_result.rows:
+                return _ScanOperator()
+            # No rows => empty result -- return an operator that yields nothing
+            from uqa.operators.boolean import ComplementOperator
+            scan = _ScanOperator()
+            return ComplementOperator(scan)
+
+        raise ValueError(
+            f"Unsupported subquery type: {link_type.name}"
+        )
 
     def _compile_func_in_where(self, node: FuncCall, ctx: ExecutionContext) -> Any:
         name = node.funcname[-1].sval.lower()
@@ -1513,13 +1565,18 @@ class _ExprFilterOperator:
     ``FilterOperator(field, predicate)`` -- e.g. ``WHERE price * 2 > 100``.
     """
 
-    def __init__(self, expr_node: Any) -> None:
+    def __init__(
+        self, expr_node: Any, subquery_executor: Any = None
+    ) -> None:
         self.expr_node = expr_node
+        self._subquery_executor = subquery_executor
 
     def execute(self, context: Any) -> PostingList:
         from uqa.sql.expr_evaluator import ExprEvaluator
 
-        evaluator = ExprEvaluator()
+        evaluator = ExprEvaluator(
+            subquery_executor=self._subquery_executor
+        )
         doc_store = context.document_store
         if doc_store is None:
             return PostingList()

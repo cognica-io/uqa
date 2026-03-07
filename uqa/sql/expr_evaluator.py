@@ -33,10 +33,11 @@ from pglast.ast import (
     Integer as PgInteger,
     NullTest,
     String as PgString,
+    SubLink,
     TypeCast,
 )
 from pglast.enums.parsenodes import A_Expr_Kind
-from pglast.enums.primnodes import BoolExprType, NullTestType
+from pglast.enums.primnodes import BoolExprType, NullTestType, SubLinkType
 
 
 class ExprEvaluator:
@@ -45,7 +46,16 @@ class ExprEvaluator:
     Each ``evaluate()`` call takes an AST node and a ``dict`` row and
     returns the computed scalar value.  The evaluator is stateless and
     reusable across rows.
+
+    *subquery_executor* is an optional callback ``(SelectStmt) -> SQLResult``
+    used to evaluate scalar subqueries (``EXPR_SUBLINK``) and
+    ``IN`` subqueries (``ANY_SUBLINK``).
     """
+
+    def __init__(
+        self, subquery_executor: Any = None
+    ) -> None:
+        self._subquery_executor = subquery_executor
 
     def evaluate(self, node: Any, row: dict[str, Any]) -> Any:
         """Evaluate *node* against *row* and return the result."""
@@ -75,6 +85,9 @@ class ExprEvaluator:
 
         if isinstance(node, CoalesceExpr):
             return self._eval_coalesce(node, row)
+
+        if isinstance(node, SubLink):
+            return self._eval_sublink(node, row)
 
         raise ValueError(f"Unsupported expression node: {type(node).__name__}")
 
@@ -223,6 +236,42 @@ class ExprEvaluator:
             if value is not None:
                 return value
         return None
+
+    # -- SubLink (subquery) --------------------------------------------
+
+    def _eval_sublink(self, node: SubLink, row: dict[str, Any]) -> Any:
+        if self._subquery_executor is None:
+            raise ValueError(
+                "Subquery in expression requires a subquery executor"
+            )
+
+        link_type = SubLinkType(node.subLinkType)
+
+        if link_type == SubLinkType.EXPR_SUBLINK:
+            # Scalar subquery: (SELECT COUNT(*) FROM ...)
+            result = self._subquery_executor(node.subselect)
+            if not result.rows:
+                return None
+            first_col = result.columns[0]
+            return result.rows[0][first_col]
+
+        if link_type == SubLinkType.ANY_SUBLINK:
+            # IN subquery: col IN (SELECT ...)
+            left = self.evaluate(node.testexpr, row)
+            if left is None:
+                return False
+            result = self._subquery_executor(node.subselect)
+            if not result.columns:
+                return False
+            sub_col = result.columns[0]
+            return left in {r[sub_col] for r in result.rows}
+
+        if link_type == SubLinkType.EXISTS_SUBLINK:
+            # EXISTS (SELECT ...)
+            result = self._subquery_executor(node.subselect)
+            return len(result.rows) > 0
+
+        raise ValueError(f"Unsupported subquery type: {link_type.name}")
 
     # -- FuncCall (scalar functions) -----------------------------------
 

@@ -139,9 +139,11 @@ class ExprProjectOp(PhysicalOperator):
         self,
         child: PhysicalOperator,
         targets: list[tuple[str, Any]],
+        subquery_executor: Any = None,
     ) -> None:
         self._child = child
         self._targets = targets
+        self._subquery_executor = subquery_executor
 
     def open(self) -> None:
         self._child.open()
@@ -156,7 +158,9 @@ class ExprProjectOp(PhysicalOperator):
         batch = batch.compact()
         input_rows = batch.to_rows()
 
-        evaluator = ExprEvaluator()
+        evaluator = ExprEvaluator(
+            subquery_executor=self._subquery_executor
+        )
         output_rows: list[dict[str, Any]] = []
         for row in input_rows:
             out: dict[str, Any] = {}
