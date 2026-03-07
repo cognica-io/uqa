@@ -1297,6 +1297,10 @@ class SQLCompiler:
         if table is None:
             return self._engine._build_context()
 
+        parallel_executor = getattr(
+            self._engine, "_parallel_executor", None
+        )
+
         return ExecutionContext(
             document_store=table.document_store,
             inverted_index=table.inverted_index,
@@ -1304,6 +1308,7 @@ class SQLCompiler:
             graph_store=self._engine.graph_store,
             block_max_index=self._engine.block_max_index,
             index_manager=index_manager,
+            parallel_executor=parallel_executor,
         )
 
     def _compile_from_function(

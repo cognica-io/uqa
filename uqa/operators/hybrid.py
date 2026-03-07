@@ -92,7 +92,11 @@ class LogOddsFusionOperator(Operator):
     def execute(self, context: ExecutionContext) -> PostingList:
         from uqa.fusion.log_odds import LogOddsFusion
 
-        posting_lists = [sig.execute(context) for sig in self.signals]
+        par = context.parallel_executor
+        if par is not None and par.enabled:
+            posting_lists = par.execute_branches(self.signals, context)
+        else:
+            posting_lists = [sig.execute(context) for sig in self.signals]
 
         all_doc_ids: set[int] = set()
         score_maps: list[dict[int, float]] = []
@@ -138,7 +142,11 @@ class ProbBoolFusionOperator(Operator):
     def execute(self, context: ExecutionContext) -> PostingList:
         from uqa.fusion.boolean import ProbabilisticBoolean
 
-        posting_lists = [sig.execute(context) for sig in self.signals]
+        par = context.parallel_executor
+        if par is not None and par.enabled:
+            posting_lists = par.execute_branches(self.signals, context)
+        else:
+            posting_lists = [sig.execute(context) for sig in self.signals]
 
         all_doc_ids: set[int] = set()
         score_maps: list[dict[int, float]] = []

@@ -112,7 +112,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
 """
 
     def __init__(self, db_path: str) -> None:
-        raw = sqlite3.connect(db_path)
+        raw = sqlite3.connect(db_path, check_same_thread=False)
         raw.execute("PRAGMA journal_mode=WAL")
         raw.execute("PRAGMA foreign_keys=ON")
         raw.executescript(self._SCHEMA_SQL)

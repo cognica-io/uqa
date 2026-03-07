@@ -14,6 +14,7 @@ from uqa.core.posting_list import PostingList
 from uqa.core.types import IndexStats
 
 if TYPE_CHECKING:
+    from uqa.planner.parallel import ParallelExecutor
     from uqa.storage.block_max_index import BlockMaxIndex
     from uqa.storage.document_store import DocumentStore
     from uqa.storage.index_manager import IndexManager
@@ -31,6 +32,7 @@ class ExecutionContext:
     graph_store: Any = None
     block_max_index: BlockMaxIndex | None = None
     index_manager: IndexManager | None = None
+    parallel_executor: ParallelExecutor | None = None
 
 
 class Operator(ABC):

@@ -18,6 +18,7 @@ from uqa.storage.document_store import DocumentStore
 from uqa.storage.inverted_index import InvertedIndex
 from uqa.storage.vector_index import HNSWIndex
 from uqa.graph.store import GraphStore
+from uqa.planner.parallel import ParallelExecutor
 from uqa.storage.block_max_index import BlockMaxIndex
 from uqa.storage.index_manager import IndexManager
 from uqa.storage.sqlite_graph_store import SQLiteGraphStore
@@ -39,6 +40,7 @@ class Engine:
         db_path: str | None = None,
         vector_dimensions: int = 64,
         max_elements: int = 10000,
+        parallel_workers: int = 4,
     ):
         self.document_store = DocumentStore()
         self.inverted_index = InvertedIndex()
@@ -50,6 +52,9 @@ class Engine:
         self.block_max_index = BlockMaxIndex()
         self._vector_dimensions = vector_dimensions
         self._max_elements = max_elements
+        self._parallel_executor = ParallelExecutor(
+            max_workers=parallel_workers
+        )
         self._tables: dict[str, Any] = {}
         self._views: dict[str, Any] = {}  # name -> SelectStmt AST
         self._prepared: dict[str, Any] = {}  # name -> PrepareStmt AST
@@ -463,4 +468,5 @@ class Engine:
             graph_store=self.graph_store,
             block_max_index=self.block_max_index,
             index_manager=self._index_manager,
+            parallel_executor=self._parallel_executor,
         )

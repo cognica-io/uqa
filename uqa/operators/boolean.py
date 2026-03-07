@@ -20,7 +20,11 @@ class UnionOperator(Operator):
         self.operands = operands
 
     def execute(self, context: ExecutionContext) -> PostingList:
-        results = [op.execute(context) for op in self.operands]
+        par = context.parallel_executor
+        if par is not None and par.enabled:
+            results = par.execute_branches(self.operands, context)
+        else:
+            results = [op.execute(context) for op in self.operands]
         return reduce(PostingList.union, results, PostingList())
 
     def cost_estimate(self, stats: IndexStats) -> float:
@@ -36,7 +40,11 @@ class IntersectOperator(Operator):
     def execute(self, context: ExecutionContext) -> PostingList:
         if not self.operands:
             return PostingList()
-        results = [op.execute(context) for op in self.operands]
+        par = context.parallel_executor
+        if par is not None and par.enabled:
+            results = par.execute_branches(self.operands, context)
+        else:
+            results = [op.execute(context) for op in self.operands]
         return reduce(PostingList.intersect, results)
 
     def cost_estimate(self, stats: IndexStats) -> float:
