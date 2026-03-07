@@ -51,6 +51,7 @@ class Engine:
         self._vector_dimensions = vector_dimensions
         self._max_elements = max_elements
         self._tables: dict[str, Any] = {}
+        self._views: dict[str, Any] = {}  # name -> SelectStmt AST
 
         # Persistence and transactions
         self._catalog: Catalog | None = None

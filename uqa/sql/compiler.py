@@ -1574,18 +1574,12 @@ class SQLCompiler:
 
     def _extract_window_specs(
         self, target_list: tuple
-    ) -> list[tuple[str, str, str | None, list[str], list[tuple[str, bool]]]]:
-        """Extract window function specs from the target list.
-
-        Returns a list of (alias, func_name, arg_col, partition_cols, order_keys).
-        For LAG/LEAD, arg_col encodes "col:offset:default".
-        For RANK/DENSE_RANK, arg_col encodes the sort columns as "col1,col2".
-        """
+    ) -> list[WindowSpec]:
+        """Extract window function specs from the target list."""
+        from uqa.execution.relational import WindowSpec
         from uqa.sql.expr_evaluator import ExprEvaluator
 
-        specs: list[
-            tuple[str, str, str | None, list[str], list[tuple[str, bool]]]
-        ] = []
+        specs: list[WindowSpec] = []
         for target in target_list:
             val = target.val
             if not isinstance(val, FuncCall) or val.over is None:
@@ -1609,43 +1603,43 @@ class SQLCompiler:
                     desc = s.sortby_dir == SortByDir.SORTBY_DESC
                     order_keys.append((col, desc))
 
-            # Argument column
+            # Build WindowSpec with typed fields
             arg_col: str | None = None
+            offset = 1
+            default_value: Any = None
+            ntile_buckets = 1
+
             if func_name in ("lag", "lead"):
-                # Encode col:offset:default
                 evaluator = ExprEvaluator()
-                parts_list: list[str] = []
                 if val.args:
-                    parts_list.append(
-                        self._extract_column_name(val.args[0])
-                    )
+                    arg_col = self._extract_column_name(val.args[0])
                     if len(val.args) > 1:
-                        parts_list.append(
-                            str(evaluator.evaluate(val.args[1], {}))
-                        )
+                        offset = int(evaluator.evaluate(val.args[1], {}))
                     if len(val.args) > 2:
-                        parts_list.append(
-                            str(evaluator.evaluate(val.args[2], {}))
+                        default_value = evaluator.evaluate(
+                            val.args[2], {}
                         )
-                arg_col = ":".join(parts_list)
             elif func_name == "ntile":
                 evaluator = ExprEvaluator()
                 if val.args:
-                    arg_col = str(evaluator.evaluate(val.args[0], {}))
-            elif func_name in ("rank", "dense_rank"):
-                # Encode sort columns for equality check
-                if order_keys:
-                    arg_col = ",".join(c for c, _ in order_keys)
-            elif func_name in ("row_number",):
-                arg_col = None
-            else:
+                    ntile_buckets = int(
+                        evaluator.evaluate(val.args[0], {})
+                    )
+            elif func_name not in ("row_number", "rank", "dense_rank"):
                 # Aggregate window functions (SUM, COUNT, AVG, MIN, MAX)
-                if val.agg_star:
-                    arg_col = None
-                elif val.args:
+                if not val.agg_star and val.args:
                     arg_col = self._extract_column_name(val.args[0])
 
-            specs.append((alias, func_name, arg_col, part_cols, order_keys))
+            specs.append(WindowSpec(
+                alias=alias,
+                func_name=func_name,
+                partition_cols=part_cols,
+                order_keys=order_keys,
+                arg_col=arg_col,
+                offset=offset,
+                default_value=default_value,
+                ntile_buckets=ntile_buckets,
+            ))
 
         return specs
 
