@@ -32,6 +32,8 @@ from pglast.ast import (
     FuncCall,
     Integer as PgInteger,
     NullTest,
+    RangeVar,
+    SelectStmt,
     String as PgString,
     SubLink,
     TypeCast,
@@ -245,11 +247,16 @@ class ExprEvaluator:
                 "Subquery in expression requires a subquery executor"
             )
 
+        # Substitute correlated column references from the outer row
+        subselect = self._substitute_correlated_refs(
+            node.subselect, row
+        )
+
         link_type = SubLinkType(node.subLinkType)
 
         if link_type == SubLinkType.EXPR_SUBLINK:
             # Scalar subquery: (SELECT COUNT(*) FROM ...)
-            result = self._subquery_executor(node.subselect)
+            result = self._subquery_executor(subselect)
             if not result.rows:
                 return None
             first_col = result.columns[0]
@@ -260,7 +267,7 @@ class ExprEvaluator:
             left = self.evaluate(node.testexpr, row)
             if left is None:
                 return False
-            result = self._subquery_executor(node.subselect)
+            result = self._subquery_executor(subselect)
             if not result.columns:
                 return False
             sub_col = result.columns[0]
@@ -268,10 +275,94 @@ class ExprEvaluator:
 
         if link_type == SubLinkType.EXISTS_SUBLINK:
             # EXISTS (SELECT ...)
-            result = self._subquery_executor(node.subselect)
+            result = self._subquery_executor(subselect)
             return len(result.rows) > 0
 
         raise ValueError(f"Unsupported subquery type: {link_type.name}")
+
+    def _substitute_correlated_refs(
+        self, node: Any, outer_row: dict[str, Any]
+    ) -> Any:
+        """Replace correlated ColumnRef nodes with constants from the outer row.
+
+        A correlated reference is a multi-part ColumnRef (e.g., ``e.dept``)
+        whose qualifier (first part) does not match any table in the inner
+        query's FROM clause.  Such references are replaced with ``A_Const``
+        values from the outer row.
+        """
+        # Collect inner table names/aliases from the FROM clause
+        inner_tables: set[str] = set()
+        if isinstance(node, SelectStmt) and node.fromClause:
+            for from_item in node.fromClause:
+                if isinstance(from_item, RangeVar):
+                    if from_item.alias:
+                        inner_tables.add(from_item.alias.aliasname)
+                    inner_tables.add(from_item.relname)
+
+        return self._subst_correlated(node, outer_row, inner_tables)
+
+    def _subst_correlated(
+        self, node: Any, outer_row: dict[str, Any],
+        inner_tables: set[str],
+    ) -> Any:
+        """Recursively walk AST, replacing correlated ColumnRefs."""
+        if isinstance(node, ColumnRef):
+            if len(node.fields) >= 2:
+                qualifier = node.fields[0].sval
+                col_name = node.fields[-1].sval
+                if qualifier not in inner_tables:
+                    # Correlated reference -- substitute with outer value
+                    val = outer_row.get(col_name)
+                    return self._value_to_const(val)
+            return node
+
+        if isinstance(node, tuple):
+            return tuple(
+                self._subst_correlated(item, outer_row, inner_tables)
+                for item in node
+            )
+        if isinstance(node, list):
+            return [
+                self._subst_correlated(item, outer_row, inner_tables)
+                for item in node
+            ]
+
+        if hasattr(node, '__slots__') and isinstance(node.__slots__, dict):
+            kwargs = {}
+            for slot in node.__slots__:
+                val = getattr(node, slot, None)
+                if val is None:
+                    kwargs[slot] = None
+                elif isinstance(val, (tuple, list)):
+                    kwargs[slot] = type(val)(
+                        self._subst_correlated(
+                            item, outer_row, inner_tables
+                        )
+                        for item in val
+                    )
+                elif hasattr(val, '__slots__'):
+                    kwargs[slot] = self._subst_correlated(
+                        val, outer_row, inner_tables
+                    )
+                else:
+                    kwargs[slot] = val
+            try:
+                return node.__class__(**kwargs)
+            except TypeError:
+                return node
+
+        return node
+
+    @staticmethod
+    def _value_to_const(val: Any) -> A_Const:
+        """Convert a Python value to an A_Const AST node."""
+        if val is None:
+            return A_Const(isnull=True, val=None)
+        if isinstance(val, int):
+            return A_Const(isnull=False, val=PgInteger(ival=val))
+        if isinstance(val, float):
+            return A_Const(isnull=False, val=PgFloat(fval=str(val)))
+        return A_Const(isnull=False, val=PgString(sval=str(val)))
 
     # -- FuncCall (scalar functions) -----------------------------------
 

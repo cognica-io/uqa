@@ -1542,7 +1542,16 @@ class SQLCompiler:
         Supports:
         - ANY_SUBLINK: ``WHERE col IN (SELECT ...)``
         - EXISTS_SUBLINK: ``WHERE EXISTS (SELECT ...)``
+
+        Correlated subqueries (inner query references outer table) are
+        routed to per-row evaluation via ``_ExprFilterOperator``.
         """
+        # Detect correlated subqueries -- route to per-row evaluation
+        if self._is_correlated(node.subselect):
+            return _ExprFilterOperator(
+                node, subquery_executor=self._compile_select
+            )
+
         from uqa.operators.primitive import FilterOperator
 
         link_type = SubLinkType(node.subLinkType)
@@ -1573,6 +1582,46 @@ class SQLCompiler:
         raise ValueError(
             f"Unsupported subquery type: {link_type.name}"
         )
+
+    def _is_correlated(self, subselect: Any) -> bool:
+        """Check if a subquery contains correlated column references.
+
+        A correlated reference is a multi-part ColumnRef (e.g., ``e.dept``)
+        whose qualifier does not match any table in the inner FROM clause.
+        """
+        inner_tables: set[str] = set()
+        if subselect.fromClause:
+            for from_item in subselect.fromClause:
+                if isinstance(from_item, RangeVar):
+                    if from_item.alias:
+                        inner_tables.add(from_item.alias.aliasname)
+                    inner_tables.add(from_item.relname)
+
+        return self._has_outer_refs(subselect, inner_tables)
+
+    def _has_outer_refs(self, node: Any, inner_tables: set[str]) -> bool:
+        """Recursively check for outer column references."""
+        if isinstance(node, ColumnRef):
+            if len(node.fields) >= 2:
+                qualifier = node.fields[0].sval
+                return qualifier not in inner_tables
+            return False
+
+        if isinstance(node, (tuple, list)):
+            return any(
+                self._has_outer_refs(item, inner_tables)
+                for item in node
+            )
+
+        if hasattr(node, '__slots__') and isinstance(node.__slots__, dict):
+            for slot in node.__slots__:
+                val = getattr(node, slot, None)
+                if val is not None and self._has_outer_refs(
+                    val, inner_tables
+                ):
+                    return True
+
+        return False
 
     def _compile_func_in_where(self, node: FuncCall, ctx: ExecutionContext) -> Any:
         name = node.funcname[-1].sval.lower()
