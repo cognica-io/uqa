@@ -16,7 +16,9 @@ Supported statements:
     DELETE FROM name [WHERE ...]
   DQL:
     WITH name AS (SELECT ...) [, ...]     -- common table expressions
-    SELECT [DISTINCT] [* | col, ... | expr, ... | aggregates] FROM table
+    SELECT [DISTINCT] [* | col, ... | expr, ... | aggregates |
+           window_func() OVER ([PARTITION BY ...] [ORDER BY ...])]
+      FROM table
       [WHERE comparisons / boolean / IS [NOT] NULL /
              LIKE / NOT LIKE / ILIKE / NOT ILIKE /
              IN (SELECT ...) / EXISTS (SELECT ...) /
@@ -661,6 +663,7 @@ class SQLCompiler:
             LimitOp,
             ProjectOp,
             SortOp,
+            WindowOp,
         )
 
         # Build table schema for typed ColumnVectors
@@ -682,9 +685,34 @@ class SQLCompiler:
         is_agg_only = not is_grouped and self._has_aggregates(
             stmt.targetList
         )
+        has_window = self._has_window_functions(stmt.targetList)
         expected_cols: list[str] | None = None
 
-        if is_grouped:
+        if has_window:
+            # Window functions: compute window values, then project
+            win_specs = self._extract_window_specs(stmt.targetList)
+            physical = WindowOp(physical, win_specs)
+
+            # Build expected columns: non-window columns + window aliases
+            expected_cols = []
+            for target in stmt.targetList:
+                val = target.val
+                if isinstance(val, FuncCall) and val.over is not None:
+                    alias = target.name or val.funcname[-1].sval.lower()
+                    expected_cols.append(alias)
+                elif isinstance(val, ColumnRef):
+                    expected_cols.append(
+                        target.name or self._extract_column_name(val)
+                    )
+                else:
+                    expected_cols.append(
+                        target.name or self._infer_target_name(target)
+                    )
+
+            # Project to expected columns
+            physical = ProjectOp(physical, expected_cols)
+
+        elif is_grouped:
             group_cols = [
                 self._extract_column_name(g) for g in stmt.groupClause
             ]
@@ -1513,6 +1541,7 @@ class SQLCompiler:
         return any(
             isinstance(t.val, FuncCall)
             and t.val.funcname[-1].sval.lower() in ("count", "sum", "avg", "min", "max")
+            and (t.val.over is None)
             for t in target_list
         )
 
@@ -1530,6 +1559,94 @@ class SQLCompiler:
             arg_col = None if func.agg_star else self._extract_column_name(func.args[0])
             alias = target.name or (func_name if arg_col is None else f"{func_name}_{arg_col}")
             specs.append((alias, func_name, arg_col))
+        return specs
+
+    # -- Window functions -----------------------------------------------
+
+    @staticmethod
+    def _has_window_functions(target_list: tuple | None) -> bool:
+        if target_list is None:
+            return False
+        return any(
+            isinstance(t.val, FuncCall) and t.val.over is not None
+            for t in target_list
+        )
+
+    def _extract_window_specs(
+        self, target_list: tuple
+    ) -> list[tuple[str, str, str | None, list[str], list[tuple[str, bool]]]]:
+        """Extract window function specs from the target list.
+
+        Returns a list of (alias, func_name, arg_col, partition_cols, order_keys).
+        For LAG/LEAD, arg_col encodes "col:offset:default".
+        For RANK/DENSE_RANK, arg_col encodes the sort columns as "col1,col2".
+        """
+        from uqa.sql.expr_evaluator import ExprEvaluator
+
+        specs: list[
+            tuple[str, str, str | None, list[str], list[tuple[str, bool]]]
+        ] = []
+        for target in target_list:
+            val = target.val
+            if not isinstance(val, FuncCall) or val.over is None:
+                continue
+
+            func_name = val.funcname[-1].sval.lower()
+            alias = target.name or func_name
+            win = val.over
+
+            # Partition columns
+            part_cols: list[str] = []
+            if win.partitionClause:
+                for p in win.partitionClause:
+                    part_cols.append(self._extract_column_name(p))
+
+            # Order keys
+            order_keys: list[tuple[str, bool]] = []
+            if win.orderClause:
+                for s in win.orderClause:
+                    col = self._extract_column_name(s.node)
+                    desc = s.sortby_dir == SortByDir.SORTBY_DESC
+                    order_keys.append((col, desc))
+
+            # Argument column
+            arg_col: str | None = None
+            if func_name in ("lag", "lead"):
+                # Encode col:offset:default
+                evaluator = ExprEvaluator()
+                parts_list: list[str] = []
+                if val.args:
+                    parts_list.append(
+                        self._extract_column_name(val.args[0])
+                    )
+                    if len(val.args) > 1:
+                        parts_list.append(
+                            str(evaluator.evaluate(val.args[1], {}))
+                        )
+                    if len(val.args) > 2:
+                        parts_list.append(
+                            str(evaluator.evaluate(val.args[2], {}))
+                        )
+                arg_col = ":".join(parts_list)
+            elif func_name == "ntile":
+                evaluator = ExprEvaluator()
+                if val.args:
+                    arg_col = str(evaluator.evaluate(val.args[0], {}))
+            elif func_name in ("rank", "dense_rank"):
+                # Encode sort columns for equality check
+                if order_keys:
+                    arg_col = ",".join(c for c, _ in order_keys)
+            elif func_name in ("row_number",):
+                arg_col = None
+            else:
+                # Aggregate window functions (SUM, COUNT, AVG, MIN, MAX)
+                if val.agg_star:
+                    arg_col = None
+                elif val.args:
+                    arg_col = self._extract_column_name(val.args[0])
+
+            specs.append((alias, func_name, arg_col, part_cols, order_keys))
+
         return specs
 
     # -- Result conversion ---------------------------------------------

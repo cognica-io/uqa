@@ -434,6 +434,248 @@ class DistinctOp(PhysicalOperator):
         self._offset = 0
 
 
+class WindowOp(PhysicalOperator):
+    """Evaluate window functions over partitioned, ordered rows.
+
+    Blocking operator: materializes all input, partitions by the
+    specified columns, sorts each partition by the order keys, then
+    evaluates window functions (ROW_NUMBER, RANK, DENSE_RANK, NTILE,
+    LAG, LEAD, FIRST_VALUE, LAST_VALUE, SUM/COUNT/AVG/MIN/MAX OVER).
+
+    Each window spec is a tuple:
+        (output_name, func_name, arg_col, partition_cols, order_keys)
+
+    where *order_keys* is a list of ``(col, desc)`` pairs.
+    """
+
+    def __init__(
+        self,
+        child: PhysicalOperator,
+        window_specs: list[
+            tuple[str, str, str | None, list[str], list[tuple[str, bool]]]
+        ],
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> None:
+        self._child = child
+        self._window_specs = window_specs
+        self._batch_size = batch_size
+        self._result_rows: list[dict[str, Any]] | None = None
+        self._offset = 0
+
+    def open(self) -> None:
+        self._child.open()
+
+        all_rows: list[dict[str, Any]] = []
+        while True:
+            batch = self._child.next()
+            if batch is None:
+                break
+            all_rows.extend(batch.to_rows())
+        self._child.close()
+
+        # Evaluate each window spec
+        for alias, func, arg_col, part_cols, order_keys in self._window_specs:
+            # Sort by partition keys + order keys
+            sorted_rows = list(all_rows)
+            for col, desc in reversed(order_keys):
+                sorted_rows.sort(
+                    key=lambda r, c=col: (r.get(c) is None, r.get(c)),
+                    reverse=desc,
+                )
+            if part_cols:
+                sorted_rows.sort(
+                    key=lambda r: tuple(r.get(c) for c in part_cols)
+                )
+
+            # Build a mapping from original row identity to sorted index
+            # We use id() to track row objects
+            row_id_to_sorted_idx: dict[int, int] = {}
+            for idx, row in enumerate(sorted_rows):
+                row_id_to_sorted_idx[id(row)] = idx
+
+            # Partition the sorted rows
+            partitions: list[list[int]] = []
+            current_key: tuple | None = None
+            for idx, row in enumerate(sorted_rows):
+                key = tuple(row.get(c) for c in part_cols)
+                if key != current_key:
+                    partitions.append([])
+                    current_key = key
+                partitions[-1].append(idx)
+
+            # Compute window values for sorted rows
+            win_values: dict[int, Any] = {}
+            for part_indices in partitions:
+                part_rows = [sorted_rows[i] for i in part_indices]
+                values = _compute_window_function(
+                    func, arg_col, part_rows
+                )
+                for i, idx in enumerate(part_indices):
+                    win_values[idx] = values[i]
+
+            # Apply computed values back to original rows
+            for row in all_rows:
+                sorted_idx = row_id_to_sorted_idx[id(row)]
+                row[alias] = win_values[sorted_idx]
+
+        self._result_rows = all_rows
+        self._offset = 0
+
+    def next(self) -> Batch | None:
+        if self._result_rows is None:
+            return None
+        if self._offset >= len(self._result_rows):
+            return None
+
+        end = min(
+            self._offset + self._batch_size, len(self._result_rows)
+        )
+        batch_rows = self._result_rows[self._offset : end]
+        self._offset = end
+        return Batch.from_rows(batch_rows)
+
+    def close(self) -> None:
+        self._result_rows = None
+        self._offset = 0
+
+
+def _compute_window_function(
+    func_name: str,
+    arg_col: str | None,
+    partition_rows: list[dict[str, Any]],
+) -> list[Any]:
+    """Compute a window function over an ordered partition.
+
+    Returns a list of values, one per row in the partition.
+    """
+    n = len(partition_rows)
+
+    if func_name == "row_number":
+        return list(range(1, n + 1))
+
+    if func_name == "rank":
+        ranks: list[int] = []
+        for i, row in enumerate(partition_rows):
+            if i == 0:
+                ranks.append(1)
+            else:
+                # Compare with previous row on sort keys
+                # Since rows are pre-sorted, equal values get same rank
+                prev = partition_rows[i - 1]
+                if _rows_equal_on_values(prev, row, arg_col):
+                    ranks.append(ranks[-1])
+                else:
+                    ranks.append(i + 1)
+        return ranks
+
+    if func_name == "dense_rank":
+        ranks = []
+        current_rank = 0
+        for i, row in enumerate(partition_rows):
+            if i == 0:
+                current_rank = 1
+            else:
+                prev = partition_rows[i - 1]
+                if not _rows_equal_on_values(prev, row, arg_col):
+                    current_rank += 1
+            ranks.append(current_rank)
+        return ranks
+
+    if func_name == "ntile":
+        num_buckets = int(arg_col) if arg_col is not None else 1
+        result: list[int] = []
+        for i in range(n):
+            bucket = (i * num_buckets) // n + 1
+            result.append(bucket)
+        return result
+
+    if func_name == "lag":
+        offset = 1
+        default = None
+        # arg_col encodes "col:offset:default" or just "col"
+        parts = (arg_col or "").split(":", 2)
+        col = parts[0] if parts else None
+        if len(parts) > 1 and parts[1]:
+            offset = int(parts[1])
+        if len(parts) > 2 and parts[2]:
+            default = _parse_window_default(parts[2])
+        result = []
+        for i in range(n):
+            if i - offset >= 0:
+                result.append(partition_rows[i - offset].get(col))
+            else:
+                result.append(default)
+        return result
+
+    if func_name == "lead":
+        offset = 1
+        default = None
+        parts = (arg_col or "").split(":", 2)
+        col = parts[0] if parts else None
+        if len(parts) > 1 and parts[1]:
+            offset = int(parts[1])
+        if len(parts) > 2 and parts[2]:
+            default = _parse_window_default(parts[2])
+        result = []
+        for i in range(n):
+            if i + offset < n:
+                result.append(partition_rows[i + offset].get(col))
+            else:
+                result.append(default)
+        return result
+
+    if func_name == "first_value":
+        if n == 0:
+            return []
+        val = partition_rows[0].get(arg_col)
+        return [val] * n
+
+    if func_name == "last_value":
+        if n == 0:
+            return []
+        val = partition_rows[-1].get(arg_col)
+        return [val] * n
+
+    # Aggregate window functions (SUM, COUNT, AVG, MIN, MAX OVER)
+    if func_name in ("sum", "count", "avg", "min", "max"):
+        agg_val = _compute_aggregate(func_name, arg_col, partition_rows)
+        return [agg_val] * n
+
+    raise ValueError(f"Unknown window function: {func_name}")
+
+
+def _rows_equal_on_values(
+    a: dict[str, Any], b: dict[str, Any], col: str | None
+) -> bool:
+    """Check if two rows have equal values.
+
+    For RANK/DENSE_RANK, *col* encodes the sort columns as
+    ``"col1,col2,..."``.  If None, rows are always unequal.
+    """
+    if col is None:
+        return False
+    for c in col.split(","):
+        c = c.strip()
+        if a.get(c) != b.get(c):
+            return False
+    return True
+
+
+def _parse_window_default(s: str) -> Any:
+    """Parse a default value string from the window spec encoding."""
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    if s.lower() == "none":
+        return None
+    return s
+
+
 def _compute_aggregate(
     func_name: str, arg_col: str | None, rows: list[dict[str, Any]]
 ) -> Any:
