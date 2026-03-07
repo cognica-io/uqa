@@ -35,6 +35,10 @@ Supported statements:
     SAVEPOINT name                      -- create savepoint
     RELEASE SAVEPOINT name              -- release savepoint
     ROLLBACK TO SAVEPOINT name          -- rollback to savepoint
+  Prepared Statements:
+    PREPARE name [(type, ...)] AS query -- prepare a parameterized statement
+    EXECUTE name [(val, ...)]           -- execute with parameter values
+    DEALLOCATE name | ALL               -- deallocate prepared statement(s)
   Utility:
     EXPLAIN SELECT ...                  -- show optimized query plan
     ANALYZE [table]                     -- collect per-column statistics
@@ -96,6 +100,10 @@ from pglast.ast import (
     UpdateStmt,
     VacuumStmt,
     ViewStmt,
+    PrepareStmt,
+    ExecuteStmt,
+    DeallocateStmt,
+    ParamRef,
 )
 from pglast.enums.parsenodes import A_Expr_Kind, ConstrType, SortByDir
 from pglast.enums.primnodes import BoolExprType, NullTestType, SubLinkType
@@ -220,6 +228,12 @@ class SQLCompiler:
             return self._compile_analyze(stmt)
         if isinstance(stmt, TransactionStmt):
             return self._compile_transaction(stmt)
+        if isinstance(stmt, PrepareStmt):
+            return self._compile_prepare(stmt)
+        if isinstance(stmt, ExecuteStmt):
+            return self._compile_execute(stmt)
+        if isinstance(stmt, DeallocateStmt):
+            return self._compile_deallocate(stmt)
         raise ValueError(f"Unsupported statement: {type(stmt).__name__}")
 
     # ==================================================================
@@ -586,6 +600,105 @@ class SQLCompiler:
             txn.rollback_to(stmt.savepoint_name)
             return SQLResult([], [])
         raise ValueError(f"Unsupported transaction statement kind: {kind}")
+
+    # ==================================================================
+    # Prepared Statements: PREPARE / EXECUTE / DEALLOCATE
+    # ==================================================================
+
+    def _compile_prepare(self, stmt: PrepareStmt) -> SQLResult:
+        name = stmt.name
+        if name in self._engine._prepared:
+            raise ValueError(
+                f"Prepared statement '{name}' already exists"
+            )
+        self._engine._prepared[name] = stmt
+        return SQLResult([], [])
+
+    def _compile_execute(self, stmt: ExecuteStmt) -> SQLResult:
+        name = stmt.name
+        prep = self._engine._prepared.get(name)
+        if prep is None:
+            raise ValueError(
+                f"Prepared statement '{name}' does not exist"
+            )
+
+        # Collect parameter values from EXECUTE
+        params: dict[int, A_Const] = {}
+        if stmt.params:
+            for i, param in enumerate(stmt.params):
+                params[i + 1] = param  # 1-based
+
+        # Substitute ParamRef nodes in the stored query AST
+        query = self._substitute_params(prep.query, params)
+
+        # Dispatch to the appropriate compiler method
+        if isinstance(query, SelectStmt):
+            return self._compile_select(query)
+        if isinstance(query, InsertStmt):
+            return self._compile_insert(query)
+        if isinstance(query, UpdateStmt):
+            return self._compile_update(query)
+        if isinstance(query, DeleteStmt):
+            return self._compile_delete(query)
+        raise ValueError(
+            f"Unsupported prepared query type: {type(query).__name__}"
+        )
+
+    def _compile_deallocate(self, stmt: DeallocateStmt) -> SQLResult:
+        if stmt.name is None:
+            # DEALLOCATE ALL
+            self._engine._prepared.clear()
+        else:
+            if stmt.name not in self._engine._prepared:
+                raise ValueError(
+                    f"Prepared statement '{stmt.name}' does not exist"
+                )
+            del self._engine._prepared[stmt.name]
+        return SQLResult([], [])
+
+    def _substitute_params(
+        self, node: Any, params: dict[int, A_Const]
+    ) -> Any:
+        """Recursively replace ParamRef nodes with A_Const values."""
+        if isinstance(node, ParamRef):
+            if node.number not in params:
+                raise ValueError(
+                    f"No value supplied for parameter ${node.number}"
+                )
+            return params[node.number]
+
+        # Recurse into plain tuples/lists (e.g. valuesLists rows)
+        if isinstance(node, tuple):
+            return tuple(
+                self._substitute_params(item, params) for item in node
+            )
+        if isinstance(node, list):
+            return [
+                self._substitute_params(item, params) for item in node
+            ]
+
+        # pglast AST nodes use __slots__; clone with substituted children
+        if hasattr(node, '__slots__') and isinstance(node.__slots__, dict):
+            kwargs = {}
+            for slot in node.__slots__:
+                val = getattr(node, slot, None)
+                if val is None:
+                    kwargs[slot] = None
+                elif isinstance(val, (tuple, list)):
+                    kwargs[slot] = type(val)(
+                        self._substitute_params(item, params)
+                        for item in val
+                    )
+                elif hasattr(val, '__slots__'):
+                    kwargs[slot] = self._substitute_params(val, params)
+                else:
+                    kwargs[slot] = val
+            try:
+                return node.__class__(**kwargs)
+            except TypeError:
+                return node
+
+        return node
 
     # ==================================================================
     # EXPLAIN / ANALYZE

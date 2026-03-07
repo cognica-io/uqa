@@ -52,6 +52,7 @@ class Engine:
         self._max_elements = max_elements
         self._tables: dict[str, Any] = {}
         self._views: dict[str, Any] = {}  # name -> SelectStmt AST
+        self._prepared: dict[str, Any] = {}  # name -> PrepareStmt AST
 
         # Persistence and transactions
         self._catalog: Catalog | None = None
