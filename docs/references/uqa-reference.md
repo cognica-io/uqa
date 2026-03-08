@@ -305,10 +305,10 @@ Filter on nested (hierarchical) document fields. The 2-argument form tests equal
 
 ```sql
 -- Equality
-SELECT * FROM _default WHERE path_filter('shipping.city', 'Seoul');
+SELECT * FROM orders WHERE path_filter('shipping.city', 'Seoul');
 
 -- Comparison
-SELECT * FROM _default WHERE path_filter('items.price', '>', 100);
+SELECT * FROM orders WHERE path_filter('items.price', '>', 100);
 ```
 
 | Parameter | Type | Description |
@@ -407,7 +407,7 @@ Per-row aggregation over nested arrays. Navigates the dot-separated path into ea
 ```sql
 SELECT path_agg('items.price', 'sum') AS total,
        path_agg('items.quantity', 'count') AS num_items
-FROM _default
+FROM orders
 WHERE path_filter('shipping.city', 'Seoul');
 ```
 
@@ -423,7 +423,7 @@ Access a nested field value by dot-path.
 ```sql
 SELECT path_value('shipping.city') AS city,
        path_value('customer.name') AS name
-FROM _default;
+FROM orders;
 ```
 
 | Parameter | Type | Description |
@@ -781,17 +781,17 @@ WHERE fuse_prob_or(
 
 ```sql
 -- Filter on nested paths
-SELECT * FROM _default WHERE path_filter('shipping.city', 'Seoul');
+SELECT * FROM orders WHERE path_filter('shipping.city', 'Seoul');
 
 -- Comparison operators on nested paths
-SELECT * FROM _default WHERE path_filter('items.price', '>', 100);
+SELECT * FROM orders WHERE path_filter('items.price', '>', 100);
 
 -- Aggregate nested arrays
-SELECT path_agg('items.price', 'sum') AS total FROM _default
+SELECT path_agg('items.price', 'sum') AS total FROM orders
 WHERE path_filter('shipping.city', 'Seoul');
 
 -- Access nested field values
-SELECT path_value('shipping.city') AS city FROM _default;
+SELECT path_value('shipping.city') AS city FROM orders;
 ```
 
 #### Query Introspection
@@ -814,14 +814,17 @@ from uqa.engine import Engine
 from uqa.core.types import Equals, GreaterThanOrEqual
 import numpy as np
 
-engine = Engine(vector_dimensions=64)
+engine = Engine()
+
+# All queries require a table name
+q = engine.query(table="papers")
 
 # Term search
-result = engine.query().term("attention", field="title").execute()
+result = q.term("attention", field="title").execute()
 
 # BM25 scoring
 result = (
-    engine.query()
+    engine.query(table="papers")
     .term("attention", field="title")
     .score_bm25("attention")
     .execute()
@@ -829,54 +832,54 @@ result = (
 
 # Bayesian BM25 scoring
 result = (
-    engine.query()
+    engine.query(table="papers")
     .term("attention", field="title")
     .score_bayesian_bm25("attention")
     .execute()
 )
 
 # Boolean composition
-relevant = engine.query().term("attention")
-not_graph = engine.query().term("graph").not_()
+relevant = engine.query(table="papers").term("attention")
+not_graph = engine.query(table="papers").term("graph").not_()
 result = relevant.and_(not_graph).execute()
 
 # KNN vector search
 query_vec = np.random.randn(64).astype(np.float32)
-result = engine.query().knn(query_vec, k=10).execute()
+result = engine.query(table="papers").knn(query_vec, k=10).execute()
 
 # Hybrid: text AND vector
-text = engine.query().term("transformer").score_bm25("transformer")
-vector = engine.query().knn(query_vec, k=10)
+text = engine.query(table="papers").term("transformer").score_bm25("transformer")
+vector = engine.query(table="papers").knn(query_vec, k=10)
 result = text.and_(vector).execute()
 
 # Filter
 result = (
-    engine.query()
+    engine.query(table="papers")
     .term("attention")
     .filter("year", GreaterThanOrEqual(2020))
     .execute()
 )
 
 # Facets
-facets = engine.query().facet("field")  # dict[value, count]
+facets = engine.query(table="papers").facet("field")  # dict[value, count]
 
 # Aggregation
 count = (
-    engine.query()
+    engine.query(table="papers")
     .filter("year", GreaterThanOrEqual(2020))
     .aggregate("id", "count")
 )
 
 # Graph traversal
-team = engine.query().traverse(start_id=1, label="manages", max_hops=2)
+team = engine.query(table="employees").traverse(start_id=1, label="manages", max_hops=2)
 members = team.execute()
 total_salary = team.vertex_aggregate("salary", "sum")
 
 # Join
 result = (
-    engine.query().term("attention")
+    engine.query(table="papers").term("attention")
     .join(
-        engine.query().term("transformer"),
+        engine.query(table="papers").term("transformer"),
         left_field="id",
         right_field="paper_id"
     )
@@ -884,41 +887,57 @@ result = (
 )
 
 # Explain
-plan = engine.query().term("attention").explain()
+plan = engine.query(table="papers").term("attention").explain()
 print(plan)
 ```
 
 ### 6.5 Programmatic Document API
 
-For applications that do not use SQL tables, the Engine provides a direct document API with a global (table-independent) document store.
+The Engine provides a direct document API for adding and removing documents, graph vertices, and edges. All operations require an explicit table name -- there is no global store.
 
 ```python
 import numpy as np
 from uqa.engine import Engine
-from uqa.graph.store import Vertex, Edge
+from uqa.core.types import Vertex, Edge
 
-engine = Engine(db_path="data.db", vector_dimensions=64)
+engine = Engine(db_path="data.db")
+
+# Create a table first
+engine.sql("""
+    CREATE TABLE papers (
+        id INT PRIMARY KEY,
+        title TEXT NOT NULL,
+        year INTEGER,
+        embedding VECTOR(64)
+    )
+""")
 
 # Add documents with embeddings
 engine.add_document(
     doc_id=1,
     document={"title": "attention is all you need", "year": 2017},
-    embedding=np.random.randn(64).astype(np.float32)
+    table="papers",
+    embedding=np.random.randn(64).astype(np.float32),
 )
 
 # Delete documents
-engine.delete_document(doc_id=1)
+engine.delete_document(doc_id=1, table="papers")
 
-# Add graph vertices and edges
-engine.add_graph_vertex(Vertex(vertex_id=1, properties={"name": "Alice"}))
-engine.add_graph_vertex(Vertex(vertex_id=2, properties={"name": "Bob"}))
-engine.add_graph_edge(Edge(
-    edge_id=1,
-    source_id=1,
-    target_id=2,
-    label="manages",
-    properties={"since": 2020}
-))
+# Graph vertices and edges require a table
+engine.sql("CREATE TABLE network (id INT PRIMARY KEY, name TEXT)")
+engine.add_graph_vertex(
+    Vertex(vertex_id=1, properties={"name": "Alice"}), table="network"
+)
+engine.add_graph_vertex(
+    Vertex(vertex_id=2, properties={"name": "Bob"}), table="network"
+)
+engine.add_graph_edge(
+    Edge(
+        edge_id=1, source_id=1, target_id=2,
+        label="manages", properties={"since": 2020},
+    ),
+    table="network",
+)
 
 # Persist scoring parameters for Bayesian BM25 calibration
 engine.save_scoring_params("text_signal", {"alpha": 1.0, "beta": 3.5})

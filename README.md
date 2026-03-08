@@ -27,7 +27,7 @@ SELECT _doc_id, title FROM traverse(1, 'cited_by', 2);
 SELECT _doc_id, title FROM rpq('cited_by/cited_by', 1);
 
 -- Hierarchical data: nested array aggregation
-SELECT path_agg('items.price', 'sum') AS total FROM _default
+SELECT path_agg('items.price', 'sum') AS total FROM orders
 WHERE path_filter('shipping.city', 'Seoul');
 
 -- Prepared statements
@@ -276,7 +276,7 @@ from uqa.core.types import Equals, GreaterThanOrEqual
 
 # Text search with scoring
 result = (
-    engine.query()
+    engine.query(table="papers")
     .term("attention", field="title")
     .score_bayesian_bm25("attention")
     .execute()
@@ -284,18 +284,18 @@ result = (
 
 # Nested data: filter + aggregate
 result = (
-    engine.query()
+    engine.query(table="orders")
     .filter("shipping.city", Equals("Seoul"))
     .path_aggregate("items.price", "sum")
     .execute()
 )
 
 # Graph traversal + aggregation
-team = engine.query().traverse(2, "manages", max_hops=2)
+team = engine.query(table="employees").traverse(2, "manages", max_hops=2)
 total = team.vertex_aggregate("salary", "sum")
 
 # Facets over all documents
-facets = engine.query().facet("status")
+facets = engine.query(table="papers").facet("status")
 ```
 
 ## Examples
