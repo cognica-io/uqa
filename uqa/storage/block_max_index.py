@@ -23,7 +23,7 @@ class BlockMaxIndex:
 
     def __init__(self, block_size: int = 128) -> None:
         self.block_size = block_size
-        self._block_maxes: dict[tuple[str, str], list[float]] = {}
+        self._block_maxes: dict[tuple[str, str, str], list[float]] = {}
 
     def build(
         self,
@@ -31,11 +31,12 @@ class BlockMaxIndex:
         scorer: BM25Scorer,
         field: str,
         term: str,
+        table_name: str = "",
     ) -> None:
         """Compute per-block max scores for a posting list."""
         entries = posting_list.entries
         if not entries:
-            self._block_maxes[(field, term)] = []
+            self._block_maxes[(table_name, field, term)] = []
             return
 
         doc_freq = len(entries)
@@ -51,17 +52,19 @@ class BlockMaxIndex:
                 max_score = max(max_score, score)
             block_maxes.append(max_score)
 
-        self._block_maxes[(field, term)] = block_maxes
+        self._block_maxes[(table_name, field, term)] = block_maxes
 
-    def get_block_max(self, field: str, term: str, block_idx: int) -> float:
+    def get_block_max(
+        self, field: str, term: str, block_idx: int, table_name: str = ""
+    ) -> float:
         """Return max score for a given block."""
-        maxes = self._block_maxes.get((field, term))
+        maxes = self._block_maxes.get((table_name, field, term))
         if maxes is None or block_idx >= len(maxes):
             return 0.0
         return maxes[block_idx]
 
-    def num_blocks(self, field: str, term: str) -> int:
-        maxes = self._block_maxes.get((field, term))
+    def num_blocks(self, field: str, term: str, table_name: str = "") -> int:
+        maxes = self._block_maxes.get((table_name, field, term))
         if maxes is None:
             return 0
         return len(maxes)
@@ -72,21 +75,22 @@ class BlockMaxIndex:
         """Persist all block-max scores to a ``_global_blockmax`` table."""
         conn.execute(
             "CREATE TABLE IF NOT EXISTS _global_blockmax ("
-            "    field     TEXT    NOT NULL,"
-            "    term      TEXT    NOT NULL,"
-            "    block_idx INTEGER NOT NULL,"
-            "    max_score REAL    NOT NULL,"
-            "    PRIMARY KEY (field, term, block_idx)"
+            "    table_name TEXT    NOT NULL,"
+            "    field      TEXT    NOT NULL,"
+            "    term       TEXT    NOT NULL,"
+            "    block_idx  INTEGER NOT NULL,"
+            "    max_score  REAL    NOT NULL,"
+            "    PRIMARY KEY (table_name, field, term, block_idx)"
             ")"
         )
         conn.execute("DELETE FROM _global_blockmax")
-        for (field, term), maxes in self._block_maxes.items():
+        for (table_name, field, term), maxes in self._block_maxes.items():
             for block_idx, max_score in enumerate(maxes):
                 conn.execute(
                     "INSERT INTO _global_blockmax "
-                    "(field, term, block_idx, max_score) "
-                    "VALUES (?, ?, ?, ?)",
-                    (field, term, block_idx, max_score),
+                    "(table_name, field, term, block_idx, max_score) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (table_name, field, term, block_idx, max_score),
                 )
         conn.commit()
 
@@ -100,15 +104,25 @@ class BlockMaxIndex:
         if row is None:
             return
 
+        # Detect legacy schema (without table_name column) and migrate.
+        col_info = conn.execute(
+            "PRAGMA table_info(_global_blockmax)"
+        ).fetchall()
+        col_names = {r[1] for r in col_info}
+        if "table_name" not in col_names:
+            self._migrate_legacy_blockmax(conn)
+            return
+
         rows = conn.execute(
-            "SELECT field, term, block_idx, max_score "
-            "FROM _global_blockmax ORDER BY field, term, block_idx"
+            "SELECT table_name, field, term, block_idx, max_score "
+            "FROM _global_blockmax "
+            "ORDER BY table_name, field, term, block_idx"
         ).fetchall()
 
-        current_key: tuple[str, str] | None = None
+        current_key: tuple[str, str, str] | None = None
         scores: list[float] = []
-        for field, term, block_idx, max_score in rows:
-            key = (field, term)
+        for table_name, field, term, block_idx, max_score in rows:
+            key = (table_name, field, term)
             if key != current_key:
                 if current_key is not None:
                     self._block_maxes[current_key] = scores
@@ -117,3 +131,42 @@ class BlockMaxIndex:
             scores.append(max_score)
         if current_key is not None:
             self._block_maxes[current_key] = scores
+
+    def _migrate_legacy_blockmax(self, conn: sqlite3.Connection) -> None:
+        """Migrate old _global_blockmax (without table_name) to new schema."""
+        rows = conn.execute(
+            "SELECT field, term, block_idx, max_score "
+            "FROM _global_blockmax ORDER BY field, term, block_idx"
+        ).fetchall()
+
+        conn.execute("DROP TABLE _global_blockmax")
+        conn.execute(
+            "CREATE TABLE _global_blockmax ("
+            "    table_name TEXT    NOT NULL,"
+            "    field      TEXT    NOT NULL,"
+            "    term       TEXT    NOT NULL,"
+            "    block_idx  INTEGER NOT NULL,"
+            "    max_score  REAL    NOT NULL,"
+            "    PRIMARY KEY (table_name, field, term, block_idx)"
+            ")"
+        )
+
+        current_key: tuple[str, str] | None = None
+        scores: list[float] = []
+        for field, term, block_idx, max_score in rows:
+            key = (field, term)
+            if key != current_key:
+                if current_key is not None:
+                    self._block_maxes[("", *current_key)] = scores
+                current_key = key
+                scores = []
+            scores.append(max_score)
+            conn.execute(
+                "INSERT INTO _global_blockmax "
+                "(table_name, field, term, block_idx, max_score) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("", field, term, block_idx, max_score),
+            )
+        if current_key is not None:
+            self._block_maxes[("", *current_key)] = scores
+        conn.commit()

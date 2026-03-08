@@ -599,9 +599,9 @@ class SQLiteInvertedIndex:
             for term, block_idx, max_score in rows:
                 if term != current_term:
                     if current_term is not None:
-                        block_max_index._block_maxes[(field, current_term)] = scores  # type: ignore[union-attr]
+                        block_max_index._block_maxes[(self._table_name, field, current_term)] = scores  # type: ignore[union-attr]
                     current_term = term
                     scores = []
                 scores.append(max_score)
             if current_term is not None:
-                block_max_index._block_maxes[(field, current_term)] = scores  # type: ignore[union-attr]
+                block_max_index._block_maxes[(self._table_name, field, current_term)] = scores  # type: ignore[union-attr]

@@ -323,9 +323,9 @@ class TestSkipBlockMaxPersistence:
         idx1.load_block_max_into(bm_idx)
         conn1.close()
 
-        # BlockMaxIndex should have the scores.
-        assert bm_idx.num_blocks("body", "alpha") == 1
-        assert bm_idx.get_block_max("body", "alpha", 0) > 0.0
+        # BlockMaxIndex should have the scores scoped by table name.
+        assert bm_idx.num_blocks("body", "alpha", table_name="docs") == 1
+        assert bm_idx.get_block_max("body", "alpha", 0, table_name="docs") > 0.0
 
 
 # ======================================================================
@@ -338,8 +338,8 @@ class TestBlockMaxIndexPersistence:
         db = str(tmp_path / "test.db")
 
         bm = BlockMaxIndex()
-        bm._block_maxes[("body", "hello")] = [1.5, 2.3, 0.9]
-        bm._block_maxes[("title", "world")] = [3.0]
+        bm._block_maxes[("articles", "body", "hello")] = [1.5, 2.3, 0.9]
+        bm._block_maxes[("articles", "title", "world")] = [3.0]
 
         conn = sqlite3.connect(db)
         bm.save_to_sqlite(conn)
@@ -350,12 +350,32 @@ class TestBlockMaxIndexPersistence:
         bm2.load_from_sqlite(conn2)
         conn2.close()
 
-        assert bm2.get_block_max("body", "hello", 0) == 1.5
-        assert bm2.get_block_max("body", "hello", 1) == 2.3
-        assert bm2.get_block_max("body", "hello", 2) == 0.9
-        assert bm2.get_block_max("title", "world", 0) == 3.0
-        assert bm2.num_blocks("body", "hello") == 3
-        assert bm2.num_blocks("title", "world") == 1
+        assert bm2.get_block_max("body", "hello", 0, table_name="articles") == 1.5
+        assert bm2.get_block_max("body", "hello", 1, table_name="articles") == 2.3
+        assert bm2.get_block_max("body", "hello", 2, table_name="articles") == 0.9
+        assert bm2.get_block_max("title", "world", 0, table_name="articles") == 3.0
+        assert bm2.num_blocks("body", "hello", table_name="articles") == 3
+        assert bm2.num_blocks("title", "world", table_name="articles") == 1
+
+    def test_save_and_load_multi_table_isolation(self, tmp_path):
+        """Block-max scores from different tables must not collide."""
+        db = str(tmp_path / "test.db")
+
+        bm = BlockMaxIndex()
+        bm._block_maxes[("articles", "body", "hello")] = [1.5]
+        bm._block_maxes[("comments", "body", "hello")] = [9.9]
+
+        conn = sqlite3.connect(db)
+        bm.save_to_sqlite(conn)
+        conn.close()
+
+        bm2 = BlockMaxIndex()
+        conn2 = sqlite3.connect(db)
+        bm2.load_from_sqlite(conn2)
+        conn2.close()
+
+        assert bm2.get_block_max("body", "hello", 0, table_name="articles") == 1.5
+        assert bm2.get_block_max("body", "hello", 0, table_name="comments") == 9.9
 
     def test_save_overwrites_previous(self, tmp_path):
         db = str(tmp_path / "test.db")
@@ -363,11 +383,11 @@ class TestBlockMaxIndexPersistence:
         conn = sqlite3.connect(db)
 
         bm1 = BlockMaxIndex()
-        bm1._block_maxes[("body", "hello")] = [1.0]
+        bm1._block_maxes[("", "body", "hello")] = [1.0]
         bm1.save_to_sqlite(conn)
 
         bm2 = BlockMaxIndex()
-        bm2._block_maxes[("body", "hello")] = [9.9]
+        bm2._block_maxes[("", "body", "hello")] = [9.9]
         bm2.save_to_sqlite(conn)
 
         bm3 = BlockMaxIndex()
@@ -386,6 +406,32 @@ class TestBlockMaxIndexPersistence:
         conn.close()
 
         assert bm.num_blocks("body", "hello") == 0
+
+    def test_load_legacy_schema_migration(self, tmp_path):
+        """Old databases without table_name column should auto-migrate."""
+        db = str(tmp_path / "legacy.db")
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "CREATE TABLE _global_blockmax ("
+            "    field     TEXT    NOT NULL,"
+            "    term      TEXT    NOT NULL,"
+            "    block_idx INTEGER NOT NULL,"
+            "    max_score REAL    NOT NULL,"
+            "    PRIMARY KEY (field, term, block_idx)"
+            ")"
+        )
+        conn.execute(
+            "INSERT INTO _global_blockmax VALUES ('body', 'hello', 0, 2.5)"
+        )
+        conn.commit()
+
+        bm = BlockMaxIndex()
+        bm.load_from_sqlite(conn)
+        conn.close()
+
+        # Legacy rows are loaded with table_name=""
+        assert bm.get_block_max("body", "hello", 0) == 2.5
+        assert bm.num_blocks("body", "hello") == 1
 
 
 # ======================================================================

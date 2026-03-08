@@ -136,6 +136,7 @@ class BlockMaxWANDScorer:
         fields: list[str] | None = None,
         terms: list[str] | None = None,
         block_size: int = 128,
+        table_name: str = "",
     ) -> None:
         self.scorers = scorers
         self.k = k
@@ -144,6 +145,7 @@ class BlockMaxWANDScorer:
         self.fields = fields or [""] * len(posting_lists)
         self.terms = terms or [""] * len(posting_lists)
         self.block_size = block_size
+        self.table_name = table_name
 
     def _get_block_idx(self, position: int) -> int:
         return position // self.block_size
@@ -182,7 +184,8 @@ class BlockMaxWANDScorer:
                 ):
                     block_idx = self._get_block_idx(positions[i])
                     block_max = self.block_max_index.get_block_max(
-                        self.fields[i], self.terms[i], block_idx
+                        self.fields[i], self.terms[i], block_idx,
+                        table_name=self.table_name,
                     )
                     potential_score += block_max
 
