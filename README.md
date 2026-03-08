@@ -56,13 +56,13 @@ graph TD
     PAR --> VI[Vector Index<br/>HNSW + SQLite]
     PAR --> GS[Graph Store<br/>SQLite]
 
-    subgraph Scoring
+    subgraph Scoring [Scoring &lt;br/&gt; bayesian-bm25]
         BM25[BM25]
         BBFS[Bayesian BM25]
         VS[Vector Scorer]
     end
 
-    subgraph Fusion
+    subgraph Fusion [Fusion &lt;br/&gt; bayesian-bm25]
         LO[Log-Odds]
         PB[Probabilistic Boolean]
     end
@@ -77,10 +77,10 @@ graph TD
 uqa/
   core/           PostingList, types, hierarchical documents
   storage/        SQLite-backed stores: documents, inverted index, vectors, graph
-  operators/      Operator algebra (boolean, primitive, hybrid, aggregation)
-  scoring/        BM25, Bayesian BM25, VectorScorer, WAND/BlockMaxWAND
-  fusion/         Log-odds conjunction, probabilistic boolean
-  graph/          GraphStore, traversal, pattern matching, RPQ, cross-paradigm
+  operators/      Operator algebra (boolean, primitive, hybrid, aggregation, hierarchical)
+  scoring/        BM25, Bayesian BM25, VectorScorer, WAND/BlockMaxWAND (via bayesian-bm25)
+  fusion/         Log-odds conjunction, probabilistic boolean (via bayesian-bm25)
+  graph/          GraphStore, traversal, pattern matching, RPQ, cross-paradigm, indexes
   joins/          Hash, sort-merge, index, graph, cross-paradigm, similarity joins
   execution/      Volcano iterator engine: Apache Arrow columnar batches, physical operators, disk spilling
   planner/        Cost model, cardinality estimator, optimizer, parallel executor
@@ -194,6 +194,7 @@ engine = Engine(parallel_workers=0)                   # disable parallelism
 - Python 3.12+
 - numpy >= 1.26
 - pyarrow >= 20.0
+- bayesian-bm25 >= 0.8.0
 - hnswlib >= 0.8
 - pglast >= 7.0
 - prompt-toolkit >= 3.0
@@ -202,6 +203,9 @@ engine = Engine(parallel_workers=0)                   # disable parallelism
 ## Installation
 
 ```bash
+pip install uqa
+
+# From source
 pip install -e .
 
 # With development dependencies
