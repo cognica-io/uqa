@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+#
+# Unified Query Algebra
+#
+# Copyright (c) 2023-2026 Cognica, Inc.
+#
+
 """Full-text search examples using the fluent QueryBuilder API.
 
 Demonstrates:

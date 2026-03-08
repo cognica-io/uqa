@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+#
+# Unified Query Algebra
+#
+# Copyright (c) 2023-2026 Cognica, Inc.
+#
+
 """UQA extended SQL function examples.
 
 Demonstrates SQL functions beyond standard SQL:
