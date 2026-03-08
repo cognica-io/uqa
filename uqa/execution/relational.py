@@ -195,6 +195,10 @@ class SortOp(PhysicalOperator):
     Blocking operator: materializes all input before producing sorted
     output in batches.  Sort stability is guaranteed (Python's
     ``list.sort`` is stable).
+
+    When *spill_threshold* > 0 and the input exceeds that many rows,
+    sorted runs are spilled to disk as Arrow IPC files and merged via
+    a k-way merge (external merge sort).
     """
 
     def __init__(
@@ -202,34 +206,96 @@ class SortOp(PhysicalOperator):
         child: PhysicalOperator,
         sort_keys: list[tuple[str, bool]],
         batch_size: int = DEFAULT_BATCH_SIZE,
+        spill_threshold: int = 0,
     ) -> None:
         self._child = child
         self._sort_keys = sort_keys
         self._batch_size = batch_size
+        self._spill_threshold = spill_threshold
         self._sorted_rows: list[dict[str, Any]] | None = None
+        self._merge_iter: Any = None
+        self._spill_mgr: Any = None
         self._offset = 0
 
-    def open(self) -> None:
-        self._child.open()
-
-        all_rows: list[dict[str, Any]] = []
-        while True:
-            batch = self._child.next()
-            if batch is None:
-                break
-            all_rows.extend(batch.to_rows())
-        self._child.close()
-
-        for col_name, desc in reversed(self._sort_keys):
-            all_rows.sort(
+    @staticmethod
+    def _sort_rows(
+        rows: list[dict[str, Any]],
+        sort_keys: list[tuple[str, bool]],
+    ) -> None:
+        for col_name, desc in reversed(sort_keys):
+            rows.sort(
                 key=lambda r, c=col_name: (r.get(c) is None, r.get(c)),
                 reverse=desc,
             )
 
-        self._sorted_rows = all_rows
-        self._offset = 0
+    def open(self) -> None:
+        self._child.open()
+
+        if self._spill_threshold <= 0:
+            all_rows: list[dict[str, Any]] = []
+            while True:
+                batch = self._child.next()
+                if batch is None:
+                    break
+                all_rows.extend(batch.to_rows())
+            self._child.close()
+            self._sort_rows(all_rows, self._sort_keys)
+            self._sorted_rows = all_rows
+            self._offset = 0
+            return
+
+        # External merge sort with disk spilling.
+        from uqa.execution.spill import (
+            SpillManager,
+            SpillWriter,
+            merge_sorted_runs,
+            read_rows_from_ipc,
+        )
+
+        spill_mgr = SpillManager()
+        self._spill_mgr = spill_mgr
+        buffer: list[dict[str, Any]] = []
+        run_paths: list[str] = []
+
+        while True:
+            batch = self._child.next()
+            if batch is None:
+                break
+            buffer.extend(batch.to_rows())
+            if len(buffer) >= self._spill_threshold:
+                self._sort_rows(buffer, self._sort_keys)
+                path = spill_mgr.new_path()
+                writer = SpillWriter(path)
+                writer.write_rows(buffer)
+                writer.close()
+                run_paths.append(path)
+                buffer.clear()
+        self._child.close()
+
+        if not run_paths:
+            # Everything fit in memory.
+            self._sort_rows(buffer, self._sort_keys)
+            self._sorted_rows = buffer
+            self._offset = 0
+            return
+
+        runs: list[Any] = [read_rows_from_ipc(p) for p in run_paths]
+        if buffer:
+            self._sort_rows(buffer, self._sort_keys)
+            runs.append(iter(buffer))
+        self._merge_iter = merge_sorted_runs(runs, self._sort_keys)
 
     def next(self) -> Batch | None:
+        if self._merge_iter is not None:
+            rows: list[dict[str, Any]] = []
+            for row in self._merge_iter:
+                rows.append(row)
+                if len(rows) >= self._batch_size:
+                    break
+            if not rows:
+                return None
+            return Batch.from_rows(rows)
+
         if self._sorted_rows is None:
             return None
         if self._offset >= len(self._sorted_rows):
@@ -244,7 +310,11 @@ class SortOp(PhysicalOperator):
 
     def close(self) -> None:
         self._sorted_rows = None
+        self._merge_iter = None
         self._offset = 0
+        if self._spill_mgr is not None:
+            self._spill_mgr.cleanup()
+            self._spill_mgr = None
 
 
 class LimitOp(PhysicalOperator):
@@ -315,7 +385,13 @@ class HashAggOp(PhysicalOperator):
 
     When *group_columns* is empty, the entire input is treated as a
     single group (aggregate-only query like ``SELECT COUNT(*) FROM t``).
+
+    When *spill_threshold* > 0 and the input exceeds that many rows,
+    rows are hash-partitioned into 16 on-disk partitions (Grace hash)
+    and each partition is aggregated independently.
     """
+
+    _NUM_PARTITIONS = 16
 
     def __init__(
         self,
@@ -323,30 +399,27 @@ class HashAggOp(PhysicalOperator):
         group_columns: list[str],
         agg_specs: list[tuple[str, str, str | None]],
         batch_size: int = DEFAULT_BATCH_SIZE,
+        spill_threshold: int = 0,
     ) -> None:
         self._child = child
         self._group_columns = group_columns
         self._agg_specs = agg_specs
         self._batch_size = batch_size
+        self._spill_threshold = spill_threshold
         self._result_rows: list[dict[str, Any]] | None = None
+        self._result_iter: Any = None
+        self._spill_mgr: Any = None
         self._offset = 0
 
-    def open(self) -> None:
-        self._child.open()
-
+    def _aggregate_rows(
+        self, rows_iter: Any
+    ) -> list[dict[str, Any]]:
         groups: dict[tuple, list[dict[str, Any]]] = {}
-        while True:
-            batch = self._child.next()
-            if batch is None:
-                break
-            for row in batch.to_rows():
-                key = tuple(row.get(c) for c in self._group_columns)
-                groups.setdefault(key, []).append(row)
-        self._child.close()
-
+        for row in rows_iter:
+            key = tuple(row.get(c) for c in self._group_columns)
+            groups.setdefault(key, []).append(row)
         if not groups and not self._group_columns:
             groups[()] = []
-
         result: list[dict[str, Any]] = []
         for key, rows in groups.items():
             row_out: dict[str, Any] = dict(
@@ -357,11 +430,117 @@ class HashAggOp(PhysicalOperator):
                     func_name, arg_col, rows
                 )
             result.append(row_out)
+        return result
 
-        self._result_rows = result
-        self._offset = 0
+    def open(self) -> None:
+        self._child.open()
+
+        if self._spill_threshold <= 0:
+            self._result_rows = self._aggregate_rows(
+                self._drain_child()
+            )
+            self._offset = 0
+            return
+
+        # Try in-memory first.
+        buffer: list[dict[str, Any]] = []
+        exceeded = False
+        while True:
+            batch = self._child.next()
+            if batch is None:
+                break
+            buffer.extend(batch.to_rows())
+            if len(buffer) >= self._spill_threshold:
+                exceeded = True
+                break
+
+        if not exceeded:
+            self._child.close()
+            self._result_rows = self._aggregate_rows(iter(buffer))
+            self._offset = 0
+            return
+
+        # Grace hash partitioning.
+        from uqa.execution.spill import (
+            SpillManager,
+            SpillWriter,
+            read_rows_from_ipc,
+        )
+
+        spill_mgr = SpillManager()
+        self._spill_mgr = spill_mgr
+        num_parts = self._NUM_PARTITIONS
+        flush_size = max(1024, self._spill_threshold // num_parts)
+        partition_paths = [spill_mgr.new_path() for _ in range(num_parts)]
+        writers = [SpillWriter(p) for p in partition_paths]
+        part_buffers: list[list[dict[str, Any]]] = [
+            [] for _ in range(num_parts)
+        ]
+        group_cols = self._group_columns
+
+        def _partition_row(row: dict[str, Any]) -> None:
+            key = tuple(row.get(c) for c in group_cols)
+            h = hash(key) % num_parts
+            part_buffers[h].append(row)
+            if len(part_buffers[h]) >= flush_size:
+                writers[h].write_rows(part_buffers[h])
+                part_buffers[h].clear()
+
+        for row in buffer:
+            _partition_row(row)
+        buffer.clear()
+
+        while True:
+            batch = self._child.next()
+            if batch is None:
+                break
+            for row in batch.to_rows():
+                _partition_row(row)
+        self._child.close()
+
+        active_paths: list[str] = []
+        for h in range(num_parts):
+            if part_buffers[h]:
+                writers[h].write_rows(part_buffers[h])
+                part_buffers[h].clear()
+            writers[h].close()
+            if writers[h].row_count > 0:
+                active_paths.append(partition_paths[h])
+
+        if not active_paths and not self._group_columns:
+            self._result_rows = self._aggregate_rows(iter([]))
+            self._offset = 0
+            return
+
+        agg_specs = self._agg_specs
+
+        def _process_partitions():
+            for path in active_paths:
+                yield from self._aggregate_rows(
+                    read_rows_from_ipc(path)
+                )
+
+        self._result_iter = _process_partitions()
+
+    def _drain_child(self) -> Any:
+        while True:
+            batch = self._child.next()
+            if batch is None:
+                break
+            yield from batch.to_rows()
+        self._child.close()
 
     def next(self) -> Batch | None:
+        if self._result_iter is not None:
+            rows: list[dict[str, Any]] = []
+            for row in self._result_iter:
+                rows.append(row)
+                if len(rows) >= self._batch_size:
+                    break
+            if not rows:
+                return None
+            return Batch.from_rows(rows)
+
         if self._result_rows is None:
             return None
         if self._offset >= len(self._result_rows):
@@ -376,47 +555,153 @@ class HashAggOp(PhysicalOperator):
 
     def close(self) -> None:
         self._result_rows = None
+        self._result_iter = None
         self._offset = 0
+        if self._spill_mgr is not None:
+            self._spill_mgr.cleanup()
+            self._spill_mgr = None
 
 
 class DistinctOp(PhysicalOperator):
     """Remove duplicate rows based on specified columns.
 
     Blocking operator: materializes all input to perform deduplication.
+
+    When *spill_threshold* > 0 and the input exceeds that many rows,
+    rows are hash-partitioned to disk and deduplicated per partition.
     """
+
+    _NUM_PARTITIONS = 16
 
     def __init__(
         self,
         child: PhysicalOperator,
         columns: list[str],
         batch_size: int = DEFAULT_BATCH_SIZE,
+        spill_threshold: int = 0,
     ) -> None:
         self._child = child
         self._columns = columns
         self._batch_size = batch_size
+        self._spill_threshold = spill_threshold
         self._unique_rows: list[dict[str, Any]] | None = None
+        self._result_iter: Any = None
+        self._spill_mgr: Any = None
         self._offset = 0
+
+    @staticmethod
+    def _dedup(
+        rows_iter: Any,
+        columns: list[str],
+    ) -> list[dict[str, Any]]:
+        seen: set[tuple] = set()
+        unique: list[dict[str, Any]] = []
+        for row in rows_iter:
+            key = tuple(row.get(c) for c in columns)
+            if key not in seen:
+                seen.add(key)
+                unique.append(row)
+        return unique
 
     def open(self) -> None:
         self._child.open()
 
-        seen: set[tuple] = set()
-        unique: list[dict[str, Any]] = []
+        if self._spill_threshold <= 0:
+            all_rows: list[dict[str, Any]] = []
+            while True:
+                batch = self._child.next()
+                if batch is None:
+                    break
+                all_rows.extend(batch.to_rows())
+            self._child.close()
+            self._unique_rows = self._dedup(all_rows, self._columns)
+            self._offset = 0
+            return
+
+        # Try in-memory first.
+        buffer: list[dict[str, Any]] = []
+        exceeded = False
+        while True:
+            batch = self._child.next()
+            if batch is None:
+                break
+            buffer.extend(batch.to_rows())
+            if len(buffer) >= self._spill_threshold:
+                exceeded = True
+                break
+
+        if not exceeded:
+            self._child.close()
+            self._unique_rows = self._dedup(buffer, self._columns)
+            self._offset = 0
+            return
+
+        # Hash partition dedup.
+        from uqa.execution.spill import (
+            SpillManager,
+            SpillWriter,
+            read_rows_from_ipc,
+        )
+
+        spill_mgr = SpillManager()
+        self._spill_mgr = spill_mgr
+        num_parts = self._NUM_PARTITIONS
+        flush_size = max(1024, self._spill_threshold // num_parts)
+        partition_paths = [spill_mgr.new_path() for _ in range(num_parts)]
+        writers = [SpillWriter(p) for p in partition_paths]
+        part_buffers: list[list[dict[str, Any]]] = [
+            [] for _ in range(num_parts)
+        ]
+        columns = self._columns
+
+        def _partition_row(row: dict[str, Any]) -> None:
+            key = tuple(row.get(c) for c in columns)
+            h = hash(key) % num_parts
+            part_buffers[h].append(row)
+            if len(part_buffers[h]) >= flush_size:
+                writers[h].write_rows(part_buffers[h])
+                part_buffers[h].clear()
+
+        for row in buffer:
+            _partition_row(row)
+        buffer.clear()
+
         while True:
             batch = self._child.next()
             if batch is None:
                 break
             for row in batch.to_rows():
-                key = tuple(row.get(c) for c in self._columns)
-                if key not in seen:
-                    seen.add(key)
-                    unique.append(row)
+                _partition_row(row)
         self._child.close()
 
-        self._unique_rows = unique
-        self._offset = 0
+        active_paths: list[str] = []
+        for h in range(num_parts):
+            if part_buffers[h]:
+                writers[h].write_rows(part_buffers[h])
+                part_buffers[h].clear()
+            writers[h].close()
+            if writers[h].row_count > 0:
+                active_paths.append(partition_paths[h])
+
+        def _dedup_partitions():
+            for path in active_paths:
+                yield from self._dedup(
+                    read_rows_from_ipc(path), columns
+                )
+
+        self._result_iter = _dedup_partitions()
 
     def next(self) -> Batch | None:
+        if self._result_iter is not None:
+            rows: list[dict[str, Any]] = []
+            for row in self._result_iter:
+                rows.append(row)
+                if len(rows) >= self._batch_size:
+                    break
+            if not rows:
+                return None
+            return Batch.from_rows(rows)
+
         if self._unique_rows is None:
             return None
         if self._offset >= len(self._unique_rows):
@@ -431,7 +716,11 @@ class DistinctOp(PhysicalOperator):
 
     def close(self) -> None:
         self._unique_rows = None
+        self._result_iter = None
         self._offset = 0
+        if self._spill_mgr is not None:
+            self._spill_mgr.cleanup()
+            self._spill_mgr = None
 
 
 class WindowOp(PhysicalOperator):
@@ -448,10 +737,12 @@ class WindowOp(PhysicalOperator):
         child: PhysicalOperator,
         window_specs: list[WindowSpec],
         batch_size: int = DEFAULT_BATCH_SIZE,
+        spill_threshold: int = 0,
     ) -> None:
         self._child = child
         self._window_specs = window_specs
         self._batch_size = batch_size
+        self._spill_threshold = spill_threshold
         self._result_rows: list[dict[str, Any]] | None = None
         self._offset = 0
 

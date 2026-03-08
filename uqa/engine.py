@@ -41,6 +41,7 @@ class Engine:
         vector_dimensions: int = 64,
         max_elements: int = 10000,
         parallel_workers: int = 4,
+        spill_threshold: int = 0,
     ):
         self.document_store = DocumentStore()
         self.inverted_index = InvertedIndex()
@@ -55,6 +56,7 @@ class Engine:
         self._parallel_executor = ParallelExecutor(
             max_workers=parallel_workers
         )
+        self.spill_threshold = spill_threshold
         self._tables: dict[str, Any] = {}
         self._views: dict[str, Any] = {}  # name -> SelectStmt AST
         self._prepared: dict[str, Any] = {}  # name -> PrepareStmt AST

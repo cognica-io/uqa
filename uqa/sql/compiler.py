@@ -837,7 +837,10 @@ class SQLCompiler:
         if has_window:
             # Window functions: compute window values, then project
             win_specs = self._extract_window_specs(stmt.targetList)
-            physical = WindowOp(physical, win_specs)
+            physical = WindowOp(
+                physical, win_specs,
+                spill_threshold=self._engine.spill_threshold,
+            )
 
             # Build expected columns: non-window columns + window aliases
             expected_cols = []
@@ -863,7 +866,10 @@ class SQLCompiler:
                 self._extract_column_name(g) for g in stmt.groupClause
             ]
             agg_specs = self._extract_agg_specs(stmt.targetList)
-            physical = HashAggOp(physical, group_cols, agg_specs)
+            physical = HashAggOp(
+                physical, group_cols, agg_specs,
+                spill_threshold=self._engine.spill_threshold,
+            )
 
             if stmt.havingClause is not None:
                 col, pred = self._resolve_having_predicate(
@@ -875,7 +881,10 @@ class SQLCompiler:
 
         elif is_agg_only:
             agg_specs = self._extract_agg_specs(stmt.targetList)
-            physical = HashAggOp(physical, [], agg_specs)
+            physical = HashAggOp(
+                physical, [], agg_specs,
+                spill_threshold=self._engine.spill_threshold,
+            )
             expected_cols = [a for a, _, _ in agg_specs]
 
         else:
@@ -908,7 +917,10 @@ class SQLCompiler:
                     if table is not None
                     else []
                 )
-            physical = DistinctOp(physical, distinct_cols)
+            physical = DistinctOp(
+                physical, distinct_cols,
+                spill_threshold=self._engine.spill_threshold,
+            )
 
         # ORDER BY
         if stmt.sortClause is not None:
@@ -919,7 +931,10 @@ class SQLCompiler:
                 )
                 for s in stmt.sortClause
             ]
-            physical = SortOp(physical, sort_keys)
+            physical = SortOp(
+                physical, sort_keys,
+                spill_threshold=self._engine.spill_threshold,
+            )
 
         # LIMIT / OFFSET
         if stmt.limitCount is not None:
