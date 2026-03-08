@@ -12,7 +12,7 @@ Where conventional systems force users to stitch together a relational database,
 SELECT title, _score FROM papers
 WHERE fuse_log_odds(
     text_match(title, 'attention'),
-    knn_match(5),
+    knn_match(embedding, ARRAY[0.1, 0.2, ...], 5),
     traverse_match(1, 'cited_by', 2)
 ) AND year >= 2020
 ORDER BY _score DESC;
@@ -255,17 +255,28 @@ ORDER BY _score DESC;
 
 Returns: PostingList with `_score` as a calibrated probability in $[0, 1]$.
 
-#### `knn_match(k)`
+#### `knn_match(field, vector, k)`
 
-K-nearest neighbor vector search using the HNSW index. Requires calling `engine.set_query_vector(vec)` before executing the SQL statement.
+K-nearest neighbor vector search using the per-field HNSW index. The vector argument accepts either an `ARRAY[...]` literal or a `$N` parameter reference.
 
 ```python
-engine.set_query_vector(np.array([...], dtype=np.float32))
-result = engine.sql("SELECT title, _score FROM papers WHERE knn_match(10) ORDER BY _score DESC")
+# Option A: parameter binding
+qv = np.random.randn(64).astype(np.float32)
+result = engine.sql(
+    "SELECT title, _score FROM papers WHERE knn_match(embedding, $1, 10) ORDER BY _score DESC",
+    params=[qv],
+)
+
+# Option B: inline ARRAY literal
+result = engine.sql(
+    "SELECT title, _score FROM papers WHERE knn_match(embedding, ARRAY[0.1, 0.2, ...], 10) ORDER BY _score DESC"
+)
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
+| `field` | column name | The VECTOR column to search |
+| `vector` | ARRAY or $N | Query vector (float32) |
 | `k` | integer | Number of nearest neighbors to retrieve |
 
 Returns: PostingList with `_score` set to cosine similarity.
@@ -308,18 +319,23 @@ SELECT * FROM _default WHERE path_filter('items.price', '>', 100);
 
 If any element in a nested array matches, the document is included.
 
-#### `vector_exclude(k, threshold)`
+#### `vector_exclude(field, positive_vector, negative_vector, k, threshold)`
 
-KNN search with negative vector exclusion. Retrieves $k$ nearest neighbors to the query vector, then removes documents whose cosine similarity to the negative vector exceeds the threshold. Requires both `set_query_vector()` and `set_negative_vector()`.
+KNN search with negative vector exclusion. Retrieves $k$ nearest neighbors to the positive vector, then removes documents whose cosine similarity to the negative vector exceeds the threshold.
 
 ```python
-engine.set_query_vector(query_vec)
-engine.set_negative_vector(negative_vec)
-result = engine.sql("SELECT title, _score FROM papers WHERE vector_exclude(10, 0.8) ORDER BY _score DESC")
+result = engine.sql(
+    "SELECT title, _score FROM papers "
+    "WHERE vector_exclude(embedding, $1, $2, 10, 0.8) ORDER BY _score DESC",
+    params=[query_vec, negative_vec],
+)
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
+| `field` | column name | The VECTOR column to search |
+| `positive_vector` | ARRAY or $N | Query vector for KNN retrieval |
+| `negative_vector` | ARRAY or $N | Negative vector for exclusion |
 | `k` | integer | Number of nearest neighbors to retrieve |
 | `threshold` | float | Exclusion threshold for negative similarity |
 
@@ -335,7 +351,7 @@ Log-odds conjunction. Maps each signal's calibrated probability to log-odds, com
 SELECT title, _score FROM papers
 WHERE fuse_log_odds(
     text_match(title, 'attention'),
-    knn_match(5),
+    knn_match(embedding, ARRAY[0.1, 0.2, ...], 5),
     traverse_match(1, 'cited_by', 2)
 ) ORDER BY _score DESC;
 
@@ -343,7 +359,7 @@ WHERE fuse_log_odds(
 SELECT title, _score FROM papers
 WHERE fuse_log_odds(
     bayesian_match(title, 'neural'),
-    knn_match(10),
+    knn_match(embedding, ARRAY[0.1, 0.2, ...], 10),
     0.7
 ) ORDER BY _score DESC;
 ```
@@ -356,7 +372,7 @@ Probabilistic AND. Computes $P = \prod_i P_i$.
 SELECT title, _score FROM papers
 WHERE fuse_prob_and(
     text_match(title, 'attention'),
-    knn_match(5)
+    knn_match(embedding, ARRAY[0.1, 0.2, ...], 5)
 ) ORDER BY _score DESC;
 ```
 
@@ -368,7 +384,7 @@ Probabilistic OR. Computes $P = 1 - \prod_i (1 - P_i)$.
 SELECT title, _score FROM papers
 WHERE fuse_prob_or(
     text_match(title, 'attention'),
-    knn_match(5)
+    knn_match(embedding, ARRAY[0.1, 0.2, ...], 5)
 ) ORDER BY _score DESC;
 ```
 
@@ -614,9 +630,12 @@ CREATE TABLE papers (
     title TEXT NOT NULL,
     year INTEGER NOT NULL,
     field TEXT,
-    citations INTEGER DEFAULT 0
+    citations INTEGER DEFAULT 0,
+    embedding VECTOR(64)
 );
 ```
+
+Supported column types: `INTEGER`, `BIGINT`, `SERIAL`, `TEXT`, `VARCHAR`, `REAL`, `FLOAT`, `DOUBLE PRECISION`, `NUMERIC`, `BOOLEAN`, `VECTOR(N)`. The `VECTOR(N)` type creates a per-field HNSW index with N dimensions for use with `knn_match()`.
 
 #### Data Manipulation
 
@@ -696,16 +715,19 @@ ORDER BY _score DESC;
 
 #### Vector Search
 
-```python
-import numpy as np
-
-# Set the query vector before executing SQL
-engine.set_query_vector(np.random.randn(64).astype(np.float32))
+```sql
+-- K-nearest neighbors with ARRAY literal
+SELECT title, _score FROM papers
+WHERE knn_match(embedding, ARRAY[0.1, 0.2, ...], 10) ORDER BY _score DESC;
 ```
 
-```sql
--- K-nearest neighbors
-SELECT title, _score FROM papers WHERE knn_match(10) ORDER BY _score DESC;
+```python
+-- K-nearest neighbors with parameter binding
+qv = np.random.randn(64).astype(np.float32)
+result = engine.sql(
+    "SELECT title, _score FROM papers WHERE knn_match(embedding, $1, 10) ORDER BY _score DESC",
+    params=[qv],
+)
 ```
 
 #### Graph Queries
@@ -729,7 +751,7 @@ WHERE traverse_match(1, 'cited_by', 2) ORDER BY _score DESC;
 SELECT title, _score FROM papers
 WHERE fuse_log_odds(
     text_match(title, 'attention'),
-    knn_match(5),
+    knn_match(embedding, ARRAY[0.1, 0.2, ...], 5),
     traverse_match(1, 'cited_by', 2)
 ) ORDER BY _score DESC;
 
@@ -737,7 +759,7 @@ WHERE fuse_log_odds(
 SELECT title, _score FROM papers
 WHERE fuse_log_odds(
     bayesian_match(title, 'neural'),
-    knn_match(10),
+    knn_match(embedding, ARRAY[0.1, 0.2, ...], 10),
     0.7
 ) ORDER BY _score DESC;
 
@@ -745,13 +767,13 @@ WHERE fuse_log_odds(
 SELECT title, _score FROM papers
 WHERE fuse_prob_and(
     text_match(title, 'attention'),
-    knn_match(5)
+    knn_match(embedding, ARRAY[0.1, 0.2, ...], 5)
 ) ORDER BY _score DESC;
 
 SELECT title, _score FROM papers
 WHERE fuse_prob_or(
     text_match(title, 'attention'),
-    knn_match(5)
+    knn_match(embedding, ARRAY[0.1, 0.2, ...], 5)
 ) ORDER BY _score DESC;
 ```
 

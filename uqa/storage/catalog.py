@@ -221,6 +221,10 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         self._conn.execute(f'DROP TABLE IF EXISTS "_field_stats_{name}"')
         self._conn.execute(f'DROP TABLE IF EXISTS "_doc_lengths_{name}"')
 
+        # -- Drop per-table graph tables ---
+        self._conn.execute(f'DROP TABLE IF EXISTS "_graph_vertices_{name}"')
+        self._conn.execute(f'DROP TABLE IF EXISTS "_graph_edges_{name}"')
+
         # Drop all per-field inverted, skip, and block-max tables
         for prefix in (f"_inverted_{name}_", f"_skip_{name}_", f"_blockmax_{name}_"):
             rows = self._conn.execute(

@@ -46,19 +46,10 @@ def engine() -> Engine:
         ('scaling language models methods and insights', 2020, 'arXiv', 'nlp', 8000)
     """)
 
-    # -- Graph: citation edges (programmatic API) --------------------
-    docs = [
-        "attention is all you need",
-        "bert pre-training of deep bidirectional transformers",
-        "graph attention networks",
-        "vision transformer for image recognition",
-        "scaling language models methods and insights",
-    ]
-    for i, title in enumerate(docs, 1):
-        e.add_graph_vertex(Vertex(i, {"title": title}))
-    e.add_graph_edge(Edge(1, 1, 2, "cited_by"))
-    e.add_graph_edge(Edge(2, 1, 3, "cited_by"))
-    e.add_graph_edge(Edge(3, 2, 4, "cited_by"))
+    # -- Graph: citation edges (per-table graph store) ---------------
+    e.add_graph_edge(Edge(1, 1, 2, "cited_by"), table="papers")
+    e.add_graph_edge(Edge(2, 1, 3, "cited_by"), table="papers")
+    e.add_graph_edge(Edge(3, 2, 4, "cited_by"), table="papers")
 
     return e
 
@@ -359,18 +350,24 @@ class TestAggregation:
 
 class TestGraphQueries:
     def test_traverse(self, engine: Engine) -> None:
-        result = engine.sql("SELECT _doc_id, title FROM traverse(1, 'cited_by', 1)")
+        result = engine.sql(
+            "SELECT _doc_id, title FROM traverse(1, 'cited_by', 1, 'papers')"
+        )
         doc_ids = {r["_doc_id"] for r in result}
         assert 2 in doc_ids
         assert 3 in doc_ids
 
     def test_traverse_2_hops(self, engine: Engine) -> None:
-        result = engine.sql("SELECT _doc_id FROM traverse(1, 'cited_by', 2)")
+        result = engine.sql(
+            "SELECT _doc_id FROM traverse(1, 'cited_by', 2, 'papers')"
+        )
         doc_ids = {r["_doc_id"] for r in result}
         assert 4 in doc_ids  # 1->2->4
 
     def test_rpq(self, engine: Engine) -> None:
-        result = engine.sql("SELECT _doc_id FROM rpq('cited_by/cited_by', 1)")
+        result = engine.sql(
+            "SELECT _doc_id FROM rpq('cited_by/cited_by', 1, 'papers')"
+        )
         doc_ids = {r["_doc_id"] for r in result}
         assert 4 in doc_ids  # 1->2->4
 
@@ -539,9 +536,12 @@ class TestEdgeCases:
         )
         assert result.rows[0]["cnt"] == 2
 
-    def test_knn_without_vector_raises(self, engine: Engine) -> None:
-        with pytest.raises(ValueError, match="No query vector"):
-            engine.sql("SELECT * FROM papers WHERE knn_match(5)")
+    def test_knn_wrong_arg_count_raises(self, engine: Engine) -> None:
+        with pytest.raises(ValueError, match="requires 3 arguments"):
+            engine.sql(
+                "SELECT * FROM papers "
+                "WHERE knn_match(ARRAY[1.0, 2.0], 5)"
+            )
 
     def test_unsupported_statement(self, engine: Engine) -> None:
         with pytest.raises(ValueError, match="Unsupported statement"):
@@ -567,30 +567,35 @@ def hybrid_engine() -> Engine:
             id SERIAL PRIMARY KEY,
             title TEXT NOT NULL,
             year INTEGER NOT NULL,
-            field TEXT
+            field TEXT,
+            embedding VECTOR(8)
         )
     """)
-    e.sql("""INSERT INTO papers (title, year, field) VALUES
-        ('attention is all you need', 2017, 'nlp'),
-        ('bert pre-training', 2019, 'nlp'),
-        ('graph attention networks', 2018, 'graph'),
-        ('vision transformer', 2021, 'cv'),
-        ('scaling language models', 2020, 'nlp')
-    """)
-    for i in range(1, 6):
-        e.add_graph_vertex(Vertex(i, {"title": f"paper_{i}"}))
-    e.add_graph_edge(Edge(1, 1, 2, "cited_by"))
-    e.add_graph_edge(Edge(2, 1, 3, "cited_by"))
-    e.add_graph_edge(Edge(3, 1, 4, "cited_by"))
-    e.add_graph_edge(Edge(4, 2, 4, "cited_by"))
 
     rng = np.random.RandomState(42)
     base = rng.randn(8).astype(np.float32)
     base /= np.linalg.norm(base)
-    for i in range(1, 6):
+
+    titles = [
+        ('attention is all you need', 2017, 'nlp'),
+        ('bert pre-training', 2019, 'nlp'),
+        ('graph attention networks', 2018, 'graph'),
+        ('vision transformer', 2021, 'cv'),
+        ('scaling language models', 2020, 'nlp'),
+    ]
+    for title, year, fld in titles:
         emb = base + rng.randn(8).astype(np.float32) * 0.3
         emb = (emb / np.linalg.norm(emb)).astype(np.float32)
-        e.vector_index.add(i, emb)
+        arr_str = "ARRAY[" + ",".join(str(float(v)) for v in emb) + "]"
+        e.sql(
+            f"INSERT INTO papers (title, year, field, embedding) "
+            f"VALUES ('{title}', {year}, '{fld}', {arr_str})"
+        )
+
+    e.add_graph_edge(Edge(1, 1, 2, "cited_by"), table="papers")
+    e.add_graph_edge(Edge(2, 1, 3, "cited_by"), table="papers")
+    e.add_graph_edge(Edge(3, 1, 4, "cited_by"), table="papers")
+    e.add_graph_edge(Edge(4, 2, 4, "cited_by"), table="papers")
 
     return e
 
@@ -683,41 +688,37 @@ class TestFusionLogOdds:
             assert row["year"] >= 2018
 
     def test_fuse_three_signals(self, hybrid_engine: Engine) -> None:
-        compiler = SQLCompiler(hybrid_engine)
         rng = np.random.RandomState(42)
         qv = rng.randn(8).astype(np.float32)
         qv /= np.linalg.norm(qv)
-        compiler.set_query_vector(qv)
 
-        result = compiler.execute("""
+        result = hybrid_engine.sql("""
             SELECT title, _score FROM papers
             WHERE fuse_log_odds(
                 text_match(title, 'attention'),
-                knn_match(5),
+                knn_match(embedding, $1, 5),
                 traverse_match(1, 'cited_by', 1)
             )
             ORDER BY _score DESC
-        """)
+        """, params=[qv])
         assert len(result) > 0
         for row in result:
             assert 0.0 < row["_score"] < 1.0
 
     def test_knn_calibrated_in_fusion(self, hybrid_engine: Engine) -> None:
         """knn_match inside fusion applies P = (1 + cosine_sim) / 2."""
-        compiler = SQLCompiler(hybrid_engine)
         rng = np.random.RandomState(42)
         qv = rng.randn(8).astype(np.float32)
         qv /= np.linalg.norm(qv)
-        compiler.set_query_vector(qv)
 
-        result = compiler.execute("""
+        result = hybrid_engine.sql("""
             SELECT title, _score FROM papers
             WHERE fuse_log_odds(
                 bayesian_match(title, 'attention'),
-                knn_match(5)
+                knn_match(embedding, $1, 5)
             )
             ORDER BY _score DESC
-        """)
+        """, params=[qv])
         for row in result:
             assert 0.0 < row["_score"] < 1.0
 
@@ -826,6 +827,7 @@ class TestSQLPathFunctions:
     @pytest.fixture
     def order_engine(self) -> Engine:
         e = Engine()
+        e.sql("CREATE TABLE orders (id INTEGER PRIMARY KEY, data TEXT)")
         e.add_document(1, {
             "order_id": "ORD-001",
             "customer": "Alice",
@@ -834,7 +836,7 @@ class TestSQLPathFunctions:
                 {"name": "Widget B", "price": 49.99, "quantity": 1},
             ],
             "shipping": {"city": "Seoul", "method": "express", "cost": 15.0},
-        })
+        }, table="orders")
         e.add_document(2, {
             "order_id": "ORD-002",
             "customer": "Bob",
@@ -842,7 +844,7 @@ class TestSQLPathFunctions:
                 {"name": "Gadget X", "price": 99.99, "quantity": 1},
             ],
             "shipping": {"city": "Busan", "method": "standard", "cost": 5.0},
-        })
+        }, table="orders")
         e.add_document(3, {
             "order_id": "ORD-003",
             "customer": "Charlie",
@@ -852,14 +854,14 @@ class TestSQLPathFunctions:
                 {"name": "Part Z", "price": 9.99, "quantity": 10},
             ],
             "shipping": {"city": "Seoul", "method": "express", "cost": 20.0},
-        })
+        }, table="orders")
         return e
 
     # -- path_agg --
 
     def test_path_agg_sum(self, order_engine: Engine) -> None:
         result = order_engine.sql(
-            "SELECT path_agg('items.price', 'sum') AS total FROM _default"
+            "SELECT path_agg('items.price', 'sum') AS total FROM orders"
         )
         assert len(result.rows) == 3
         totals = sorted(r["total"] for r in result.rows)
@@ -869,14 +871,14 @@ class TestSQLPathFunctions:
 
     def test_path_agg_count(self, order_engine: Engine) -> None:
         result = order_engine.sql(
-            "SELECT path_agg('items.name', 'count') AS n FROM _default"
+            "SELECT path_agg('items.name', 'count') AS n FROM orders"
         )
         counts = sorted(r["n"] for r in result.rows)
         assert counts == [1, 2, 3]
 
     def test_path_agg_avg(self, order_engine: Engine) -> None:
         result = order_engine.sql(
-            "SELECT path_agg('items.price', 'avg') AS avg_price FROM _default"
+            "SELECT path_agg('items.price', 'avg') AS avg_price FROM orders"
         )
         avgs = sorted(r["avg_price"] for r in result.rows)
         assert abs(avgs[0] - 39.99) < 0.01  # ORD-001: (29.99+49.99)/2
@@ -885,7 +887,7 @@ class TestSQLPathFunctions:
     def test_path_agg_min_max(self, order_engine: Engine) -> None:
         result = order_engine.sql(
             "SELECT path_agg('items.price', 'min') AS lo, "
-            "path_agg('items.price', 'max') AS hi FROM _default"
+            "path_agg('items.price', 'max') AS hi FROM orders"
         )
         assert len(result.rows) == 3
         for row in result.rows:
@@ -895,14 +897,14 @@ class TestSQLPathFunctions:
 
     def test_path_value_scalar(self, order_engine: Engine) -> None:
         result = order_engine.sql(
-            "SELECT path_value('shipping.city') AS city FROM _default"
+            "SELECT path_value('shipping.city') AS city FROM orders"
         )
         cities = sorted(r["city"] for r in result.rows)
         assert cities == ["Busan", "Seoul", "Seoul"]
 
     def test_path_value_nested(self, order_engine: Engine) -> None:
         result = order_engine.sql(
-            "SELECT path_value('shipping.cost') AS cost FROM _default"
+            "SELECT path_value('shipping.cost') AS cost FROM orders"
         )
         costs = sorted(r["cost"] for r in result.rows)
         assert costs == [5.0, 15.0, 20.0]
@@ -911,7 +913,7 @@ class TestSQLPathFunctions:
 
     def test_path_filter_equality(self, order_engine: Engine) -> None:
         result = order_engine.sql(
-            "SELECT * FROM _default WHERE path_filter('shipping.city', 'Seoul')"
+            "SELECT * FROM orders WHERE path_filter('shipping.city', 'Seoul')"
         )
         assert len(result.rows) == 2
         customers = sorted(r["customer"] for r in result.rows)
@@ -919,7 +921,7 @@ class TestSQLPathFunctions:
 
     def test_path_filter_with_operator(self, order_engine: Engine) -> None:
         result = order_engine.sql(
-            "SELECT * FROM _default WHERE path_filter('shipping.cost', '>', 10)"
+            "SELECT * FROM orders WHERE path_filter('shipping.cost', '>', 10)"
         )
         assert len(result.rows) == 2
         customers = sorted(r["customer"] for r in result.rows)
@@ -928,7 +930,7 @@ class TestSQLPathFunctions:
     def test_path_filter_array_any_match(self, order_engine: Engine) -> None:
         """path_filter on an array field should match if ANY element matches."""
         result = order_engine.sql(
-            "SELECT * FROM _default WHERE path_filter('items.name', 'Widget A')"
+            "SELECT * FROM orders WHERE path_filter('items.name', 'Widget A')"
         )
         assert len(result.rows) == 2
         customers = sorted(r["customer"] for r in result.rows)
@@ -936,7 +938,7 @@ class TestSQLPathFunctions:
 
     def test_path_filter_combined_with_path_agg(self, order_engine: Engine) -> None:
         result = order_engine.sql(
-            "SELECT path_agg('items.price', 'sum') AS total FROM _default "
+            "SELECT path_agg('items.price', 'sum') AS total FROM orders "
             "WHERE path_filter('shipping.city', 'Seoul')"
         )
         assert len(result.rows) == 2
@@ -955,24 +957,25 @@ class TestSQLGraphAggregates:
     @pytest.fixture
     def graph_engine(self) -> Engine:
         e = Engine()
+        e.sql("CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, role TEXT, salary INTEGER)")
         # Build org chart: CEO -> VP -> Engineers
-        e.add_graph_vertex(Vertex(1, {"name": "CEO", "role": "executive", "salary": 200000}))
-        e.add_graph_vertex(Vertex(2, {"name": "VP-Eng", "role": "vp", "salary": 150000}))
-        e.add_graph_vertex(Vertex(3, {"name": "VP-Sales", "role": "vp", "salary": 140000}))
-        e.add_graph_vertex(Vertex(4, {"name": "Alice", "role": "engineer", "salary": 120000}))
-        e.add_graph_vertex(Vertex(5, {"name": "Bob", "role": "engineer", "salary": 110000}))
-        e.add_graph_vertex(Vertex(6, {"name": "Carol", "role": "sales", "salary": 100000}))
+        e.add_graph_vertex(Vertex(1, {"name": "CEO", "role": "executive", "salary": 200000}), table="employees")
+        e.add_graph_vertex(Vertex(2, {"name": "VP-Eng", "role": "vp", "salary": 150000}), table="employees")
+        e.add_graph_vertex(Vertex(3, {"name": "VP-Sales", "role": "vp", "salary": 140000}), table="employees")
+        e.add_graph_vertex(Vertex(4, {"name": "Alice", "role": "engineer", "salary": 120000}), table="employees")
+        e.add_graph_vertex(Vertex(5, {"name": "Bob", "role": "engineer", "salary": 110000}), table="employees")
+        e.add_graph_vertex(Vertex(6, {"name": "Carol", "role": "sales", "salary": 100000}), table="employees")
 
-        e.add_graph_edge(Edge(1, 1, 2, "manages"))
-        e.add_graph_edge(Edge(2, 1, 3, "manages"))
-        e.add_graph_edge(Edge(3, 2, 4, "manages"))
-        e.add_graph_edge(Edge(4, 2, 5, "manages"))
-        e.add_graph_edge(Edge(5, 3, 6, "manages"))
+        e.add_graph_edge(Edge(1, 1, 2, "manages"), table="employees")
+        e.add_graph_edge(Edge(2, 1, 3, "manages"), table="employees")
+        e.add_graph_edge(Edge(3, 2, 4, "manages"), table="employees")
+        e.add_graph_edge(Edge(4, 2, 5, "manages"), table="employees")
+        e.add_graph_edge(Edge(5, 3, 6, "manages"), table="employees")
         return e
 
     def test_sum_from_traverse(self, graph_engine: Engine) -> None:
         result = graph_engine.sql(
-            "SELECT SUM(salary) AS total FROM traverse(1, 'manages', 1)"
+            "SELECT SUM(salary) AS total FROM traverse(1, 'manages', 1, 'employees')"
         )
         assert len(result.rows) == 1
         # CEO (200k) + VP-Eng (150k) + VP-Sales (140k) = 490k (includes start)
@@ -980,7 +983,7 @@ class TestSQLGraphAggregates:
 
     def test_avg_from_traverse(self, graph_engine: Engine) -> None:
         result = graph_engine.sql(
-            "SELECT AVG(salary) AS avg_salary FROM traverse(2, 'manages', 1)"
+            "SELECT AVG(salary) AS avg_salary FROM traverse(2, 'manages', 1, 'employees')"
         )
         assert len(result.rows) == 1
         # VP-Eng (150k) + Alice (120k) + Bob (110k) -> avg = 126666.67
@@ -989,7 +992,7 @@ class TestSQLGraphAggregates:
 
     def test_count_from_traverse(self, graph_engine: Engine) -> None:
         result = graph_engine.sql(
-            "SELECT COUNT(*) AS cnt FROM traverse(1, 'manages', 2)"
+            "SELECT COUNT(*) AS cnt FROM traverse(1, 'manages', 2, 'employees')"
         )
         assert len(result.rows) == 1
         # CEO + 2 VPs + 2 engineers + 1 sales = 6 (all reachable within 2 hops)
@@ -997,7 +1000,7 @@ class TestSQLGraphAggregates:
 
     def test_group_by_from_traverse(self, graph_engine: Engine) -> None:
         result = graph_engine.sql(
-            "SELECT role, COUNT(*) AS cnt FROM traverse(1, 'manages', 2) GROUP BY role"
+            "SELECT role, COUNT(*) AS cnt FROM traverse(1, 'manages', 2, 'employees') GROUP BY role"
         )
         role_counts = {r["role"]: r["cnt"] for r in result.rows}
         assert role_counts["executive"] == 1
@@ -1007,7 +1010,7 @@ class TestSQLGraphAggregates:
 
     def test_select_star_from_traverse(self, graph_engine: Engine) -> None:
         result = graph_engine.sql(
-            "SELECT * FROM traverse(2, 'manages', 1)"
+            "SELECT * FROM traverse(2, 'manages', 1, 'employees')"
         )
         # VP-Eng + Alice + Bob = 3 (includes start vertex)
         assert len(result.rows) == 3
@@ -1016,7 +1019,7 @@ class TestSQLGraphAggregates:
 
     def test_rpq_query(self, graph_engine: Engine) -> None:
         result = graph_engine.sql(
-            "SELECT * FROM rpq('manages*', 1)"
+            "SELECT * FROM rpq('manages*', 1, 'employees')"
         )
         # Kleene star: all reachable from CEO via manages (including CEO)
         assert len(result.rows) >= 5

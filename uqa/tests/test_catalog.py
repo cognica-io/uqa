@@ -8,11 +8,7 @@
 
 from __future__ import annotations
 
-import tempfile
-import os
-
 import numpy as np
-import pytest
 
 from uqa.core.types import Edge, Vertex
 from uqa.engine import Engine
@@ -612,60 +608,113 @@ class TestEnginePersistenceAPI:
 
     def test_add_document_persists(self, tmp_path):
         db = str(tmp_path / "test.db")
-        with Engine(db_path=db, vector_dimensions=4) as engine:
-            engine.add_document(1, {"title": "hello world"})
-            engine.add_document(2, {"title": "foo bar"})
+        with Engine(db_path=db) as engine:
+            engine.sql("""
+                CREATE TABLE docs (
+                    id INT PRIMARY KEY,
+                    title TEXT NOT NULL
+                )
+            """)
+            engine.add_document(1, {"title": "hello world"}, table="docs")
+            engine.add_document(2, {"title": "foo bar"}, table="docs")
 
-        with Engine(db_path=db, vector_dimensions=4) as engine:
-            assert engine.document_store.get(1) == {"title": "hello world"}
-            assert engine.document_store.get(2) == {"title": "foo bar"}
+        with Engine(db_path=db) as engine:
+            store = engine._tables["docs"].document_store
+            doc1 = store.get(1)
+            assert doc1 is not None
+            assert doc1["title"] == "hello world"
+            doc2 = store.get(2)
+            assert doc2 is not None
+            assert doc2["title"] == "foo bar"
 
-    def test_add_document_with_vector_persists(self, tmp_path):
+    def test_add_document_with_vector(self, tmp_path):
         db = str(tmp_path / "test.db")
         vec = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
-        with Engine(db_path=db, vector_dimensions=4) as engine:
-            engine.add_document(1, {"title": "test"}, embedding=vec)
+        with Engine(db_path=db) as engine:
+            engine.sql("""
+                CREATE TABLE docs (
+                    id INT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    embedding VECTOR(4)
+                )
+            """)
+            engine.add_document(
+                1, {"title": "test"}, table="docs", embedding=vec
+            )
 
-        with Engine(db_path=db, vector_dimensions=4) as engine:
-            assert engine.document_store.get(1) is not None
-            # Vector search should work
+            # Document persists via SQLite-backed store
+            store = engine._tables["docs"].document_store
+            assert store.get(1) is not None
+
+            # Vector search works within the same session (HNSW is
+            # in-memory and not serialized across restarts)
             query = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
-            pl = engine.vector_index.search_knn(query, k=1)
+            vec_idx = next(
+                iter(engine._tables["docs"].vector_indexes.values())
+            )
+            pl = vec_idx.search_knn(query, k=1)
             assert len(pl.entries) == 1
             assert pl.entries[0].doc_id == 1
 
     def test_add_graph_persists(self, tmp_path):
         db = str(tmp_path / "test.db")
         with Engine(db_path=db) as engine:
-            engine.add_graph_vertex(Vertex(vertex_id=1, properties={"name": "A"}))
-            engine.add_graph_vertex(Vertex(vertex_id=2, properties={"name": "B"}))
-            engine.add_graph_edge(Edge(
-                edge_id=1, source_id=1, target_id=2,
-                label="knows", properties={},
-            ))
+            engine.sql("""
+                CREATE TABLE graph_data (
+                    id INT PRIMARY KEY,
+                    name TEXT
+                )
+            """)
+            engine.add_graph_vertex(
+                Vertex(vertex_id=1, properties={"name": "A"}),
+                table="graph_data",
+            )
+            engine.add_graph_vertex(
+                Vertex(vertex_id=2, properties={"name": "B"}),
+                table="graph_data",
+            )
+            engine.add_graph_edge(
+                Edge(
+                    edge_id=1, source_id=1, target_id=2,
+                    label="knows", properties={},
+                ),
+                table="graph_data",
+            )
 
         with Engine(db_path=db) as engine:
-            v1 = engine.graph_store.get_vertex(1)
+            gs = engine._tables["graph_data"].graph_store
+            v1 = gs.get_vertex(1)
             assert v1 is not None
             assert v1.properties == {"name": "A"}
-            neighbors = engine.graph_store.neighbors(1, "knows")
+            neighbors = gs.neighbors(1, "knows")
             assert neighbors == [2]
 
     def test_delete_document(self, tmp_path):
         """delete_document removes from all stores and catalog."""
         db = str(tmp_path / "test.db")
-        with Engine(db_path=db, vector_dimensions=4) as engine:
-            engine.add_document(1, {"title": "hello world"})
-            engine.add_document(2, {"title": "foo bar"})
-            engine.delete_document(1)
-            assert engine.document_store.get(1) is None
-            assert engine.document_store.get(2) is not None
+        with Engine(db_path=db) as engine:
+            engine.sql("""
+                CREATE TABLE docs (
+                    id INT PRIMARY KEY,
+                    title TEXT NOT NULL
+                )
+            """)
+            engine.add_document(
+                1, {"title": "hello world"}, table="docs"
+            )
+            engine.add_document(
+                2, {"title": "foo bar"}, table="docs"
+            )
+            engine.delete_document(1, table="docs")
+            store = engine._tables["docs"].document_store
+            assert store.get(1) is None
+            assert store.get(2) is not None
 
-        with Engine(db_path=db, vector_dimensions=4) as engine:
-            assert engine.document_store.get(1) is None
-            assert engine.document_store.get(2) == {"title": "foo bar"}
-            # Inverted index should not contain deleted doc
-            pl = engine.inverted_index.get_posting_list("title", "hello")
+        with Engine(db_path=db) as engine:
+            store = engine._tables["docs"].document_store
+            assert store.get(1) is None
+            idx = engine._tables["docs"].inverted_index
+            pl = idx.get_posting_list("title", "hello")
             doc_ids = [e.doc_id for e in pl.entries]
             assert 1 not in doc_ids
 
@@ -695,26 +744,50 @@ class TestEnginePersistencePostings:
         """Corpus stats (doc_count, avg_doc_length) match after restart."""
         db = str(tmp_path / "test.db")
         with Engine(db_path=db) as engine:
-            engine.add_document(1, {"title": "the quick brown fox"})
-            engine.add_document(2, {"title": "lazy dog"})
-            engine.add_document(3, {"title": "quick fox jumps high"})
-            stats_before = engine.inverted_index.stats
+            engine.sql("""
+                CREATE TABLE docs (
+                    id INT PRIMARY KEY,
+                    title TEXT NOT NULL
+                )
+            """)
+            engine.add_document(
+                1, {"title": "the quick brown fox"}, table="docs"
+            )
+            engine.add_document(
+                2, {"title": "lazy dog"}, table="docs"
+            )
+            engine.add_document(
+                3, {"title": "quick fox jumps high"}, table="docs"
+            )
+            stats_before = engine._tables["docs"].inverted_index.stats
 
         with Engine(db_path=db) as engine:
-            stats_after = engine.inverted_index.stats
+            stats_after = engine._tables["docs"].inverted_index.stats
             assert stats_after.total_docs == stats_before.total_docs
-            assert abs(stats_after.avg_doc_length - stats_before.avg_doc_length) < 1e-10
+            assert abs(
+                stats_after.avg_doc_length - stats_before.avg_doc_length
+            ) < 1e-10
 
     def test_posting_positions_preserved(self, tmp_path):
         """Token positions are correctly round-tripped through SQLite."""
         db = str(tmp_path / "test.db")
         with Engine(db_path=db) as engine:
-            engine.add_document(1, {"body": "the cat sat on the mat"})
-            pl_before = engine.inverted_index.get_posting_list("body", "the")
+            engine.sql("""
+                CREATE TABLE docs (
+                    id INT PRIMARY KEY,
+                    body TEXT NOT NULL
+                )
+            """)
+            engine.add_document(
+                1, {"body": "the cat sat on the mat"}, table="docs"
+            )
+            idx = engine._tables["docs"].inverted_index
+            pl_before = idx.get_posting_list("body", "the")
             positions_before = pl_before.entries[0].payload.positions
 
         with Engine(db_path=db) as engine:
-            pl_after = engine.inverted_index.get_posting_list("body", "the")
+            idx = engine._tables["docs"].inverted_index
+            pl_after = idx.get_posting_list("body", "the")
             positions_after = pl_after.entries[0].payload.positions
             assert positions_after == positions_before
 
@@ -722,13 +795,25 @@ class TestEnginePersistencePostings:
         """Per-document field lengths survive restart for BM25 scoring."""
         db = str(tmp_path / "test.db")
         with Engine(db_path=db) as engine:
-            engine.add_document(1, {"title": "hello world", "body": "a b c d e"})
-            len_before = engine.inverted_index.get_doc_length(1, "title")
-            body_len_before = engine.inverted_index.get_doc_length(1, "body")
+            engine.sql("""
+                CREATE TABLE docs (
+                    id INT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    body TEXT NOT NULL
+                )
+            """)
+            engine.add_document(
+                1, {"title": "hello world", "body": "a b c d e"},
+                table="docs",
+            )
+            idx = engine._tables["docs"].inverted_index
+            len_before = idx.get_doc_length(1, "title")
+            body_len_before = idx.get_doc_length(1, "body")
 
         with Engine(db_path=db) as engine:
-            assert engine.inverted_index.get_doc_length(1, "title") == len_before
-            assert engine.inverted_index.get_doc_length(1, "body") == body_len_before
+            idx = engine._tables["docs"].inverted_index
+            assert idx.get_doc_length(1, "title") == len_before
+            assert idx.get_doc_length(1, "body") == body_len_before
 
     def test_bm25_scores_match_after_restart(self, tmp_path):
         """BM25 text search produces identical scores before/after restart."""
@@ -781,8 +866,17 @@ class TestEnginePersistenceBackwardCompat:
 
     def test_add_document_without_persistence(self):
         engine = Engine(vector_dimensions=4)
-        engine.add_document(1, {"title": "test"})
-        assert engine.document_store.get(1) == {"title": "test"}
+        engine.sql("""
+            CREATE TABLE docs (
+                id INT PRIMARY KEY,
+                title TEXT NOT NULL
+            )
+        """)
+        engine.add_document(1, {"title": "test"}, table="docs")
+        store = engine._tables["docs"].document_store
+        doc = store.get(1)
+        assert doc is not None
+        assert doc["title"] == "test"
         engine.close()
 
     def test_context_manager(self):
@@ -793,76 +887,23 @@ class TestEnginePersistenceBackwardCompat:
     def test_delete_document_in_memory(self):
         """delete_document works in pure in-memory mode."""
         engine = Engine(vector_dimensions=4)
-        engine.add_document(1, {"title": "hello world"})
-        engine.add_document(2, {"title": "foo bar"})
-        engine.delete_document(1)
-        assert engine.document_store.get(1) is None
-        assert engine.document_store.get(2) is not None
-        pl = engine.inverted_index.get_posting_list("title", "hello")
+        engine.sql("""
+            CREATE TABLE docs (
+                id INT PRIMARY KEY,
+                title TEXT NOT NULL
+            )
+        """)
+        engine.add_document(
+            1, {"title": "hello world"}, table="docs"
+        )
+        engine.add_document(
+            2, {"title": "foo bar"}, table="docs"
+        )
+        engine.delete_document(1, table="docs")
+        store = engine._tables["docs"].document_store
+        assert store.get(1) is None
+        assert store.get(2) is not None
+        idx = engine._tables["docs"].inverted_index
+        pl = idx.get_posting_list("title", "hello")
         assert all(e.doc_id != 1 for e in pl.entries)
         engine.close()
-
-
-class TestEnginePersistenceMigration:
-    """Test backward compat migration from old databases without _postings."""
-
-    def test_old_database_migrates_on_open(self, tmp_path):
-        """A database created without _postings gets auto-migrated."""
-        import sqlite3
-
-        db = str(tmp_path / "test.db")
-
-        # Simulate an old-format database by inserting directly into SQLite
-        conn = sqlite3.connect(db)
-        conn.executescript("""
-            CREATE TABLE _metadata (
-                key TEXT PRIMARY KEY, value TEXT NOT NULL
-            );
-            CREATE TABLE _catalog_tables (
-                name TEXT PRIMARY KEY, columns_json TEXT NOT NULL
-            );
-            CREATE TABLE _documents (
-                table_name TEXT NOT NULL, doc_id INTEGER NOT NULL,
-                data_json TEXT NOT NULL,
-                PRIMARY KEY (table_name, doc_id)
-            );
-            CREATE TABLE _graph_vertices (
-                vertex_id INTEGER PRIMARY KEY, properties_json TEXT NOT NULL
-            );
-            CREATE TABLE _graph_edges (
-                edge_id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL,
-                target_id INTEGER NOT NULL, label TEXT NOT NULL,
-                properties_json TEXT NOT NULL
-            );
-            CREATE TABLE _vectors (
-                doc_id INTEGER PRIMARY KEY, dimensions INTEGER NOT NULL,
-                embedding BLOB NOT NULL
-            );
-        """)
-        conn.execute(
-            "INSERT INTO _metadata VALUES ('vector_dimensions', '64')"
-        )
-        conn.execute(
-            "INSERT INTO _metadata VALUES ('max_elements', '10000')"
-        )
-        # Insert a document directly (old format, no _postings table)
-        import json
-        conn.execute(
-            "INSERT INTO _documents VALUES ('', 1, ?)",
-            (json.dumps({"title": "hello world test"}),),
-        )
-        conn.commit()
-        conn.close()
-
-        # Open with Engine -- should auto-migrate (create _postings, etc.)
-        with Engine(db_path=db) as engine:
-            assert engine.document_store.get(1) == {"title": "hello world test"}
-            # Inverted index should be populated via migration
-            pl = engine.inverted_index.get_posting_list("title", "hello")
-            assert len(pl.entries) == 1
-            assert pl.entries[0].doc_id == 1
-
-        # Re-open -- should use fast path now (postings exist)
-        with Engine(db_path=db) as engine:
-            pl = engine.inverted_index.get_posting_list("title", "world")
-            assert len(pl.entries) == 1

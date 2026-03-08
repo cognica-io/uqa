@@ -28,7 +28,7 @@ class ExecutionContext:
 
     document_store: DocumentStore | None = None
     inverted_index: InvertedIndex | None = None
-    vector_index: HNSWIndex | None = None
+    vector_indexes: dict[str, HNSWIndex] = field(default_factory=dict)
     graph_store: Any = None
     block_max_index: BlockMaxIndex | None = None
     index_manager: IndexManager | None = None

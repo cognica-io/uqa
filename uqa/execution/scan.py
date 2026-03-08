@@ -93,7 +93,7 @@ class PostingListScanOp(PhysicalOperator):
     def __init__(
         self,
         posting_list: PostingList,
-        document_store: DocumentStore,
+        document_store: DocumentStore | None,
         schema: dict[str, DataType] | None = None,
         graph_store: Any = None,
         batch_size: int = DEFAULT_BATCH_SIZE,
@@ -123,7 +123,7 @@ class PostingListScanOp(PhysicalOperator):
                 "_doc_id": entry.doc_id,
                 "_score": entry.payload.score,
             }
-            doc = self._doc_store.get(entry.doc_id)
+            doc = self._doc_store.get(entry.doc_id) if self._doc_store is not None else None
             if doc is not None:
                 row.update(doc)
             elif self._graph_store is not None:

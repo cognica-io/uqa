@@ -18,7 +18,6 @@ Covers:
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from uqa.storage.catalog import Catalog
 from uqa.storage.sqlite_vector_index import SQLiteVectorIndex
@@ -251,59 +250,158 @@ class TestPersistence:
 
 
 class TestEngineIntegration:
-    def test_engine_uses_sqlite_vector_index(self, tmp_path):
-        from uqa.engine import Engine
-
-        db = str(tmp_path / "test.db")
-        with Engine(db_path=db, vector_dimensions=8) as engine:
-            assert isinstance(engine.vector_index, SQLiteVectorIndex)
-
-    def test_in_memory_engine_uses_plain_index(self):
+    def test_table_has_vector_index(self, tmp_path):
         from uqa.engine import Engine
         from uqa.storage.vector_index import HNSWIndex
 
-        engine = Engine(vector_dimensions=8)
-        assert type(engine.vector_index) is HNSWIndex
+        db = str(tmp_path / "test.db")
+        with Engine(db_path=db, vector_dimensions=8) as engine:
+            engine.sql(
+                "CREATE TABLE docs ("
+                "  id SERIAL PRIMARY KEY,"
+                "  emb VECTOR(8)"
+                ")"
+            )
+            # Per-table vector indexes are HNSWIndex (in-memory)
+            assert "emb" in engine._tables["docs"].vector_indexes
+            assert isinstance(
+                engine._tables["docs"].vector_indexes["emb"], HNSWIndex
+            )
 
-    def test_vector_survives_engine_close_reopen(self, tmp_path):
+    def test_in_memory_table_has_vector_index(self):
+        from uqa.engine import Engine
+        from uqa.storage.vector_index import HNSWIndex
+
+        with Engine(vector_dimensions=8) as engine:
+            engine.sql(
+                "CREATE TABLE docs ("
+                "  id SERIAL PRIMARY KEY,"
+                "  emb VECTOR(8)"
+                ")"
+            )
+            assert "emb" in engine._tables["docs"].vector_indexes
+            assert isinstance(
+                engine._tables["docs"].vector_indexes["emb"], HNSWIndex
+            )
+
+    def test_sql_insert_populates_vector_index(self, tmp_path):
         from uqa.engine import Engine
 
         db = str(tmp_path / "test.db")
-        vec = np.array([1.0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
-
         with Engine(db_path=db, vector_dimensions=8) as engine:
-            engine.add_document(1, {"title": "test"}, embedding=vec)
+            engine.sql(
+                "CREATE TABLE docs ("
+                "  id SERIAL PRIMARY KEY,"
+                "  title TEXT,"
+                "  emb VECTOR(8)"
+                ")"
+            )
+            vec = np.array([1.0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
+            arr = "ARRAY[" + ",".join(str(float(v)) for v in vec) + "]"
+            engine.sql(
+                f"INSERT INTO docs (title, emb) VALUES ('test', {arr})"
+            )
 
-        with Engine(db_path=db, vector_dimensions=8) as engine:
+            vec_idx = engine._tables["docs"].vector_indexes["emb"]
+            assert len(vec_idx._doc_id_to_internal) == 1
+
             query = np.array([1.0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
-            result = engine.vector_index.search_knn(query, k=1)
+            result = vec_idx.search_knn(query, k=1)
             assert len(result.entries) == 1
             assert result.entries[0].doc_id == 1
 
-    def test_delete_document_removes_vector(self, tmp_path):
+    def test_add_document_populates_vector_index(self, tmp_path):
         from uqa.engine import Engine
 
         db = str(tmp_path / "test.db")
         vec = np.array([1.0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
 
         with Engine(db_path=db, vector_dimensions=8) as engine:
-            engine.add_document(1, {"title": "test"}, embedding=vec)
-            engine.delete_document(1)
+            engine.sql(
+                "CREATE TABLE docs ("
+                "  id SERIAL PRIMARY KEY,"
+                "  title TEXT,"
+                "  emb VECTOR(8)"
+                ")"
+            )
+            engine.add_document(
+                1, {"title": "test"}, table="docs", embedding=vec
+            )
 
+            vec_idx = engine._tables["docs"].vector_indexes["emb"]
+            assert len(vec_idx._doc_id_to_internal) == 1
+
+            query = np.array([1.0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
+            result = vec_idx.search_knn(query, k=1)
+            assert len(result.entries) == 1
+            assert result.entries[0].doc_id == 1
+
+    def test_sql_data_persists_across_engine_restart(self, tmp_path):
+        from uqa.engine import Engine
+
+        db = str(tmp_path / "test.db")
+        with Engine(db_path=db) as engine:
+            engine.sql(
+                "CREATE TABLE docs ("
+                "  id SERIAL PRIMARY KEY,"
+                "  title TEXT,"
+                "  emb VECTOR(8)"
+                ")"
+            )
+            vec = np.array([1.0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
+            arr = "ARRAY[" + ",".join(str(float(v)) for v in vec) + "]"
+            engine.sql(
+                f"INSERT INTO docs (title, emb) VALUES ('test', {arr})"
+            )
+
+        # Scalar data persists; vector indexes are rebuilt as empty
+        # on engine restart (HNSWIndex is in-memory only).
+        with Engine(db_path=db) as engine:
+            result = engine.sql("SELECT title FROM docs")
+            assert len(result.rows) == 1
+            assert result.rows[0]["title"] == "test"
+
+    def test_delete_document_removes_from_store(self, tmp_path):
+        from uqa.engine import Engine
+
+        db = str(tmp_path / "test.db")
         with Engine(db_path=db, vector_dimensions=8) as engine:
-            assert engine.vector_index.count() == 0
+            engine.sql(
+                "CREATE TABLE docs ("
+                "  id SERIAL PRIMARY KEY,"
+                "  title TEXT,"
+                "  emb VECTOR(8)"
+                ")"
+            )
+            vec = np.array([1.0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
+            engine.add_document(
+                1, {"title": "test"}, table="docs", embedding=vec
+            )
+            engine.delete_document(1, table="docs")
 
-    def test_multiple_vectors_persist(self, tmp_path):
+            # Document is removed from the document store
+            assert engine._tables["docs"].document_store.get(1) is None
+
+    def test_multiple_vectors_in_table(self, tmp_path):
         from uqa.engine import Engine
 
         db = str(tmp_path / "test.db")
         with Engine(db_path=db, vector_dimensions=4) as engine:
+            engine.sql(
+                "CREATE TABLE docs ("
+                "  id SERIAL PRIMARY KEY,"
+                "  title TEXT,"
+                "  emb VECTOR(4)"
+                ")"
+            )
             for i in range(1, 6):
                 vec = _random_vector(4, seed=i)
-                engine.add_document(i, {"title": f"doc{i}"}, embedding=vec)
+                engine.add_document(
+                    i, {"title": f"doc{i}"}, table="docs", embedding=vec
+                )
 
-        with Engine(db_path=db, vector_dimensions=4) as engine:
-            assert engine.vector_index.count() == 5
+            vec_idx = engine._tables["docs"].vector_indexes["emb"]
+            assert len(vec_idx._doc_id_to_internal) == 5
             query = _random_vector(4, seed=3)
-            result = engine.vector_index.search_knn(query, k=1)
+            result = vec_idx.search_knn(query, k=1)
             assert result.entries[0].doc_id == 3

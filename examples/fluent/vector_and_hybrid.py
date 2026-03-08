@@ -28,6 +28,18 @@ from uqa.engine import Engine
 
 engine = Engine(vector_dimensions=8, max_elements=50)
 
+engine.sql("""
+    CREATE TABLE products (
+        id INTEGER PRIMARY KEY,
+        name TEXT,
+        category TEXT,
+        brand TEXT,
+        price REAL,
+        rating REAL,
+        embedding VECTOR(8)
+    )
+""")
+
 rng = np.random.RandomState(42)
 
 products = [
@@ -66,7 +78,7 @@ for doc_id, doc in products:
     center = category_centers[doc["category"]]
     embedding = center + rng.randn(8) * 0.1
     embedding = embedding / np.linalg.norm(embedding)
-    engine.add_document(doc_id, doc, embedding=embedding)
+    engine.add_document(doc_id, doc, table="products", embedding=embedding)
 
 print("=" * 70)
 print("Vector Search & Hybrid Retrieval Examples (Fluent API)")
@@ -80,9 +92,9 @@ print("\n--- 1. KNN search: 3 nearest to audio query ---")
 audio_query = category_centers["audio"] + rng.randn(8) * 0.05
 audio_query = audio_query / np.linalg.norm(audio_query)
 
-results = engine.query().knn(audio_query, k=3).execute()
+results = engine.query(table="products").knn(audio_query, k=3).execute()
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["products"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] sim={entry.payload.score:.4f}  {doc['name']}")
 
 
@@ -90,9 +102,9 @@ for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
 # 2. Threshold-based vector search
 # ------------------------------------------------------------------
 print("\n--- 2. Threshold vector search: similarity > 0.5 ---")
-results = engine.query().vector(audio_query, threshold=0.5).execute()
+results = engine.query(table="products").vector(audio_query, threshold=0.5).execute()
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["products"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] sim={entry.payload.score:.4f}  {doc['name']}")
 
 
@@ -101,13 +113,13 @@ for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
 # ------------------------------------------------------------------
 print("\n--- 3. KNN + filter: top 5, price <= $200 ---")
 results = (
-    engine.query()
+    engine.query(table="products")
     .knn(audio_query, k=5)
     .filter("price", LessThanOrEqual(200.0))
     .execute()
 )
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["products"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] sim={entry.payload.score:.4f}  "
           f"${doc['price']:.2f}  {doc['name']}")
 
@@ -116,11 +128,11 @@ for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
 # 4. Hybrid text + vector: 'wireless' AND similar to audio
 # ------------------------------------------------------------------
 print("\n--- 4. Hybrid: term 'wireless' AND KNN(audio, k=5) ---")
-text_q = engine.query().term("wireless")
-vec_q = engine.query().knn(audio_query, k=5)
+text_q = engine.query(table="products").term("wireless")
+vec_q = engine.query(table="products").knn(audio_query, k=5)
 results = text_q.and_(vec_q).execute()
 for entry in results:
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["products"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] {doc['name']} [${doc['price']:.2f}]")
 
 
@@ -132,13 +144,13 @@ peripherals_query = category_centers["peripherals"]
 peripherals_query = peripherals_query / np.linalg.norm(peripherals_query)
 
 results = (
-    engine.query()
+    engine.query(table="products")
     .knn(audio_query, k=5)
     .vector_exclude(peripherals_query, threshold=0.3)
     .execute()
 )
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["products"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] sim={entry.payload.score:.4f}  "
           f"{doc['name']} [{doc['category']}]")
 
@@ -147,7 +159,7 @@ for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
 # 6. Vector-conditioned facets: category distribution near audio
 # ------------------------------------------------------------------
 print("\n--- 6. Vector facets: categories among audio-similar docs ---")
-facets = engine.query().vector_facet("category", audio_query, threshold=0.3)
+facets = engine.query(table="products").vector_facet("category", audio_query, threshold=0.3)
 for cat, count in sorted(facets.counts.items(), key=lambda x: -x[1]):
     print(f"  {cat:>15}: {count}")
 
@@ -159,13 +171,13 @@ print("\n--- 7. Log-odds fusion: 'monitor' text + display vector ---")
 display_query = category_centers["displays"] + rng.randn(8) * 0.05
 display_query = display_query / np.linalg.norm(display_query)
 
-text_signal = engine.query().term("monitor").score_bayesian_bm25("monitor")
-vec_signal = engine.query().knn(display_query, k=5)
+text_signal = engine.query(table="products").term("monitor").score_bayesian_bm25("monitor")
+vec_signal = engine.query(table="products").knn(display_query, k=5)
 
-fused = engine.query().fuse_log_odds(text_signal, vec_signal, alpha=0.6)
+fused = engine.query(table="products").fuse_log_odds(text_signal, vec_signal, alpha=0.6)
 results = fused.execute()
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["products"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] fused={entry.payload.score:.4f}  {doc['name']}")
 
 
@@ -173,12 +185,12 @@ for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
 # 8. Probabilistic AND: high confidence matches
 # ------------------------------------------------------------------
 print("\n--- 8. Prob AND: 'wireless' text AND audio vector ---")
-text_signal = engine.query().term("wireless").score_bayesian_bm25("wireless")
-vec_signal = engine.query().vector(audio_query, threshold=0.3)
+text_signal = engine.query(table="products").term("wireless").score_bayesian_bm25("wireless")
+vec_signal = engine.query(table="products").vector(audio_query, threshold=0.3)
 
-results = engine.query().fuse_prob_and(text_signal, vec_signal).execute()
+results = engine.query(table="products").fuse_prob_and(text_signal, vec_signal).execute()
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["products"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] P(and)={entry.payload.score:.4f}  {doc['name']}")
 
 
@@ -186,12 +198,12 @@ for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
 # 9. Probabilistic OR: broader recall
 # ------------------------------------------------------------------
 print("\n--- 9. Prob OR: 'gaming' text OR peripherals vector ---")
-text_signal = engine.query().term("gaming").score_bayesian_bm25("gaming")
-vec_signal = engine.query().vector(peripherals_query, threshold=0.3)
+text_signal = engine.query(table="products").term("gaming").score_bayesian_bm25("gaming")
+vec_signal = engine.query(table="products").vector(peripherals_query, threshold=0.3)
 
-results = engine.query().fuse_prob_or(text_signal, vec_signal).execute()
+results = engine.query(table="products").fuse_prob_or(text_signal, vec_signal).execute()
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True)[:5]:
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["products"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] P(or)={entry.payload.score:.4f}  {doc['name']}")
 
 
@@ -199,17 +211,17 @@ for entry in sorted(results, key=lambda e: e.payload.score, reverse=True)[:5]:
 # 10. Multi-signal fusion: text + vector + filter pipeline
 # ------------------------------------------------------------------
 print("\n--- 10. Pipeline: fusion -> filter(rating >= 4.5) ---")
-text_signal = engine.query().term("monitor").score_bayesian_bm25("monitor")
-vec_signal = engine.query().knn(display_query, k=5)
+text_signal = engine.query(table="products").term("monitor").score_bayesian_bm25("monitor")
+vec_signal = engine.query(table="products").knn(display_query, k=5)
 
 results = (
-    engine.query()
+    engine.query(table="products")
     .fuse_log_odds(text_signal, vec_signal)
     .filter("rating", GreaterThanOrEqual(4.5))
     .execute()
 )
 for entry in results:
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["products"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] {doc['name']} (rating: {doc['rating']})")
 
 
@@ -217,7 +229,7 @@ for entry in results:
 # 11. Aggregation over vector search results
 # ------------------------------------------------------------------
 print("\n--- 11. Aggregation: avg price of audio-similar products ---")
-vec_results = engine.query().knn(audio_query, k=5)
+vec_results = engine.query(table="products").knn(audio_query, k=5)
 avg_price = vec_results.aggregate("price", "avg")
 print(f"  Average price: ${avg_price.value:.2f}")
 

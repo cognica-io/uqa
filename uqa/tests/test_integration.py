@@ -32,6 +32,15 @@ from uqa.core.posting_list import PostingList
 def engine_with_docs() -> Engine:
     """Engine populated with sample documents, vectors, and graph data."""
     engine = Engine(vector_dimensions=16, max_elements=100)
+    engine.sql(
+        "CREATE TABLE papers ("
+        "id INTEGER PRIMARY KEY, "
+        "title TEXT, "
+        "abstract TEXT, "
+        "year INTEGER, "
+        "category TEXT, "
+        "embedding VECTOR(16))"
+    )
     rng = np.random.RandomState(42)
 
     docs = [
@@ -48,7 +57,7 @@ def engine_with_docs() -> Engine:
     for i, doc in enumerate(docs, 1):
         embedding = rng.randn(16).astype(np.float32)
         embedding = embedding / np.linalg.norm(embedding)
-        engine.add_document(i, doc, embedding)
+        engine.add_document(i, doc, table="papers", embedding=embedding)
 
     vertices = [
         Vertex(1, {"type": "paper", "title": "neural network basics"}),
@@ -61,7 +70,7 @@ def engine_with_docs() -> Engine:
         Vertex(8, {"type": "paper", "title": "knowledge graphs"}),
     ]
     for v in vertices:
-        engine.add_graph_vertex(v)
+        engine.add_graph_vertex(v, table="papers")
 
     edges = [
         Edge(1, 2, 1, "cites"),
@@ -73,7 +82,7 @@ def engine_with_docs() -> Engine:
         Edge(7, 8, 3, "cites"),
     ]
     for e in edges:
-        engine.add_graph_edge(e)
+        engine.add_graph_edge(e, table="papers")
 
     return engine
 
@@ -82,31 +91,31 @@ class TestFullPipeline:
     """Test the add/index/query pipeline."""
 
     def test_term_search(self, engine_with_docs: Engine):
-        results = engine_with_docs.query().term("neural").execute()
+        results = engine_with_docs.query(table="papers").term("neural").execute()
         assert len(results) > 0
         doc_ids = results.doc_ids
         assert 1 in doc_ids
         assert 3 in doc_ids
 
     def test_term_search_with_field(self, engine_with_docs: Engine):
-        results = engine_with_docs.query().term("neural", field="title").execute()
+        results = engine_with_docs.query(table="papers").term("neural", field="title").execute()
         assert len(results) > 0
 
     def test_filter_query(self, engine_with_docs: Engine):
         results = (
-            engine_with_docs.query()
+            engine_with_docs.query(table="papers")
             .term("neural")
             .filter("year", GreaterThanOrEqual(2024))
             .execute()
         )
         for entry in results:
-            doc = engine_with_docs.document_store.get(entry.doc_id)
+            doc = engine_with_docs._tables["papers"].document_store.get(entry.doc_id)
             assert doc is not None
             assert doc["year"] >= 2024
 
     def test_boolean_or(self, engine_with_docs: Engine):
-        q1 = engine_with_docs.query().term("neural")
-        q2 = engine_with_docs.query().term("bayesian")
+        q1 = engine_with_docs.query(table="papers").term("neural")
+        q2 = engine_with_docs.query(table="papers").term("bayesian")
         results = q1.or_(q2).execute()
         assert len(results) > 0
         ids = results.doc_ids
@@ -114,12 +123,12 @@ class TestFullPipeline:
         assert 4 in ids
 
     def test_boolean_and(self, engine_with_docs: Engine):
-        q1 = engine_with_docs.query().term("neural")
-        q2 = engine_with_docs.query().term("networks")
+        q1 = engine_with_docs.query(table="papers").term("neural")
+        q2 = engine_with_docs.query(table="papers").term("networks")
         results = q1.and_(q2).execute()
         ids = results.doc_ids
         for doc_id in ids:
-            doc = engine_with_docs.document_store.get(doc_id)
+            doc = engine_with_docs._tables["papers"].document_store.get(doc_id)
             text = " ".join(
                 v for v in doc.values() if isinstance(v, str)
             ).lower()
@@ -132,7 +141,7 @@ class TestScoringPipeline:
 
     def test_bm25_scoring(self, engine_with_docs: Engine):
         results = (
-            engine_with_docs.query()
+            engine_with_docs.query(table="papers")
             .term("neural")
             .score_bm25("neural")
             .execute()
@@ -143,7 +152,7 @@ class TestScoringPipeline:
 
     def test_bayesian_bm25_scoring(self, engine_with_docs: Engine):
         results = (
-            engine_with_docs.query()
+            engine_with_docs.query(table="papers")
             .term("neural")
             .score_bayesian_bm25("neural")
             .execute()
@@ -161,7 +170,7 @@ class TestVectorSearch:
         query_vec = rng.randn(16).astype(np.float32)
         query_vec = query_vec / np.linalg.norm(query_vec)
 
-        results = engine_with_docs.query().knn(query_vec, k=3).execute()
+        results = engine_with_docs.query(table="papers").knn(query_vec, k=3).execute()
         assert len(results) <= 3
         assert len(results) > 0
 
@@ -175,14 +184,14 @@ class TestFusion:
         query_vec = query_vec / np.linalg.norm(query_vec)
 
         text_q = (
-            engine_with_docs.query()
+            engine_with_docs.query(table="papers")
             .term("neural")
             .score_bayesian_bm25("neural")
         )
-        vec_q = engine_with_docs.query().knn(query_vec, k=5)
+        vec_q = engine_with_docs.query(table="papers").knn(query_vec, k=5)
 
         results = (
-            engine_with_docs.query()
+            engine_with_docs.query(table="papers")
             .fuse_log_odds(text_q, vec_q, alpha=0.5)
             .execute()
         )
@@ -196,7 +205,7 @@ class TestGraphQueries:
 
     def test_traverse(self, engine_with_docs: Engine):
         results = (
-            engine_with_docs.query()
+            engine_with_docs.query(table="papers")
             .traverse(start=1, label="cites", max_hops=2)
             .execute()
         )
@@ -204,12 +213,12 @@ class TestGraphQueries:
 
     def test_traverse_multi_hop(self, engine_with_docs: Engine):
         results_1hop = (
-            engine_with_docs.query()
+            engine_with_docs.query(table="papers")
             .traverse(start=1, label="cites", max_hops=1)
             .execute()
         )
         results_2hop = (
-            engine_with_docs.query()
+            engine_with_docs.query(table="papers")
             .traverse(start=1, label="cites", max_hops=2)
             .execute()
         )
@@ -221,7 +230,7 @@ class TestAggregation:
 
     def test_count(self, engine_with_docs: Engine):
         result = (
-            engine_with_docs.query()
+            engine_with_docs.query(table="papers")
             .term("neural")
             .aggregate("title", "count")
         )
@@ -230,7 +239,7 @@ class TestAggregation:
 
     def test_facet(self, engine_with_docs: Engine):
         result = (
-            engine_with_docs.query()
+            engine_with_docs.query(table="papers")
             .term("neural")
             .facet("category")
         )
@@ -241,12 +250,12 @@ class TestExplain:
     """Test query plan explanation."""
 
     def test_explain_term(self, engine_with_docs: Engine):
-        plan = engine_with_docs.query().term("neural").explain()
+        plan = engine_with_docs.query(table="papers").term("neural").explain()
         assert "TermOp" in plan
 
     def test_explain_intersection(self, engine_with_docs: Engine):
-        q1 = engine_with_docs.query().term("neural")
-        q2 = engine_with_docs.query().term("networks")
+        q1 = engine_with_docs.query(table="papers").term("neural")
+        q2 = engine_with_docs.query(table="papers").term("networks")
         plan = q1.and_(q2).explain()
         assert "Intersect" in plan
 
@@ -260,7 +269,7 @@ class TestOptimizerCorrectness:
         from uqa.planner.optimizer import QueryOptimizer
         from uqa.planner.executor import PlanExecutor
 
-        ctx = engine_with_docs._build_context()
+        ctx = engine_with_docs._context_for_table("papers")
 
         op = IntersectOperator([
             TermOperator("neural"),

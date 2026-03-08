@@ -50,11 +50,15 @@ PlanExecutor with timing stats.
 Extended functions (WHERE clause):
   text_match(field, 'query')         -- full-text search with BM25 scoring
   bayesian_match(field, 'query')     -- Bayesian BM25 calibrated probability
-  knn_match(k)                       -- KNN vector search (requires set_query_vector)
+  knn_match(field, vector, k)        -- KNN vector search
   traverse_match(start, 'label', k)  -- graph reachability as a scored signal
   path_filter('path', value)         -- hierarchical path filter (equality)
   path_filter('path', 'op', value)   -- hierarchical path filter with operator
-  vector_exclude(k, threshold)       -- vector exclusion (requires set_negative_vector)
+  vector_exclude(field, pos, neg, k, threshold) -- vector exclusion
+
+  Vector arguments accept ARRAY literals or $N parameter references:
+    knn_match(embedding, ARRAY[0.1, 0.2, ...], 5)
+    knn_match(embedding, $1, 5)  -- with params=[query_vec]
 
 Fusion meta-functions (WHERE clause):
   fuse_log_odds(sig1, sig2, ...[, alpha]) -- log-odds conjunction (Paper 4)
@@ -78,6 +82,7 @@ from typing import Any, TYPE_CHECKING
 
 from pglast import parse_sql
 from pglast.ast import (
+    A_ArrayExpr,
     A_Const,
     A_Expr,
     A_Star,
@@ -201,20 +206,17 @@ class SQLCompiler:
 
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
-        self._query_vector: Any = None
-        self._negative_vector: Any = None
+        self._params: list[Any] = []
         self._expanded_views: list[str] = []
 
-    def set_query_vector(self, vector: Any) -> None:
-        """Register a query vector for knn_match() calls."""
-        self._query_vector = vector
+    def execute(self, sql: str, params: list[Any] | None = None) -> SQLResult:
+        """Parse and execute a SQL statement.
 
-    def set_negative_vector(self, vector: Any) -> None:
-        """Register a negative vector for vector_exclude() calls."""
-        self._negative_vector = vector
-
-    def execute(self, sql: str) -> SQLResult:
-        """Parse and execute a SQL statement."""
+        *params* is an optional list of parameter values for ``$1``,
+        ``$2``, ... placeholders.  Values can be any Python object
+        (scalars, numpy arrays, etc.).
+        """
+        self._params = list(params) if params else []
         stmts = parse_sql(sql)
         if not stmts:
             raise ValueError("Empty SQL statement")
@@ -279,6 +281,7 @@ class SQLCompiler:
                         "not_null": col.not_null,
                         "auto_increment": col.auto_increment,
                         "default": col.default,
+                        "vector_dimensions": col.vector_dimensions,
                     }
                     for col in columns
                 ],
@@ -290,6 +293,18 @@ class SQLCompiler:
         col_name: str = node.colname
         type_names = node.typeName.names
         raw_type, python_type = resolve_type(type_names)
+
+        # VECTOR(N) -- extract dimensions from type modifier
+        vector_dimensions: int | None = None
+        if raw_type == "vector":
+            typmods = node.typeName.typmods
+            if typmods and isinstance(typmods[0], A_Const):
+                vector_dimensions = self._extract_int_value(typmods[0])
+            else:
+                raise ValueError(
+                    f"VECTOR column '{col_name}' requires dimensions, "
+                    f"e.g. VECTOR(128)"
+                )
 
         primary_key = False
         not_null = False
@@ -316,6 +331,7 @@ class SQLCompiler:
             not_null=not_null,
             auto_increment=auto_increment,
             default=default,
+            vector_dimensions=vector_dimensions,
         )
 
     def _compile_drop(self, stmt: DropStmt) -> SQLResult:
@@ -450,7 +466,7 @@ class SQLCompiler:
                 )
             row: dict[str, Any] = {}
             for i, val_node in enumerate(row_values):
-                row[col_names[i]] = self._extract_const_value(val_node)
+                row[col_names[i]] = self._extract_insert_value(val_node)
             table.insert(row)
             inserted += 1
 
@@ -1377,9 +1393,6 @@ class SQLCompiler:
                 view_query = self._engine._views.get(table_name)
                 if view_query is not None:
                     return self._expand_view(table_name, view_query)
-                # "_default" references the engine's default document store
-                if table_name == "_default":
-                    return None, None
                 raise ValueError(f"Table '{table_name}' does not exist")
             return table, None
 
@@ -1392,24 +1405,30 @@ class SQLCompiler:
         raise ValueError(f"Unsupported FROM clause: {type(node).__name__}")
 
     def _context_for_table(self, table: Table | None) -> ExecutionContext:
-        """Build an ExecutionContext scoped to a specific table."""
+        """Build an ExecutionContext scoped to a specific table.
+
+        When *table* is ``None`` (e.g. ``SELECT 1`` with no FROM clause)
+        a minimal context with no storage is returned.
+        """
         from uqa.operators.base import ExecutionContext
 
         index_manager = getattr(self._engine, "_index_manager", None)
-
-        if table is None:
-            return self._engine._build_context()
-
         parallel_executor = getattr(
             self._engine, "_parallel_executor", None
         )
 
+        if table is None:
+            return ExecutionContext(
+                index_manager=index_manager,
+                parallel_executor=parallel_executor,
+            )
+
         return ExecutionContext(
             document_store=table.document_store,
             inverted_index=table.inverted_index,
-            vector_index=self._engine.vector_index,
-            graph_store=self._engine.graph_store,
-            block_max_index=self._engine.block_max_index,
+            vector_indexes=table.vector_indexes,
+            graph_store=table.graph_store,
+            block_max_index=table.block_max_index,
             index_manager=index_manager,
             parallel_executor=parallel_executor,
         )
@@ -1425,9 +1444,9 @@ class SQLCompiler:
         args = func_call.args or ()
 
         if name == "traverse":
-            return None, self._build_traverse(args)
+            return self._build_traverse_from(args)
         if name == "rpq":
-            return None, self._build_rpq(args)
+            return self._build_rpq_from(args)
         if name == "text_search":
             return self._build_text_search_from(args)
         raise ValueError(f"Unknown table function: {name}")
@@ -1440,21 +1459,60 @@ class SQLCompiler:
         from uqa.graph.operators import TraverseOperator, RegularPathQueryOperator
         return isinstance(op, (TraverseOperator, RegularPathQueryOperator))
 
-    def _build_traverse(self, args: tuple) -> Any:
+    def _build_traverse_from(
+        self, args: tuple
+    ) -> tuple[Table | None, Any]:
+        """Build traverse() FROM-clause.
+
+        traverse(start, 'label', hops, 'table')   -- per-table graph
+        traverse(start, 'label', hops)             -- requires table
+        """
         from uqa.graph.operators import TraverseOperator
 
         start = self._extract_int_value(args[0])
         label = self._extract_string_value(args[1]) if len(args) > 1 else None
         max_hops = self._extract_int_value(args[2]) if len(args) > 2 else 1
-        return TraverseOperator(start, label, max_hops)
+        if len(args) > 3:
+            table_name = self._extract_string_value(args[3])
+        else:
+            # Use the first available table's graph store
+            if not self._engine._tables:
+                raise ValueError(
+                    "traverse() requires a table argument or "
+                    "at least one table to exist"
+                )
+            table_name = next(iter(self._engine._tables))
+        table = self._engine._tables.get(table_name)
+        if table is None:
+            raise ValueError(f"Table '{table_name}' does not exist")
+        return table, TraverseOperator(start, label, max_hops)
 
-    def _build_rpq(self, args: tuple) -> Any:
+    def _build_rpq_from(
+        self, args: tuple
+    ) -> tuple[Table | None, Any]:
+        """Build rpq() FROM-clause.
+
+        rpq('expr', start, 'table')     -- per-table graph
+        rpq('expr', start)              -- requires table
+        """
         from uqa.graph.operators import RegularPathQueryOperator
         from uqa.graph.pattern import parse_rpq
 
         expr = self._extract_string_value(args[0])
         start = self._extract_int_value(args[1]) if len(args) > 1 else None
-        return RegularPathQueryOperator(parse_rpq(expr), start_vertex=start)
+        if len(args) > 2:
+            table_name = self._extract_string_value(args[2])
+        else:
+            if not self._engine._tables:
+                raise ValueError(
+                    "rpq() requires a table argument or "
+                    "at least one table to exist"
+                )
+            table_name = next(iter(self._engine._tables))
+        table = self._engine._tables.get(table_name)
+        if table is None:
+            raise ValueError(f"Table '{table_name}' does not exist")
+        return table, RegularPathQueryOperator(parse_rpq(expr), start_vertex=start)
 
     def _build_text_search_from(
         self, args: tuple
@@ -1753,7 +1811,7 @@ class SQLCompiler:
             query = self._extract_string_value(args[1])
             return self._make_text_search_op(field_name, query, ctx, bayesian=True)
         if name == "knn_match":
-            return self._make_knn_op(self._extract_int_value(args[0]))
+            return self._make_knn_op(args)
         if name == "traverse_match":
             return self._make_traverse_match_op(args)
         if name == "path_filter":
@@ -1788,14 +1846,24 @@ class SQLCompiler:
             scorer = BM25Scorer(BM25Params(), ctx.inverted_index.stats)
         return ScoreOperator(scorer, retrieval, terms, field=field_name)
 
-    def _make_knn_op(self, k: int) -> Any:
+    def _make_knn_op(self, args: tuple) -> Any:
+        """knn_match(field, vector, k)
+
+        *field* is a column name (ColumnRef).
+        *vector* is an ARRAY literal or $N parameter reference.
+        *k* is an integer constant.
+        """
         from uqa.operators.primitive import KNNOperator
-        if self._query_vector is None:
+
+        if len(args) != 3:
             raise ValueError(
-                "No query vector registered. "
-                "Call set_query_vector() before using knn_match()."
+                "knn_match() requires 3 arguments: "
+                "knn_match(field, vector, k)"
             )
-        return KNNOperator(self._query_vector, k)
+        field_name = self._extract_column_name(args[0])
+        query_vector = self._extract_vector_arg(args[1])
+        k = self._extract_int_value(args[2])
+        return KNNOperator(query_vector, k, field=field_name)
 
     def _make_traverse_match_op(self, args: tuple) -> Any:
         """traverse_match(start_id, 'label', max_hops) as a WHERE signal.
@@ -1840,35 +1908,34 @@ class SQLCompiler:
         return PathFilterOperator(path_expr, _op_to_predicate(op_str, value))
 
     def _make_vector_exclude_op(self, args: tuple) -> Any:
-        """vector_exclude(k, threshold) -- KNN with negative exclusion.
+        """vector_exclude(field, positive_vector, negative_vector, k, threshold)
 
-        Requires set_query_vector() and set_negative_vector() to be called
-        before executing the query.
+        *field* is a column name (ColumnRef).
+        *positive_vector* is an ARRAY literal or $N parameter.
+        *negative_vector* is an ARRAY literal or $N parameter.
+        *k* is an integer constant.
+        *threshold* is a numeric constant.
         """
         from uqa.operators.hybrid import VectorExclusionOperator
         from uqa.operators.primitive import KNNOperator
 
-        if len(args) < 2:
+        if len(args) != 5:
             raise ValueError(
-                "vector_exclude() requires 2 arguments: k, threshold"
+                "vector_exclude() requires 5 arguments: "
+                "vector_exclude(field, positive_vector, negative_vector, "
+                "k, threshold)"
             )
 
-        k = self._extract_int_value(args[0])
-        threshold = float(self._extract_const_value(args[1]))
+        field_name = self._extract_column_name(args[0])
+        positive_vector = self._extract_vector_arg(args[1])
+        negative_vector = self._extract_vector_arg(args[2])
+        k = self._extract_int_value(args[3])
+        threshold = float(self._extract_const_value(args[4]))
 
-        if self._query_vector is None:
-            raise ValueError(
-                "No query vector registered. "
-                "Call set_query_vector() before using vector_exclude()."
-            )
-        negative_vector = getattr(self, "_negative_vector", None)
-        if negative_vector is None:
-            raise ValueError(
-                "No negative vector registered. "
-                "Call set_negative_vector() before using vector_exclude()."
-            )
-        positive = KNNOperator(self._query_vector, k)
-        return VectorExclusionOperator(positive, negative_vector, threshold)
+        positive = KNNOperator(positive_vector, k, field=field_name)
+        return VectorExclusionOperator(
+            positive, negative_vector, threshold, field=field_name
+        )
 
     def _compile_calibrated_signal(
         self, node: FuncCall, ctx: ExecutionContext
@@ -1893,7 +1960,7 @@ class SQLCompiler:
             query = self._extract_string_value(args[1])
             return self._make_text_search_op(field_name, query, ctx, bayesian=True)
         if name == "knn_match":
-            return self._make_calibrated_knn_op(self._extract_int_value(args[0]))
+            return self._make_calibrated_knn_op(args)
         if name == "traverse_match":
             return self._make_traverse_match_op(args)
         raise ValueError(
@@ -1901,18 +1968,21 @@ class SQLCompiler:
             f"Use text_match, bayesian_match, knn_match, or traverse_match."
         )
 
-    def _make_calibrated_knn_op(self, k: int) -> Any:
+    def _make_calibrated_knn_op(self, args: tuple) -> Any:
         """KNN search with scores calibrated to probabilities via
         P_vector = (1 + cosine_similarity) / 2 (Definition 7.1.2, Paper 3).
-        """
-        from uqa.operators.primitive import KNNOperator
 
-        if self._query_vector is None:
+        knn_match(field, vector, k) -- same signature as _make_knn_op.
+        """
+        if len(args) != 3:
             raise ValueError(
-                "No query vector registered. "
-                "Call set_query_vector() before using knn_match()."
+                "knn_match() requires 3 arguments: "
+                "knn_match(field, vector, k)"
             )
-        return _CalibratedKNNOperator(self._query_vector, k)
+        field_name = self._extract_column_name(args[0])
+        query_vector = self._extract_vector_arg(args[1])
+        k = self._extract_int_value(args[2])
+        return _CalibratedKNNOperator(query_vector, k, field=field_name)
 
     def _make_prob_not_op(self, args: tuple, ctx: ExecutionContext) -> Any:
         """fuse_prob_not(signal) -- probabilistic complement of a single signal."""
@@ -2082,6 +2152,10 @@ class SQLCompiler:
     # -- Result conversion ---------------------------------------------
 
     def _scan_all(self, ctx: ExecutionContext) -> PostingList:
+        if ctx.document_store is None:
+            # No FROM clause (e.g. SELECT 1 AS val): produce a single
+            # dummy row so that expression projection yields one result.
+            return PostingList([PostingEntry(0, Payload(score=0.0))])
         all_ids = sorted(ctx.document_store.doc_ids)
         return PostingList([PostingEntry(d, Payload(score=0.0)) for d in all_ids])
 
@@ -2130,6 +2204,39 @@ class SQLCompiler:
             return node.val.ival
         raise ValueError(f"Expected integer constant, got {type(node).__name__}")
 
+    def _extract_vector_arg(self, node: Any) -> Any:
+        """Extract a vector from an ARRAY literal or a $N parameter.
+
+        Returns a numpy float32 array.
+        """
+        import numpy as np
+
+        if isinstance(node, A_ArrayExpr):
+            values = [
+                self._extract_const_value(elem) for elem in node.elements
+            ]
+            return np.array(values, dtype=np.float32)
+        if isinstance(node, ParamRef):
+            idx = node.number - 1  # $1 -> index 0
+            if idx < 0 or idx >= len(self._params):
+                raise ValueError(
+                    f"No value supplied for parameter ${node.number}"
+                )
+            return np.asarray(self._params[idx], dtype=np.float32)
+        raise ValueError(
+            f"Expected ARRAY literal or $N parameter for vector, "
+            f"got {type(node).__name__}"
+        )
+
+    def _extract_insert_value(self, node: Any) -> Any:
+        """Extract a value from an INSERT VALUES clause.
+
+        Handles A_Const (scalars) and A_ArrayExpr (vector literals).
+        """
+        if isinstance(node, A_ArrayExpr):
+            return [self._extract_const_value(elem) for elem in node.elements]
+        return self._extract_const_value(node)
+
 
 class _ScanOperator:
     """Scans all documents in the store."""
@@ -2153,12 +2260,13 @@ class _CalibratedKNNOperator:
     - similarity = -1.0 ->  P = 0.0  (opposite)
     """
 
-    def __init__(self, query_vector: Any, k: int) -> None:
+    def __init__(self, query_vector: Any, k: int, field: str = "embedding") -> None:
         self.query_vector = query_vector
         self.k = k
+        self.field = field
 
     def execute(self, context: Any) -> PostingList:
-        vec_idx = context.vector_index
+        vec_idx = context.vector_indexes.get(self.field)
         if vec_idx is None:
             return PostingList()
         raw_pl = vec_idx.search_knn(self.query_vector, self.k)

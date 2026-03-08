@@ -304,19 +304,23 @@ class TestPersistence:
 
 
 class TestEngineIntegration:
+    _TABLE_DDL = "CREATE TABLE g (id SERIAL PRIMARY KEY, name TEXT)"
+
     def test_graph_uses_sqlite_store(self, tmp_path):
         from uqa.engine import Engine
 
         db = str(tmp_path / "test.db")
         with Engine(db_path=db) as engine:
-            assert isinstance(engine.graph_store, SQLiteGraphStore)
+            engine.sql(self._TABLE_DDL)
+            assert isinstance(engine._tables["g"].graph_store, SQLiteGraphStore)
 
     def test_in_memory_engine_uses_plain_store(self):
         from uqa.engine import Engine
         from uqa.graph.store import GraphStore
 
         engine = Engine()
-        assert type(engine.graph_store) is GraphStore
+        engine.sql(self._TABLE_DDL)
+        assert type(engine._tables["g"].graph_store) is GraphStore
 
     def test_graph_survives_engine_close_reopen(self, tmp_path):
         from uqa.engine import Engine
@@ -324,20 +328,28 @@ class TestEngineIntegration:
         db = str(tmp_path / "test.db")
 
         with Engine(db_path=db) as engine:
-            engine.add_graph_vertex(Vertex(1, {"name": "Alice", "age": 30}))
-            engine.add_graph_vertex(Vertex(2, {"name": "Bob", "age": 25}))
-            engine.add_graph_edge(Edge(1, 1, 2, "knows", {"since": 2020}))
+            engine.sql(self._TABLE_DDL)
+            engine.add_graph_vertex(
+                Vertex(1, {"name": "Alice", "age": 30}), table="g"
+            )
+            engine.add_graph_vertex(
+                Vertex(2, {"name": "Bob", "age": 25}), table="g"
+            )
+            engine.add_graph_edge(
+                Edge(1, 1, 2, "knows", {"since": 2020}), table="g"
+            )
 
         with Engine(db_path=db) as engine:
-            v = engine.graph_store.get_vertex(1)
+            gs = engine._tables["g"].graph_store
+            v = gs.get_vertex(1)
             assert v is not None
             assert v.properties["name"] == "Alice"
 
-            e = engine.graph_store.get_edge(1)
+            e = gs.get_edge(1)
             assert e is not None
             assert e.label == "knows"
 
-            neighbors = engine.graph_store.neighbors(1, direction="out")
+            neighbors = gs.neighbors(1, direction="out")
             assert 2 in neighbors
 
     def test_graph_operators_work_with_sqlite_store(self, tmp_path):
@@ -346,13 +358,16 @@ class TestEngineIntegration:
 
         db = str(tmp_path / "test.db")
         with Engine(db_path=db) as engine:
-            engine.add_graph_vertex(Vertex(1, {"name": "Alice"}))
-            engine.add_graph_vertex(Vertex(2, {"name": "Bob"}))
-            engine.add_graph_vertex(Vertex(3, {"name": "Charlie"}))
-            engine.add_graph_edge(Edge(1, 1, 2, "knows", {}))
-            engine.add_graph_edge(Edge(2, 2, 3, "knows", {}))
+            engine.sql(self._TABLE_DDL)
+            engine.add_graph_vertex(Vertex(1, {"name": "Alice"}), table="g")
+            engine.add_graph_vertex(Vertex(2, {"name": "Bob"}), table="g")
+            engine.add_graph_vertex(
+                Vertex(3, {"name": "Charlie"}), table="g"
+            )
+            engine.add_graph_edge(Edge(1, 1, 2, "knows", {}), table="g")
+            engine.add_graph_edge(Edge(2, 2, 3, "knows", {}), table="g")
 
-            ctx = engine._build_context()
+            ctx = engine._context_for_table("g")
             op = TraverseOperator(start_vertex=1, label="knows", max_hops=2)
             result = op.execute(ctx)
             doc_ids = {e.doc_id for e in result}
@@ -365,13 +380,16 @@ class TestEngineIntegration:
 
         db = str(tmp_path / "test.db")
         with Engine(db_path=db) as engine:
-            engine.add_graph_vertex(Vertex(1, {"name": "Alice"}))
-            engine.add_graph_vertex(Vertex(2, {"name": "Bob"}))
-            engine.add_graph_vertex(Vertex(3, {"name": "Charlie"}))
-            engine.add_graph_edge(Edge(1, 1, 2, "knows", {}))
-            engine.add_graph_edge(Edge(2, 1, 3, "knows", {}))
+            engine.sql(self._TABLE_DDL)
+            engine.add_graph_vertex(Vertex(1, {"name": "Alice"}), table="g")
+            engine.add_graph_vertex(Vertex(2, {"name": "Bob"}), table="g")
+            engine.add_graph_vertex(
+                Vertex(3, {"name": "Charlie"}), table="g"
+            )
+            engine.add_graph_edge(Edge(1, 1, 2, "knows", {}), table="g")
+            engine.add_graph_edge(Edge(2, 1, 3, "knows", {}), table="g")
 
-            ctx = engine._build_context()
+            ctx = engine._context_for_table("g")
             pattern = GraphPattern(
                 vertex_patterns=[VertexPattern("a"), VertexPattern("b")],
                 edge_patterns=[EdgePattern("a", "b", "knows")],
@@ -387,13 +405,14 @@ class TestEngineIntegration:
 
         db = str(tmp_path / "test.db")
         with Engine(db_path=db) as engine:
-            engine.add_graph_vertex(Vertex(1, {"name": "A"}))
-            engine.add_graph_vertex(Vertex(2, {"name": "B"}))
-            engine.add_graph_vertex(Vertex(3, {"name": "C"}))
-            engine.add_graph_edge(Edge(1, 1, 2, "knows", {}))
-            engine.add_graph_edge(Edge(2, 2, 3, "follows", {}))
+            engine.sql(self._TABLE_DDL)
+            engine.add_graph_vertex(Vertex(1, {"name": "A"}), table="g")
+            engine.add_graph_vertex(Vertex(2, {"name": "B"}), table="g")
+            engine.add_graph_vertex(Vertex(3, {"name": "C"}), table="g")
+            engine.add_graph_edge(Edge(1, 1, 2, "knows", {}), table="g")
+            engine.add_graph_edge(Edge(2, 2, 3, "follows", {}), table="g")
 
-            ctx = engine._build_context()
+            ctx = engine._context_for_table("g")
             expr = Concat(Label("knows"), Label("follows"))
             op = RegularPathQueryOperator(expr, start_vertex=1)
             result = op.execute(ctx)

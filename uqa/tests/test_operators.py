@@ -101,7 +101,7 @@ def context(
     return ExecutionContext(
         document_store=doc_store,
         inverted_index=inv_index,
-        vector_index=vec_index,
+        vector_indexes={"embedding": vec_index},
     )
 
 

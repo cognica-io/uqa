@@ -8,27 +8,19 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
 from numpy.typing import NDArray
 
 from uqa.api.query_builder import QueryBuilder
 from uqa.core.types import DocId, Edge, Payload, PostingEntry, Vertex
 from uqa.storage.catalog import Catalog
-from uqa.storage.document_store import DocumentStore
-from uqa.storage.inverted_index import InvertedIndex
-from uqa.storage.vector_index import HNSWIndex
-from uqa.graph.store import GraphStore
 from uqa.planner.parallel import ParallelExecutor
-from uqa.storage.block_max_index import BlockMaxIndex
 from uqa.storage.index_manager import IndexManager
-from uqa.storage.sqlite_graph_store import SQLiteGraphStore
-from uqa.storage.sqlite_vector_index import SQLiteVectorIndex
 from uqa.storage.transaction import Transaction
 from uqa.sql.table import ColumnDef, ColumnStats, Table, _SQL_TYPE_MAP
 
 
 class Engine:
-    """Main engine: initializes all storage and provides query interface.
+    """Main engine: all storage is per-table, no global stores.
 
     When ``db_path`` is provided the engine persists every mutation to a
     SQLite database (write-through) and restores state on next startup.
@@ -43,14 +35,6 @@ class Engine:
         parallel_workers: int = 4,
         spill_threshold: int = 0,
     ):
-        self.document_store = DocumentStore()
-        self.inverted_index = InvertedIndex()
-        self.vector_index: HNSWIndex = HNSWIndex(
-            dimensions=vector_dimensions,
-            max_elements=max_elements,
-        )
-        self.graph_store: GraphStore = GraphStore()
-        self.block_max_index = BlockMaxIndex()
         self._vector_dimensions = vector_dimensions
         self._max_elements = max_elements
         self._parallel_executor = ParallelExecutor(
@@ -60,8 +44,6 @@ class Engine:
         self._tables: dict[str, Any] = {}
         self._views: dict[str, Any] = {}  # name -> SelectStmt AST
         self._prepared: dict[str, Any] = {}  # name -> PrepareStmt AST
-        self._query_vector: Any = None
-        self._negative_vector: Any = None
 
         # Persistence and transactions
         self._catalog: Catalog | None = None
@@ -72,12 +54,6 @@ class Engine:
             self._index_manager = IndexManager(
                 self._catalog.conn, self._catalog
             )
-            self.vector_index = SQLiteVectorIndex(
-                self._catalog.conn,
-                dimensions=vector_dimensions,
-                max_elements=max_elements,
-            )
-            self.graph_store = SQLiteGraphStore(self._catalog.conn)
             self._catalog.set_metadata(
                 "vector_dimensions", str(vector_dimensions)
             )
@@ -97,18 +73,25 @@ class Engine:
         # Documents and postings are already in per-table SQLite tables,
         # so no manual restore is needed.
         for name, col_dicts in catalog.load_table_schemas():
-            columns = [
-                ColumnDef(
-                    name=cd["name"],
-                    type_name=cd["type_name"],
-                    python_type=_SQL_TYPE_MAP[cd["type_name"]],
-                    primary_key=cd["primary_key"],
-                    not_null=cd["not_null"],
-                    auto_increment=cd["auto_increment"],
-                    default=cd["default"],
+            columns = []
+            for cd in col_dicts:
+                type_name = cd["type_name"]
+                if type_name == "vector":
+                    python_type: type = list
+                else:
+                    python_type = _SQL_TYPE_MAP[type_name]
+                columns.append(
+                    ColumnDef(
+                        name=cd["name"],
+                        type_name=type_name,
+                        python_type=python_type,
+                        primary_key=cd["primary_key"],
+                        not_null=cd["not_null"],
+                        auto_increment=cd["auto_increment"],
+                        default=cd["default"],
+                        vector_dimensions=cd.get("vector_dimensions"),
+                    )
                 )
-                for cd in col_dicts
-            ]
             table = Table(name, columns, conn=catalog.conn)
 
             # Migrate old-format databases: if documents exist in the
@@ -143,44 +126,6 @@ class Engine:
         # -- Indexes ---------------------------------------------------
         if self._index_manager is not None:
             self._index_manager.load_from_catalog()
-
-        # -- Global documents (programmatic API) -----------------------
-        for doc_id, data in catalog.load_documents(""):
-            self.document_store.put(doc_id, data)
-
-        # Restore global inverted index
-        if not self._restore_inverted_index(
-            catalog, "", self.inverted_index
-        ):
-            self._migrate_inverted_index(
-                catalog, "", self.document_store, self.inverted_index
-            )
-
-        # -- Vectors ---------------------------------------------------
-        # SQLiteVectorIndex loads vectors from SQLite on construction.
-        # Only load manually for plain HNSWIndex.
-        if not isinstance(self.vector_index, SQLiteVectorIndex):
-            for doc_id, embedding in catalog.load_vectors():
-                self.vector_index.add(doc_id, embedding)
-
-        # -- Graph -----------------------------------------------------
-        # SQLiteGraphStore loads vertices and edges from SQLite on
-        # construction.  Only load manually for plain GraphStore.
-        if not isinstance(self.graph_store, SQLiteGraphStore):
-            for vertex_id, props in catalog.load_vertices():
-                self.graph_store.add_vertex(
-                    Vertex(vertex_id=vertex_id, properties=props)
-                )
-            for eid, src, dst, label, props in catalog.load_edges():
-                self.graph_store.add_edge(
-                    Edge(
-                        edge_id=eid,
-                        source_id=src,
-                        target_id=dst,
-                        label=label,
-                        properties=props,
-                    )
-                )
 
     @staticmethod
     def _migrate_old_format_table(
@@ -236,158 +181,66 @@ class Engine:
         )
         catalog.conn.commit()
 
-    @staticmethod
-    def _restore_inverted_index(
-        catalog: Catalog,
-        table_name: str,
-        inverted_index: InvertedIndex,
-    ) -> bool:
-        """Restore an in-memory inverted index from persisted postings.
-
-        Used only for the global (programmatic API) inverted index.
-        Returns True if postings were found and restored, False otherwise.
-        """
-        postings = catalog.load_postings(table_name)
-        if not postings:
-            return False
-
-        doc_lengths_list = catalog.load_doc_lengths(table_name)
-
-        # Populate posting entries
-        for field, term, doc_id, positions in postings:
-            entry = PostingEntry(
-                doc_id, Payload(positions=positions, score=0.0)
-            )
-            inverted_index.add_posting(field, term, entry)
-
-        # Populate doc lengths and compute aggregate stats
-        inverted_index.set_doc_count(len(doc_lengths_list))
-        for doc_id, lengths in doc_lengths_list:
-            inverted_index.set_doc_length(doc_id, lengths)
-            for field, length in lengths.items():
-                inverted_index.add_total_length(field, length)
-
-        return True
-
-    @staticmethod
-    def _migrate_inverted_index(
-        catalog: Catalog,
-        table_name: str,
-        document_store: DocumentStore,
-        inverted_index: InvertedIndex,
-    ) -> None:
-        """Backward compat: re-tokenize global documents and persist postings.
-
-        Called once when opening a database created before posting
-        persistence was added.  Subsequent restarts use the fast path.
-        """
-        doc_ids = sorted(document_store.doc_ids)
-        if not doc_ids:
-            return
-
-        catalog.begin()
-        try:
-            for doc_id in doc_ids:
-                data = document_store.get(doc_id)
-                if data is None:
-                    continue
-                text_fields = {
-                    k: v for k, v in data.items() if isinstance(v, str)
-                }
-                if text_fields:
-                    indexed = inverted_index.add_document(
-                        doc_id, text_fields
-                    )
-                    catalog.save_postings(
-                        table_name,
-                        doc_id,
-                        indexed.field_lengths,
-                        indexed.postings,
-                    )
-            catalog.commit()
-        except Exception:
-            catalog.rollback()
-            raise
-
     # -- Public API ----------------------------------------------------
 
     def add_document(
         self,
         doc_id: DocId,
         document: dict[str, Any],
+        table: str,
         embedding: NDArray | None = None,
     ) -> None:
-        """Add a document to all relevant indexes."""
-        self.document_store.put(doc_id, document)
+        """Add a document to a table's storage and indexes.
+
+        The document is stored in the table's document store, text fields
+        are indexed into the table's inverted index, and an optional
+        embedding vector is added to the first available vector index.
+        """
+        tbl = self._tables.get(table)
+        if tbl is None:
+            raise ValueError(f"Table '{table}' does not exist")
+
+        # Include the primary key in stored data for consistency with
+        # SQL INSERT (Table.insert) which always stores the PK column.
+        stored = dict(document)
+        if tbl.primary_key is not None and tbl.primary_key not in stored:
+            pk_col = tbl.columns[tbl.primary_key]
+            stored[tbl.primary_key] = pk_col.python_type(doc_id)
+
+        tbl.document_store.put(doc_id, stored)
 
         text_fields = {
-            k: v for k, v in document.items() if isinstance(v, str)
+            k: v for k, v in stored.items() if isinstance(v, str)
         }
-        indexed = None
         if text_fields:
-            indexed = self.inverted_index.add_document(doc_id, text_fields)
+            tbl.inverted_index.add_document(doc_id, text_fields)
 
         if embedding is not None:
-            self.vector_index.add(doc_id, embedding)
+            vec_idx = next(iter(tbl.vector_indexes.values()), None)
+            if vec_idx is not None:
+                vec_idx.add(doc_id, embedding)
 
-        if self._catalog is not None:
-            self._catalog.begin()
-            try:
-                self._catalog.save_document("", doc_id, document)
-                if indexed is not None:
-                    self._catalog.save_postings(
-                        "", doc_id,
-                        indexed.field_lengths, indexed.postings,
-                    )
-                # SQLiteVectorIndex handles persistence via write-through.
-                if embedding is not None and not isinstance(
-                    self.vector_index, SQLiteVectorIndex
-                ):
-                    self._catalog.save_vector(doc_id, embedding)
-                self._catalog.commit()
-            except Exception:
-                self._catalog.rollback()
-                raise
+    def delete_document(self, doc_id: DocId, table: str) -> None:
+        """Remove a document from a table's storage and indexes."""
+        tbl = self._tables.get(table)
+        if tbl is None:
+            raise ValueError(f"Table '{table}' does not exist")
+        tbl.document_store.delete(doc_id)
+        tbl.inverted_index.remove_document(doc_id)
 
-    def delete_document(self, doc_id: DocId) -> None:
-        """Remove a document from all in-memory indexes and catalog."""
-        self.document_store.delete(doc_id)
-        self.inverted_index.remove_document(doc_id)
-        if isinstance(self.vector_index, SQLiteVectorIndex):
-            self.vector_index.delete(doc_id)
-        if self._catalog is not None:
-            self._catalog.begin()
-            try:
-                self._catalog.delete_document("", doc_id)
-                # SQLiteVectorIndex handles persistence via write-through.
-                if not isinstance(self.vector_index, SQLiteVectorIndex):
-                    self._catalog.delete_vector(doc_id)
-                self._catalog.commit()
-            except Exception:
-                self._catalog.rollback()
-                raise
+    def add_graph_vertex(self, vertex: Vertex, table: str) -> None:
+        """Add a graph vertex to a table's graph store."""
+        tbl = self._tables.get(table)
+        if tbl is None:
+            raise ValueError(f"Table '{table}' does not exist")
+        tbl.graph_store.add_vertex(vertex)
 
-    def add_graph_vertex(self, vertex: Vertex) -> None:
-        self.graph_store.add_vertex(vertex)
-        # SQLiteGraphStore handles persistence via write-through.
-        if self._catalog is not None and not isinstance(
-            self.graph_store, SQLiteGraphStore
-        ):
-            self._catalog.save_vertex(vertex.vertex_id, vertex.properties)
-
-    def add_graph_edge(self, edge: Edge) -> None:
-        self.graph_store.add_edge(edge)
-        # SQLiteGraphStore handles persistence via write-through.
-        if self._catalog is not None and not isinstance(
-            self.graph_store, SQLiteGraphStore
-        ):
-            self._catalog.save_edge(
-                edge.edge_id,
-                edge.source_id,
-                edge.target_id,
-                edge.label,
-                edge.properties,
-            )
+    def add_graph_edge(self, edge: Edge, table: str) -> None:
+        """Add a graph edge to a table's graph store."""
+        tbl = self._tables.get(table)
+        if tbl is None:
+            raise ValueError(f"Table '{table}' does not exist")
+        tbl.graph_store.add_edge(edge)
 
     # -- Scoring parameters (Papers 3-4) -------------------------------
 
@@ -437,27 +290,20 @@ class Engine:
 
     # -- Query interface -----------------------------------------------
 
-    def query(self) -> QueryBuilder:
-        return QueryBuilder(self)
+    def query(self, table: str) -> QueryBuilder:
+        """Create a fluent query builder scoped to a table."""
+        return QueryBuilder(self, table=table)
 
-    def set_query_vector(self, vector: Any) -> None:
-        """Set the query vector for knn_match() in SQL queries."""
-        self._query_vector = vector
+    def sql(self, query: str, params: list[Any] | None = None) -> Any:
+        """Execute a SQL query against the engine's storage.
 
-    def set_negative_vector(self, vector: Any) -> None:
-        """Set the negative vector for vector_exclude() in SQL queries."""
-        self._negative_vector = vector
-
-    def sql(self, query: str) -> Any:
-        """Execute a SQL query against the engine's storage."""
+        *params* is an optional list of parameter values for ``$1``,
+        ``$2``, ... placeholders (e.g. numpy arrays for vector search).
+        """
         from uqa.sql.compiler import SQLCompiler
 
         compiler = SQLCompiler(self)
-        if self._query_vector is not None:
-            compiler.set_query_vector(self._query_vector)
-        if self._negative_vector is not None:
-            compiler.set_negative_vector(self._negative_vector)
-        return compiler.execute(query)
+        return compiler.execute(query, params=params)
 
     def close(self) -> None:
         """Close the persistent catalog (no-op if in-memory only)."""
@@ -474,15 +320,19 @@ class Engine:
     def __exit__(self, *exc: object) -> None:
         self.close()
 
-    def _build_context(self) -> Any:
+    def _context_for_table(self, table_name: str) -> Any:
+        """Build an ExecutionContext scoped to a specific table."""
         from uqa.operators.base import ExecutionContext
 
+        tbl = self._tables.get(table_name)
+        if tbl is None:
+            raise ValueError(f"Table '{table_name}' does not exist")
         return ExecutionContext(
-            document_store=self.document_store,
-            inverted_index=self.inverted_index,
-            vector_index=self.vector_index,
-            graph_store=self.graph_store,
-            block_max_index=self.block_max_index,
+            document_store=tbl.document_store,
+            inverted_index=tbl.inverted_index,
+            vector_indexes=tbl.vector_indexes,
+            graph_store=tbl.graph_store,
+            block_max_index=tbl.block_max_index,
             index_manager=self._index_manager,
             parallel_executor=self._parallel_executor,
         )

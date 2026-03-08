@@ -15,7 +15,7 @@ WHERE text_match(title, 'attention transformer') ORDER BY _score DESC;
 SELECT title, _score FROM papers
 WHERE fuse_log_odds(
     text_match(title, 'attention'),
-    knn_match(5),
+    knn_match(embedding, ARRAY[0.1, 0.2, ...], 5),
     traverse_match(1, 'cited_by', 2)
 ) AND year >= 2020
 ORDER BY _score DESC;
@@ -113,7 +113,7 @@ uqa/
 |----------|-------------|
 | `text_match(field, 'query')` | Full-text search with BM25 scoring |
 | `bayesian_match(field, 'query')` | Bayesian BM25 — calibrated P(relevant) in [0,1] |
-| `knn_match(k)` | K-nearest neighbor vector search |
+| `knn_match(field, vector, k)` | K-nearest neighbor vector search (vector as `ARRAY[...]` or `$N`) |
 | `traverse_match(start, 'label', hops)` | Graph reachability as a scored signal |
 | `path_filter(path, value)` | Hierarchical equality filter (any-match on arrays) |
 | `path_filter(path, op, value)` | Hierarchical comparison filter (`>`, `<`, `>=`, `<=`, `!=`) |

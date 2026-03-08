@@ -41,8 +41,9 @@ class FacetResult:
 class QueryBuilder:
     """Fluent API for constructing queries over the unified algebra (Section 13, Design Doc)."""
 
-    def __init__(self, engine: Engine):
+    def __init__(self, engine: Engine, table: str):
         self._engine = engine
+        self._table = table
         self._root: Any = None
 
     # -- Term retrieval (Definition 3.1.1) --
@@ -77,7 +78,7 @@ class QueryBuilder:
         if self._root is None or other._root is None:
             raise ValueError("Both builders must have operators before combining")
         op = IntersectOperator([self._root, other._root])
-        qb = QueryBuilder(self._engine)
+        qb = QueryBuilder(self._engine, self._table)
         qb._root = op
         return qb
 
@@ -87,7 +88,7 @@ class QueryBuilder:
         if self._root is None or other._root is None:
             raise ValueError("Both builders must have operators before combining")
         op = UnionOperator([self._root, other._root])
-        qb = QueryBuilder(self._engine)
+        qb = QueryBuilder(self._engine, self._table)
         qb._root = op
         return qb
 
@@ -97,7 +98,7 @@ class QueryBuilder:
         if self._root is None:
             raise ValueError("Builder must have an operator before negation")
         op = ComplementOperator(self._root)
-        qb = QueryBuilder(self._engine)
+        qb = QueryBuilder(self._engine, self._table)
         qb._root = op
         return qb
 
@@ -118,7 +119,7 @@ class QueryBuilder:
             from uqa.operators.primitive import FilterOperator
 
             op = FilterOperator(field, predicate, self._root)
-        qb = QueryBuilder(self._engine)
+        qb = QueryBuilder(self._engine, self._table)
         qb._root = op
         return qb
 
@@ -137,7 +138,7 @@ class QueryBuilder:
             raise ValueError("Both builders must have operators before joining")
         condition = JoinCondition(left_field, right_field)
         op = InnerJoinOperator(self._root, other._root, condition)
-        qb = QueryBuilder(self._engine)
+        qb = QueryBuilder(self._engine, self._table)
         qb._root = op
         return qb
 
@@ -155,7 +156,7 @@ class QueryBuilder:
         op = VectorSimilarityJoinOperator(
             self._root, other._root, left_field, right_field, threshold
         )
-        qb = QueryBuilder(self._engine)
+        qb = QueryBuilder(self._engine, self._table)
         qb._root = op
         return qb
 
@@ -199,7 +200,7 @@ class QueryBuilder:
             )
 
         op = VertexAggregationOperator(self._root, property_name, agg_fn)
-        ctx = self._engine._build_context()
+        ctx = self._engine._context_for_table(self._table)
         result_gpl = op.execute(ctx)
 
         if result_gpl and len(result_gpl) > 0:
@@ -223,7 +224,7 @@ class QueryBuilder:
         op = VectorExclusionOperator(
             self._root, negative_vector, threshold
         )
-        qb = QueryBuilder(self._engine)
+        qb = QueryBuilder(self._engine, self._table)
         qb._root = op
         return qb
 
@@ -252,7 +253,7 @@ class QueryBuilder:
 
         monoid = monoid_cls()
         agg_op = AggregateOperator(self._root, field, monoid)
-        ctx = self._engine._build_context()
+        ctx = self._engine._context_for_table(self._table)
         result_pl = agg_op.execute(ctx)
 
         if result_pl and len(result_pl) > 0:
@@ -264,7 +265,7 @@ class QueryBuilder:
         from uqa.operators.primitive import FacetOperator
 
         op = FacetOperator(field, self._root)
-        ctx = self._engine._build_context()
+        ctx = self._engine._context_for_table(self._table)
         result_pl = op.execute(ctx)
 
         counts: dict[Any, int] = {}
@@ -284,7 +285,7 @@ class QueryBuilder:
         op = FacetVectorOperator(
             field, query_vector, threshold, self._root
         )
-        ctx = self._engine._build_context()
+        ctx = self._engine._context_for_table(self._table)
         result_pl = op.execute(ctx)
 
         counts: dict[Any, int] = {}
@@ -301,7 +302,7 @@ class QueryBuilder:
         from uqa.operators.hierarchical import PathFilterOperator
 
         op = PathFilterOperator(path, predicate, self._root)
-        qb = QueryBuilder(self._engine)
+        qb = QueryBuilder(self._engine, self._table)
         qb._root = op
         return qb
 
@@ -309,7 +310,7 @@ class QueryBuilder:
         from uqa.operators.hierarchical import PathProjectOperator
 
         op = PathProjectOperator(list(paths), self._root)
-        qb = QueryBuilder(self._engine)
+        qb = QueryBuilder(self._engine, self._table)
         qb._root = op
         return qb
 
@@ -317,7 +318,7 @@ class QueryBuilder:
         from uqa.operators.hierarchical import PathUnnestOperator
 
         op = PathUnnestOperator(path, self._root)
-        qb = QueryBuilder(self._engine)
+        qb = QueryBuilder(self._engine, self._table)
         qb._root = op
         return qb
 
@@ -361,7 +362,7 @@ class QueryBuilder:
             path_expr = path
 
         op = PathAggregateOperator(path_expr, monoid_cls(), self._root)
-        qb = QueryBuilder(self._engine)
+        qb = QueryBuilder(self._engine, self._table)
         qb._root = op
         return qb
 
@@ -372,10 +373,10 @@ class QueryBuilder:
         from uqa.scoring.bm25 import BM25Params, BM25Scorer
 
         terms = query.lower().split()
-        ctx = self._engine._build_context()
+        ctx = self._engine._context_for_table(self._table)
         scorer = BM25Scorer(BM25Params(), ctx.inverted_index.stats)
         op = ScoreOperator(scorer, self._root, terms)
-        qb = QueryBuilder(self._engine)
+        qb = QueryBuilder(self._engine, self._table)
         qb._root = op
         return qb
 
@@ -384,10 +385,10 @@ class QueryBuilder:
         from uqa.scoring.bayesian_bm25 import BayesianBM25Params, BayesianBM25Scorer
 
         terms = query.lower().split()
-        ctx = self._engine._build_context()
+        ctx = self._engine._context_for_table(self._table)
         scorer = BayesianBM25Scorer(BayesianBM25Params(), ctx.inverted_index.stats)
         op = ScoreOperator(scorer, self._root, terms)
-        qb = QueryBuilder(self._engine)
+        qb = QueryBuilder(self._engine, self._table)
         qb._root = op
         return qb
 
@@ -397,10 +398,8 @@ class QueryBuilder:
         self, *builders: QueryBuilder, alpha: float = 0.5
     ) -> QueryBuilder:
         from uqa.fusion.log_odds import LogOddsFusion
-        from uqa.operators.boolean import UnionOperator
 
         fusion = LogOddsFusion(confidence_alpha=alpha)
-        ctx = self._engine._build_context()
 
         sources = []
         for b in builders:
@@ -410,21 +409,17 @@ class QueryBuilder:
         if not sources:
             return self
 
-        qb = QueryBuilder(self._engine)
+        qb = QueryBuilder(self._engine, self._table)
         qb._root = _FusionOperator(fusion, [b._root for b in sources])
         return qb
 
     def fuse_prob_and(self, *builders: QueryBuilder) -> QueryBuilder:
-        from uqa.fusion.boolean import ProbabilisticBoolean
-
-        qb = QueryBuilder(self._engine)
+        qb = QueryBuilder(self._engine, self._table)
         qb._root = _ProbBooleanOperator("and", [b._root for b in builders if b._root])
         return qb
 
     def fuse_prob_or(self, *builders: QueryBuilder) -> QueryBuilder:
-        from uqa.fusion.boolean import ProbabilisticBoolean
-
-        qb = QueryBuilder(self._engine)
+        qb = QueryBuilder(self._engine, self._table)
         qb._root = _ProbBooleanOperator("or", [b._root for b in builders if b._root])
         return qb
 
@@ -438,7 +433,7 @@ class QueryBuilder:
         if self._root is None:
             return PostingList()
 
-        ctx = self._engine._build_context()
+        ctx = self._engine._context_for_table(self._table)
         optimizer = QueryOptimizer(ctx.inverted_index.stats)
         optimized = optimizer.optimize(self._root)
 
@@ -452,7 +447,7 @@ class QueryBuilder:
         if self._root is None:
             return "(empty query)"
 
-        ctx = self._engine._build_context()
+        ctx = self._engine._context_for_table(self._table)
         optimizer = QueryOptimizer(ctx.inverted_index.stats)
         optimized = optimizer.optimize(self._root)
 
@@ -466,7 +461,7 @@ class QueryBuilder:
             from uqa.operators.boolean import IntersectOperator
 
             op = IntersectOperator([self._root, op])
-        qb = QueryBuilder(self._engine)
+        qb = QueryBuilder(self._engine, self._table)
         qb._root = op
         return qb
 
@@ -553,5 +548,3 @@ class _ProbBooleanOperator:
             getattr(s, "cost_estimate", lambda _: 100.0)(stats)
             for s in self.sources
         )
-
-

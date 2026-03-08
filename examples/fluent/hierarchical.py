@@ -30,6 +30,17 @@ from uqa.engine import Engine
 
 engine = Engine()
 
+engine.sql("""
+    CREATE TABLE orders (
+        id INTEGER PRIMARY KEY,
+        order_id TEXT,
+        customer TEXT,
+        status TEXT,
+        items TEXT,
+        shipping TEXT
+    )
+""")
+
 orders = [
     (1, {
         "order_id": "ORD-001", "customer": "Alice", "status": "shipped",
@@ -83,7 +94,7 @@ orders = [
 ]
 
 for doc_id, doc in orders:
-    engine.add_document(doc_id, doc)
+    engine.add_document(doc_id, doc, table="orders")
 
 print("=" * 70)
 print("Hierarchical Data Examples (Fluent API)")
@@ -94,9 +105,9 @@ print("=" * 70)
 # 1. Path aggregate: total price per order
 # ------------------------------------------------------------------
 print("\n--- 1. path_aggregate: SUM of items.price per order ---")
-results = engine.query().path_aggregate("items.price", "sum").execute()
+results = engine.query(table="orders").path_aggregate("items.price", "sum").execute()
 for entry in sorted(results, key=lambda e: e.doc_id):
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["orders"].document_store.get(entry.doc_id)
     total = entry.payload.fields.get("_path_aggregate", 0)
     print(f"  {doc['order_id']} ({doc['customer']}): ${total:.2f}")
 
@@ -105,9 +116,9 @@ for entry in sorted(results, key=lambda e: e.doc_id):
 # 2. Path aggregate: item count per order
 # ------------------------------------------------------------------
 print("\n--- 2. path_aggregate: COUNT of items.name per order ---")
-results = engine.query().path_aggregate("items.name", "count").execute()
+results = engine.query(table="orders").path_aggregate("items.name", "count").execute()
 for entry in sorted(results, key=lambda e: e.doc_id):
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["orders"].document_store.get(entry.doc_id)
     count = entry.payload.fields.get("_path_aggregate", 0)
     print(f"  {doc['order_id']}: {count} item(s)")
 
@@ -116,12 +127,12 @@ for entry in sorted(results, key=lambda e: e.doc_id):
 # 3. Path aggregate: min/max price per order
 # ------------------------------------------------------------------
 print("\n--- 3. path_aggregate: MIN/MAX price per order ---")
-min_results = engine.query().path_aggregate("items.price", "min").execute()
-max_results = engine.query().path_aggregate("items.price", "max").execute()
+min_results = engine.query(table="orders").path_aggregate("items.price", "min").execute()
+max_results = engine.query(table="orders").path_aggregate("items.price", "max").execute()
 min_map = {e.doc_id: e.payload.fields.get("_path_aggregate") for e in min_results}
 max_map = {e.doc_id: e.payload.fields.get("_path_aggregate") for e in max_results}
 for doc_id in sorted(min_map.keys()):
-    doc = engine.document_store.get(doc_id)
+    doc = engine._tables["orders"].document_store.get(doc_id)
     print(f"  {doc['order_id']}: ${min_map[doc_id]:.2f} - ${max_map[doc_id]:.2f}")
 
 
@@ -129,9 +140,9 @@ for doc_id in sorted(min_map.keys()):
 # 4. Path aggregate: average price per order
 # ------------------------------------------------------------------
 print("\n--- 4. path_aggregate: AVG price per order ---")
-results = engine.query().path_aggregate("items.price", "avg").execute()
+results = engine.query(table="orders").path_aggregate("items.price", "avg").execute()
 for entry in sorted(results, key=lambda e: e.doc_id):
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["orders"].document_store.get(entry.doc_id)
     avg = entry.payload.fields.get("_path_aggregate", 0)
     print(f"  {doc['order_id']}: ${avg:.2f}")
 
@@ -140,9 +151,9 @@ for entry in sorted(results, key=lambda e: e.doc_id):
 # 5. Filter on flat field: status = 'shipped'
 # ------------------------------------------------------------------
 print("\n--- 5. Filter: status = 'shipped' ---")
-results = engine.query().filter("status", Equals("shipped")).execute()
+results = engine.query(table="orders").filter("status", Equals("shipped")).execute()
 for entry in results:
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["orders"].document_store.get(entry.doc_id)
     print(f"  {doc['order_id']} ({doc['customer']})")
 
 
@@ -150,9 +161,9 @@ for entry in results:
 # 6. Filter on nested path: shipping.city = 'Seoul'
 # ------------------------------------------------------------------
 print("\n--- 6. Nested filter: shipping.city = 'Seoul' ---")
-results = engine.query().filter("shipping.city", Equals("Seoul")).execute()
+results = engine.query(table="orders").filter("shipping.city", Equals("Seoul")).execute()
 for entry in results:
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["orders"].document_store.get(entry.doc_id)
     print(f"  {doc['order_id']} ({doc['customer']})")
 
 
@@ -160,9 +171,9 @@ for entry in results:
 # 7. Filter on nested path: shipping.method = 'express'
 # ------------------------------------------------------------------
 print("\n--- 7. Nested filter: shipping.method = 'express' ---")
-results = engine.query().filter("shipping.method", Equals("express")).execute()
+results = engine.query(table="orders").filter("shipping.method", Equals("express")).execute()
 for entry in results:
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["orders"].document_store.get(entry.doc_id)
     ship = doc["shipping"]
     print(f"  {doc['order_id']} -> {ship['city']} (${ship['cost']:.2f})")
 
@@ -171,9 +182,9 @@ for entry in results:
 # 8. Filter on nested path with comparison: shipping.cost > 10
 # ------------------------------------------------------------------
 print("\n--- 8. Nested filter: shipping.cost > 10 ---")
-results = engine.query().filter("shipping.cost", GreaterThan(10)).execute()
+results = engine.query(table="orders").filter("shipping.cost", GreaterThan(10)).execute()
 for entry in results:
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["orders"].document_store.get(entry.doc_id)
     print(f"  {doc['order_id']}: shipping ${doc['shipping']['cost']:.2f}")
 
 
@@ -182,13 +193,13 @@ for entry in results:
 # ------------------------------------------------------------------
 print("\n--- 9. Chained: status != 'cancelled' AND shipping.city = 'Seoul' ---")
 results = (
-    engine.query()
+    engine.query(table="orders")
     .filter("status", NotEquals("cancelled"))
     .filter("shipping.city", Equals("Seoul"))
     .execute()
 )
 for entry in results:
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["orders"].document_store.get(entry.doc_id)
     print(f"  {doc['order_id']} ({doc['customer']}) [{doc['status']}]")
 
 
@@ -197,7 +208,7 @@ for entry in results:
 # ------------------------------------------------------------------
 print("\n--- 10. Pipeline: Seoul express orders -> SUM(items.price) ---")
 results = (
-    engine.query()
+    engine.query(table="orders")
     .filter("shipping.city", Equals("Seoul"))
     .filter("shipping.method", Equals("express"))
     .path_aggregate("items.price", "sum")
@@ -205,7 +216,7 @@ results = (
 )
 grand_total = 0.0
 for entry in sorted(results, key=lambda e: e.doc_id):
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["orders"].document_store.get(entry.doc_id)
     total = entry.payload.fields.get("_path_aggregate", 0)
     grand_total += total
     print(f"  {doc['order_id']} ({doc['customer']}): ${total:.2f}")
@@ -216,9 +227,9 @@ print(f"  Grand total: ${grand_total:.2f}")
 # 11. Filter on array element: items containing 'Webcam'
 # ------------------------------------------------------------------
 print("\n--- 11. Array filter: items.name = 'Webcam' ---")
-results = engine.query().filter("items.name", Equals("Webcam")).execute()
+results = engine.query(table="orders").filter("items.name", Equals("Webcam")).execute()
 for entry in results:
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["orders"].document_store.get(entry.doc_id)
     print(f"  {doc['order_id']} ({doc['customer']})")
 
 
@@ -226,7 +237,7 @@ for entry in results:
 # 12. Path project: extract specific nested fields
 # ------------------------------------------------------------------
 print("\n--- 12. path_project: order_id + shipping ---")
-source = engine.query().filter("status", Equals("shipped"))
+source = engine.query(table="orders").filter("status", Equals("shipped"))
 results = source.path_project(["order_id"], ["shipping", "city"], ["shipping", "cost"]).execute()
 for entry in results:
     fields = entry.payload.fields
@@ -238,13 +249,13 @@ for entry in results:
 # 13. Dashboard: multi-aggregation per order
 # ------------------------------------------------------------------
 print("\n--- 13. Dashboard: per-order summary ---")
-sum_results = engine.query().path_aggregate("items.price", "sum").execute()
-count_results = engine.query().path_aggregate("items.name", "count").execute()
+sum_results = engine.query(table="orders").path_aggregate("items.price", "sum").execute()
+count_results = engine.query(table="orders").path_aggregate("items.name", "count").execute()
 sum_map = {e.doc_id: e.payload.fields.get("_path_aggregate", 0) for e in sum_results}
 count_map = {e.doc_id: e.payload.fields.get("_path_aggregate", 0) for e in count_results}
 
 for doc_id in sorted(sum_map.keys()):
-    doc = engine.document_store.get(doc_id)
+    doc = engine._tables["orders"].document_store.get(doc_id)
     total = sum_map[doc_id]
     count = count_map.get(doc_id, 0)
     ship = doc["shipping"]["cost"]
@@ -258,7 +269,7 @@ for doc_id in sorted(sum_map.keys()):
 print("\n--- 14. Revenue by shipping method ---")
 for method in ("express", "standard"):
     results = (
-        engine.query()
+        engine.query(table="orders")
         .filter("shipping.method", Equals(method))
         .filter("status", NotEquals("cancelled"))
         .path_aggregate("items.price", "sum")
@@ -272,7 +283,7 @@ for method in ("express", "standard"):
 # 15. Faceted search: order count by status
 # ------------------------------------------------------------------
 print("\n--- 15. Facets: order distribution by status ---")
-facets = engine.query().facet("status")
+facets = engine.query(table="orders").facet("status")
 for status, count in sorted(facets.counts.items(), key=lambda x: -x[1]):
     print(f"  {status:>12}: {count} order(s)")
 

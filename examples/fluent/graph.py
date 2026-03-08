@@ -27,7 +27,10 @@ from uqa.planner.cardinality import CardinalityEstimator, GraphStats
 # ======================================================================
 
 engine = Engine()
-gs = engine.graph_store
+
+engine.sql("CREATE TABLE network (id INTEGER PRIMARY KEY, name TEXT)")
+
+gs = engine._tables["network"].graph_store
 
 # -- Vertices: employees --
 employees = [
@@ -93,7 +96,7 @@ print("=" * 70)
 # 1. Direct reports: 1-hop traversal from CEO
 # ------------------------------------------------------------------
 print("\n--- 1. Direct reports of CEO (1-hop 'manages') ---")
-results = engine.query().traverse(1, "manages", max_hops=1).execute()
+results = engine.query(table="network").traverse(1, "manages", max_hops=1).execute()
 for entry in results:
     v = gs.get_vertex(entry.doc_id)
     if v and entry.doc_id != 1:
@@ -104,7 +107,7 @@ for entry in results:
 # 2. Full org tree: multi-hop traversal
 # ------------------------------------------------------------------
 print("\n--- 2. Full org tree (3-hop 'manages' from CEO) ---")
-results = engine.query().traverse(1, "manages", max_hops=3).execute()
+results = engine.query(table="network").traverse(1, "manages", max_hops=3).execute()
 for entry in sorted(results, key=lambda e: e.doc_id):
     v = gs.get_vertex(entry.doc_id)
     if v:
@@ -117,7 +120,7 @@ for entry in sorted(results, key=lambda e: e.doc_id):
 # 3. Vertex aggregation: salary statistics
 # ------------------------------------------------------------------
 print("\n--- 3. Salary stats for Bob's team (VP Eng -> reports) ---")
-team = engine.query().traverse(2, "manages", max_hops=2)
+team = engine.query(table="network").traverse(2, "manages", max_hops=2)
 for fn in ("sum", "avg", "min", "max", "count"):
     result = team.vertex_aggregate("salary", fn)
     if fn == "count":
@@ -130,7 +133,7 @@ for fn in ("sum", "avg", "min", "max", "count"):
 # 4. RPQ: transitive management chain (Kleene star)
 # ------------------------------------------------------------------
 print("\n--- 4. RPQ: manages* from Alice (transitive closure) ---")
-results = engine.query().rpq("manages*", start=1).execute()
+results = engine.query(table="network").rpq("manages*", start=1).execute()
 print(f"  {len(results)} vertices reachable")
 for entry in sorted(results, key=lambda e: e.doc_id):
     v = gs.get_vertex(entry.doc_id)
@@ -142,7 +145,7 @@ for entry in sorted(results, key=lambda e: e.doc_id):
 # 5. RPQ: management then skill chain
 # ------------------------------------------------------------------
 print("\n--- 5. RPQ: manages/has_skill from Bob ---")
-results = engine.query().rpq("manages/has_skill", start=2).execute()
+results = engine.query(table="network").rpq("manages/has_skill", start=2).execute()
 for entry in sorted(results, key=lambda e: e.doc_id):
     v = gs.get_vertex(entry.doc_id)
     if v:
@@ -162,7 +165,7 @@ pattern = GraphPattern(
         EdgePattern("eng", "proj", "works_on"),
     ],
 )
-results = engine.query().match_pattern(pattern).execute()
+results = engine.query(table="network").match_pattern(pattern).execute()
 print(f"  {len(results)} pattern matches found")
 for entry in results:
     bindings = entry.payload.fields.get("_bindings", {})
@@ -187,7 +190,7 @@ pattern = GraphPattern(
         EdgePattern("eng", "proj", "works_on"),
     ],
 )
-results = engine.query().match_pattern(pattern).execute()
+results = engine.query(table="network").match_pattern(pattern).execute()
 for entry in results:
     bindings = entry.payload.fields.get("_bindings", {})
     eng = gs.get_vertex(bindings.get("eng", 0))
@@ -261,7 +264,7 @@ for label, count in sorted(stats.label_counts.items()):
 # 12. Engineering team: traverse from VP Eng + aggregate
 # ------------------------------------------------------------------
 print("\n--- 12. Engineering team analysis (Bob's reports) ---")
-eng_team = engine.query().traverse(2, "manages", max_hops=2)
+eng_team = engine.query(table="network").traverse(2, "manages", max_hops=2)
 results = eng_team.execute()
 members = []
 for entry in results:

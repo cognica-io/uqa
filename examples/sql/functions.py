@@ -10,7 +10,7 @@
 Demonstrates SQL functions beyond standard SQL:
   - text_match(field, query): BM25 full-text search
   - bayesian_match(field, query): calibrated probability scoring
-  - knn_match(k): KNN vector similarity search
+  - knn_match(field, vector, k): KNN vector similarity search
   - path_agg(path, func): per-row nested array aggregation
   - path_value(path): nested field access
   - path_filter(path, value): hierarchical path filtering
@@ -27,17 +27,21 @@ from uqa.engine import Engine
 
 engine = Engine(vector_dimensions=8, max_elements=50)
 
-# -- SQL table: articles --
+# -- SQL table: articles with vector column --
 engine.sql("""
     CREATE TABLE articles (
         id SERIAL PRIMARY KEY,
         title TEXT NOT NULL,
         body TEXT NOT NULL,
         category TEXT,
-        year INTEGER
+        year INTEGER,
+        embedding VECTOR(8)
     )
 """)
-engine.sql("""INSERT INTO articles (title, body, category, year) VALUES
+
+rng = np.random.RandomState(42)
+
+articles = [
     ('transformer architecture for nlp',
      'the transformer model uses self attention for sequence processing',
      'nlp', 2017),
@@ -55,17 +59,28 @@ engine.sql("""INSERT INTO articles (title, body, category, year) VALUES
      'cv', 2021),
     ('reinforcement learning from feedback',
      'rlhf trains language models using human preference reward signals',
-     'alignment', 2022)
-""")
-
-# -- Vector embeddings for knn_match --
-rng = np.random.RandomState(42)
-for i in range(1, 7):
+     'alignment', 2022),
+]
+for title, body, cat, year in articles:
     vec = rng.randn(8).astype(np.float32)
     vec = vec / np.linalg.norm(vec)
-    engine.vector_index.add(i, vec)
+    arr = "ARRAY[" + ",".join(str(float(v)) for v in vec) + "]"
+    engine.sql(
+        f"INSERT INTO articles (title, body, category, year, embedding) "
+        f"VALUES ('{title}', '{body}', '{cat}', {year}, {arr})"
+    )
 
-# -- Documents with nested data for path functions --
+# -- Table with nested data for path functions --
+engine.sql("""
+    CREATE TABLE orders (
+        id INTEGER PRIMARY KEY,
+        order_id TEXT,
+        customer TEXT,
+        items TEXT,
+        shipping TEXT
+    )
+""")
+
 engine.add_document(101, {
     "order_id": "ORD-001", "customer": "Alice",
     "items": [
@@ -73,14 +88,14 @@ engine.add_document(101, {
         {"name": "Widget B", "price": 49.99, "qty": 1},
     ],
     "shipping": {"city": "Seoul", "method": "express", "cost": 15.0},
-})
+}, table="orders")
 engine.add_document(102, {
     "order_id": "ORD-002", "customer": "Bob",
     "items": [
         {"name": "Gadget X", "price": 99.99, "qty": 1},
     ],
     "shipping": {"city": "Busan", "method": "standard", "cost": 5.0},
-})
+}, table="orders")
 engine.add_document(103, {
     "order_id": "ORD-003", "customer": "Charlie",
     "items": [
@@ -89,7 +104,7 @@ engine.add_document(103, {
         {"name": "Part Z", "price": 9.99, "qty": 10},
     ],
     "shipping": {"city": "Seoul", "method": "express", "cost": 20.0},
-})
+}, table="orders")
 
 
 def show(label, result):
@@ -154,10 +169,11 @@ show("4. bayesian_match: P(relevant|'attention')", engine.sql(
 # ==================================================================
 query_vec = rng.randn(8).astype(np.float32)
 query_vec = query_vec / np.linalg.norm(query_vec)
-engine.set_query_vector(query_vec)
 
-show("5. knn_match(3): top-3 nearest", engine.sql(
-    "SELECT title, _score FROM articles WHERE knn_match(3) ORDER BY _score DESC"
+show("5. knn_match(embedding, $1, 3): top-3 nearest", engine.sql(
+    "SELECT title, _score FROM articles "
+    "WHERE knn_match(embedding, $1, 3) ORDER BY _score DESC",
+    params=[query_vec],
 ))
 
 
@@ -166,7 +182,9 @@ show("5. knn_match(3): top-3 nearest", engine.sql(
 # ==================================================================
 show("6. knn_match + category filter", engine.sql(
     "SELECT title, category, _score FROM articles "
-    "WHERE knn_match(5) AND category = 'nlp' ORDER BY _score DESC"
+    "WHERE knn_match(embedding, $1, 5) AND category = 'nlp' "
+    "ORDER BY _score DESC",
+    params=[query_vec],
 ))
 
 
@@ -183,20 +201,20 @@ show("7. FROM text_search()", engine.sql(
 # path_agg: per-row nested array aggregation
 # ==================================================================
 show("8. path_agg: SUM(items.price)", engine.sql(
-    "SELECT path_agg('items.price', 'sum') AS total FROM _default"
+    "SELECT path_agg('items.price', 'sum') AS total FROM orders"
 ))
 
 show("9. path_agg: COUNT(items.name)", engine.sql(
-    "SELECT path_agg('items.name', 'count') AS item_count FROM _default"
+    "SELECT path_agg('items.name', 'count') AS item_count FROM orders"
 ))
 
 show("10. path_agg: AVG(items.price)", engine.sql(
-    "SELECT path_agg('items.price', 'avg') AS avg_price FROM _default"
+    "SELECT path_agg('items.price', 'avg') AS avg_price FROM orders"
 ))
 
 show("11. path_agg: MIN + MAX", engine.sql(
     "SELECT path_agg('items.price', 'min') AS lo, "
-    "path_agg('items.price', 'max') AS hi FROM _default"
+    "path_agg('items.price', 'max') AS hi FROM orders"
 ))
 
 
@@ -205,7 +223,7 @@ show("11. path_agg: MIN + MAX", engine.sql(
 # ==================================================================
 show("12. path_value: shipping.city", engine.sql(
     "SELECT path_value('shipping.city') AS city, "
-    "path_value('shipping.cost') AS cost FROM _default"
+    "path_value('shipping.cost') AS cost FROM orders"
 ))
 
 
@@ -213,15 +231,15 @@ show("12. path_value: shipping.city", engine.sql(
 # path_filter: hierarchical WHERE clause
 # ==================================================================
 show("13. path_filter: shipping.city = 'Seoul'", engine.sql(
-    "SELECT * FROM _default WHERE path_filter('shipping.city', 'Seoul')"
+    "SELECT * FROM orders WHERE path_filter('shipping.city', 'Seoul')"
 ))
 
 show("14. path_filter: shipping.cost > 10", engine.sql(
-    "SELECT * FROM _default WHERE path_filter('shipping.cost', '>', 10)"
+    "SELECT * FROM orders WHERE path_filter('shipping.cost', '>', 10)"
 ))
 
 show("15. path_filter: items.name = 'Widget A' (any-match)", engine.sql(
-    "SELECT * FROM _default WHERE path_filter('items.name', 'Widget A')"
+    "SELECT * FROM orders WHERE path_filter('items.name', 'Widget A')"
 ))
 
 
@@ -230,7 +248,7 @@ show("15. path_filter: items.name = 'Widget A' (any-match)", engine.sql(
 # ==================================================================
 show("16. Seoul orders total", engine.sql(
     "SELECT path_agg('items.price', 'sum') AS total "
-    "FROM _default WHERE path_filter('shipping.city', 'Seoul')"
+    "FROM orders WHERE path_filter('shipping.city', 'Seoul')"
 ))
 
 

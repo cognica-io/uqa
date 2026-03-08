@@ -459,6 +459,13 @@ class TestCrossParadigmOptimizerCorrectness:
     @pytest.fixture
     def engine(self):
         e = Engine(vector_dimensions=16, max_elements=100)
+        e.sql(
+            "CREATE TABLE papers ("
+            "id INTEGER PRIMARY KEY, "
+            "title TEXT, "
+            "category TEXT, "
+            "embedding VECTOR(16))"
+        )
         rng = np.random.RandomState(42)
         docs = [
             {"title": "neural network basics", "category": "ml"},
@@ -469,7 +476,7 @@ class TestCrossParadigmOptimizerCorrectness:
         for i, doc in enumerate(docs, 1):
             emb = rng.randn(16).astype(np.float32)
             emb = emb / np.linalg.norm(emb)
-            e.add_document(i, doc, emb)
+            e.add_document(i, doc, table="papers", embedding=emb)
         return e
 
     def test_fusion_reorder_preserves_results(self, engine):
@@ -479,7 +486,7 @@ class TestCrossParadigmOptimizerCorrectness:
         from uqa.scoring.bm25 import BM25Params, BM25Scorer
         from uqa.planner.executor import PlanExecutor
 
-        ctx = engine._build_context()
+        ctx = engine._context_for_table("papers")
         stats = ctx.inverted_index.stats
 
         term = TermOperator("neural", field="title")
@@ -519,7 +526,7 @@ class TestCrossParadigmOptimizerCorrectness:
         )
         from uqa.planner.executor import PlanExecutor
 
-        ctx = engine._build_context()
+        ctx = engine._context_for_table("papers")
         stats = ctx.inverted_index.stats
 
         term = TermOperator("neural", field="title")
@@ -572,17 +579,17 @@ class TestSQLCrossParadigmOptimizer:
         e = Engine(vector_dimensions=4, max_elements=10)
         from uqa.core.types import Edge, Vertex
 
-        for i in range(1, 4):
-            e.add_graph_vertex(Vertex(i, {"name": f"v{i}"}))
-        e.add_graph_edge(Edge(1, 1, 2, "knows"))
-        e.add_graph_edge(Edge(2, 2, 3, "knows"))
-
         e.sql(
             "CREATE TABLE docs ("
             "id INTEGER PRIMARY KEY, "
             "name TEXT"
             ")"
         )
+        for i in range(1, 4):
+            e.add_graph_vertex(Vertex(i, {"name": f"v{i}"}), table="docs")
+        e.add_graph_edge(Edge(1, 1, 2, "knows"), table="docs")
+        e.add_graph_edge(Edge(2, 2, 3, "knows"), table="docs")
+
         for i in range(1, 4):
             e.sql(
                 f"INSERT INTO docs (id, name) VALUES ({i}, 'v{i}')"

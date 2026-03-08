@@ -25,6 +25,17 @@ from uqa.engine import Engine
 
 engine = Engine()
 
+engine.sql("""
+    CREATE TABLE articles (
+        id INTEGER PRIMARY KEY,
+        title TEXT,
+        body TEXT,
+        category TEXT,
+        year INTEGER,
+        citations INTEGER
+    )
+""")
+
 articles = [
     (1, {
         "title": "transformer architecture revolutionizes nlp",
@@ -109,7 +120,7 @@ articles = [
 ]
 
 for doc_id, doc in articles:
-    engine.add_document(doc_id, doc)
+    engine.add_document(doc_id, doc, table="articles")
 
 print("=" * 70)
 print("Full-Text Search Examples (Fluent API)")
@@ -120,9 +131,9 @@ print("=" * 70)
 # 1. Basic term search
 # ------------------------------------------------------------------
 print("\n--- 1. Term search: 'attention' ---")
-results = engine.query().term("attention").execute()
+results = engine.query(table="articles").term("attention").execute()
 for entry in results:
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["articles"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] {doc['title']}")
 print(f"  -> {len(results)} documents found")
 
@@ -131,10 +142,10 @@ print(f"  -> {len(results)} documents found")
 # 2. BM25 scored search
 # ------------------------------------------------------------------
 print("\n--- 2. BM25 scored: 'transformer attention' ---")
-q = engine.query().term("transformer").or_(engine.query().term("attention"))
+q = engine.query(table="articles").term("transformer").or_(engine.query(table="articles").term("attention"))
 results = q.score_bm25("transformer attention").execute()
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["articles"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] score={entry.payload.score:.4f}  {doc['title']}")
 
 
@@ -142,10 +153,10 @@ for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
 # 3. Bayesian BM25 (calibrated probability)
 # ------------------------------------------------------------------
 print("\n--- 3. Bayesian BM25: 'language model' ---")
-q = engine.query().term("language").or_(engine.query().term("model"))
+q = engine.query(table="articles").term("language").or_(engine.query(table="articles").term("model"))
 results = q.score_bayesian_bm25("language model").execute()
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["articles"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] P(rel)={entry.payload.score:.4f}  {doc['title']}")
 
 
@@ -154,12 +165,12 @@ for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
 # ------------------------------------------------------------------
 print("\n--- 4. Boolean AND: 'attention' AND 'graph' ---")
 results = (
-    engine.query().term("attention")
-    .and_(engine.query().term("graph"))
+    engine.query(table="articles").term("attention")
+    .and_(engine.query(table="articles").term("graph"))
     .execute()
 )
 for entry in results:
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["articles"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] {doc['title']}")
 
 
@@ -168,12 +179,12 @@ for entry in results:
 # ------------------------------------------------------------------
 print("\n--- 5. Boolean OR: 'diffusion' OR 'generative' ---")
 results = (
-    engine.query().term("diffusion")
-    .or_(engine.query().term("generative"))
+    engine.query(table="articles").term("diffusion")
+    .or_(engine.query(table="articles").term("generative"))
     .execute()
 )
 for entry in results:
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["articles"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] {doc['title']}")
 
 
@@ -181,11 +192,11 @@ for entry in results:
 # 6. Boolean NOT: 'attention' but NOT 'graph'
 # ------------------------------------------------------------------
 print("\n--- 6. Boolean NOT: 'attention' NOT 'graph' ---")
-attention = engine.query().term("attention")
-not_graph = engine.query().term("graph").not_()
+attention = engine.query(table="articles").term("attention")
+not_graph = engine.query(table="articles").term("graph").not_()
 results = attention.and_(not_graph).execute()
 for entry in results:
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["articles"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] {doc['title']}")
 
 
@@ -193,9 +204,9 @@ for entry in results:
 # 7. Filter: category = 'nlp'
 # ------------------------------------------------------------------
 print("\n--- 7. Filter: category = 'nlp' ---")
-results = engine.query().filter("category", Equals("nlp")).execute()
+results = engine.query(table="articles").filter("category", Equals("nlp")).execute()
 for entry in results:
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["articles"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] {doc['title']} ({doc['year']})")
 
 
@@ -204,12 +215,12 @@ for entry in results:
 # ------------------------------------------------------------------
 print("\n--- 8. Text + filter: 'attention' AND category='nlp' ---")
 results = (
-    engine.query().term("attention")
+    engine.query(table="articles").term("attention")
     .filter("category", Equals("nlp"))
     .execute()
 )
 for entry in results:
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["articles"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] {doc['title']}")
 
 
@@ -217,9 +228,9 @@ for entry in results:
 # 9. Range filter: year BETWEEN 2020 AND 2022
 # ------------------------------------------------------------------
 print("\n--- 9. Range filter: year BETWEEN 2020 AND 2022 ---")
-results = engine.query().filter("year", Between(2020, 2022)).execute()
+results = engine.query(table="articles").filter("year", Between(2020, 2022)).execute()
 for entry in results:
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["articles"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] {doc['title']} ({doc['year']})")
 
 
@@ -228,12 +239,12 @@ for entry in results:
 # ------------------------------------------------------------------
 print("\n--- 10. Multi-value: category IN ('cv', 'multimodal') ---")
 results = (
-    engine.query()
+    engine.query(table="articles")
     .filter("category", InSet(frozenset(["cv", "multimodal"])))
     .execute()
 )
 for entry in results:
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["articles"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] {doc['title']} [{doc['category']}]")
 
 
@@ -242,14 +253,14 @@ for entry in results:
 # ------------------------------------------------------------------
 print("\n--- 11. Chained: category='nlp' AND year>=2019 AND citations>=8000 ---")
 results = (
-    engine.query()
+    engine.query(table="articles")
     .filter("category", Equals("nlp"))
     .filter("year", GreaterThanOrEqual(2019))
     .filter("citations", GreaterThanOrEqual(8000))
     .execute()
 )
 for entry in results:
-    doc = engine.document_store.get(entry.doc_id)
+    doc = engine._tables["articles"].document_store.get(entry.doc_id)
     print(f"  [{entry.doc_id}] {doc['title']} ({doc['year']}, {doc['citations']:,} cit)")
 
 
@@ -257,7 +268,7 @@ for entry in results:
 # 12. Faceted search: distribution by category
 # ------------------------------------------------------------------
 print("\n--- 12. Faceted search: category distribution ---")
-facets = engine.query().filter("year", GreaterThanOrEqual(2020)).facet("category")
+facets = engine.query(table="articles").filter("year", GreaterThanOrEqual(2020)).facet("category")
 for category, count in sorted(facets.counts.items(), key=lambda x: -x[1]):
     print(f"  {category:>12}: {count}")
 
@@ -266,7 +277,7 @@ for category, count in sorted(facets.counts.items(), key=lambda x: -x[1]):
 # 13. Aggregation: citation statistics for NLP papers
 # ------------------------------------------------------------------
 print("\n--- 13. Aggregation: NLP citation statistics ---")
-nlp_query = engine.query().filter("category", Equals("nlp"))
+nlp_query = engine.query(table="articles").filter("category", Equals("nlp"))
 for fn in ("count", "sum", "avg", "min", "max"):
     result = nlp_query.aggregate("citations", fn)
     if isinstance(result.value, float):
@@ -279,7 +290,7 @@ for fn in ("count", "sum", "avg", "min", "max"):
 # 14. Query plan explanation
 # ------------------------------------------------------------------
 print("\n--- 14. EXPLAIN: 'transformer' scored search ---")
-q = engine.query().term("transformer")
+q = engine.query(table="articles").term("transformer")
 plan = q.score_bm25("transformer").explain()
 print(f"  {plan}")
 

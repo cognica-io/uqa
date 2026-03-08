@@ -18,10 +18,16 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
+
+from uqa.graph.store import GraphStore
+from uqa.storage.block_max_index import BlockMaxIndex
 from uqa.storage.document_store import DocumentStore
 from uqa.storage.inverted_index import IndexedTerms, InvertedIndex
 from uqa.storage.sqlite_document_store import SQLiteDocumentStore
+from uqa.storage.sqlite_graph_store import SQLiteGraphStore
 from uqa.storage.sqlite_inverted_index import SQLiteInvertedIndex
+from uqa.storage.vector_index import HNSWIndex
 
 
 _SQL_TYPE_MAP: dict[str, type] = {
@@ -84,6 +90,7 @@ class ColumnDef:
     not_null: bool = False
     auto_increment: bool = False
     default: Any = None
+    vector_dimensions: int | None = None
 
 
 class Table:
@@ -111,17 +118,40 @@ class Table:
             (col.name for col in columns if col.primary_key), None
         )
 
+        # Filter out vector columns -- they are not stored in the
+        # document store (they live in per-field HNSW indexes instead).
+        scalar_columns = [
+            col for col in columns if col.vector_dimensions is None
+        ]
+
         if conn is not None:
-            col_pairs = [(col.name, col.type_name) for col in columns]
+            col_pairs = [
+                (col.name, col.type_name) for col in scalar_columns
+            ]
             self.document_store: DocumentStore | SQLiteDocumentStore = (
                 SQLiteDocumentStore(conn, name, col_pairs)
             )
             self.inverted_index: InvertedIndex | SQLiteInvertedIndex = (
                 SQLiteInvertedIndex(conn, name)
             )
+            self.graph_store: GraphStore | SQLiteGraphStore = (
+                SQLiteGraphStore(conn, table_name=name)
+            )
+            self.block_max_index = BlockMaxIndex()
         else:
             self.document_store = DocumentStore()
             self.inverted_index = InvertedIndex()
+            self.graph_store = GraphStore()
+            self.block_max_index = BlockMaxIndex()
+
+        # Per-field HNSW vector indexes for VECTOR columns.
+        self.vector_indexes: dict[str, HNSWIndex] = {}
+        for col in columns:
+            if col.vector_dimensions is not None:
+                self.vector_indexes[col.name] = HNSWIndex(
+                    dimensions=col.vector_dimensions,
+                    max_elements=10000,
+                )
 
         self._next_id = 1
         self._stats: dict[str, ColumnStats] = {}
@@ -175,9 +205,15 @@ class Table:
 
         # -- type coercion + defaults ---------------------------------
         coerced: dict[str, Any] = {}
+        vectors: dict[str, Any] = {}
         for col_name, col_def in self.columns.items():
             if col_name in row and row[col_name] is not None:
-                coerced[col_name] = col_def.python_type(row[col_name])
+                if col_def.vector_dimensions is not None:
+                    vectors[col_name] = np.asarray(
+                        row[col_name], dtype=np.float32
+                    )
+                else:
+                    coerced[col_name] = col_def.python_type(row[col_name])
             elif col_def.default is not None:
                 coerced[col_name] = col_def.default
             # else: column absent -> not stored (sparse document)
@@ -189,6 +225,11 @@ class Table:
         text_fields = {k: v for k, v in coerced.items() if isinstance(v, str)}
         if text_fields:
             indexed = self.inverted_index.add_document(doc_id, text_fields)
+
+        for field_name, vec in vectors.items():
+            vec_idx = self.vector_indexes.get(field_name)
+            if vec_idx is not None:
+                vec_idx.add(doc_id, vec)
 
         return doc_id, indexed
 
@@ -321,6 +362,8 @@ def resolve_type(type_names: tuple) -> tuple[str, type]:
     """Map a pglast TypeName.names tuple to (canonical_name, python_type)."""
     # TypeName.names is e.g. ('pg_catalog', 'int4') or ('text',)
     raw = type_names[-1].sval.lower()
+    if raw == "vector":
+        return raw, list
     python_type = _SQL_TYPE_MAP.get(raw)
     if python_type is None:
         raise ValueError(f"Unsupported column type: {raw}")

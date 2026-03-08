@@ -60,7 +60,7 @@ class VectorSimilarityOperator(Operator):
         self.field = field
 
     def execute(self, context: ExecutionContext) -> PostingList:
-        vec_idx = context.vector_index
+        vec_idx = context.vector_indexes.get(self.field)
         if vec_idx is None:
             return PostingList()
         return vec_idx.search_threshold(self.query_vector, self.threshold)
@@ -87,7 +87,7 @@ class KNNOperator(Operator):
         self.field = field
 
     def execute(self, context: ExecutionContext) -> PostingList:
-        vec_idx = context.vector_index
+        vec_idx = context.vector_indexes.get(self.field)
         if vec_idx is None:
             return PostingList()
         return vec_idx.search_knn(self.query_vector, self.k)

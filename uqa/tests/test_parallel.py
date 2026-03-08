@@ -126,6 +126,12 @@ class TestParallelBooleanOps:
     @pytest.fixture
     def engine(self):
         e = Engine(vector_dimensions=4, max_elements=10, parallel_workers=4)
+        e.sql(
+            "CREATE TABLE docs ("
+            "id INTEGER PRIMARY KEY, "
+            "title TEXT, "
+            "cat TEXT)"
+        )
         docs = [
             {"title": "neural network basics", "cat": "ml"},
             {"title": "transformer models", "cat": "dl"},
@@ -134,7 +140,7 @@ class TestParallelBooleanOps:
             {"title": "reinforcement learning", "cat": "rl"},
         ]
         for i, doc in enumerate(docs, 1):
-            e.add_document(i, doc)
+            e.add_document(i, doc, table="docs")
         return e
 
     def test_union_parallel_same_as_sequential(self, engine):
@@ -143,7 +149,7 @@ class TestParallelBooleanOps:
         from uqa.operators.primitive import TermOperator
         from uqa.planner.executor import PlanExecutor
 
-        ctx_par = engine._build_context()
+        ctx_par = engine._context_for_table("docs")
         ops = [
             TermOperator("neural"),
             TermOperator("bayesian"),
@@ -152,9 +158,10 @@ class TestParallelBooleanOps:
         par_result = PlanExecutor(ctx_par).execute(UnionOperator(ops))
 
         # Sequential
+        tbl = engine._tables["docs"]
         ctx_seq = ExecutionContext(
-            document_store=engine.document_store,
-            inverted_index=engine.inverted_index,
+            document_store=tbl.document_store,
+            inverted_index=tbl.inverted_index,
             parallel_executor=ParallelExecutor(max_workers=0),
         )
         seq_result = PlanExecutor(ctx_seq).execute(
@@ -173,13 +180,14 @@ class TestParallelBooleanOps:
         from uqa.operators.primitive import TermOperator
         from uqa.planner.executor import PlanExecutor
 
-        ctx_par = engine._build_context()
+        ctx_par = engine._context_for_table("docs")
         ops = [TermOperator("neural"), TermOperator("networks")]
         par_result = PlanExecutor(ctx_par).execute(IntersectOperator(ops))
 
+        tbl = engine._tables["docs"]
         ctx_seq = ExecutionContext(
-            document_store=engine.document_store,
-            inverted_index=engine.inverted_index,
+            document_store=tbl.document_store,
+            inverted_index=tbl.inverted_index,
             parallel_executor=ParallelExecutor(max_workers=0),
         )
         seq_result = PlanExecutor(ctx_seq).execute(
@@ -201,6 +209,13 @@ class TestParallelFusion:
     @pytest.fixture
     def engine(self):
         e = Engine(vector_dimensions=4, max_elements=10, parallel_workers=4)
+        e.sql(
+            "CREATE TABLE docs ("
+            "id INTEGER PRIMARY KEY, "
+            "title TEXT, "
+            "cat TEXT, "
+            "embedding VECTOR(4))"
+        )
         docs = [
             {"title": "neural network basics", "cat": "ml"},
             {"title": "transformer models", "cat": "dl"},
@@ -210,7 +225,7 @@ class TestParallelFusion:
             rng = np.random.RandomState(i)
             emb = rng.randn(4).astype(np.float32)
             emb = emb / np.linalg.norm(emb)
-            e.add_document(i, doc, emb)
+            e.add_document(i, doc, table="docs", embedding=emb)
         return e
 
     def test_log_odds_fusion_parallel(self, engine):
@@ -220,7 +235,7 @@ class TestParallelFusion:
         from uqa.scoring.bm25 import BM25Params, BM25Scorer
         from uqa.planner.executor import PlanExecutor
 
-        ctx = engine._build_context()
+        ctx = engine._context_for_table("docs")
         stats = ctx.inverted_index.stats
 
         term = TermOperator("neural", field="title")
@@ -264,7 +279,8 @@ class TestEngineParallelConfig:
     def test_context_has_parallel_executor(self):
         """ExecutionContext carries parallel executor."""
         e = Engine(parallel_workers=2)
-        ctx = e._build_context()
+        e.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        ctx = e._context_for_table("t")
         assert ctx.parallel_executor is not None
         assert ctx.parallel_executor._max_workers == 2
 

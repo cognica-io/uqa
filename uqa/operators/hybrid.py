@@ -189,10 +189,11 @@ class VectorExclusionOperator(Operator):
         positive: Operator,
         negative_vector: NDArray,
         negative_threshold: float,
+        field: str = "embedding",
     ) -> None:
         self.positive = positive
         self.negative_op = VectorSimilarityOperator(
-            negative_vector, negative_threshold
+            negative_vector, negative_threshold, field=field
         )
 
     def execute(self, context: ExecutionContext) -> PostingList:

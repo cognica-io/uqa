@@ -24,7 +24,15 @@ from uqa.engine import Engine
 # ======================================================================
 
 engine = Engine()
-gs = engine.graph_store
+
+engine.sql("""
+    CREATE TABLE employees (
+        id INTEGER PRIMARY KEY,
+        name TEXT
+    )
+""")
+
+gs = engine._tables["employees"].graph_store
 
 # Employees
 employees = [
@@ -198,6 +206,13 @@ engine.sql("""INSERT INTO reviews (employee_id, rating, comment) VALUES
     (7, 4.6, 'top sales performer'),
     (8, 3.9, 'needs development')
 """)
+
+# Add management edges to the reviews table's graph store so that
+# traverse_match can discover reachable rows.  Review doc_ids 1-8
+# correspond to employee vertices 1-8.
+for e in edges:
+    if e.label == "manages":
+        engine.add_graph_edge(e, table="reviews")
 
 show("16. Reviews + traverse_match (Bob's team)", engine.sql(
     "SELECT employee_id, rating, comment FROM reviews "

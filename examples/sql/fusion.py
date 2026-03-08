@@ -19,7 +19,7 @@ Demonstrates:
 
 import numpy as np
 
-from uqa.core.types import Edge, Vertex
+from uqa.core.types import Edge
 from uqa.engine import Engine
 
 # ======================================================================
@@ -28,7 +28,7 @@ from uqa.engine import Engine
 
 engine = Engine(vector_dimensions=8, max_elements=50)
 
-# -- SQL table --
+# -- SQL table with vector column --
 engine.sql("""
     CREATE TABLE papers (
         id SERIAL PRIMARY KEY,
@@ -36,10 +36,14 @@ engine.sql("""
         year INTEGER NOT NULL,
         venue TEXT,
         field TEXT,
-        citations INTEGER DEFAULT 0
+        citations INTEGER DEFAULT 0,
+        embedding VECTOR(8)
     )
 """)
-engine.sql("""INSERT INTO papers (title, year, venue, field, citations) VALUES
+
+rng = np.random.RandomState(42)
+
+titles = [
     ('attention is all you need',                    2017, 'NeurIPS', 'nlp',       90000),
     ('bert pre-training deep bidirectional',         2019, 'NAACL',   'nlp',       75000),
     ('graph attention networks',                     2018, 'ICLR',    'graph',     15000),
@@ -47,33 +51,31 @@ engine.sql("""INSERT INTO papers (title, year, venue, field, citations) VALUES
     ('scaling language models methods insights',     2020, 'arXiv',   'nlp',       8000),
     ('diffusion models beat gans',                   2021, 'NeurIPS', 'cv',        12000),
     ('reinforcement learning human feedback',        2022, 'NeurIPS', 'alignment', 5000),
-    ('efficient attention long sequences',           2020, 'ICML',    'nlp',       3000)
-""")
-
-# -- Vector embeddings --
-rng = np.random.RandomState(42)
-for i in range(1, 9):
+    ('efficient attention long sequences',           2020, 'ICML',    'nlp',       3000),
+]
+for title, year, venue, fld, cit in titles:
     vec = rng.randn(8).astype(np.float32)
     vec = vec / np.linalg.norm(vec)
-    engine.vector_index.add(i, vec)
+    arr = "ARRAY[" + ",".join(str(float(v)) for v in vec) + "]"
+    engine.sql(
+        f"INSERT INTO papers (title, year, venue, field, citations, embedding) "
+        f"VALUES ('{title}', {year}, '{venue}', '{fld}', {cit}, {arr})"
+    )
 
-# -- Citation graph --
-for i in range(1, 9):
-    engine.add_graph_vertex(Vertex(i, {"title": f"paper_{i}"}))
+# -- Citation graph (per-table: edges between paper rows) --
 # Paper 1 (attention) cited by 2, 3, 4
-engine.add_graph_edge(Edge(1, 1, 2, "cited_by"))
-engine.add_graph_edge(Edge(2, 1, 3, "cited_by"))
-engine.add_graph_edge(Edge(3, 1, 4, "cited_by"))
+engine.add_graph_edge(Edge(1, 1, 2, "cited_by"), table="papers")
+engine.add_graph_edge(Edge(2, 1, 3, "cited_by"), table="papers")
+engine.add_graph_edge(Edge(3, 1, 4, "cited_by"), table="papers")
 # Paper 2 (bert) cited by 5, 7
-engine.add_graph_edge(Edge(4, 2, 5, "cited_by"))
-engine.add_graph_edge(Edge(5, 2, 7, "cited_by"))
+engine.add_graph_edge(Edge(4, 2, 5, "cited_by"), table="papers")
+engine.add_graph_edge(Edge(5, 2, 7, "cited_by"), table="papers")
 # Paper 3 (GAT) cited by 4
-engine.add_graph_edge(Edge(6, 3, 4, "cited_by"))
+engine.add_graph_edge(Edge(6, 3, 4, "cited_by"), table="papers")
 
-# -- Set query vector for knn_match --
+# -- Query vector for knn_match --
 query_vec = rng.randn(8).astype(np.float32)
 query_vec = query_vec / np.linalg.norm(query_vec)
-engine.set_query_vector(query_vec)
 
 
 def show(label, result):
@@ -120,10 +122,10 @@ show("2. fuse_log_odds: text + vector", engine.sql("""
     SELECT title, _score FROM papers
     WHERE fuse_log_odds(
         text_match(title, 'transformer'),
-        knn_match(5)
+        knn_match(embedding, $1, 5)
     )
     ORDER BY _score DESC
-"""))
+""", params=[query_vec]))
 
 
 # ==================================================================
@@ -133,11 +135,11 @@ show("3. fuse_log_odds: text + vector + graph", engine.sql("""
     SELECT title, _score FROM papers
     WHERE fuse_log_odds(
         text_match(title, 'attention transformer'),
-        knn_match(5),
+        knn_match(embedding, $1, 5),
         traverse_match(1, 'cited_by', 2)
     )
     ORDER BY _score DESC
-"""))
+""", params=[query_vec]))
 
 
 # ==================================================================
@@ -161,10 +163,10 @@ show("5. fusion + year >= 2019", engine.sql("""
     SELECT title, year, _score FROM papers
     WHERE fuse_log_odds(
         text_match(title, 'attention transformer'),
-        knn_match(5)
+        knn_match(embedding, $1, 5)
     ) AND year >= 2019
     ORDER BY _score DESC
-"""))
+""", params=[query_vec]))
 
 
 # ==================================================================
@@ -230,10 +232,10 @@ result = engine.sql("""
     EXPLAIN SELECT * FROM papers
     WHERE fuse_log_odds(
         text_match(title, 'attention'),
-        knn_match(3),
+        knn_match(embedding, $1, 3),
         traverse_match(1, 'cited_by', 1)
     )
-""")
+""", params=[query_vec])
 print("\n--- 10. EXPLAIN fusion plan ---")
 for row in result.rows:
     print(f"  {row['plan']}")
