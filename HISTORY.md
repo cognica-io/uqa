@@ -1,5 +1,45 @@
 # History
 
+## 0.5.0 (2026-03-08)
+
+Per-table storage normalization — all storage is now scoped to explicit tables with full bidirectional interop between the fluent API and SQL.
+
+### Breaking Changes
+
+- Removed all global store instances from Engine (`document_store`, `inverted_index`, `vector_index`, `graph_store`, `block_max_index`)
+- `engine.add_document()`, `engine.delete_document()`, `engine.add_graph_vertex()`, `engine.add_graph_edge()` now require a `table` parameter
+- `engine.query()` now requires a `table` parameter: `engine.query(table="papers")`
+- Removed `engine.set_query_vector()` and `engine.set_negative_vector()` — vectors are now inline in SQL via `ARRAY[...]` literals or `$N` parameter binding
+- Removed `FROM _default` pseudo-table — all SQL queries must reference a real table
+- Removed `engine._build_context()` — replaced by `engine._context_for_table(table_name)`
+
+### Per-Table Architecture
+
+- Each `Table` owns all storage: `document_store`, `inverted_index`, `vector_indexes`, `graph_store`, `block_max_index`
+- `BlockMaxIndex` added to `Table` for completeness (both in-memory and SQLite-backed modes)
+- Fluent API and SQL API share the same per-table storage — data inserted via SQL is queryable via fluent and vice versa
+- `QueryBuilder` propagates `table` parameter through all chained operations (`_chain`, `and_`, `or_`, `not_`, `filter`, `join`, `score_bm25`, `fuse_log_odds`, etc.)
+
+### SQL Compiler
+
+- `_context_for_table()` handles `None` table for FROM-less queries (`SELECT 1 AS val`)
+- `_scan_all()` produces a single dummy row for expression-only queries
+- `PostingListScanOp` handles `None` document store for table-less queries
+- `knn_match(field, vector, k)` and `vector_exclude(field, pos, neg, k, threshold)` use field-based syntax with inline vectors
+- `traverse()` and `rpq()` auto-detect the first available table when no table argument is provided
+
+### Documentation
+
+- Updated README and reference guide: all examples use explicit table names
+- Rewritten programmatic document API section for per-table architecture
+- UQA reference guide PDF added
+
+### Tests
+
+- 1000 tests across 31 test files (up from 999 in v0.4.0)
+- All test fixtures updated for per-table access patterns
+
+
 ## 0.4.0 (2026-03-08)
 
 Hierarchical data SQL integration, Arrow native nested types, graph-sourced WHERE.
@@ -9,14 +49,8 @@ Hierarchical data SQL integration, Arrow native nested types, graph-sourced WHER
 - `path_agg(path, func)`: per-row nested array aggregation (sum, count, avg, min, max) in SELECT
 - `path_value(path)`: nested field access in SELECT
 - `path_filter(path, value)` / `path_filter(path, op, value)`: hierarchical WHERE predicate with equality and comparison operators
-- `_default` table recognition in FROM clause for querying programmatic documents via SQL
 - `BOOLEAN` column type with `DEFAULT TRUE/FALSE` support (`PgBoolean` AST node handling)
 - Deferred WHERE for graph-sourced queries: `FROM traverse()/rpq()` with relational WHERE predicates now correctly filter on vertex properties via physical `FilterOp` instead of posting list operators
-
-### Engine API
-
-- `engine.set_query_vector(vector)`: set the query vector for `knn_match()` in SQL queries
-- `engine.set_negative_vector(vector)`: set the negative vector for `vector_exclude()` in SQL queries
 
 ### Arrow Execution Engine
 
