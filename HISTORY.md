@@ -25,8 +25,8 @@ Hierarchical data SQL integration, Arrow native nested types, graph-sourced WHER
 
 ### Hierarchical Data
 
-- `HierarchicalDocument.eval_path`: implicit array wildcard -- when a string path component follows a list, maps over all array elements
-- `PathFilterOperator`: any-match semantics -- when `eval_path` returns a list, matches if ANY element satisfies the predicate
+- `HierarchicalDocument.eval_path`: implicit array wildcard — when a string path component follows a list, maps over all array elements
+- `PathFilterOperator`: any-match semantics — when `eval_path` returns a list, matches if ANY element satisfies the predicate
 
 ### Operator Fixes
 
@@ -50,9 +50,9 @@ Disk spilling and multi-index correctness.
 ### Execution Engine
 
 - Disk spilling for blocking operators when input exceeds `spill_threshold` rows
-- `SortOp`: external merge sort -- sorted runs spilled to Arrow IPC stream files, merged via k-way min-heap
-- `HashAggOp`: Grace hash partitioning -- rows hash-distributed into 16 on-disk partitions, each aggregated independently
-- `DistinctOp`: hash partition dedup -- same partitioning strategy, per-partition deduplication
+- `SortOp`: external merge sort — sorted runs spilled to Arrow IPC stream files, merged via k-way min-heap
+- `HashAggOp`: Grace hash partitioning — rows hash-distributed into 16 on-disk partitions, each aggregated independently
+- `DistinctOp`: hash partition dedup — same partitioning strategy, per-partition deduplication
 - `WindowOp`: accepts `spill_threshold` parameter for API consistency
 - Spill infrastructure: `SpillManager`, `SpillWriter`, `read_rows_from_ipc`, `merge_sorted_runs` in `execution/spill.py`
 - Configurable `spill_threshold` parameter on `Engine` (0 disables, default)

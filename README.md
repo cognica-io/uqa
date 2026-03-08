@@ -171,13 +171,13 @@ Blocking operators (sort, hash-aggregate, distinct) spill intermediate data to t
 
 | Operator | Strategy |
 |----------|----------|
-| `SortOp` | External merge sort -- sorted runs spilled to disk, merged via k-way min-heap |
-| `HashAggOp` | Grace hash -- rows partitioned into 16 on-disk files, each aggregated independently |
-| `DistinctOp` | Hash partition dedup -- same partitioning, per-partition deduplication |
+| `SortOp` | External merge sort — sorted runs spilled to disk, merged via k-way min-heap |
+| `HashAggOp` | Grace hash — rows partitioned into 16 on-disk files, each aggregated independently |
+| `DistinctOp` | Hash partition dedup — same partitioning, per-partition deduplication |
 
 ```python
 engine = Engine(db_path="my.db", spill_threshold=100000)  # spill after 100K rows
-engine = Engine(spill_threshold=0)                         # disable (default)
+engine = Engine(spill_threshold=0)                        # disable (default)
 ```
 
 ### Parallel Execution
@@ -186,7 +186,7 @@ Independent operator branches (Union, Intersect, Fusion signals) execute concurr
 
 ```python
 engine = Engine(db_path="my.db", parallel_workers=4)  # default: 4
-engine = Engine(parallel_workers=0)                     # disable parallelism
+engine = Engine(parallel_workers=0)                   # disable parallelism
 ```
 
 ## Requirements
