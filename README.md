@@ -217,7 +217,7 @@ pip install -e ".[dev]"
 ### Interactive SQL Shell
 
 ```bash
-python usql.py                # In-memory
+python usql.py                 # In-memory
 python usql.py --db mydata.db  # Persistent database
 ```
 
@@ -303,7 +303,7 @@ facets = engine.query().facet("status")
 ### Fluent API (`examples/fluent/`)
 
 ```bash
-python examples/fluent/text_search.py        # BM25, Bayesian BM25, boolean, facets
+python examples/fluent/text_search.py         # BM25, Bayesian BM25, boolean, facets
 python examples/fluent/vector_and_hybrid.py   # KNN, hybrid, vector exclusion, fusion
 python examples/fluent/graph.py               # Traversal, RPQ, pattern matching, indexes
 python examples/fluent/hierarchical.py        # Nested data, path filters, aggregation
@@ -312,7 +312,7 @@ python examples/fluent/hierarchical.py        # Nested data, path filters, aggre
 ### SQL (`examples/sql/`)
 
 ```bash
-python examples/sql/basics.py      # DDL, DML, SELECT, CTE, window, transactions, views
+python examples/sql/basics.py       # DDL, DML, SELECT, CTE, window, transactions, views
 python examples/sql/functions.py    # text_match, knn_match, path_agg, path_value, path_filter
 python examples/sql/graph.py        # FROM traverse/rpq, aggregates, GROUP BY, WHERE
 python examples/sql/fusion.py       # fuse_log_odds, fuse_prob_and/or/not, EXPLAIN
@@ -321,8 +321,8 @@ python examples/sql/fusion.py       # fuse_log_odds, fuse_prob_and/or/not, EXPLA
 ### Interactive Shell
 
 ```bash
-python usql.py               # In-memory
-python usql.py --db mydata.db # Persistent
+python usql.py                 # In-memory
+python usql.py --db mydata.db  # Persistent
 ```
 
 ## Tests
