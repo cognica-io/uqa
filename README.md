@@ -56,13 +56,13 @@ graph TD
     PAR --> VI[Vector Index<br/>HNSW + SQLite]
     PAR --> GS[Graph Store<br/>SQLite]
 
-    subgraph Scoring [Scoring &lt;br/&gt; bayesian-bm25]
+    subgraph Scoring ["Scoring (bayesian-bm25)"]
         BM25[BM25]
         BBFS[Bayesian BM25]
         VS[Vector Scorer]
     end
 
-    subgraph Fusion [Fusion &lt;br/&gt; bayesian-bm25]
+    subgraph Fusion ["Fusion (bayesian-bm25)"]
         LO[Log-Odds]
         PB[Probabilistic Boolean]
     end
