@@ -78,11 +78,11 @@ uqa/
   fusion/         Log-odds conjunction, probabilistic boolean
   graph/          GraphStore, traversal, pattern matching, RPQ, cross-paradigm
   joins/          Hash, sort-merge, index, graph, cross-paradigm, similarity joins
-  execution/      Volcano iterator engine: Apache Arrow columnar batches, physical operators
+  execution/      Volcano iterator engine: Apache Arrow columnar batches, physical operators, disk spilling
   planner/        Cost model, cardinality estimator, optimizer, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          899 tests across 29 test files
+  tests/          930 tests across 30 test files
 ```
 
 ## Key Features
@@ -151,6 +151,21 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 - Fusion signal reordering by cost (cheapest first)
 - B-tree index scan substitution (replace full scans when profitable)
 - Cross-paradigm cardinality estimation for text, vector, graph, and fusion operators
+
+### Disk Spilling
+
+Blocking operators (sort, hash-aggregate, distinct) spill intermediate data to temporary Arrow IPC files when the input exceeds `spill_threshold` rows, bounding memory usage for large queries:
+
+| Operator | Strategy |
+|----------|----------|
+| `SortOp` | External merge sort -- sorted runs spilled to disk, merged via k-way min-heap |
+| `HashAggOp` | Grace hash -- rows partitioned into 16 on-disk files, each aggregated independently |
+| `DistinctOp` | Hash partition dedup -- same partitioning, per-partition deduplication |
+
+```python
+engine = Engine(db_path="my.db", spill_threshold=100000)  # spill after 100K rows
+engine = Engine(spill_threshold=0)                         # disable (default)
+```
 
 ### Parallel Execution
 
@@ -276,7 +291,7 @@ python usql.py examples/demo.sql
 ## Tests
 
 ```bash
-# Run all 899 tests
+# Run all 930 tests
 python -m pytest uqa/tests/ -v
 
 # Run a specific test file

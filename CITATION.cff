@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+title: "UQA: Unified Query Algebra"
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - given-names: Jaepil
+    family-names: Jeong
+    email: jaepil@cognica.io
+    affiliation: "Cognica, Inc."
+repository-code: "https://github.com/cognica-io/uqa"
+license: AGPL-3.0-only
+version: 0.3.0
+date-released: "2026-03-08"
+abstract: >-
+  A database prototype that unifies relational, text retrieval,
+  vector search, and graph query paradigms under a single algebraic
+  structure, using posting lists as the universal abstraction.
+keywords:
+  - unified-query-algebra
+  - information-retrieval
+  - vector-search
+  - graph-database
+  - bm25
+  - bayesian-bm25
+  - posting-list
+  - multi-paradigm-database

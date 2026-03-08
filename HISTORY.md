@@ -1,5 +1,29 @@
 # History
 
+## 0.3.0 (2026-03-08)
+
+Disk spilling and multi-index correctness.
+
+### Execution Engine
+
+- Disk spilling for blocking operators when input exceeds `spill_threshold` rows
+- `SortOp`: external merge sort -- sorted runs spilled to Arrow IPC stream files, merged via k-way min-heap
+- `HashAggOp`: Grace hash partitioning -- rows hash-distributed into 16 on-disk partitions, each aggregated independently
+- `DistinctOp`: hash partition dedup -- same partitioning strategy, per-partition deduplication
+- `WindowOp`: accepts `spill_threshold` parameter for API consistency
+- Spill infrastructure: `SpillManager`, `SpillWriter`, `read_rows_from_ipc`, `merge_sorted_runs` in `execution/spill.py`
+- Configurable `spill_threshold` parameter on `Engine` (0 disables, default)
+
+### Bug Fixes
+
+- Fixed `BlockMaxIndex` table-name collision: key changed from `(field, term)` to `(table_name, field, term)` across in-memory dict, SQLite persistence, and all callers (`BlockMaxWANDScorer`, `SQLiteInvertedIndex.load_block_max_into`)
+- Added legacy schema migration for old `_global_blockmax` tables without `table_name` column
+
+### Tests
+
+- 930 tests across 30 test files (up from 899 in v0.2.1)
+
+
 ## 0.2.1 (2026-03-08)
 
 Apache Arrow columnar execution engine.
