@@ -814,3 +814,209 @@ class TestFusionErrors:
                     some_func(title, 'test')
                 )
             """)
+
+
+# ==================================================================
+# SQL integration: hierarchical path functions
+# ==================================================================
+
+class TestSQLPathFunctions:
+    """Tests for path_agg, path_value, and path_filter SQL functions."""
+
+    @pytest.fixture
+    def order_engine(self) -> Engine:
+        e = Engine()
+        e.add_document(1, {
+            "order_id": "ORD-001",
+            "customer": "Alice",
+            "items": [
+                {"name": "Widget A", "price": 29.99, "quantity": 2},
+                {"name": "Widget B", "price": 49.99, "quantity": 1},
+            ],
+            "shipping": {"city": "Seoul", "method": "express", "cost": 15.0},
+        })
+        e.add_document(2, {
+            "order_id": "ORD-002",
+            "customer": "Bob",
+            "items": [
+                {"name": "Gadget X", "price": 99.99, "quantity": 1},
+            ],
+            "shipping": {"city": "Busan", "method": "standard", "cost": 5.0},
+        })
+        e.add_document(3, {
+            "order_id": "ORD-003",
+            "customer": "Charlie",
+            "items": [
+                {"name": "Widget A", "price": 29.99, "quantity": 3},
+                {"name": "Gadget X", "price": 99.99, "quantity": 2},
+                {"name": "Part Z", "price": 9.99, "quantity": 10},
+            ],
+            "shipping": {"city": "Seoul", "method": "express", "cost": 20.0},
+        })
+        return e
+
+    # -- path_agg --
+
+    def test_path_agg_sum(self, order_engine: Engine) -> None:
+        result = order_engine.sql(
+            "SELECT path_agg('items.price', 'sum') AS total FROM _default"
+        )
+        assert len(result.rows) == 3
+        totals = sorted(r["total"] for r in result.rows)
+        assert abs(totals[0] - 79.98) < 0.01  # ORD-001: 29.99 + 49.99
+        assert abs(totals[1] - 99.99) < 0.01  # ORD-002: 99.99
+        assert abs(totals[2] - 139.97) < 0.01  # ORD-003: 29.99 + 99.99 + 9.99
+
+    def test_path_agg_count(self, order_engine: Engine) -> None:
+        result = order_engine.sql(
+            "SELECT path_agg('items.name', 'count') AS n FROM _default"
+        )
+        counts = sorted(r["n"] for r in result.rows)
+        assert counts == [1, 2, 3]
+
+    def test_path_agg_avg(self, order_engine: Engine) -> None:
+        result = order_engine.sql(
+            "SELECT path_agg('items.price', 'avg') AS avg_price FROM _default"
+        )
+        avgs = sorted(r["avg_price"] for r in result.rows)
+        assert abs(avgs[0] - 39.99) < 0.01  # ORD-001: (29.99+49.99)/2
+        assert abs(avgs[2] - 99.99) < 0.01  # ORD-002: 99.99/1
+
+    def test_path_agg_min_max(self, order_engine: Engine) -> None:
+        result = order_engine.sql(
+            "SELECT path_agg('items.price', 'min') AS lo, "
+            "path_agg('items.price', 'max') AS hi FROM _default"
+        )
+        assert len(result.rows) == 3
+        for row in result.rows:
+            assert row["lo"] <= row["hi"]
+
+    # -- path_value --
+
+    def test_path_value_scalar(self, order_engine: Engine) -> None:
+        result = order_engine.sql(
+            "SELECT path_value('shipping.city') AS city FROM _default"
+        )
+        cities = sorted(r["city"] for r in result.rows)
+        assert cities == ["Busan", "Seoul", "Seoul"]
+
+    def test_path_value_nested(self, order_engine: Engine) -> None:
+        result = order_engine.sql(
+            "SELECT path_value('shipping.cost') AS cost FROM _default"
+        )
+        costs = sorted(r["cost"] for r in result.rows)
+        assert costs == [5.0, 15.0, 20.0]
+
+    # -- path_filter in WHERE --
+
+    def test_path_filter_equality(self, order_engine: Engine) -> None:
+        result = order_engine.sql(
+            "SELECT * FROM _default WHERE path_filter('shipping.city', 'Seoul')"
+        )
+        assert len(result.rows) == 2
+        customers = sorted(r["customer"] for r in result.rows)
+        assert customers == ["Alice", "Charlie"]
+
+    def test_path_filter_with_operator(self, order_engine: Engine) -> None:
+        result = order_engine.sql(
+            "SELECT * FROM _default WHERE path_filter('shipping.cost', '>', 10)"
+        )
+        assert len(result.rows) == 2
+        customers = sorted(r["customer"] for r in result.rows)
+        assert customers == ["Alice", "Charlie"]
+
+    def test_path_filter_array_any_match(self, order_engine: Engine) -> None:
+        """path_filter on an array field should match if ANY element matches."""
+        result = order_engine.sql(
+            "SELECT * FROM _default WHERE path_filter('items.name', 'Widget A')"
+        )
+        assert len(result.rows) == 2
+        customers = sorted(r["customer"] for r in result.rows)
+        assert customers == ["Alice", "Charlie"]
+
+    def test_path_filter_combined_with_path_agg(self, order_engine: Engine) -> None:
+        result = order_engine.sql(
+            "SELECT path_agg('items.price', 'sum') AS total FROM _default "
+            "WHERE path_filter('shipping.city', 'Seoul')"
+        )
+        assert len(result.rows) == 2
+        totals = sorted(r["total"] for r in result.rows)
+        assert abs(totals[0] - 79.98) < 0.01
+        assert abs(totals[1] - 139.97) < 0.01
+
+
+# ==================================================================
+# SQL integration: graph aggregates via standard SQL
+# ==================================================================
+
+class TestSQLGraphAggregates:
+    """Standard SQL aggregates should work on graph traversal results."""
+
+    @pytest.fixture
+    def graph_engine(self) -> Engine:
+        e = Engine()
+        # Build org chart: CEO -> VP -> Engineers
+        e.add_graph_vertex(Vertex(1, {"name": "CEO", "role": "executive", "salary": 200000}))
+        e.add_graph_vertex(Vertex(2, {"name": "VP-Eng", "role": "vp", "salary": 150000}))
+        e.add_graph_vertex(Vertex(3, {"name": "VP-Sales", "role": "vp", "salary": 140000}))
+        e.add_graph_vertex(Vertex(4, {"name": "Alice", "role": "engineer", "salary": 120000}))
+        e.add_graph_vertex(Vertex(5, {"name": "Bob", "role": "engineer", "salary": 110000}))
+        e.add_graph_vertex(Vertex(6, {"name": "Carol", "role": "sales", "salary": 100000}))
+
+        e.add_graph_edge(Edge(1, 1, 2, "manages"))
+        e.add_graph_edge(Edge(2, 1, 3, "manages"))
+        e.add_graph_edge(Edge(3, 2, 4, "manages"))
+        e.add_graph_edge(Edge(4, 2, 5, "manages"))
+        e.add_graph_edge(Edge(5, 3, 6, "manages"))
+        return e
+
+    def test_sum_from_traverse(self, graph_engine: Engine) -> None:
+        result = graph_engine.sql(
+            "SELECT SUM(salary) AS total FROM traverse(1, 'manages', 1)"
+        )
+        assert len(result.rows) == 1
+        # CEO (200k) + VP-Eng (150k) + VP-Sales (140k) = 490k (includes start)
+        assert result.rows[0]["total"] == 490000
+
+    def test_avg_from_traverse(self, graph_engine: Engine) -> None:
+        result = graph_engine.sql(
+            "SELECT AVG(salary) AS avg_salary FROM traverse(2, 'manages', 1)"
+        )
+        assert len(result.rows) == 1
+        # VP-Eng (150k) + Alice (120k) + Bob (110k) -> avg = 126666.67
+        avg = result.rows[0]["avg_salary"]
+        assert abs(avg - 126666.67) < 1.0
+
+    def test_count_from_traverse(self, graph_engine: Engine) -> None:
+        result = graph_engine.sql(
+            "SELECT COUNT(*) AS cnt FROM traverse(1, 'manages', 2)"
+        )
+        assert len(result.rows) == 1
+        # CEO + 2 VPs + 2 engineers + 1 sales = 6 (all reachable within 2 hops)
+        assert result.rows[0]["cnt"] == 6
+
+    def test_group_by_from_traverse(self, graph_engine: Engine) -> None:
+        result = graph_engine.sql(
+            "SELECT role, COUNT(*) AS cnt FROM traverse(1, 'manages', 2) GROUP BY role"
+        )
+        role_counts = {r["role"]: r["cnt"] for r in result.rows}
+        assert role_counts["executive"] == 1
+        assert role_counts["vp"] == 2
+        assert role_counts["engineer"] == 2
+        assert role_counts["sales"] == 1
+
+    def test_select_star_from_traverse(self, graph_engine: Engine) -> None:
+        result = graph_engine.sql(
+            "SELECT * FROM traverse(2, 'manages', 1)"
+        )
+        # VP-Eng + Alice + Bob = 3 (includes start vertex)
+        assert len(result.rows) == 3
+        names = sorted(r["name"] for r in result.rows)
+        assert names == ["Alice", "Bob", "VP-Eng"]
+
+    def test_rpq_query(self, graph_engine: Engine) -> None:
+        result = graph_engine.sql(
+            "SELECT * FROM rpq('manages*', 1)"
+        )
+        # Kleene star: all reachable from CEO via manages (including CEO)
+        assert len(result.rows) >= 5

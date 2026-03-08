@@ -176,6 +176,106 @@ class ProbBoolFusionOperator(Operator):
         return sum(sig.cost_estimate(stats) for sig in self.signals)
 
 
+class VectorExclusionOperator(Operator):
+    """Definition 3.3.3: VE(V1, V2) = V1 AND NOT V2.
+
+    Keeps documents from V1 that are dissimilar to V2's query vector.
+    V1 produces the candidate set; any document also appearing in V2
+    (i.e., similar to the negative query) is removed.
+    """
+
+    def __init__(
+        self,
+        positive: Operator,
+        negative_vector: NDArray,
+        negative_threshold: float,
+    ) -> None:
+        self.positive = positive
+        self.negative_op = VectorSimilarityOperator(
+            negative_vector, negative_threshold
+        )
+
+    def execute(self, context: ExecutionContext) -> PostingList:
+        positive_pl = self.positive.execute(context)
+        negative_pl = self.negative_op.execute(context)
+        negative_ids = {entry.doc_id for entry in negative_pl}
+        entries = [e for e in positive_pl if e.doc_id not in negative_ids]
+        return PostingList(entries)
+
+    def cost_estimate(self, stats: IndexStats) -> float:
+        return (
+            self.positive.cost_estimate(stats)
+            + self.negative_op.cost_estimate(stats)
+        )
+
+
+class FacetVectorOperator(Operator):
+    """Definition 3.3.4: FV(Phi_f, V_theta) = Facet over vector-similar docs.
+
+    Computes facet counts only over documents that pass the vector
+    similarity threshold, giving facet distributions conditioned on
+    semantic relevance.
+    """
+
+    def __init__(
+        self,
+        facet_field: str,
+        query_vector: NDArray,
+        threshold: float,
+        source: Operator | None = None,
+    ) -> None:
+        self.facet_field = facet_field
+        self.vector_op = VectorSimilarityOperator(query_vector, threshold)
+        self.source = source
+
+    def execute(self, context: ExecutionContext) -> PostingList:
+        from collections import Counter
+
+        vector_pl = self.vector_op.execute(context)
+        vector_ids = {entry.doc_id for entry in vector_pl}
+
+        if self.source is not None:
+            source_pl = self.source.execute(context)
+            candidate_ids = [
+                e.doc_id for e in source_pl if e.doc_id in vector_ids
+            ]
+        else:
+            candidate_ids = sorted(vector_ids)
+
+        doc_store = context.document_store
+        if doc_store is None:
+            return PostingList()
+
+        value_counts: Counter[str] = Counter()
+        for doc_id in candidate_ids:
+            value = doc_store.get_field(doc_id, self.facet_field)
+            if value is not None:
+                value_counts[str(value)] += 1
+
+        entries: list[PostingEntry] = []
+        for i, (value, count) in enumerate(sorted(value_counts.items())):
+            entries.append(
+                PostingEntry(
+                    doc_id=i,
+                    payload=Payload(
+                        score=float(count),
+                        fields={
+                            "_facet_field": self.facet_field,
+                            "_facet_value": value,
+                            "_facet_count": count,
+                        },
+                    ),
+                )
+            )
+        return PostingList(entries)
+
+    def cost_estimate(self, stats: IndexStats) -> float:
+        base = self.vector_op.cost_estimate(stats)
+        if self.source is not None:
+            base += self.source.cost_estimate(stats)
+        return base
+
+
 class ProbNotOperator(Operator):
     """Probabilistic NOT (Paper 3, Section 5): P(NOT signal) = 1 - P(signal).
 

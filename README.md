@@ -26,6 +26,10 @@ SELECT _doc_id, title FROM traverse(1, 'cited_by', 2);
 -- Regular path query
 SELECT _doc_id, title FROM rpq('cited_by/cited_by', 1);
 
+-- Hierarchical data: nested array aggregation
+SELECT path_agg('items.price', 'sum') AS total FROM _default
+WHERE path_filter('shipping.city', 'Seoul');
+
 -- Prepared statements
 PREPARE find_by_year AS SELECT title FROM papers WHERE year = $1;
 EXECUTE find_by_year(2024);
@@ -82,7 +86,7 @@ uqa/
   planner/        Cost model, cardinality estimator, optimizer, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          930 tests across 30 test files
+  tests/          999 tests across 31 test files
 ```
 
 ## Key Features
@@ -111,6 +115,8 @@ uqa/
 | `bayesian_match(field, 'query')` | Bayesian BM25 — calibrated P(relevant) in [0,1] |
 | `knn_match(k)` | K-nearest neighbor vector search |
 | `traverse_match(start, 'label', hops)` | Graph reachability as a scored signal |
+| `path_filter(path, value)` | Hierarchical equality filter (any-match on arrays) |
+| `path_filter(path, op, value)` | Hierarchical comparison filter (`>`, `<`, `>=`, `<=`, `!=`) |
 
 ### Fusion Meta-Functions
 
@@ -120,6 +126,13 @@ uqa/
 | `fuse_prob_and(sig1, sig2, ...)` | Probabilistic AND: P = prod(P_i) |
 | `fuse_prob_or(sig1, sig2, ...)` | Probabilistic OR: P = 1 - prod(1 - P_i) |
 | `fuse_prob_not(signal)` | Probabilistic NOT: P = 1 - P_signal |
+
+### SELECT Scalar Functions
+
+| Function | Description |
+|----------|-------------|
+| `path_agg(path, func)` | Per-row nested array aggregation (`sum`, `count`, `avg`, `min`, `max`) |
+| `path_value(path)` | Access nested field value by dot-path |
 
 ### FROM-Clause Table Functions
 
@@ -200,13 +213,8 @@ pip install -e ".[dev]"
 ### Interactive SQL Shell
 
 ```bash
-python usql.py
-
-# Or with a script file
-python usql.py examples/demo.sql
-
-# Persistent database
-python usql.py --db mydata.db
+python usql.py                # In-memory
+python usql.py --db mydata.db  # Persistent database
 ```
 
 Shell commands:
@@ -260,38 +268,63 @@ engine.close()  # or use: with Engine(db_path="...") as engine:
 ### Fluent QueryBuilder API
 
 ```python
+from uqa.core.types import Equals, GreaterThanOrEqual
+
+# Text search with scoring
 result = (
     engine.query()
     .term("attention", field="title")
-    .score_bayesian_bm25(["attention"], field="title")
-    .filter("year", lambda x: x >= 2020)
+    .score_bayesian_bm25("attention")
     .execute()
 )
+
+# Nested data: filter + aggregate
+result = (
+    engine.query()
+    .filter("shipping.city", Equals("Seoul"))
+    .path_aggregate("items.price", "sum")
+    .execute()
+)
+
+# Graph traversal + aggregation
+team = engine.query().traverse(2, "manages", max_hops=2)
+total = team.vertex_aggregate("salary", "sum")
+
+# Facets over all documents
+facets = engine.query().facet("status")
 ```
 
 ## Examples
 
+### Fluent API (`examples/fluent/`)
+
 ```bash
-# SQL interface examples (DDL, DML, search, aggregation, graph, fusion)
-python examples/sql_queries.py
+python examples/fluent/text_search.py        # BM25, Bayesian BM25, boolean, facets
+python examples/fluent/vector_and_hybrid.py   # KNN, hybrid, vector exclusion, fusion
+python examples/fluent/graph.py               # Traversal, RPQ, pattern matching, indexes
+python examples/fluent/hierarchical.py        # Nested data, path filters, aggregation
+```
 
-# Academic paper search (text + vector + graph + fusion)
-python examples/academic_search.py
+### SQL (`examples/sql/`)
 
-# E-commerce product search (filters, facets, scoring)
-python examples/ecommerce_search.py
+```bash
+python examples/sql/basics.py      # DDL, DML, SELECT, CTE, window, transactions, views
+python examples/sql/functions.py    # text_match, knn_match, path_agg, path_value, path_filter
+python examples/sql/graph.py        # FROM traverse/rpq, aggregates, GROUP BY, WHERE
+python examples/sql/fusion.py       # fuse_log_odds, fuse_prob_and/or/not, EXPLAIN
+```
 
-# Biomedical knowledge graph (traversal, RPQ, pattern matching)
-python examples/knowledge_graph.py
+### Interactive Shell
 
-# Interactive demo script
-python usql.py examples/demo.sql
+```bash
+python usql.py               # In-memory
+python usql.py --db mydata.db # Persistent
 ```
 
 ## Tests
 
 ```bash
-# Run all 930 tests
+# Run all 999 tests
 python -m pytest uqa/tests/ -v
 
 # Run a specific test file

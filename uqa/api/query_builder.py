@@ -101,12 +101,23 @@ class QueryBuilder:
         qb._root = op
         return qb
 
-    # -- Filter (Definition 3.1.4) --
+    # -- Filter (Definition 3.1.4 / 5.3.5) --
 
     def filter(self, field: str, predicate: Predicate) -> QueryBuilder:
-        from uqa.operators.primitive import FilterOperator
+        if "." in field:
+            from uqa.operators.hierarchical import PathFilterOperator
 
-        op = FilterOperator(field, predicate, self._root)
+            path: PathExpr = []
+            for component in field.split("."):
+                if component.isdigit():
+                    path.append(int(component))
+                else:
+                    path.append(component)
+            op = PathFilterOperator(path, predicate, self._root)
+        else:
+            from uqa.operators.primitive import FilterOperator
+
+            op = FilterOperator(field, predicate, self._root)
         qb = QueryBuilder(self._engine)
         qb._root = op
         return qb
@@ -172,6 +183,50 @@ class QueryBuilder:
         op = RegularPathQueryOperator(path_expr, start_vertex=start)
         return self._chain(op)
 
+    def vertex_aggregate(
+        self, property_name: str, agg_fn: str = "sum"
+    ) -> AggregateResult:
+        """Aggregate a vertex property over graph traversal results.
+
+        Requires a prior graph operation (traverse, match_pattern, or rpq).
+        Returns a single aggregated value.
+        """
+        from uqa.graph.operators import VertexAggregationOperator
+
+        if self._root is None:
+            raise ValueError(
+                "vertex_aggregate requires a graph traversal source"
+            )
+
+        op = VertexAggregationOperator(self._root, property_name, agg_fn)
+        ctx = self._engine._build_context()
+        result_gpl = op.execute(ctx)
+
+        if result_gpl and len(result_gpl) > 0:
+            entry = next(iter(result_gpl))
+            return AggregateResult(
+                entry.payload.fields.get("_vertex_agg_result")
+            )
+        return AggregateResult(0.0)
+
+    # -- Vector exclusion (Definition 3.3.3, Paper 1) --
+
+    def vector_exclude(
+        self, negative_vector: NDArray, threshold: float
+    ) -> QueryBuilder:
+        """Exclude documents similar to a negative query vector."""
+        from uqa.operators.hybrid import VectorExclusionOperator
+
+        if self._root is None:
+            raise ValueError("vector_exclude requires a source query")
+
+        op = VectorExclusionOperator(
+            self._root, negative_vector, threshold
+        )
+        qb = QueryBuilder(self._engine)
+        qb._root = op
+        return qb
+
     # -- Aggregation (Section 5.1, Paper 1) --
 
     def aggregate(self, field: str, agg: str) -> AggregateResult:
@@ -220,6 +275,26 @@ class QueryBuilder:
                 counts[val] = count
         return FacetResult(counts)
 
+    def vector_facet(
+        self, field: str, query_vector: NDArray, threshold: float
+    ) -> FacetResult:
+        """Facet counts conditioned on vector similarity (Definition 3.3.4)."""
+        from uqa.operators.hybrid import FacetVectorOperator
+
+        op = FacetVectorOperator(
+            field, query_vector, threshold, self._root
+        )
+        ctx = self._engine._build_context()
+        result_pl = op.execute(ctx)
+
+        counts: dict[Any, int] = {}
+        for entry in result_pl:
+            val = entry.payload.fields.get("_facet_value")
+            count = int(entry.payload.fields.get("_facet_count", 0))
+            if val is not None:
+                counts[val] = count
+        return FacetResult(counts)
+
     # -- Hierarchical (Section 5.2-5.3, Paper 1) --
 
     def path_filter(self, path: PathExpr, predicate: Predicate) -> QueryBuilder:
@@ -242,6 +317,50 @@ class QueryBuilder:
         from uqa.operators.hierarchical import PathUnnestOperator
 
         op = PathUnnestOperator(path, self._root)
+        qb = QueryBuilder(self._engine)
+        qb._root = op
+        return qb
+
+    def path_aggregate(
+        self, path: str | PathExpr, agg: str
+    ) -> QueryBuilder:
+        """Per-document aggregation over nested array values (Definition 5.3.3).
+
+        Applies an aggregation function to the array at ``path`` within each
+        document.  The aggregated value is stored in each entry's payload
+        field ``_path_aggregate``.
+        """
+        from uqa.operators.aggregation import (
+            AvgMonoid,
+            CountMonoid,
+            MaxMonoid,
+            MinMonoid,
+            SumMonoid,
+        )
+        from uqa.operators.hierarchical import PathAggregateOperator
+
+        monoid_map = {
+            "count": CountMonoid,
+            "sum": SumMonoid,
+            "avg": AvgMonoid,
+            "min": MinMonoid,
+            "max": MaxMonoid,
+        }
+        monoid_cls = monoid_map.get(agg.lower())
+        if monoid_cls is None:
+            raise ValueError(f"Unknown aggregation: {agg}")
+
+        if isinstance(path, str):
+            path_expr: PathExpr = []
+            for component in path.split("."):
+                if component.isdigit():
+                    path_expr.append(int(component))
+                else:
+                    path_expr.append(component)
+        else:
+            path_expr = path
+
+        op = PathAggregateOperator(path_expr, monoid_cls(), self._root)
         qb = QueryBuilder(self._engine)
         qb._root = op
         return qb
@@ -434,3 +553,5 @@ class _ProbBooleanOperator:
             getattr(s, "cost_estimate", lambda _: 100.0)(stats)
             for s in self.sources
         )
+
+

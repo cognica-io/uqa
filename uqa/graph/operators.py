@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections import deque
 from typing import TYPE_CHECKING
 
+from typing import Any
+
 from uqa.core.types import Payload, PostingEntry
 from uqa.graph.pattern import (
     Alternation,
@@ -386,3 +388,85 @@ class RegularPathQueryOperator:
             for _, target in state.transitions:
                 stack.append(target)
         return visited
+
+
+class VertexAggregationOperator:
+    """Definition 2.2.3: Aggregate vertex properties over traversal results.
+
+    Given a traversal result (GraphPostingList), aggregates a specified
+    vertex property across all reached vertices using a provided
+    aggregation function.
+
+    Returns a GraphPostingList with a single entry containing the
+    aggregated result.
+    """
+
+    def __init__(
+        self,
+        source: TraverseOperator | PatternMatchOperator | RegularPathQueryOperator,
+        property_name: str,
+        agg_fn: str = "sum",
+    ) -> None:
+        self.source = source
+        self.property_name = property_name
+        self.agg_fn = agg_fn
+
+    def execute(self, ctx: object) -> GraphPostingList:
+        graph: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
+        source_gpl = self.source.execute(ctx)
+
+        vertex_ids: set[int] = set()
+        for entry in source_gpl:
+            gp = source_gpl.get_graph_payload(entry.doc_id)
+            if gp is not None:
+                vertex_ids.update(gp.subgraph_vertices)
+
+        values: list[Any] = []
+        for vid in sorted(vertex_ids):
+            vertex = graph.get_vertex(vid)
+            if vertex is not None:
+                val = vertex.properties.get(self.property_name)
+                if val is not None:
+                    values.append(val)
+
+        result = self._aggregate(values)
+
+        entries = [
+            PostingEntry(
+                0,
+                Payload(
+                    score=float(result) if isinstance(result, (int, float)) else 0.0,
+                    fields={
+                        "_vertex_agg_property": self.property_name,
+                        "_vertex_agg_fn": self.agg_fn,
+                        "_vertex_agg_result": result,
+                        "_vertex_agg_count": len(values),
+                    },
+                ),
+            )
+        ]
+        return GraphPostingList(
+            entries,
+            {
+                0: GraphPayload(
+                    subgraph_vertices=frozenset(vertex_ids),
+                    subgraph_edges=frozenset(),
+                )
+            },
+        )
+
+    def _aggregate(self, values: list[Any]) -> Any:
+        if not values:
+            return 0.0
+        numeric = [float(v) for v in values]
+        if self.agg_fn == "sum":
+            return sum(numeric)
+        if self.agg_fn == "avg":
+            return sum(numeric) / len(numeric)
+        if self.agg_fn == "min":
+            return min(numeric)
+        if self.agg_fn == "max":
+            return max(numeric)
+        if self.agg_fn == "count":
+            return len(values)
+        return sum(numeric)

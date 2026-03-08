@@ -244,7 +244,9 @@ class Batch:
         """Create a Batch from a list of row dicts.
 
         If *schema* is ``None``, types are inferred from the first
-        non-null value in each column.
+        non-null value in each column.  Complex values (lists, dicts) are
+        stored using Arrow's native nested types (list, struct) via
+        automatic type inference.
         """
         if not rows:
             return cls(pa.RecordBatch.from_pylist([]))
@@ -278,13 +280,27 @@ class Batch:
         for name in col_names:
             values = [row.get(name) for row in rows]
             dtype = schema.get(name, DataType.TEXT)
-            arrow_type = _DTYPE_TO_ARROW[dtype]
-            arrays.append(pa.array(values, type=arrow_type))
-            fields.append(pa.field(name, arrow_type))
+            if _has_complex_values(values):
+                # Let Arrow infer nested types (list, struct) natively
+                arr = pa.array(values, from_pandas=True)
+                arrays.append(arr)
+                fields.append(pa.field(name, arr.type))
+            else:
+                arrow_type = _DTYPE_TO_ARROW[dtype]
+                arrays.append(pa.array(values, type=arrow_type))
+                fields.append(pa.field(name, arrow_type))
 
         return cls(
             pa.RecordBatch.from_arrays(arrays, schema=pa.schema(fields))
         )
+
+
+def _has_complex_values(values: list[Any]) -> bool:
+    """Check if any non-null value is a list or dict."""
+    for v in values:
+        if isinstance(v, (list, dict)):
+            return True
+    return False
 
 
 def _infer_dtype(value: Any) -> DataType:

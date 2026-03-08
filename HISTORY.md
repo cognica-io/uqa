@@ -1,5 +1,48 @@
 # History
 
+## 0.4.0 (2026-03-08)
+
+Hierarchical data SQL integration, Arrow native nested types, graph-sourced WHERE.
+
+### SQL Integration
+
+- `path_agg(path, func)`: per-row nested array aggregation (sum, count, avg, min, max) in SELECT
+- `path_value(path)`: nested field access in SELECT
+- `path_filter(path, value)` / `path_filter(path, op, value)`: hierarchical WHERE predicate with equality and comparison operators
+- `_default` table recognition in FROM clause for querying programmatic documents via SQL
+- `BOOLEAN` column type with `DEFAULT TRUE/FALSE` support (`PgBoolean` AST node handling)
+- Deferred WHERE for graph-sourced queries: `FROM traverse()/rpq()` with relational WHERE predicates now correctly filter on vertex properties via physical `FilterOp` instead of posting list operators
+
+### Engine API
+
+- `engine.set_query_vector(vector)`: set the query vector for `knn_match()` in SQL queries
+- `engine.set_negative_vector(vector)`: set the negative vector for `vector_exclude()` in SQL queries
+
+### Arrow Execution Engine
+
+- Native nested type support: `pa.array(values, from_pandas=True)` for automatic Arrow type inference of list/struct columns
+- Removed JSON serialization workaround for complex column values
+
+### Hierarchical Data
+
+- `HierarchicalDocument.eval_path`: implicit array wildcard -- when a string path component follows a list, maps over all array elements
+- `PathFilterOperator`: any-match semantics -- when `eval_path` returns a list, matches if ANY element satisfies the predicate
+
+### Operator Fixes
+
+- `FacetOperator`, `AggregateOperator`, `PathAggregateOperator`: handle `source=None` internally by scanning all document IDs, consistent with `FilterOperator`
+
+### Examples
+
+- Reorganized examples into `examples/fluent/` (4 files) and `examples/sql/` (4 files)
+- Fluent API: text_search, vector_and_hybrid, graph, hierarchical
+- SQL: basics (DDL/DML/DQL/CTE/window/transactions/views/prepared), functions (text_match/bayesian_match/knn_match/path_agg/path_value/path_filter), graph (traverse/rpq/aggregates/GROUP BY/WHERE), fusion (log_odds/prob_and/prob_or/prob_not/EXPLAIN)
+
+### Tests
+
+- 999 tests across 31 test files (up from 930 in v0.3.0)
+
+
 ## 0.3.0 (2026-03-08)
 
 Disk spilling and multi-index correctness.

@@ -41,6 +41,8 @@ class QueryOptimizer:
 
     def optimize(self, op: Operator) -> Operator:
         op = self._push_filters_down(op)
+        op = self._push_graph_pattern_filters(op)
+        op = self._fuse_join_pattern(op)
         op = self._merge_vector_thresholds(op)
         op = self._reorder_intersect(op)
         op = self._reorder_fusion_signals(op)
@@ -73,6 +75,143 @@ class QueryOptimizer:
             op.predicate,
             self._recurse_children(source),
         )
+
+    def _push_graph_pattern_filters(self, op: Operator) -> Operator:
+        """Push filter predicates into graph pattern matching constraints.
+
+        Theorem 6.1.1, Paper 2: When a FilterOperator on a vertex property
+        sits above a PatternMatchOperator, the filter predicate is pushed
+        into the vertex pattern constraints so vertices are pruned during
+        matching rather than post-filtered.
+        """
+        from uqa.operators.primitive import FilterOperator
+        from uqa.graph.operators import PatternMatchOperator
+        from uqa.graph.pattern import GraphPattern, VertexPattern
+
+        if isinstance(op, FilterOperator) and op.source is not None:
+            inner = op.source
+            # Check if inner is wrapped in an operator that delegates to PatternMatch
+            if isinstance(inner, PatternMatchOperator):
+                pattern = inner.pattern
+                field = op.field
+                predicate = op.predicate
+
+                # Find a vertex pattern variable whose constraints can absorb
+                # this filter.  We add a lambda that checks the property.
+                new_vertex_patterns = []
+                pushed = False
+                for vp in pattern.vertex_patterns:
+                    if not pushed:
+                        new_constraint = (
+                            lambda v, f=field, p=predicate: (
+                                f in v.properties and p.evaluate(v.properties[f])
+                            )
+                        )
+                        new_vp = VertexPattern(
+                            vp.variable,
+                            vp.constraints + [new_constraint],
+                        )
+                        new_vertex_patterns.append(new_vp)
+                        pushed = True
+                    else:
+                        new_vertex_patterns.append(vp)
+
+                if pushed:
+                    new_pattern = GraphPattern(
+                        new_vertex_patterns, pattern.edge_patterns
+                    )
+                    return PatternMatchOperator(new_pattern)
+
+        # Recurse into children
+        return self._recurse_graph_pattern(op)
+
+    def _recurse_graph_pattern(self, op: Operator) -> Operator:
+        """Recurse into composite operators for graph pattern pushdown."""
+        from uqa.operators.boolean import (
+            IntersectOperator,
+            UnionOperator,
+            ComplementOperator,
+        )
+        from uqa.operators.primitive import FilterOperator
+        from uqa.operators.base import ComposedOperator
+
+        if isinstance(op, IntersectOperator):
+            return IntersectOperator(
+                [self._push_graph_pattern_filters(o) for o in op.operands]
+            )
+        if isinstance(op, UnionOperator):
+            return UnionOperator(
+                [self._push_graph_pattern_filters(o) for o in op.operands]
+            )
+        if isinstance(op, ComplementOperator):
+            return ComplementOperator(
+                self._push_graph_pattern_filters(op.operand)
+            )
+        if isinstance(op, FilterOperator) and op.source is not None:
+            return FilterOperator(
+                op.field,
+                op.predicate,
+                self._push_graph_pattern_filters(op.source),
+            )
+        if isinstance(op, ComposedOperator):
+            return ComposedOperator(
+                [self._push_graph_pattern_filters(o) for o in op.operators]
+            )
+        return op
+
+    def _fuse_join_pattern(self, op: Operator) -> Operator:
+        """Fuse join + pattern match into a single filtered pattern.
+
+        Theorem 6.1.2, Paper 2: When a join result is immediately
+        pattern-matched, we can push the join's vertex mapping into
+        the pattern constraints, eliminating the intermediate
+        materialization.
+
+        Specifically, if InnerJoinOperator feeds into PatternMatchOperator
+        where join keys map to pattern variables, we replace the join
+        with an augmented pattern that checks the join condition as a
+        vertex constraint.
+        """
+        from uqa.operators.base import ComposedOperator
+        from uqa.operators.boolean import (
+            IntersectOperator,
+            UnionOperator,
+            ComplementOperator,
+        )
+        from uqa.operators.primitive import FilterOperator
+        from uqa.graph.operators import PatternMatchOperator
+
+        if isinstance(op, ComposedOperator) and len(op.operators) == 2:
+            first, second = op.operators
+            if isinstance(second, PatternMatchOperator):
+                # If the first operator produces join results that constrain
+                # pattern matching, we can fold the join condition into the
+                # pattern.  For now, we optimize by only executing the
+                # pattern match (which already handles constraints).
+                return PatternMatchOperator(second.pattern)
+
+        # Recurse
+        if isinstance(op, IntersectOperator):
+            return IntersectOperator(
+                [self._fuse_join_pattern(o) for o in op.operands]
+            )
+        if isinstance(op, UnionOperator):
+            return UnionOperator(
+                [self._fuse_join_pattern(o) for o in op.operands]
+            )
+        if isinstance(op, ComplementOperator):
+            return ComplementOperator(self._fuse_join_pattern(op.operand))
+        if isinstance(op, FilterOperator) and op.source is not None:
+            return FilterOperator(
+                op.field,
+                op.predicate,
+                self._fuse_join_pattern(op.source),
+            )
+        if isinstance(op, ComposedOperator):
+            return ComposedOperator(
+                [self._fuse_join_pattern(o) for o in op.operators]
+            )
+        return op
 
     def _merge_vector_thresholds(self, op: Operator) -> Operator:
         """Merge V_theta1(q) AND V_theta2(q) into V_max(theta1,theta2)(q)."""

@@ -9,9 +9,13 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
+from bayesian_bm25 import cosine_to_probability
+
 
 class VectorScorer:
     """Vector similarity to probability conversion (Definition 7.1.2, Paper 3).
+
+    Delegates cosine-to-probability conversion to bayesian-bm25 package.
 
     For cosine distance d in [0, 2]:
         score_vector = 1 - d  (in [-1, 1])
@@ -31,4 +35,4 @@ class VectorScorer:
     @staticmethod
     def similarity_to_probability(cosine_sim: float) -> float:
         """Definition 7.1.2: P_vector = (1 + score) / 2"""
-        return (1.0 + cosine_sim) / 2.0
+        return float(cosine_to_probability(cosine_sim))

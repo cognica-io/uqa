@@ -29,16 +29,19 @@ class CostModel:
         )
         from uqa.operators.aggregation import AggregateOperator, GroupByOperator
         from uqa.operators.hybrid import (
+            FacetVectorOperator,
             HybridTextVectorOperator,
             LogOddsFusionOperator,
             ProbBoolFusionOperator,
             ProbNotOperator,
             SemanticFilterOperator,
+            VectorExclusionOperator,
         )
         from uqa.graph.operators import (
             TraverseOperator,
             PatternMatchOperator,
             RegularPathQueryOperator,
+            VertexAggregationOperator,
         )
 
         match op:
@@ -83,6 +86,18 @@ class CostModel:
                     self.estimate(op.source, stats)
                     + self.estimate(op.vector_op, stats)
                 )
+            case VectorExclusionOperator():
+                return (
+                    self.estimate(op.positive, stats)
+                    + self.estimate(op.negative_op, stats)
+                )
+            case FacetVectorOperator():
+                cost = self.estimate(op.vector_op, stats)
+                if op.source is not None:
+                    cost += self.estimate(op.source, stats)
+                return cost
+            case VertexAggregationOperator():
+                return float(stats.total_docs) * 0.2
             case TraverseOperator():
                 return float(stats.total_docs) * 0.1
             case PatternMatchOperator():

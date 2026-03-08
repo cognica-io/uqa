@@ -154,19 +154,24 @@ class FacetOperator(Operator):
     Returns a PostingList with facet counts stored in payload fields.
     """
 
-    def __init__(self, field: str, source: Operator) -> None:
+    def __init__(self, field: str, source: Operator | None = None) -> None:
         self.field = field
         self.source = source
 
     def execute(self, context: ExecutionContext) -> PostingList:
-        source_pl = self.source.execute(context)
         doc_store = context.document_store
         if doc_store is None:
             return PostingList()
 
+        if self.source is not None:
+            source_pl = self.source.execute(context)
+            candidate_ids = [entry.doc_id for entry in source_pl]
+        else:
+            candidate_ids = sorted(doc_store.doc_ids)
+
         value_counts: Counter[str] = Counter()
-        for entry in source_pl:
-            value = doc_store.get_field(entry.doc_id, self.field)
+        for doc_id in candidate_ids:
+            value = doc_store.get_field(doc_id, self.field)
             if value is not None:
                 value_counts[str(value)] += 1
 

@@ -20,13 +20,24 @@ class HierarchicalDocument:
         self.data = data
 
     def eval_path(self, path: PathExpr) -> Any:
-        """Path evaluation (Definition 5.2.3)."""
+        """Path evaluation (Definition 5.2.3).
+
+        Navigates a nested document structure following the path components.
+        When a string component follows an array, it maps over all array
+        elements, collecting the named field from each dict element
+        (implicit array wildcard).
+        """
         current = self.data
         for component in path:
             if isinstance(current, dict) and isinstance(component, str):
                 current = current.get(component)
             elif isinstance(current, list) and isinstance(component, int):
                 current = current[component] if component < len(current) else None
+            elif isinstance(current, list) and isinstance(component, str):
+                current = [
+                    elem.get(component) if isinstance(elem, dict) else None
+                    for elem in current
+                ]
             else:
                 return None
             if current is None:

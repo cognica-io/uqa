@@ -60,6 +60,8 @@ class Engine:
         self._tables: dict[str, Any] = {}
         self._views: dict[str, Any] = {}  # name -> SelectStmt AST
         self._prepared: dict[str, Any] = {}  # name -> PrepareStmt AST
+        self._query_vector: Any = None
+        self._negative_vector: Any = None
 
         # Persistence and transactions
         self._catalog: Catalog | None = None
@@ -438,11 +440,23 @@ class Engine:
     def query(self) -> QueryBuilder:
         return QueryBuilder(self)
 
+    def set_query_vector(self, vector: Any) -> None:
+        """Set the query vector for knn_match() in SQL queries."""
+        self._query_vector = vector
+
+    def set_negative_vector(self, vector: Any) -> None:
+        """Set the negative vector for vector_exclude() in SQL queries."""
+        self._negative_vector = vector
+
     def sql(self, query: str) -> Any:
         """Execute a SQL query against the engine's storage."""
         from uqa.sql.compiler import SQLCompiler
 
         compiler = SQLCompiler(self)
+        if self._query_vector is not None:
+            compiler.set_query_vector(self._query_vector)
+        if self._negative_vector is not None:
+            compiler.set_negative_vector(self._negative_vector)
         return compiler.execute(query)
 
     def close(self) -> None:

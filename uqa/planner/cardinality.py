@@ -6,12 +6,64 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from uqa.core.types import IndexStats
     from uqa.operators.base import Operator
     from uqa.sql.table import ColumnStats
+
+
+@dataclass
+class GraphStats:
+    """Graph-level statistics for cardinality estimation (Theorem 6.3.2, Paper 2).
+
+    Collects vertex count, edge count, label distribution, and edge
+    density to replace heuristic graph cardinality estimates with
+    independence-based formulas.
+    """
+
+    num_vertices: int = 0
+    num_edges: int = 0
+    label_counts: dict[str, int] = field(default_factory=dict)
+    avg_out_degree: float = 0.0
+
+    @classmethod
+    def from_graph_store(cls, graph_store: object) -> GraphStats:
+        """Compute statistics from a GraphStore instance."""
+        vertices = getattr(graph_store, "_vertices", {})
+        edges = getattr(graph_store, "_edges", {})
+        adj_out = getattr(graph_store, "_adj_out", {})
+
+        num_v = len(vertices)
+        num_e = len(edges)
+
+        label_counts: dict[str, int] = {}
+        for edge in edges.values():
+            label = edge.label
+            label_counts[label] = label_counts.get(label, 0) + 1
+
+        avg_out = num_e / num_v if num_v > 0 else 0.0
+
+        return cls(
+            num_vertices=num_v,
+            num_edges=num_e,
+            label_counts=label_counts,
+            avg_out_degree=avg_out,
+        )
+
+    def label_selectivity(self, label: str | None) -> float:
+        """Fraction of edges matching a given label."""
+        if label is None or self.num_edges == 0:
+            return 1.0
+        return self.label_counts.get(label, 0) / self.num_edges
+
+    def edge_density(self) -> float:
+        """Edge density: |E| / |V|^2."""
+        if self.num_vertices <= 1:
+            return 0.0
+        return self.num_edges / (self.num_vertices ** 2)
 
 
 class CardinalityEstimator:
@@ -21,12 +73,18 @@ class CardinalityEstimator:
     cardinality formulas.  When per-column statistics are available
     (via ``column_stats``), filter selectivity uses 1/ndv instead of
     the default 0.5.
+
+    When ``graph_stats`` are provided, graph operators use statistics-based
+    estimation (Theorem 6.3.2, Paper 2) instead of fixed heuristics.
     """
 
     def __init__(
-        self, column_stats: dict[str, ColumnStats] | None = None
+        self,
+        column_stats: dict[str, ColumnStats] | None = None,
+        graph_stats: GraphStats | None = None,
     ) -> None:
         self._column_stats = column_stats or {}
+        self._graph_stats = graph_stats
 
     def estimate(self, op: Operator, stats: IndexStats) -> float:
         from uqa.operators.boolean import (
@@ -92,17 +150,35 @@ class CardinalityEstimator:
         that combine signals from different query paradigms.
         """
         from uqa.operators.hybrid import (
+            FacetVectorOperator,
             HybridTextVectorOperator,
             LogOddsFusionOperator,
             ProbBoolFusionOperator,
             ProbNotOperator,
             SemanticFilterOperator,
+            VectorExclusionOperator,
         )
         from uqa.graph.operators import (
             TraverseOperator,
             PatternMatchOperator,
             RegularPathQueryOperator,
+            VertexAggregationOperator,
         )
+
+        # VectorExclusion: positive minus negative overlap
+        if isinstance(op, VectorExclusionOperator):
+            pos_card = self.estimate(op.positive, stats)
+            neg_card = self.estimate(op.negative_op, stats)
+            overlap = (pos_card * neg_card) / n if n > 0 else 0.0
+            return max(1.0, pos_card - overlap)
+
+        # FacetVector: bounded by vector result size
+        if isinstance(op, FacetVectorOperator):
+            return self.estimate(op.vector_op, stats)
+
+        # VertexAggregation: single result row
+        if isinstance(op, VertexAggregationOperator):
+            return 1.0
 
         # Fusion: union of all signal doc sets
         if isinstance(op, LogOddsFusionOperator):
@@ -136,21 +212,90 @@ class CardinalityEstimator:
             vec_card = self.estimate(op.vector_op, stats)
             return max(1.0, (src_card * vec_card) / n)
 
-        # Graph traversal: branching factor heuristic
+        # Graph traversal: statistics-based when available
         if isinstance(op, TraverseOperator):
-            hops = op.max_hops
-            branching = min(n * 0.1, 10.0)
-            return min(n, branching ** hops)
+            return self._estimate_traverse(op, n)
 
-        # Pattern matching: worst-case quadratic
+        # Pattern matching: statistics-based when available
         if isinstance(op, PatternMatchOperator):
-            return min(n, n ** 1.5)
+            return self._estimate_pattern_match(op, n)
 
-        # RPQ: similar to pattern matching
+        # RPQ: statistics-based when available
         if isinstance(op, RegularPathQueryOperator):
-            return min(n, n ** 1.5)
+            return self._estimate_rpq(op, n)
 
         return n
+
+    def _estimate_traverse(
+        self, op: object, n: float
+    ) -> float:
+        """Traverse cardinality using graph statistics (Theorem 6.3.2, Paper 2).
+
+        With statistics: branching = avg_out_degree * label_selectivity.
+        Without statistics: fallback to heuristic min(n*0.1, 10).
+        """
+        hops = getattr(op, "max_hops", 1)
+        label = getattr(op, "label", None)
+
+        if self._graph_stats is not None:
+            gs = self._graph_stats
+            sel = gs.label_selectivity(label)
+            branching = gs.avg_out_degree * sel
+        else:
+            branching = min(n * 0.1, 10.0)
+
+        return min(n, branching ** hops)
+
+    def _estimate_pattern_match(
+        self, op: object, n: float
+    ) -> float:
+        """Pattern match cardinality using graph statistics (Theorem 6.3.2, Paper 2).
+
+        With statistics: |V|^k * density^e * prod(label_selectivity)
+        where k = vertex count, e = edge count in pattern.
+        Without statistics: fallback to n^1.5.
+        """
+        from uqa.graph.operators import PatternMatchOperator
+
+        if not isinstance(op, PatternMatchOperator):
+            return min(n, n ** 1.5)
+
+        pattern = op.pattern
+        k = len(pattern.vertex_patterns)
+        e = len(pattern.edge_patterns)
+
+        if self._graph_stats is not None:
+            gs = self._graph_stats
+            nv = float(gs.num_vertices) if gs.num_vertices > 0 else n
+            density = gs.edge_density()
+
+            label_sel = 1.0
+            for ep in pattern.edge_patterns:
+                label_sel *= gs.label_selectivity(ep.label)
+
+            # |V|^k * density^e * label_selectivity
+            estimate = (nv ** k) * (density ** e) * label_sel
+            return max(1.0, min(nv, estimate))
+
+        return min(n, n ** 1.5)
+
+    def _estimate_rpq(
+        self, op: object, n: float
+    ) -> float:
+        """RPQ cardinality using graph statistics (Theorem 6.3.2, Paper 2).
+
+        With statistics: |V|^2 * density * label_selectivity.
+        Without statistics: fallback to n^1.5.
+        """
+        if self._graph_stats is not None:
+            gs = self._graph_stats
+            nv = float(gs.num_vertices) if gs.num_vertices > 0 else n
+            density = gs.edge_density()
+            # RPQ can reach any (start, end) pair; estimate fraction
+            estimate = (nv ** 2) * density
+            return max(1.0, min(nv, estimate))
+
+        return min(n, n ** 1.5)
 
     def estimate_join(
         self,

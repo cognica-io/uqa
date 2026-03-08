@@ -134,8 +134,8 @@ class TestProbabilisticBoolean:
 
     def test_prob_not(self) -> None:
         assert ProbabilisticBoolean.prob_not(0.3) == pytest.approx(0.7)
-        assert ProbabilisticBoolean.prob_not(1.0) == pytest.approx(0.0)
-        assert ProbabilisticBoolean.prob_not(0.0) == pytest.approx(1.0)
+        assert ProbabilisticBoolean.prob_not(1.0) == pytest.approx(0.0, abs=1e-9)
+        assert ProbabilisticBoolean.prob_not(0.0) == pytest.approx(1.0, abs=1e-9)
 
     def test_prob_and_with_certainty(self) -> None:
         """AND with a 1.0 probability should equal the product of the rest."""

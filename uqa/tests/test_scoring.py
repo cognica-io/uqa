@@ -11,6 +11,7 @@ import pytest
 
 from uqa.core.types import IndexStats
 from uqa.scoring.bm25 import BM25Params, BM25Scorer
+from bayesian_bm25 import BayesianProbabilityTransform
 from uqa.scoring.bayesian_bm25 import BayesianBM25Params, BayesianBM25Scorer
 from uqa.scoring.vector import VectorScorer
 
@@ -102,32 +103,40 @@ class TestBayesianBM25Scorer:
         p_high = scorer.score(term_freq=20, doc_length=200, doc_freq=100)
         assert p_low < p_mid < p_high
 
-    def test_composite_prior_bounds(
-        self, bayesian_scorer: BayesianBM25Scorer
-    ) -> None:
+    def test_composite_prior_bounds(self) -> None:
         """Composite prior must be in [0.1, 0.9] for all inputs."""
         for tf in [0, 1, 5, 10, 50, 100]:
-            for dl in [1, 10, 100, 200, 500, 2000]:
-                prior = bayesian_scorer._composite_prior(tf, dl)
+            for dl_ratio in [0.005, 0.05, 0.5, 1.0, 2.5, 10.0]:
+                prior = BayesianProbabilityTransform.composite_prior(
+                    tf, dl_ratio
+                )
                 assert 0.1 <= prior <= 0.9, (
-                    f"prior={prior} out of [0.1, 0.9] at tf={tf}, dl={dl}"
+                    f"prior={prior} out of [0.1, 0.9] "
+                    f"at tf={tf}, dl_ratio={dl_ratio}"
                 )
 
     def test_base_rate_identity(self, index_stats: IndexStats) -> None:
-        """When base_rate=0.5, the second Bayes update is identity."""
-        params_05 = BayesianBM25Params(base_rate=0.5)
-        scorer_05 = BayesianBM25Scorer(params_05, index_stats)
+        """When base_rate=0.5, the second Bayes update is identity.
 
-        # Score with base_rate=0.5 (second update skipped)
-        p = scorer_05.score(term_freq=5, doc_length=200, doc_freq=100)
+        logit(0.5) = 0, so adding it to the posterior is neutral.
+        Verify base_rate=0.5 produces the same output as no base_rate.
+        """
+        scorer_05 = BayesianBM25Scorer(
+            BayesianBM25Params(base_rate=0.5), index_stats
+        )
+        scorer_default = BayesianBM25Scorer(
+            BayesianBM25Params(), index_stats
+        )
 
-        # Manually compute: raw -> likelihood -> prior -> first update only
-        raw = scorer_05.bm25.score(5, 200, 100)
-        likelihood = BayesianBM25Scorer._sigmoid(params_05.alpha * (raw - params_05.beta))
-        prior = scorer_05._composite_prior(5, 200)
-        expected = BayesianBM25Scorer._bayes_update(likelihood, prior)
-
-        assert abs(p - expected) < 1e-12
+        for tf in [1, 5, 10]:
+            for dl in [100, 200, 500]:
+                p_05 = scorer_05.score(term_freq=tf, doc_length=dl, doc_freq=100)
+                p_def = scorer_default.score(
+                    term_freq=tf, doc_length=dl, doc_freq=100
+                )
+                assert abs(p_05 - p_def) < 1e-12, (
+                    f"base_rate=0.5 not identity at tf={tf}, dl={dl}"
+                )
 
     def test_base_rate_shifts_posterior(self, index_stats: IndexStats) -> None:
         """Non-0.5 base rate should shift the posterior."""
@@ -151,11 +160,12 @@ class TestBayesianBM25Scorer:
                 score = bayesian_scorer.score(tf, dl, 100)
                 assert score <= ub + 1e-10
 
-    def test_sigmoid_numerically_stable(self) -> None:
-        """Sigmoid should not overflow for extreme inputs."""
-        assert BayesianBM25Scorer._sigmoid(500.0) == pytest.approx(1.0)
-        assert BayesianBM25Scorer._sigmoid(-500.0) == pytest.approx(0.0)
-        assert BayesianBM25Scorer._sigmoid(0.0) == pytest.approx(0.5)
+    def test_likelihood_numerically_stable(self) -> None:
+        """Likelihood sigmoid should not overflow for extreme inputs."""
+        transform = BayesianProbabilityTransform(alpha=1.0, beta=0.0)
+        assert transform.likelihood(500.0) == pytest.approx(1.0)
+        assert transform.likelihood(-500.0) == pytest.approx(0.0)
+        assert transform.likelihood(0.0) == pytest.approx(0.5)
 
 
 # -- Vector Scorer Tests --
@@ -182,8 +192,8 @@ class TestVectorScorer:
         assert VectorScorer.cosine_similarity(z, z) == 0.0
 
     def test_similarity_to_probability_range(self) -> None:
-        assert VectorScorer.similarity_to_probability(1.0) == pytest.approx(1.0)
-        assert VectorScorer.similarity_to_probability(-1.0) == pytest.approx(0.0)
+        assert VectorScorer.similarity_to_probability(1.0) == pytest.approx(1.0, abs=1e-9)
+        assert VectorScorer.similarity_to_probability(-1.0) == pytest.approx(0.0, abs=1e-9)
         assert VectorScorer.similarity_to_probability(0.0) == pytest.approx(0.5)
 
     def test_similarity_to_probability_monotonic(self) -> None:

@@ -52,12 +52,19 @@ Extended functions (WHERE clause):
   bayesian_match(field, 'query')     -- Bayesian BM25 calibrated probability
   knn_match(k)                       -- KNN vector search (requires set_query_vector)
   traverse_match(start, 'label', k)  -- graph reachability as a scored signal
+  path_filter('path', value)         -- hierarchical path filter (equality)
+  path_filter('path', 'op', value)   -- hierarchical path filter with operator
+  vector_exclude(k, threshold)       -- vector exclusion (requires set_negative_vector)
 
 Fusion meta-functions (WHERE clause):
   fuse_log_odds(sig1, sig2, ...[, alpha]) -- log-odds conjunction (Paper 4)
   fuse_prob_and(sig1, sig2, ...)          -- probabilistic AND
   fuse_prob_or(sig1, sig2, ...)           -- probabilistic OR
   fuse_prob_not(signal)                   -- probabilistic NOT (complement)
+
+SELECT scalar functions:
+  path_agg('path', 'func')          -- per-row nested array aggregation
+  path_value('path')                 -- access nested field value
 
 FROM-clause table functions:
   traverse(start_id, 'label', max_hops) -- graph traversal
@@ -75,6 +82,7 @@ from pglast.ast import (
     A_Expr,
     A_Star,
     BoolExpr,
+    Boolean as PgBoolean,
     CaseExpr,
     CoalesceExpr,
     ColumnRef,
@@ -194,11 +202,16 @@ class SQLCompiler:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
         self._query_vector: Any = None
+        self._negative_vector: Any = None
         self._expanded_views: list[str] = []
 
     def set_query_vector(self, vector: Any) -> None:
         """Register a query vector for knn_match() calls."""
         self._query_vector = vector
+
+    def set_negative_vector(self, vector: Any) -> None:
+        """Register a negative vector for vector_exclude() calls."""
+        self._negative_vector = vector
 
     def execute(self, sql: str) -> SQLResult:
         """Parse and execute a SQL statement."""
@@ -792,6 +805,7 @@ class SQLCompiler:
         pl: PostingList,
         ctx: ExecutionContext,
         table: Table | None,
+        deferred_where: Any = None,
     ) -> SQLResult:
         """Execute relational operations via physical operators.
 
@@ -826,6 +840,10 @@ class SQLCompiler:
             schema,
             graph_store=ctx.graph_store,
         )
+
+        # Apply deferred WHERE filters (for graph-sourced queries)
+        if deferred_where is not None:
+            physical = self._apply_deferred_where(physical, deferred_where)
 
         is_grouped = stmt.groupClause is not None
         is_agg_only = not is_grouped and self._has_aggregates(
@@ -1136,6 +1154,61 @@ class SQLCompiler:
                 self._engine._tables.pop(name, None)
             self._expanded_views.clear()
 
+    def _apply_deferred_where(self, physical: Any, where_node: Any) -> Any:
+        """Apply WHERE predicates as physical FilterOps on graph-sourced rows.
+
+        Walks the WHERE AST and produces PhysFilterOp nodes for each simple
+        column comparison. Handles AND (chain of filters), comparisons
+        (=, !=, <, >, <=, >=), and BETWEEN.
+        """
+        from uqa.execution.relational import FilterOp as PhysFilterOp
+        from uqa.core.types import (
+            Equals,
+            NotEquals,
+            GreaterThan,
+            GreaterThanOrEqual,
+            LessThan,
+            LessThanOrEqual,
+        )
+
+        if isinstance(where_node, BoolExpr):
+            if where_node.boolop == BoolExprType.AND_EXPR:
+                for arg in where_node.args:
+                    physical = self._apply_deferred_where(physical, arg)
+                return physical
+
+        if isinstance(where_node, A_Expr):
+            col_name = self._extract_column_name(where_node.lexpr)
+            rhs = self._extract_const_value(where_node.rexpr)
+            kind = where_node.kind
+
+            if kind == A_Expr_Kind.AEXPR_OP:
+                op_name = where_node.name[-1].sval
+                predicate_map = {
+                    "=": Equals,
+                    "!=": NotEquals,
+                    "<>": NotEquals,
+                    "<": LessThan,
+                    "<=": LessThanOrEqual,
+                    ">": GreaterThan,
+                    ">=": GreaterThanOrEqual,
+                }
+                pred_cls = predicate_map.get(op_name)
+                if pred_cls is not None:
+                    return PhysFilterOp(physical, col_name, pred_cls(rhs))
+
+            if kind == A_Expr_Kind.AEXPR_BETWEEN:
+                lo = self._extract_const_value(where_node.rexpr[0])
+                hi = self._extract_const_value(where_node.rexpr[1])
+                physical = PhysFilterOp(
+                    physical, col_name, GreaterThanOrEqual(lo)
+                )
+                return PhysFilterOp(
+                    physical, col_name, LessThanOrEqual(hi)
+                )
+
+        return physical
+
     def _compile_select_body(
         self, stmt: SelectStmt, *, explain: bool = False
     ) -> SQLResult:
@@ -1145,14 +1218,24 @@ class SQLCompiler:
         # 2. Build execution context from resolved table
         ctx = self._context_for_table(table)
 
-        # 3. WHERE clause
-        if stmt.whereClause is not None:
-            where_op = self._compile_where(stmt.whereClause, ctx)
-            if source_op is not None:
-                where_op = self._chain_on_source(where_op, source_op)
-            source_op = where_op
+        # 3. Check if FROM is a graph source (traverse/rpq).
+        #    Graph-sourced queries defer relational WHERE to the physical layer
+        #    because graph vertex IDs are not in the document store.
+        graph_source = self._is_graph_operator(source_op)
+        deferred_where = None
 
-        # 4. Optimize and execute operator tree
+        # 4. WHERE clause
+        if stmt.whereClause is not None:
+            if graph_source:
+                # Defer WHERE to physical FilterOp layer
+                deferred_where = stmt.whereClause
+            else:
+                where_op = self._compile_where(stmt.whereClause, ctx)
+                if source_op is not None:
+                    where_op = self._chain_on_source(where_op, source_op)
+                source_op = where_op
+
+        # 5. Optimize and execute operator tree
         if source_op is not None:
             source_op = self._optimize(source_op, ctx, table)
             if explain:
@@ -1163,8 +1246,10 @@ class SQLCompiler:
                 return SQLResult(["plan"], [{"plan": "Seq Scan (full table)"}])
             pl = self._scan_all(ctx)
 
-        # 5-11. Execute relational operations via physical operators
-        return self._execute_relational(stmt, pl, ctx, table)
+        # 6-12. Execute relational operations via physical operators
+        return self._execute_relational(
+            stmt, pl, ctx, table, deferred_where=deferred_where
+        )
 
     # -- CTE materialization -------------------------------------------
 
@@ -1292,6 +1377,9 @@ class SQLCompiler:
                 view_query = self._engine._views.get(table_name)
                 if view_query is not None:
                     return self._expand_view(table_name, view_query)
+                # "_default" references the engine's default document store
+                if table_name == "_default":
+                    return None, None
                 raise ValueError(f"Table '{table_name}' does not exist")
             return table, None
 
@@ -1343,6 +1431,14 @@ class SQLCompiler:
         if name == "text_search":
             return self._build_text_search_from(args)
         raise ValueError(f"Unknown table function: {name}")
+
+    @staticmethod
+    def _is_graph_operator(op: Any) -> bool:
+        """Return True if op is a graph traversal or RPQ operator."""
+        if op is None:
+            return False
+        from uqa.graph.operators import TraverseOperator, RegularPathQueryOperator
+        return isinstance(op, (TraverseOperator, RegularPathQueryOperator))
 
     def _build_traverse(self, args: tuple) -> Any:
         from uqa.graph.operators import TraverseOperator
@@ -1660,6 +1756,10 @@ class SQLCompiler:
             return self._make_knn_op(self._extract_int_value(args[0]))
         if name == "traverse_match":
             return self._make_traverse_match_op(args)
+        if name == "path_filter":
+            return self._make_path_filter_op(args)
+        if name == "vector_exclude":
+            return self._make_vector_exclude_op(args)
         if name == "fuse_log_odds":
             return self._make_fusion_op(args, ctx, mode="log_odds")
         if name == "fuse_prob_and":
@@ -1708,6 +1808,67 @@ class SQLCompiler:
         label = self._extract_string_value(args[1]) if len(args) > 1 else None
         max_hops = self._extract_int_value(args[2]) if len(args) > 2 else 1
         return TraverseOperator(start, label, max_hops)
+
+    def _make_path_filter_op(self, args: tuple) -> Any:
+        """path_filter('path', value) or path_filter('path', 'op', value).
+
+        2-arg form: equality filter on nested path.
+        3-arg form: comparison filter with explicit operator (=, !=, <, >, <=, >=).
+        """
+        from uqa.operators.hierarchical import PathFilterOperator
+
+        if len(args) < 2:
+            raise ValueError(
+                "path_filter() requires at least 2 arguments: "
+                "path_filter('path', value) or path_filter('path', 'op', value)"
+            )
+
+        path_str = self._extract_string_value(args[0])
+        path_expr: list[str | int] = []
+        for component in path_str.split("."):
+            if component.isdigit():
+                path_expr.append(int(component))
+            else:
+                path_expr.append(component)
+
+        if len(args) == 2:
+            value = self._extract_const_value(args[1])
+            return PathFilterOperator(path_expr, Equals(value))
+
+        op_str = self._extract_string_value(args[1])
+        value = self._extract_const_value(args[2])
+        return PathFilterOperator(path_expr, _op_to_predicate(op_str, value))
+
+    def _make_vector_exclude_op(self, args: tuple) -> Any:
+        """vector_exclude(k, threshold) -- KNN with negative exclusion.
+
+        Requires set_query_vector() and set_negative_vector() to be called
+        before executing the query.
+        """
+        from uqa.operators.hybrid import VectorExclusionOperator
+        from uqa.operators.primitive import KNNOperator
+
+        if len(args) < 2:
+            raise ValueError(
+                "vector_exclude() requires 2 arguments: k, threshold"
+            )
+
+        k = self._extract_int_value(args[0])
+        threshold = float(self._extract_const_value(args[1]))
+
+        if self._query_vector is None:
+            raise ValueError(
+                "No query vector registered. "
+                "Call set_query_vector() before using vector_exclude()."
+            )
+        negative_vector = getattr(self, "_negative_vector", None)
+        if negative_vector is None:
+            raise ValueError(
+                "No negative vector registered. "
+                "Call set_negative_vector() before using vector_exclude()."
+            )
+        positive = KNNOperator(self._query_vector, k)
+        return VectorExclusionOperator(positive, negative_vector, threshold)
 
     def _compile_calibrated_signal(
         self, node: FuncCall, ctx: ExecutionContext
@@ -1951,6 +2112,8 @@ class SQLCompiler:
                 return float(val.fval)
             if isinstance(val, PgString):
                 return val.sval
+            if isinstance(val, PgBoolean):
+                return val.boolval
         raise ValueError(f"Expected A_Const, got {type(node).__name__}: {node}")
 
     @staticmethod

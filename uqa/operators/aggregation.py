@@ -113,20 +113,25 @@ class MaxMonoid(AggregationMonoid):
 class AggregateOperator(Operator):
     """Applies a monoid aggregation over a posting list field."""
 
-    def __init__(self, source: Operator, field: str, monoid: AggregationMonoid) -> None:
+    def __init__(self, source: Operator | None, field: str, monoid: AggregationMonoid) -> None:
         self.source = source
         self.field = field
         self.monoid = monoid
 
     def execute(self, context: ExecutionContext) -> PostingList:
-        source_pl = self.source.execute(context)
         doc_store = context.document_store
 
+        if self.source is not None:
+            source_pl = self.source.execute(context)
+            candidate_ids = [entry.doc_id for entry in source_pl]
+        else:
+            candidate_ids = sorted(doc_store.doc_ids) if doc_store else []
+
         state = self.monoid.identity()
-        for entry in source_pl:
+        for doc_id in candidate_ids:
             value = None
             if doc_store is not None:
-                value = doc_store.get_field(entry.doc_id, self.field)
+                value = doc_store.get_field(doc_id, self.field)
             if value is not None:
                 state = self.monoid.accumulate(state, value)
 

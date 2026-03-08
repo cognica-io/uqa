@@ -368,8 +368,75 @@ class ExprEvaluator:
 
     def _eval_func_call(self, node: FuncCall, row: dict[str, Any]) -> Any:
         func_name = node.funcname[-1].sval.lower()
+        if func_name == "path_agg":
+            return self._eval_path_agg(node, row)
+        if func_name == "path_value":
+            return self._eval_path_value(node, row)
         args = [self.evaluate(a, row) for a in (node.args or ())]
         return _call_scalar_function(func_name, args)
+
+    def _eval_path_agg(self, node: FuncCall, row: dict[str, Any]) -> Any:
+        """Evaluate path_agg('path', 'func') -- aggregate nested array values.
+
+        Navigates the row using the dot-path, collects array element values,
+        and applies the named aggregation (sum, count, avg, min, max).
+        """
+        from uqa.core.hierarchical import HierarchicalDocument
+
+        args = node.args or ()
+        if len(args) < 2:
+            raise ValueError("path_agg() requires 2 arguments: path, function")
+        path_str = self.evaluate(args[0], row)
+        agg_name = self.evaluate(args[1], row)
+
+        path_expr: list[str | int] = []
+        for component in str(path_str).split("."):
+            if component.isdigit():
+                path_expr.append(int(component))
+            else:
+                path_expr.append(component)
+
+        hdoc = HierarchicalDocument(0, row)
+        values = hdoc.eval_path(path_expr)
+
+        if not isinstance(values, list):
+            values = [values] if values is not None else []
+        numeric = [v for v in values if isinstance(v, (int, float))]
+
+        agg = str(agg_name).lower()
+        if agg == "sum":
+            return sum(numeric) if numeric else 0.0
+        if agg == "count":
+            return len(values)
+        if agg == "avg":
+            return sum(numeric) / len(numeric) if numeric else 0.0
+        if agg == "min":
+            return min(numeric) if numeric else None
+        if agg == "max":
+            return max(numeric) if numeric else None
+        raise ValueError(f"Unknown aggregation function for path_agg: {agg}")
+
+    def _eval_path_value(self, node: FuncCall, row: dict[str, Any]) -> Any:
+        """Evaluate path_value('path') -- access nested field value.
+
+        Navigates the row using the dot-path and returns the value found.
+        """
+        from uqa.core.hierarchical import HierarchicalDocument
+
+        args = node.args or ()
+        if len(args) < 1:
+            raise ValueError("path_value() requires 1 argument: path")
+        path_str = self.evaluate(args[0], row)
+
+        path_expr: list[str | int] = []
+        for component in str(path_str).split("."):
+            if component.isdigit():
+                path_expr.append(int(component))
+            else:
+                path_expr.append(component)
+
+        hdoc = HierarchicalDocument(0, row)
+        return hdoc.eval_path(path_expr)
 
 
 # -- Module-level helpers ------------------------------------------------
