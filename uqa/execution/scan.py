@@ -119,19 +119,29 @@ class PostingListScanOp(PhysicalOperator):
 
         rows: list[dict[str, Any]] = []
         for entry in batch_entries:
+            # GeneralizedPostingEntry (from joins) has doc_ids tuple,
+            # PostingEntry has doc_id scalar.
+            doc_id = (
+                entry.doc_ids[0]
+                if hasattr(entry, "doc_ids")
+                else entry.doc_id
+            )
             row: dict[str, Any] = {
-                "_doc_id": entry.doc_id,
+                "_doc_id": doc_id,
                 "_score": entry.payload.score,
             }
-            doc = self._doc_store.get(entry.doc_id) if self._doc_store is not None else None
-            if doc is not None:
-                row.update(doc)
-            elif self._graph_store is not None:
-                vertex = self._graph_store.get_vertex(entry.doc_id)
-                if vertex is not None:
-                    row.update(vertex.properties)
+            # For join entries, fields are pre-populated in payload.
+            # Skip document store lookup if fields are already present.
             if entry.payload.fields:
                 row.update(entry.payload.fields)
+            else:
+                doc = self._doc_store.get(doc_id) if self._doc_store is not None else None
+                if doc is not None:
+                    row.update(doc)
+                elif self._graph_store is not None:
+                    vertex = self._graph_store.get_vertex(doc_id)
+                    if vertex is not None:
+                        row.update(vertex.properties)
             rows.append(row)
 
         if not rows:

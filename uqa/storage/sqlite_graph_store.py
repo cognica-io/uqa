@@ -125,6 +125,13 @@ class SQLiteGraphStore(GraphStore):
             )
             super().add_edge(edge)
 
+    def clear(self) -> None:
+        """Remove all vertices and edges from both memory and SQLite."""
+        super().clear()
+        self._conn.execute(f'DELETE FROM "{self._vtx_table}"')
+        self._conn.execute(f'DELETE FROM "{self._edge_table}"')
+        self._conn.commit()
+
     # -- Mutations (write-through) -------------------------------------
 
     def add_vertex(self, vertex: Vertex) -> None:

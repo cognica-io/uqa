@@ -545,7 +545,7 @@ class TestEdgeCases:
 
     def test_unsupported_statement(self, engine: Engine) -> None:
         with pytest.raises(ValueError, match="Unsupported statement"):
-            engine.sql("ALTER TABLE papers ADD COLUMN extra TEXT")
+            engine.sql("LISTEN channel")
 
     def test_unknown_function(self, engine: Engine) -> None:
         with pytest.raises(ValueError, match="Unknown function"):

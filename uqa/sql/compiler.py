@@ -77,6 +77,7 @@ FROM-clause table functions:
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
@@ -86,10 +87,12 @@ from pglast.ast import (
     A_Const,
     A_Expr,
     A_Star,
+    AlterTableStmt,
     BoolExpr,
     Boolean as PgBoolean,
     CaseExpr,
     CoalesceExpr,
+    ColumnDef as PgColumnDef,
     ColumnRef,
     CreateStmt,
     DeleteStmt,
@@ -103,12 +106,15 @@ from pglast.ast import (
     JoinExpr,
     NullTest,
     RangeFunction,
+    RangeSubselect,
     RangeVar,
+    RenameStmt,
     SelectStmt,
     SortBy,
     String as PgString,
     SubLink,
     TransactionStmt,
+    TruncateStmt,
     TypeCast,
     UpdateStmt,
     VacuumStmt,
@@ -118,9 +124,17 @@ from pglast.ast import (
     DeallocateStmt,
     ParamRef,
 )
-from pglast.enums.parsenodes import A_Expr_Kind, ConstrType, SortByDir
+from pglast.enums.parsenodes import (
+    A_Expr_Kind,
+    AlterTableType,
+    ConstrType,
+    ObjectType,
+    SetOperation,
+    SortByDir,
+    SortByNulls,
+)
 from pglast.enums.primnodes import BoolExprType, NullTestType, SubLinkType
-from pglast.enums.nodes import JoinType
+from pglast.enums.nodes import JoinType, OnConflictAction
 
 from uqa.core.posting_list import PostingList
 from uqa.core.types import (
@@ -201,6 +215,12 @@ def _format_value(val: Any) -> str:
 # Compiler
 # ======================================================================
 
+_AGG_FUNC_NAMES = frozenset({
+    "count", "sum", "avg", "min", "max", "string_agg",
+    "array_agg", "bool_and", "bool_or",
+})
+
+
 class SQLCompiler:
     """Compiles SQL statements into UQA operations."""
 
@@ -208,6 +228,7 @@ class SQLCompiler:
         self._engine = engine
         self._params: list[Any] = []
         self._expanded_views: list[str] = []
+        self._shadowed_tables: dict[str, Table] = {}
 
     def execute(self, sql: str, params: list[Any] | None = None) -> SQLResult:
         """Parse and execute a SQL statement.
@@ -239,6 +260,12 @@ class SQLCompiler:
             return self._compile_create_index(stmt)
         if isinstance(stmt, ExplainStmt):
             return self._compile_explain(stmt)
+        if isinstance(stmt, AlterTableStmt):
+            return self._compile_alter_table(stmt)
+        if isinstance(stmt, RenameStmt):
+            return self._compile_rename(stmt)
+        if isinstance(stmt, TruncateStmt):
+            return self._compile_truncate(stmt)
         if isinstance(stmt, VacuumStmt):
             return self._compile_analyze(stmt)
         if isinstance(stmt, TransactionStmt):
@@ -251,6 +278,13 @@ class SQLCompiler:
             return self._compile_deallocate(stmt)
         raise ValueError(f"Unsupported statement: {type(stmt).__name__}")
 
+    def _get_table(self, table_name: str) -> Table:
+        """Look up a table by name, raising ValueError if not found."""
+        table = self._engine._tables.get(table_name)
+        if table is None:
+            raise ValueError(f"Table '{table_name}' does not exist")
+        return table
+
     # ==================================================================
     # DDL: CREATE TABLE / DROP TABLE
     # ==================================================================
@@ -258,16 +292,31 @@ class SQLCompiler:
     def _compile_create_table(self, stmt: CreateStmt) -> SQLResult:
         table_name = stmt.relation.relname
         if table_name in self._engine._tables:
-            raise ValueError(f"Table '{table_name}' already exists")
+            if not stmt.if_not_exists:
+                raise ValueError(f"Table '{table_name}' already exists")
+            return SQLResult([], [])
 
         columns: list[ColumnDef] = []
+        check_exprs: list[tuple[str, Any]] = []
         for elt in stmt.tableElts:
-            col = self._parse_column_def(elt)
+            col, check_expr = self._parse_column_def(elt)
             columns.append(col)
+            if check_expr is not None:
+                check_exprs.append((col.name, check_expr))
 
         catalog = self._engine._catalog
         conn = catalog.conn if catalog is not None else None
         table = Table(table_name, columns, conn=conn)
+
+        # Register CHECK constraints with ExprEvaluator closures
+        if check_exprs:
+            from uqa.sql.expr_evaluator import ExprEvaluator
+            evaluator = ExprEvaluator()
+            for name, expr in check_exprs:
+                table.check_constraints.append(
+                    (name, lambda row, e=expr, ev=evaluator: ev.evaluate(e, row))
+                )
+
         self._engine._tables[table_name] = table
 
         if catalog is not None:
@@ -282,6 +331,7 @@ class SQLCompiler:
                         "auto_increment": col.auto_increment,
                         "default": col.default,
                         "vector_dimensions": col.vector_dimensions,
+                        "unique": col.unique,
                     }
                     for col in columns
                 ],
@@ -289,7 +339,7 @@ class SQLCompiler:
 
         return SQLResult([], [])
 
-    def _parse_column_def(self, node: Any) -> ColumnDef:
+    def _parse_column_def(self, node: Any) -> tuple[ColumnDef, Any]:
         col_name: str = node.colname
         type_names = node.typeName.names
         raw_type, python_type = resolve_type(type_names)
@@ -309,6 +359,8 @@ class SQLCompiler:
         primary_key = False
         not_null = False
         default = None
+        unique = False
+        check_expr = None
 
         if node.constraints:
             for constraint in node.constraints:
@@ -320,8 +372,24 @@ class SQLCompiler:
                     not_null = True
                 elif ct == ConstrType.CONSTR_DEFAULT:
                     default = self._extract_const_value(constraint.raw_expr)
+                elif ct == ConstrType.CONSTR_UNIQUE:
+                    unique = True
+                elif ct == ConstrType.CONSTR_CHECK:
+                    check_expr = constraint.raw_expr
 
         auto_increment = raw_type in _AUTO_INCREMENT_TYPES
+
+        # NUMERIC(precision, scale) -- extract from type modifiers
+        numeric_precision: int | None = None
+        numeric_scale: int | None = None
+        if raw_type in ("numeric", "decimal"):
+            typmods = node.typeName.typmods
+            if typmods and len(typmods) >= 2:
+                numeric_precision = self._extract_int_value(typmods[0])
+                numeric_scale = self._extract_int_value(typmods[1])
+            elif typmods and len(typmods) == 1:
+                numeric_precision = self._extract_int_value(typmods[0])
+                numeric_scale = 0
 
         return ColumnDef(
             name=col_name,
@@ -332,7 +400,10 @@ class SQLCompiler:
             auto_increment=auto_increment,
             default=default,
             vector_dimensions=vector_dimensions,
-        )
+            unique=unique,
+            numeric_precision=numeric_precision,
+            numeric_scale=numeric_scale,
+        ), check_expr
 
     def _compile_drop(self, stmt: DropStmt) -> SQLResult:
         """Dispatch DROP TABLE / DROP INDEX / DROP VIEW based on removeType."""
@@ -369,6 +440,163 @@ class SQLCompiler:
                 index_manager.drop_index_if_exists(index_name)
             else:
                 index_manager.drop_index(index_name)
+        return SQLResult([], [])
+
+    # ==================================================================
+    # DDL: ALTER TABLE / RENAME / TRUNCATE
+    # ==================================================================
+
+    def _compile_alter_table(self, stmt: AlterTableStmt) -> SQLResult:
+        table_name = stmt.relation.relname
+        table = self._get_table(table_name)
+
+        for cmd in stmt.cmds:
+            at = AlterTableType(cmd.subtype)
+
+            if at == AlterTableType.AT_AddColumn:
+                col_def, check_expr = self._parse_column_def(cmd.def_)
+                if col_def.name in table.columns:
+                    raise ValueError(
+                        f"Column '{col_def.name}' already exists "
+                        f"in table '{table_name}'"
+                    )
+                table.columns[col_def.name] = col_def
+                if check_expr is not None:
+                    from uqa.sql.expr_evaluator import ExprEvaluator
+                    ev = ExprEvaluator()
+                    table.check_constraints.append(
+                        (col_def.name,
+                         lambda row, e=check_expr, v=ev: v.evaluate(e, row))
+                    )
+
+            elif at == AlterTableType.AT_DropColumn:
+                col_name = cmd.name
+                if col_name not in table.columns:
+                    if cmd.missing_ok:
+                        continue
+                    raise ValueError(
+                        f"Column '{col_name}' does not exist "
+                        f"in table '{table_name}'"
+                    )
+                del table.columns[col_name]
+                if table.primary_key == col_name:
+                    table.primary_key = None
+                # Remove field from all documents
+                for doc_id in list(table.document_store.doc_ids):
+                    doc = table.document_store.get(doc_id)
+                    if doc and col_name in doc:
+                        del doc[col_name]
+                        table.document_store.put(doc_id, doc)
+
+            elif at == AlterTableType.AT_ColumnDefault:
+                col_name = cmd.name
+                if col_name not in table.columns:
+                    raise ValueError(
+                        f"Column '{col_name}' does not exist "
+                        f"in table '{table_name}'"
+                    )
+                if cmd.def_ is not None:
+                    table.columns[col_name].default = (
+                        self._extract_const_value(cmd.def_)
+                    )
+                else:
+                    table.columns[col_name].default = None
+
+            elif at == AlterTableType.AT_SetNotNull:
+                col_name = cmd.name
+                if col_name not in table.columns:
+                    raise ValueError(
+                        f"Column '{col_name}' does not exist "
+                        f"in table '{table_name}'"
+                    )
+                # Validate existing data
+                for doc_id in table.document_store.doc_ids:
+                    val = table.document_store.get_field(doc_id, col_name)
+                    if val is None:
+                        raise ValueError(
+                            f"Column '{col_name}' contains NULL values; "
+                            f"cannot set NOT NULL"
+                        )
+                table.columns[col_name].not_null = True
+
+            elif at == AlterTableType.AT_DropNotNull:
+                col_name = cmd.name
+                if col_name not in table.columns:
+                    raise ValueError(
+                        f"Column '{col_name}' does not exist "
+                        f"in table '{table_name}'"
+                    )
+                table.columns[col_name].not_null = False
+
+            else:
+                raise ValueError(
+                    f"Unsupported ALTER TABLE subcommand: {at.name}"
+                )
+
+        return SQLResult([], [])
+
+    def _compile_rename(self, stmt: RenameStmt) -> SQLResult:
+        rt = ObjectType(stmt.renameType)
+
+        if rt == ObjectType.OBJECT_TABLE:
+            old_name = stmt.relation.relname
+            new_name = stmt.newname
+            table = self._get_table(old_name)
+            if new_name in self._engine._tables:
+                raise ValueError(
+                    f"Table '{new_name}' already exists"
+                )
+            del self._engine._tables[old_name]
+            table.name = new_name
+            self._engine._tables[new_name] = table
+            return SQLResult([], [])
+
+        if rt == ObjectType.OBJECT_COLUMN:
+            table_name = stmt.relation.relname
+            table = self._get_table(table_name)
+            old_col = stmt.subname
+            new_col = stmt.newname
+            if old_col not in table.columns:
+                raise ValueError(
+                    f"Column '{old_col}' does not exist "
+                    f"in table '{table_name}'"
+                )
+            if new_col in table.columns:
+                raise ValueError(
+                    f"Column '{new_col}' already exists "
+                    f"in table '{table_name}'"
+                )
+            # Rebuild OrderedDict preserving order
+            new_columns: OrderedDict[str, ColumnDef] = OrderedDict()
+            for name, col_def in table.columns.items():
+                if name == old_col:
+                    col_def.name = new_col
+                    new_columns[new_col] = col_def
+                else:
+                    new_columns[name] = col_def
+            table.columns = new_columns
+            if table.primary_key == old_col:
+                table.primary_key = new_col
+            # Rename field in all documents
+            for doc_id in list(table.document_store.doc_ids):
+                doc = table.document_store.get(doc_id)
+                if doc and old_col in doc:
+                    doc[new_col] = doc.pop(old_col)
+                    table.document_store.put(doc_id, doc)
+            return SQLResult([], [])
+
+        raise ValueError(f"Unsupported RENAME type: {rt.name}")
+
+    def _compile_truncate(self, stmt: TruncateStmt) -> SQLResult:
+        for rel in stmt.relations:
+            table_name = rel.relname
+            table = self._get_table(table_name)
+            table.document_store.clear()
+            table.inverted_index.clear()
+            for vi in table.vector_indexes.values():
+                vi.clear()
+            table.graph_store.clear()
+            table._next_id = 1
         return SQLResult([], [])
 
     # ==================================================================
@@ -450,27 +678,184 @@ class SQLCompiler:
         else:
             col_names = table.column_names
 
-        # VALUES rows
+        # VALUES or SELECT source
         values_stmt = stmt.selectStmt
-        if values_stmt is None or values_stmt.valuesLists is None:
-            raise ValueError("INSERT requires VALUES clause")
+        if values_stmt is None:
+            raise ValueError("INSERT requires VALUES or SELECT clause")
 
-        # SQLite-backed stores auto-persist on each put/add_document,
-        # so no separate catalog persistence is needed.
+        # Collect source rows
+        source_rows: list[dict[str, Any]] = []
+
+        if values_stmt.valuesLists is None:
+            # INSERT INTO ... SELECT ...
+            result = self._compile_select(values_stmt)
+            for row in result.rows:
+                mapped_row: dict[str, Any] = {}
+                for i, col in enumerate(col_names):
+                    if i < len(result.columns):
+                        mapped_row[col] = row.get(result.columns[i])
+                source_rows.append(mapped_row)
+        else:
+            # INSERT INTO ... VALUES ...
+            for row_values in values_stmt.valuesLists:
+                if len(row_values) != len(col_names):
+                    raise ValueError(
+                        f"VALUES has {len(row_values)} columns "
+                        f"but {len(col_names)} were specified"
+                    )
+                row: dict[str, Any] = {}
+                for i, val_node in enumerate(row_values):
+                    row[col_names[i]] = self._extract_insert_value(val_node)
+                source_rows.append(row)
+
+        # ON CONFLICT handling
+        on_conflict = stmt.onConflictClause
+        conflict_cols: list[str] = []
+        if on_conflict is not None and on_conflict.infer is not None:
+            conflict_cols = [
+                elem.name for elem in on_conflict.infer.indexElems
+            ]
+
+        # Insert rows with ON CONFLICT and RETURNING support
+        returning_rows: list[dict[str, Any]] = []
         inserted = 0
-        for row_values in values_stmt.valuesLists:
-            if len(row_values) != len(col_names):
-                raise ValueError(
-                    f"VALUES has {len(row_values)} columns "
-                    f"but {len(col_names)} were specified"
+        for src_row in source_rows:
+            if on_conflict is not None and conflict_cols:
+                existing_id = self._find_conflict(
+                    table, conflict_cols, src_row
                 )
-            row: dict[str, Any] = {}
-            for i, val_node in enumerate(row_values):
-                row[col_names[i]] = self._extract_insert_value(val_node)
-            table.insert(row)
+                if existing_id is not None:
+                    action = OnConflictAction(on_conflict.action)
+                    if action == OnConflictAction.ONCONFLICT_NOTHING:
+                        continue
+                    # DO UPDATE SET ...
+                    self._do_conflict_update(
+                        table, existing_id, src_row,
+                        on_conflict.targetList,
+                    )
+                    if stmt.returningList:
+                        doc = table.document_store.get(existing_id)
+                        if doc:
+                            returning_rows.append(
+                                self._project_returning(
+                                    doc, stmt.returningList, table
+                                )
+                            )
+                    inserted += 1
+                    continue
+
+            doc_id, _ = table.insert(src_row)
             inserted += 1
+            if stmt.returningList:
+                doc = table.document_store.get(doc_id)
+                if doc:
+                    returning_rows.append(
+                        self._project_returning(
+                            doc, stmt.returningList, table
+                        )
+                    )
+
+        if stmt.returningList:
+            cols = self._returning_columns(
+                stmt.returningList, table
+            )
+            return SQLResult(cols, returning_rows)
 
         return SQLResult(["inserted"], [{"inserted": inserted}])
+
+    def _find_conflict(
+        self,
+        table: Table,
+        conflict_cols: list[str],
+        row: dict[str, Any],
+    ) -> int | None:
+        """Find an existing doc_id that conflicts on the given columns."""
+        for doc_id in table.document_store.doc_ids:
+            doc = table.document_store.get(doc_id)
+            if doc is None:
+                continue
+            if all(doc.get(c) == row.get(c) for c in conflict_cols):
+                return doc_id
+        return None
+
+    def _do_conflict_update(
+        self,
+        table: Table,
+        doc_id: int,
+        excluded_row: dict[str, Any],
+        target_list: tuple,
+    ) -> None:
+        """Execute DO UPDATE SET assignments for an ON CONFLICT clause."""
+        from uqa.sql.expr_evaluator import ExprEvaluator
+        evaluator = ExprEvaluator(subquery_executor=self._compile_select)
+
+        old_doc = table.document_store.get(doc_id)
+        if old_doc is None:
+            return
+        new_doc = dict(old_doc)
+
+        # Merge excluded.* into the row for expression evaluation
+        eval_row = dict(old_doc)
+        for k, v in excluded_row.items():
+            eval_row[f"excluded.{k}"] = v
+
+        for target in target_list:
+            col_name = target.name
+            new_value = evaluator.evaluate(target.val, eval_row)
+            col_def = table.columns.get(col_name)
+            if new_value is not None and col_def is not None:
+                new_doc[col_name] = col_def.python_type(new_value)
+            elif new_value is None:
+                new_doc.pop(col_name, None)
+
+        table.inverted_index.remove_document(doc_id)
+        table.document_store.put(doc_id, new_doc)
+        text_fields = {
+            k: v for k, v in new_doc.items() if isinstance(v, str)
+        }
+        if text_fields:
+            table.inverted_index.add_document(doc_id, text_fields)
+
+    def _project_returning(
+        self,
+        doc: dict[str, Any],
+        returning_list: tuple,
+        table: Table,
+    ) -> dict[str, Any]:
+        """Project a document through a RETURNING clause."""
+        from uqa.sql.expr_evaluator import ExprEvaluator
+        evaluator = ExprEvaluator(subquery_executor=self._compile_select)
+        result: dict[str, Any] = {}
+        for target in returning_list:
+            if isinstance(target.val, ColumnRef):
+                if isinstance(target.val.fields[0], A_Star):
+                    # RETURNING * -- include all table columns
+                    for col_name in table.columns:
+                        result[col_name] = doc.get(col_name)
+                    continue
+                col_name = self._extract_column_name(target.val)
+                alias = target.name or col_name
+                result[alias] = doc.get(col_name)
+            else:
+                alias = target.name or "?column?"
+                result[alias] = evaluator.evaluate(target.val, doc)
+        return result
+
+    def _returning_columns(
+        self, returning_list: tuple, table: Table
+    ) -> list[str]:
+        """Extract column names from a RETURNING clause."""
+        cols: list[str] = []
+        for target in returning_list:
+            if isinstance(target.val, ColumnRef):
+                if isinstance(target.val.fields[0], A_Star):
+                    cols.extend(table.column_names)
+                    continue
+                col_name = self._extract_column_name(target.val)
+                cols.append(target.name or col_name)
+            else:
+                cols.append(target.name or "?column?")
+        return cols
 
     # ==================================================================
     # DML: UPDATE
@@ -493,6 +878,9 @@ class SQLCompiler:
 
         matching_ids = [entry.doc_id for entry in pl.entries]
         if not matching_ids:
+            if stmt.returningList:
+                cols = self._returning_columns(stmt.returningList, table)
+                return SQLResult(cols, [])
             return SQLResult(["updated"], [{"updated": 0}])
 
         # Parse SET clause into (column_name, ast_node) pairs
@@ -509,6 +897,7 @@ class SQLCompiler:
         from uqa.sql.expr_evaluator import ExprEvaluator
         evaluator = ExprEvaluator(subquery_executor=self._compile_select)
 
+        returning_rows: list[dict[str, Any]] = []
         updated = 0
         for doc_id in matching_ids:
             old_doc = table.document_store.get(doc_id)
@@ -544,8 +933,17 @@ class SQLCompiler:
             if text_fields:
                 table.inverted_index.add_document(doc_id, text_fields)
 
+            if stmt.returningList:
+                returning_rows.append(
+                    self._project_returning(
+                        new_doc, stmt.returningList, table
+                    )
+                )
             updated += 1
 
+        if stmt.returningList:
+            cols = self._returning_columns(stmt.returningList, table)
+            return SQLResult(cols, returning_rows)
         return SQLResult(["updated"], [{"updated": updated}])
 
     # ==================================================================
@@ -569,14 +967,30 @@ class SQLCompiler:
 
         matching_ids = [entry.doc_id for entry in pl.entries]
         if not matching_ids:
+            if stmt.returningList:
+                cols = self._returning_columns(stmt.returningList, table)
+                return SQLResult(cols, [])
             return SQLResult(["deleted"], [{"deleted": 0}])
 
+        returning_rows: list[dict[str, Any]] = []
         deleted = 0
         for doc_id in matching_ids:
+            # Fetch row BEFORE deletion for RETURNING
+            if stmt.returningList:
+                doc = table.document_store.get(doc_id)
+                if doc:
+                    returning_rows.append(
+                        self._project_returning(
+                            doc, stmt.returningList, table
+                        )
+                    )
             table.inverted_index.remove_document(doc_id)
             table.document_store.delete(doc_id)
             deleted += 1
 
+        if stmt.returningList:
+            cols = self._returning_columns(stmt.returningList, table)
+            return SQLResult(cols, returning_rows)
         return SQLResult(["deleted"], [{"deleted": deleted}])
 
     # ==================================================================
@@ -896,22 +1310,30 @@ class SQLCompiler:
             physical = ProjectOp(physical, expected_cols)
 
         elif is_grouped:
-            group_cols = [
-                self._extract_column_name(g) for g in stmt.groupClause
-            ]
+            group_cols = self._resolve_group_by_cols(
+                stmt.groupClause, stmt.targetList
+            )
+            group_aliases = self._build_group_aliases(
+                group_cols, stmt.targetList
+            )
             agg_specs = self._extract_agg_specs(stmt.targetList)
             physical = HashAggOp(
                 physical, group_cols, agg_specs,
                 spill_threshold=self._engine.spill_threshold,
+                group_aliases=group_aliases,
             )
 
             if stmt.havingClause is not None:
-                col, pred = self._resolve_having_predicate(
-                    stmt.havingClause, stmt.targetList
+                from uqa.execution.relational import ExprFilterOp
+                physical = ExprFilterOp(
+                    physical, stmt.havingClause,
+                    subquery_executor=self._compile_select,
                 )
-                physical = PhysFilterOp(physical, col, pred)
 
-            expected_cols = group_cols + [a for a, _, _ in agg_specs]
+            # expected_cols: use SELECT aliases for group cols
+            expected_cols = self._resolve_select_column_names(
+                stmt.targetList, group_cols, agg_specs
+            )
 
         elif is_agg_only:
             agg_specs = self._extract_agg_specs(stmt.targetList)
@@ -919,7 +1341,7 @@ class SQLCompiler:
                 physical, [], agg_specs,
                 spill_threshold=self._engine.spill_threshold,
             )
-            expected_cols = [a for a, _, _ in agg_specs]
+            expected_cols = [a for a, *_ in agg_specs]
 
         else:
             is_star = self._is_select_star(stmt.targetList)
@@ -958,13 +1380,9 @@ class SQLCompiler:
 
         # ORDER BY
         if stmt.sortClause is not None:
-            sort_keys = [
-                (
-                    self._extract_column_name(s.node),
-                    s.sortby_dir == SortByDir.SORTBY_DESC,
-                )
-                for s in stmt.sortClause
-            ]
+            sort_keys = self._build_sort_keys(
+                stmt.sortClause, stmt.targetList
+            )
             physical = SortOp(
                 physical, sort_keys,
                 spill_threshold=self._engine.spill_threshold,
@@ -1030,7 +1448,7 @@ class SQLCompiler:
             elif isinstance(target.val, FuncCall):
                 func = target.val
                 fn = func.funcname[-1].sval.lower()
-                if fn in ("count", "sum", "avg", "min", "max"):
+                if fn in _AGG_FUNC_NAMES:
                     continue
                 alias = target.name or fn
                 if "_score" not in proj_cols:
@@ -1041,6 +1459,8 @@ class SQLCompiler:
     @staticmethod
     def _has_computed_expressions(target_list: tuple | None) -> bool:
         """Check if any target is a computed expression (not a simple column)."""
+        from pglast.ast import MinMaxExpr, SQLValueFunction
+
         if target_list is None:
             return False
         for target in target_list:
@@ -1049,7 +1469,7 @@ class SQLCompiler:
                 continue
             if isinstance(val, FuncCall):
                 fn = val.funcname[-1].sval.lower()
-                if fn in ("count", "sum", "avg", "min", "max"):
+                if fn in _AGG_FUNC_NAMES:
                     continue
                 # Non-aggregate functions like UPPER(), LOWER() are computed
                 if fn in ("text_match", "bayesian_match", "knn_match",
@@ -1057,7 +1477,8 @@ class SQLCompiler:
                     continue
                 return True
             if isinstance(val, (A_Const, A_Expr, CaseExpr, TypeCast,
-                                CoalesceExpr, NullTest, SubLink)):
+                                CoalesceExpr, NullTest, SubLink,
+                                MinMaxExpr, SQLValueFunction)):
                 return True
         return False
 
@@ -1091,7 +1512,7 @@ class SQLCompiler:
             return self._extract_column_name(val)
         if isinstance(val, FuncCall):
             fn = val.funcname[-1].sval.lower()
-            if fn in ("count", "sum", "avg", "min", "max"):
+            if fn in _AGG_FUNC_NAMES:
                 arg_col = None if val.agg_star else (
                     self._extract_column_name(val.args[0])
                 )
@@ -1107,6 +1528,172 @@ class SQLCompiler:
             # Scalar subquery without alias
             return "?column?"
         return "?column?"
+
+    def _build_sort_keys(
+        self,
+        sort_clause: tuple,
+        target_list: tuple | None,
+    ) -> list[tuple[str, bool, bool]]:
+        """Build sort keys from ORDER BY clause with alias/ordinal resolution.
+
+        Returns list of (column_name, is_desc, nulls_first) tuples.
+        Supports:
+          - Column names: ORDER BY name
+          - Column aliases: ORDER BY alias_name
+          - Ordinal references: ORDER BY 1, 2
+          - NULLS FIRST / NULLS LAST modifiers
+        """
+        # Build mappings from SELECT list for alias/ordinal resolution
+        # original_to_alias: maps original column to its alias name
+        # alias_names: set of all alias names
+        original_to_alias: dict[str, str] = {}
+        alias_names: set[str] = set()
+        ordinal_map: dict[int, str] = {}
+        if target_list:
+            for idx, target in enumerate(target_list):
+                col_name = self._infer_target_name(target)
+                ordinal_map[idx + 1] = col_name
+                if target.name:
+                    alias_names.add(target.name)
+                    if isinstance(target.val, ColumnRef):
+                        real_col = self._extract_column_name(target.val)
+                        original_to_alias[real_col] = target.name
+
+        sort_keys: list[tuple[str, bool, bool]] = []
+        for s in sort_clause:
+            is_desc = s.sortby_dir == SortByDir.SORTBY_DESC
+            if s.sortby_nulls == SortByNulls.SORTBY_NULLS_FIRST:
+                nulls_first = True
+            elif s.sortby_nulls == SortByNulls.SORTBY_NULLS_LAST:
+                nulls_first = False
+            else:
+                # PostgreSQL default: NULLS FIRST for DESC, NULLS LAST for ASC
+                nulls_first = is_desc
+
+            # Ordinal reference: ORDER BY 1, 2, ...
+            if isinstance(s.node, A_Const) and isinstance(
+                s.node.val, PgInteger
+            ):
+                ordinal = s.node.val.ival
+                col = ordinal_map.get(ordinal)
+                if col is None:
+                    raise ValueError(
+                        f"ORDER BY position {ordinal} is not in select list"
+                    )
+            else:
+                col = self._extract_column_name(s.node)
+                # If col is already an alias, use as-is.
+                # If col is an original column that was aliased, use alias.
+                if col not in alias_names and col in original_to_alias:
+                    col = original_to_alias[col]
+
+            sort_keys.append((col, is_desc, nulls_first))
+        return sort_keys
+
+    def _build_group_aliases(
+        self,
+        group_cols: list[str],
+        target_list: tuple | None,
+    ) -> dict[str, str]:
+        """Build column_name -> alias mapping for group columns."""
+        aliases: dict[str, str] = {}
+        if not target_list:
+            return aliases
+        for target in target_list:
+            if isinstance(target.val, ColumnRef) and target.name:
+                col = self._extract_column_name(target.val)
+                if col in group_cols:
+                    aliases[col] = target.name
+        return aliases
+
+    def _resolve_select_column_names(
+        self,
+        target_list: tuple | None,
+        group_cols: list[str],
+        agg_specs: list[tuple],
+    ) -> list[str]:
+        """Build expected column names from SELECT targets.
+
+        For GROUP BY queries, maps group columns to their SELECT aliases
+        and appends aggregate column aliases.
+        """
+        cols: list[str] = []
+        if target_list:
+            for target in target_list:
+                if isinstance(target.val, ColumnRef):
+                    col = self._extract_column_name(target.val)
+                    # Use alias if present, otherwise raw column name
+                    cols.append(target.name or col)
+                elif isinstance(target.val, FuncCall):
+                    func = target.val
+                    fn = func.funcname[-1].sval.lower()
+                    if func.agg_star:
+                        natural = fn
+                    elif func.args:
+                        natural = (
+                            f"{fn}_{self._extract_column_name(func.args[0])}"
+                        )
+                    else:
+                        natural = fn
+                    cols.append(target.name or natural)
+                else:
+                    cols.append(
+                        target.name or self._infer_target_name(target)
+                    )
+        if not cols:
+            cols = group_cols + [a for a, *_ in agg_specs]
+        return cols
+
+    def _resolve_group_by_cols(
+        self, group_clause: tuple, target_list: tuple | None,
+    ) -> list[str]:
+        """Resolve GROUP BY items: column names, aliases, or ordinals."""
+        # Build alias map from SELECT list
+        alias_map: dict[str, str] = {}
+        select_cols: list[str] = []
+        if target_list:
+            for target in target_list:
+                if isinstance(target.val, ColumnRef):
+                    col = self._extract_column_name(target.val)
+                    select_cols.append(target.name or col)
+                    if target.name:
+                        alias_map[target.name] = col
+                elif isinstance(target.val, FuncCall):
+                    fn = target.val.funcname[-1].sval.lower()
+                    if target.val.agg_star:
+                        name = fn
+                    elif target.val.args:
+                        name = f"{fn}_{self._extract_column_name(target.val.args[0])}"
+                    else:
+                        name = fn
+                    select_cols.append(target.name or name)
+                else:
+                    select_cols.append(target.name or "?column?")
+
+        result: list[str] = []
+        for g in group_clause:
+            # Ordinal reference: GROUP BY 1, 2
+            if isinstance(g, A_Const):
+                val = g.val
+                if isinstance(val, PgInteger):
+                    idx = val.ival - 1  # 1-based
+                    if 0 <= idx < len(select_cols):
+                        result.append(select_cols[idx])
+                        continue
+                    raise ValueError(
+                        f"GROUP BY position {val.ival} is not in select list"
+                    )
+
+            # Column reference
+            if isinstance(g, ColumnRef):
+                col = self._extract_column_name(g)
+                # Check alias map
+                result.append(alias_map.get(col, col))
+                continue
+
+            # Fallback: try extracting column name
+            result.append(self._extract_column_name(g))
+        return result
 
     def _resolve_having_predicate(
         self, having_node: Any, target_list: tuple
@@ -1155,7 +1742,10 @@ class SQLCompiler:
         # 0. Materialize CTEs as temporary in-memory tables
         cte_names: list[str] = []
         if stmt.withClause is not None:
-            cte_names = self._materialize_ctes(stmt.withClause.ctes)
+            cte_names = self._materialize_ctes(
+                stmt.withClause.ctes,
+                recursive=bool(stmt.withClause.recursive),
+            )
 
         try:
             return self._compile_select_body(
@@ -1165,19 +1755,27 @@ class SQLCompiler:
             # Clean up CTE temporary tables
             for name in cte_names:
                 self._engine._tables.pop(name, None)
-            # Clean up materialized view tables
+            # Clean up materialized view / derived tables
             for name in self._expanded_views:
-                self._engine._tables.pop(name, None)
+                if name in self._shadowed_tables:
+                    self._engine._tables[name] = (
+                        self._shadowed_tables.pop(name)
+                    )
+                else:
+                    self._engine._tables.pop(name, None)
             self._expanded_views.clear()
 
     def _apply_deferred_where(self, physical: Any, where_node: Any) -> Any:
-        """Apply WHERE predicates as physical FilterOps on graph-sourced rows.
+        """Apply WHERE predicates as physical filter on joined/graph rows.
 
-        Walks the WHERE AST and produces PhysFilterOp nodes for each simple
-        column comparison. Handles AND (chain of filters), comparisons
-        (=, !=, <, >, <=, >=), and BETWEEN.
+        For simple column-to-constant comparisons, uses typed PhysFilterOp.
+        For cross-table or complex expressions (e.g., a.id = b.user_id),
+        falls back to ExprFilterOp using ExprEvaluator.
         """
-        from uqa.execution.relational import FilterOp as PhysFilterOp
+        from uqa.execution.relational import (
+            ExprFilterOp,
+            FilterOp as PhysFilterOp,
+        )
         from uqa.core.types import (
             Equals,
             NotEquals,
@@ -1194,11 +1792,16 @@ class SQLCompiler:
                 return physical
 
         if isinstance(where_node, A_Expr):
-            col_name = self._extract_column_name(where_node.lexpr)
-            rhs = self._extract_const_value(where_node.rexpr)
             kind = where_node.kind
 
-            if kind == A_Expr_Kind.AEXPR_OP:
+            # Check if RHS is a constant (column-to-constant comparison)
+            rhs_is_const = isinstance(
+                where_node.rexpr, (A_Const, PgInteger, PgFloat, PgString)
+            )
+
+            if rhs_is_const and kind == A_Expr_Kind.AEXPR_OP:
+                col_name = self._extract_column_name(where_node.lexpr)
+                rhs = self._extract_const_value(where_node.rexpr)
                 op_name = where_node.name[-1].sval
                 predicate_map = {
                     "=": Equals,
@@ -1213,7 +1816,8 @@ class SQLCompiler:
                 if pred_cls is not None:
                     return PhysFilterOp(physical, col_name, pred_cls(rhs))
 
-            if kind == A_Expr_Kind.AEXPR_BETWEEN:
+            if rhs_is_const and kind == A_Expr_Kind.AEXPR_BETWEEN:
+                col_name = self._extract_column_name(where_node.lexpr)
                 lo = self._extract_const_value(where_node.rexpr[0])
                 hi = self._extract_const_value(where_node.rexpr[1])
                 physical = PhysFilterOp(
@@ -1223,27 +1827,38 @@ class SQLCompiler:
                     physical, col_name, LessThanOrEqual(hi)
                 )
 
-        return physical
+        # Fallback: use ExprEvaluator for complex expressions
+        # (e.g., cross-table column comparisons like a.id = b.user_id)
+        return ExprFilterOp(
+            physical, where_node,
+            subquery_executor=self._compile_select,
+        )
 
     def _compile_select_body(
         self, stmt: SelectStmt, *, explain: bool = False
     ) -> SQLResult:
+        # 0. Handle set operations (UNION / INTERSECT / EXCEPT)
+        if stmt.op is not None and stmt.op != SetOperation.SETOP_NONE:
+            return self._compile_set_operation(stmt)
+
         # 1. Resolve FROM clause -> (table | None, source_op | None)
         table, source_op = self._resolve_from(stmt.fromClause)
 
         # 2. Build execution context from resolved table
         ctx = self._context_for_table(table)
 
-        # 3. Check if FROM is a graph source (traverse/rpq).
-        #    Graph-sourced queries defer relational WHERE to the physical layer
-        #    because graph vertex IDs are not in the document store.
+        # 3. Check if FROM is a graph source (traverse/rpq) or join.
+        #    Graph/join-sourced queries defer relational WHERE to the
+        #    physical layer because their entries are not single-table
+        #    doc_ids from the document store.
         graph_source = self._is_graph_operator(source_op)
+        join_source = self._is_join_operator(source_op)
         deferred_where = None
 
         # 4. WHERE clause
         if stmt.whereClause is not None:
-            if graph_source:
-                # Defer WHERE to physical FilterOp layer
+            if graph_source or join_source:
+                # Defer WHERE to physical ExprFilterOp layer
                 deferred_where = stmt.whereClause
             else:
                 where_op = self._compile_where(stmt.whereClause, ctx)
@@ -1267,56 +1882,280 @@ class SQLCompiler:
             stmt, pl, ctx, table, deferred_where=deferred_where
         )
 
+    # -- Set operations (UNION / INTERSECT / EXCEPT) -------------------
+
+    def _compile_set_operation(self, stmt: SelectStmt) -> SQLResult:
+        """Handle UNION / INTERSECT / EXCEPT set operations."""
+        from uqa.execution.relational import SortOp
+
+        left = self._compile_select(stmt.larg)
+        right = self._compile_select(stmt.rarg)
+
+        if len(left.columns) != len(right.columns):
+            raise ValueError(
+                f"Set operation column count mismatch: "
+                f"{len(left.columns)} vs {len(right.columns)}"
+            )
+
+        # Normalize right result columns to match left column names
+        right_rows = [
+            {
+                left.columns[i]: row.get(right.columns[i])
+                for i in range(len(left.columns))
+            }
+            for row in right.rows
+        ]
+        columns = left.columns
+        is_all = bool(stmt.all)
+        op = SetOperation(stmt.op)
+
+        if op == SetOperation.SETOP_UNION:
+            rows = self._set_union(
+                left.rows, right_rows, columns, is_all
+            )
+        elif op == SetOperation.SETOP_INTERSECT:
+            rows = self._set_intersect(
+                left.rows, right_rows, columns, is_all
+            )
+        elif op == SetOperation.SETOP_EXCEPT:
+            rows = self._set_except(
+                left.rows, right_rows, columns, is_all
+            )
+        else:
+            raise ValueError(f"Unsupported set operation: {op}")
+
+        # Apply ORDER BY / LIMIT on the combined result
+        if stmt.sortClause is not None:
+            sort_keys = self._build_sort_keys(
+                stmt.sortClause, stmt.larg.targetList
+            )
+            SortOp._sort_rows(rows, sort_keys)
+
+        if stmt.limitCount is not None:
+            offset = 0
+            if stmt.limitOffset is not None:
+                offset = self._extract_int_value(stmt.limitOffset)
+            limit = self._extract_int_value(stmt.limitCount)
+            rows = rows[offset : offset + limit]
+
+        return SQLResult(columns, rows)
+
+    @staticmethod
+    def _set_union(
+        left_rows: list[dict],
+        right_rows: list[dict],
+        columns: list[str],
+        is_all: bool,
+    ) -> list[dict]:
+        if is_all:
+            return list(left_rows) + right_rows
+        seen: set[tuple] = set()
+        rows: list[dict] = []
+        for row in list(left_rows) + right_rows:
+            key = tuple(row.get(c) for c in columns)
+            if key not in seen:
+                seen.add(key)
+                rows.append(row)
+        return rows
+
+    @staticmethod
+    def _set_intersect(
+        left_rows: list[dict],
+        right_rows: list[dict],
+        columns: list[str],
+        is_all: bool,
+    ) -> list[dict]:
+        from collections import Counter
+
+        if is_all:
+            right_counter: Counter[tuple] = Counter(
+                tuple(r.get(c) for c in columns) for r in right_rows
+            )
+            rows: list[dict] = []
+            for row in left_rows:
+                key = tuple(row.get(c) for c in columns)
+                if right_counter[key] > 0:
+                    rows.append(row)
+                    right_counter[key] -= 1
+            return rows
+
+        right_keys = {
+            tuple(r.get(c) for c in columns) for r in right_rows
+        }
+        seen: set[tuple] = set()
+        rows = []
+        for row in left_rows:
+            key = tuple(row.get(c) for c in columns)
+            if key in right_keys and key not in seen:
+                seen.add(key)
+                rows.append(row)
+        return rows
+
+    @staticmethod
+    def _set_except(
+        left_rows: list[dict],
+        right_rows: list[dict],
+        columns: list[str],
+        is_all: bool,
+    ) -> list[dict]:
+        from collections import Counter
+
+        if is_all:
+            right_counter: Counter[tuple] = Counter(
+                tuple(r.get(c) for c in columns) for r in right_rows
+            )
+            rows: list[dict] = []
+            for row in left_rows:
+                key = tuple(row.get(c) for c in columns)
+                if right_counter[key] > 0:
+                    right_counter[key] -= 1
+                else:
+                    rows.append(row)
+            return rows
+
+        right_keys = {
+            tuple(r.get(c) for c in columns) for r in right_rows
+        }
+        seen: set[tuple] = set()
+        rows = []
+        for row in left_rows:
+            key = tuple(row.get(c) for c in columns)
+            if key not in right_keys and key not in seen:
+                seen.add(key)
+                rows.append(row)
+        return rows
+
     # -- CTE materialization -------------------------------------------
 
-    def _materialize_ctes(self, ctes: tuple) -> list[str]:
+    _MAX_RECURSIVE_DEPTH = 1000
+
+    def _materialize_ctes(
+        self, ctes: tuple, *, recursive: bool = False
+    ) -> list[str]:
         """Execute CTE queries and register results as temporary tables.
+
+        When *recursive* is True (WITH RECURSIVE), CTEs whose query
+        is a UNION/UNION ALL are executed via iterative fixpoint.
 
         Returns the list of CTE names for cleanup after the main query.
         """
-        _type_map = {int: "integer", float: "real", str: "text"}
         cte_names: list[str] = []
         for cte in ctes:
             name = cte.ctename
-            result = self._compile_select(cte.ctequery)
+            query = cte.ctequery
 
-            # Infer column types from the first row
-            col_defs: list[ColumnDef] = []
-            for col_name in result.columns:
-                py_type: type = str
-                if result.rows:
-                    sample = result.rows[0].get(col_name)
-                    if isinstance(sample, int):
-                        py_type = int
-                    elif isinstance(sample, float):
-                        py_type = float
-                col_defs.append(ColumnDef(
-                    name=col_name,
-                    type_name=_type_map.get(py_type, "TEXT"),
-                    python_type=py_type,
-                ))
+            is_recursive = (
+                recursive
+                and query.op is not None
+                and query.op != SetOperation.SETOP_NONE
+            )
 
-            table = Table(name=name, columns=col_defs)
-            # Populate the table with CTE results
-            for i, row in enumerate(result.rows):
-                doc_id = i + 1
-                doc = {"_id": doc_id}
-                doc.update(row)
-                table.document_store.put(doc_id, doc)
-                # Index text fields for text_match support
-                text_fields = {
-                    col_def.name: str(row[col_def.name])
-                    for col_def in col_defs
-                    if row.get(col_def.name) is not None
-                    and isinstance(row[col_def.name], str)
-                }
-                if text_fields:
-                    table.inverted_index.add_document(doc_id, text_fields)
-
-            self._engine._tables[name] = table
+            if is_recursive:
+                self._materialize_recursive_cte(cte)
+            else:
+                result = self._compile_select(query)
+                table = self._result_to_table(name, result)
+                self._engine._tables[name] = table
             cte_names.append(name)
 
         return cte_names
+
+    def _materialize_recursive_cte(self, cte: Any) -> None:
+        """Iterative fixpoint computation for recursive CTEs.
+
+        1. Execute base case (larg) to seed the working table.
+        2. Loop: execute recursive case (rarg) referencing the CTE,
+           collect new rows.
+        3. If UNION (not ALL): deduplicate against accumulated rows.
+        4. Terminate when no new rows or depth limit reached.
+        """
+        name = cte.ctename
+        query = cte.ctequery
+        is_union_all = bool(query.all)
+
+        # Column name mapping from alias
+        alias_cols = (
+            [s.sval for s in cte.aliascolnames]
+            if cte.aliascolnames
+            else None
+        )
+
+        # 1. Execute base case
+        base_result = self._compile_select(query.larg)
+        base_columns = base_result.columns
+
+        # Remap columns if alias names are provided
+        if alias_cols:
+            all_rows = []
+            for row in base_result.rows:
+                remapped = {}
+                for i, acol in enumerate(alias_cols):
+                    if i < len(base_columns):
+                        remapped[acol] = row.get(base_columns[i])
+                all_rows.append(remapped)
+            columns = alias_cols
+        else:
+            all_rows = list(base_result.rows)
+            columns = base_columns
+
+        # Track seen tuples for UNION deduplication
+        seen: set[tuple] | None = None
+        if not is_union_all:
+            seen = set()
+            deduped = []
+            for row in all_rows:
+                key = tuple(row.get(c) for c in columns)
+                if key not in seen:
+                    seen.add(key)
+                    deduped.append(row)
+            all_rows = deduped
+
+        # Register working table
+        working_rows = list(all_rows)
+
+        for depth in range(self._MAX_RECURSIVE_DEPTH):
+            # Build temporary table from working rows
+            result = SQLResult(columns, working_rows)
+            table = self._result_to_table(name, result)
+            self._engine._tables[name] = table
+
+            # Execute recursive case
+            rec_result = self._compile_select(query.rarg)
+
+            # Remap columns
+            new_rows = []
+            for row in rec_result.rows:
+                if alias_cols:
+                    remapped = {}
+                    for i, acol in enumerate(alias_cols):
+                        if i < len(rec_result.columns):
+                            remapped[acol] = row.get(rec_result.columns[i])
+                    new_rows.append(remapped)
+                else:
+                    new_rows.append(row)
+
+            if not new_rows:
+                break
+
+            # Deduplicate for UNION (not ALL)
+            if seen is not None:
+                filtered = []
+                for row in new_rows:
+                    key = tuple(row.get(c) for c in columns)
+                    if key not in seen:
+                        seen.add(key)
+                        filtered.append(row)
+                new_rows = filtered
+                if not new_rows:
+                    break
+
+            all_rows.extend(new_rows)
+            working_rows = new_rows
+
+        # Final table with all accumulated rows
+        result = SQLResult(columns, all_rows)
+        table = self._result_to_table(name, result)
+        self._engine._tables[name] = table
 
     # -- View expansion ------------------------------------------------
 
@@ -1330,7 +2169,30 @@ class SQLCompiler:
         query completes.
         """
         result = self._compile_select(query)
+        table = self._result_to_table(view_name, result)
+        self._engine._tables[view_name] = table
+        self._expanded_views.append(view_name)
+        return table, None
 
+    # -- Derived table (subquery in FROM) ------------------------------
+
+    def _materialize_derived_table(
+        self, node: RangeSubselect
+    ) -> tuple[Table, None]:
+        """Materialize a subquery in FROM as a temporary table."""
+        alias = node.alias.aliasname if node.alias else "_derived"
+        result = self._compile_select(node.subquery)
+        table = self._result_to_table(alias, result)
+        # Save the original table entry if the alias shadows a real table,
+        # so it can be restored during cleanup.
+        if alias in self._engine._tables:
+            self._shadowed_tables[alias] = self._engine._tables[alias]
+        self._engine._tables[alias] = table
+        self._expanded_views.append(alias)
+        return table, None
+
+    def _result_to_table(self, name: str, result: SQLResult) -> Table:
+        """Convert a SQLResult into a temporary in-memory Table."""
         _type_map = {int: "integer", float: "real", str: "text"}
         col_defs: list[ColumnDef] = []
         for col_name in result.columns:
@@ -1343,11 +2205,11 @@ class SQLCompiler:
                     py_type = float
             col_defs.append(ColumnDef(
                 name=col_name,
-                type_name=_type_map.get(py_type, "TEXT"),
+                type_name=_type_map.get(py_type, "text"),
                 python_type=py_type,
             ))
 
-        table = Table(name=view_name, columns=col_defs)
+        table = Table(name=name, columns=col_defs)
         for i, row in enumerate(result.rows):
             doc_id = i + 1
             doc = {"_id": doc_id}
@@ -1362,8 +2224,85 @@ class SQLCompiler:
             if text_fields:
                 table.inverted_index.add_document(doc_id, text_fields)
 
-        self._engine._tables[view_name] = table
-        self._expanded_views.append(view_name)
+        return table
+
+    # -- information_schema virtual tables -----------------------------
+
+    def _build_information_schema_table(
+        self, view_name: str,
+    ) -> tuple[Table, None]:
+        """Build virtual information_schema tables from engine metadata."""
+        if view_name == "tables":
+            return self._build_info_schema_tables()
+        if view_name == "columns":
+            return self._build_info_schema_columns()
+        raise ValueError(
+            f"Unknown information_schema view: '{view_name}'"
+        )
+
+    def _build_info_schema_tables(self) -> tuple[Table, None]:
+        """Build information_schema.tables from engine state."""
+        columns = [
+            "table_catalog", "table_schema", "table_name", "table_type",
+        ]
+        rows: list[dict[str, Any]] = []
+        for tname in sorted(self._engine._tables):
+            rows.append({
+                "table_catalog": "",
+                "table_schema": "public",
+                "table_name": tname,
+                "table_type": "BASE TABLE",
+            })
+        for vname in sorted(self._engine._views):
+            rows.append({
+                "table_catalog": "",
+                "table_schema": "public",
+                "table_name": vname,
+                "table_type": "VIEW",
+            })
+        result = SQLResult(columns, rows)
+        name = "_info_schema_tables"
+        table = self._result_to_table(name, result)
+        self._engine._tables[name] = table
+        self._expanded_views.append(name)
+        return table, None
+
+    _INFO_TYPE_DISPLAY: dict[str, str] = {
+        "int2": "smallint", "int4": "integer", "int8": "bigint",
+        "float4": "real", "float8": "double precision",
+        "bool": "boolean",
+    }
+
+    def _build_info_schema_columns(self) -> tuple[Table, None]:
+        """Build information_schema.columns from engine state."""
+        columns = [
+            "table_catalog", "table_schema", "table_name",
+            "column_name", "ordinal_position", "data_type",
+            "is_nullable",
+        ]
+        rows: list[dict[str, Any]] = []
+        for tname in sorted(self._engine._tables):
+            tbl = self._engine._tables[tname]
+            for pos, (cname, cdef) in enumerate(
+                tbl.columns.items(), start=1
+            ):
+                display_type = self._INFO_TYPE_DISPLAY.get(
+                    cdef.type_name, cdef.type_name
+                )
+                rows.append({
+                    "table_catalog": "",
+                    "table_schema": "public",
+                    "table_name": tname,
+                    "column_name": cname,
+                    "ordinal_position": pos,
+                    "data_type": display_type,
+                    "is_nullable": "NO" if cdef.not_null else "YES",
+                })
+        result = SQLResult(columns, rows)
+        name = "_info_schema_columns"
+        table = self._result_to_table(name, result)
+        self._engine._tables[name] = table
+        self._expanded_views.append(name)
         return table, None
 
     # -- FROM clause ---------------------------------------------------
@@ -1375,21 +2314,47 @@ class SQLCompiler:
 
         Returns (table, None) for ``FROM table_name`` and
         (None, operator) for ``FROM func(...)``.
+
+        Multiple FROM sources (``FROM a, b, c``) are treated as
+        implicit CROSS JOINs built into a left-deep join tree.
         """
         if from_clause is None:
             return None, None
 
-        if len(from_clause) != 1:
-            raise ValueError("Multiple FROM sources not supported; use JOIN")
+        if len(from_clause) == 1:
+            return self._resolve_from_single(from_clause[0])
 
-        node = from_clause[0]
+        # Multiple FROM sources -> implicit CROSS JOIN chain
+        from uqa.joins.cross import CrossJoinOperator
 
+        table, op = self._resolve_from_single(from_clause[0])
+        if op is None:
+            op = _TableScanOperator(table)
+
+        for node in from_clause[1:]:
+            right_table, right_op = self._resolve_from_single(node)
+            if right_op is None:
+                right_op = _TableScanOperator(right_table)
+            op = CrossJoinOperator(op, right_op)
+            # Keep first resolved table as context source
+            if table is None:
+                table = right_table
+
+        return table, op
+
+    def _resolve_from_single(
+        self, node: Any
+    ) -> tuple[Table | None, Any]:
+        """Resolve a single FROM clause item."""
         if isinstance(node, RangeVar):
+            # Virtual information_schema tables
+            if node.schemaname == "information_schema":
+                return self._build_information_schema_table(
+                    node.relname
+                )
             table_name = node.relname
             table = self._engine._tables.get(table_name)
             if table is None:
-                # Check if it is a view -- expand by materializing the
-                # stored query into a temporary table.
                 view_query = self._engine._views.get(table_name)
                 if view_query is not None:
                     return self._expand_view(table_name, view_query)
@@ -1401,6 +2366,9 @@ class SQLCompiler:
 
         if isinstance(node, JoinExpr):
             return self._resolve_join(node)
+
+        if isinstance(node, RangeSubselect):
+            return self._materialize_derived_table(node)
 
         raise ValueError(f"Unsupported FROM clause: {type(node).__name__}")
 
@@ -1449,6 +2417,8 @@ class SQLCompiler:
             return self._build_rpq_from(args)
         if name == "text_search":
             return self._build_text_search_from(args)
+        if name == "generate_series":
+            return self._build_generate_series(node, args)
         raise ValueError(f"Unknown table function: {name}")
 
     @staticmethod
@@ -1458,6 +2428,15 @@ class SQLCompiler:
             return False
         from uqa.graph.operators import TraverseOperator, RegularPathQueryOperator
         return isinstance(op, (TraverseOperator, RegularPathQueryOperator))
+
+    @staticmethod
+    def _is_join_operator(op: Any) -> bool:
+        """Return True if op is a join operator (cross, inner, outer)."""
+        if op is None:
+            return False
+        from uqa.joins.base import JoinOperator
+        from uqa.joins.cross import CrossJoinOperator
+        return isinstance(op, (JoinOperator, CrossJoinOperator))
 
     def _build_traverse_from(
         self, args: tuple
@@ -1538,38 +2517,108 @@ class SQLCompiler:
         op = ScoreOperator(scorer, retrieval, terms, field=field_name)
         return table, op
 
+    def _build_generate_series(
+        self, node: RangeFunction, args: tuple
+    ) -> tuple[Table | None, Any]:
+        """Build generate_series(start, stop [, step]) as a table function."""
+        if len(args) < 2:
+            raise ValueError(
+                "generate_series requires at least 2 arguments"
+            )
+        start = self._extract_const_value(args[0])
+        stop = self._extract_const_value(args[1])
+        step = self._extract_const_value(args[2]) if len(args) > 2 else 1
+
+        if not isinstance(start, (int, float)):
+            raise ValueError("generate_series currently supports numeric ranges")
+        if step == 0:
+            raise ValueError("generate_series step cannot be zero")
+
+        values: list[int | float] = []
+        current = start
+        if step > 0:
+            while current <= stop:
+                values.append(current)
+                current += step
+        else:
+            while current >= stop:
+                values.append(current)
+                current += step
+
+        # Determine column name from alias (AS t(n)) or default
+        col_name = "generate_series"
+        if node.alias is not None:
+            if node.alias.colnames:
+                col_name = node.alias.colnames[0].sval
+            alias_name = node.alias.aliasname
+        else:
+            alias_name = "generate_series"
+
+        from uqa.sql.table import ColumnDef as SqlColumnDef
+        col_type = "integer" if all(isinstance(v, int) for v in values) else "real"
+        python_type = int if col_type == "integer" else float
+        col = SqlColumnDef(
+            name=col_name,
+            type_name=col_type,
+            python_type=python_type,
+        )
+        table = Table(alias_name, [col])
+        for i, val in enumerate(values, 1):
+            table.insert({col_name: val})
+
+        self._engine._tables[alias_name] = table
+        self._expanded_views.append(alias_name)
+        return table, None
+
     # -- JOIN ----------------------------------------------------------
 
     def _resolve_join(
         self, node: JoinExpr
     ) -> tuple[Table | None, Any]:
         from uqa.joins.base import JoinCondition
+        from uqa.joins.cross import CrossJoinOperator
         from uqa.joins.inner import InnerJoinOperator
-        from uqa.joins.outer import LeftOuterJoinOperator
+        from uqa.joins.outer import (
+            FullOuterJoinOperator,
+            LeftOuterJoinOperator,
+            RightOuterJoinOperator,
+        )
 
         left_table, left_op = self._resolve_from_node(node.larg)
         right_table, right_op = self._resolve_from_node(node.rarg)
 
-        # Both sides must be the same table or both None (engine default)
         table = left_table or right_table
 
-        if left_op is None:
+        if left_op is None and left_table is not None:
+            left_op = _TableScanOperator(left_table)
+        elif left_op is None:
             left_op = _ScanOperator()
-        if right_op is None:
+        if right_op is None and right_table is not None:
+            right_op = _TableScanOperator(right_table)
+        elif right_op is None:
             right_op = _ScanOperator()
 
+        jt = node.jointype
         quals = node.quals
+
+        # CROSS JOIN: JOIN_INNER with no quals
+        if jt == JoinType.JOIN_INNER and quals is None:
+            return table, CrossJoinOperator(left_op, right_op)
+
         if not isinstance(quals, A_Expr):
             raise ValueError("JOIN ON must be a simple column equality")
         left_field = self._extract_column_name(quals.lexpr)
         right_field = self._extract_column_name(quals.rexpr)
         condition = JoinCondition(left_field, right_field)
 
-        jt = node.jointype
         if jt == JoinType.JOIN_INNER:
             return table, InnerJoinOperator(left_op, right_op, condition)
         if jt == JoinType.JOIN_LEFT:
             return table, LeftOuterJoinOperator(left_op, right_op, condition)
+        if jt == JoinType.JOIN_RIGHT:
+            return table, RightOuterJoinOperator(left_op, right_op, condition)
+        if jt == JoinType.JOIN_FULL:
+            return table, FullOuterJoinOperator(left_op, right_op, condition)
         raise ValueError(f"Unsupported join type: {jt}")
 
     def _resolve_from_node(self, node: Any) -> tuple[Table | None, Any]:
@@ -1584,6 +2633,10 @@ class SQLCompiler:
             return table, None
         if isinstance(node, RangeFunction):
             return self._compile_from_function(node)
+        if isinstance(node, JoinExpr):
+            return self._resolve_join(node)
+        if isinstance(node, RangeSubselect):
+            return self._materialize_derived_table(node)
         raise ValueError(f"Unsupported FROM node: {type(node).__name__}")
 
     # -- WHERE clause --------------------------------------------------
@@ -2046,25 +3099,59 @@ class SQLCompiler:
             return False
         return any(
             isinstance(t.val, FuncCall)
-            and t.val.funcname[-1].sval.lower() in ("count", "sum", "avg", "min", "max")
+            and t.val.funcname[-1].sval.lower() in _AGG_FUNC_NAMES
             and (t.val.over is None)
             for t in target_list
         )
 
     def _extract_agg_specs(
         self, target_list: tuple
-    ) -> list[tuple[str, str, str | None]]:
-        specs: list[tuple[str, str, str | None]] = []
+    ) -> list[tuple]:
+        """Extract aggregate specifications as 7-tuples.
+
+        Returns (alias, func_name, arg_col, distinct, extra, filter_node,
+        order_keys).  filter_node is the AST node for FILTER (WHERE ...),
+        order_keys is a list of (col_name, descending) for ORDER BY
+        within aggregate.
+        """
+        from pglast.enums.parsenodes import SortByDir
+
+        specs: list[tuple] = []
         for target in target_list:
             if not isinstance(target.val, FuncCall):
                 continue
             func = target.val
             func_name = func.funcname[-1].sval.lower()
-            if func_name not in ("count", "sum", "avg", "min", "max"):
+            if func_name not in _AGG_FUNC_NAMES or func.over is not None:
                 continue
-            arg_col = None if func.agg_star else self._extract_column_name(func.args[0])
-            alias = target.name or (func_name if arg_col is None else f"{func_name}_{arg_col}")
-            specs.append((alias, func_name, arg_col))
+            arg_col = (
+                None
+                if func.agg_star
+                else self._extract_column_name(func.args[0])
+            )
+            distinct = bool(func.agg_distinct)
+            extra: Any = None
+            if func_name == "string_agg" and func.args and len(func.args) > 1:
+                extra = self._extract_const_value(func.args[1])
+            alias = target.name or (
+                func_name if arg_col is None else f"{func_name}_{arg_col}"
+            )
+
+            filter_node = func.agg_filter
+            order_keys = None
+            if func.agg_order:
+                order_keys = [
+                    (
+                        self._extract_column_name(sb.node),
+                        sb.sortby_dir == SortByDir.SORTBY_DESC,
+                    )
+                    for sb in func.agg_order
+                ]
+
+            specs.append((
+                alias, func_name, arg_col, distinct, extra,
+                filter_node, order_keys,
+            ))
         return specs
 
     # -- Window functions -----------------------------------------------
@@ -2131,10 +3218,33 @@ class SQLCompiler:
                     ntile_buckets = int(
                         evaluator.evaluate(val.args[0], {})
                     )
-            elif func_name not in ("row_number", "rank", "dense_rank"):
+            elif func_name == "nth_value":
+                evaluator = ExprEvaluator()
+                if val.args:
+                    arg_col = self._extract_column_name(val.args[0])
+                    if len(val.args) > 1:
+                        ntile_buckets = int(
+                            evaluator.evaluate(val.args[1], {})
+                        )
+            elif func_name not in (
+                "row_number", "rank", "dense_rank",
+                "percent_rank", "cume_dist",
+            ):
                 # Aggregate window functions (SUM, COUNT, AVG, MIN, MAX)
                 if not val.agg_star and val.args:
                     arg_col = self._extract_column_name(val.args[0])
+
+            # Parse window frame
+            frame_start, frame_end = None, None
+            frame_start_offset, frame_end_offset = 0, 0
+            fo = win.frameOptions or 0
+            if fo & 1:  # NONDEFAULT
+                frame_start, frame_start_offset = (
+                    self._parse_frame_bound(fo, "start", win.startOffset)
+                )
+                frame_end, frame_end_offset = (
+                    self._parse_frame_bound(fo, "end", win.endOffset)
+                )
 
             specs.append(WindowSpec(
                 alias=alias,
@@ -2145,9 +3255,54 @@ class SQLCompiler:
                 offset=offset,
                 default_value=default_value,
                 ntile_buckets=ntile_buckets,
+                frame_start=frame_start,
+                frame_end=frame_end,
+                frame_start_offset=frame_start_offset,
+                frame_end_offset=frame_end_offset,
             ))
 
         return specs
+
+    @staticmethod
+    def _parse_frame_bound(
+        frame_options: int, side: str, offset_node: Any
+    ) -> tuple[str, int]:
+        """Parse a window frame bound from the bitmask.
+
+        side is "start" or "end".  Returns (bound_type, offset).
+        """
+        # Constants from pglast.enums.parsenodes
+        if side == "start":
+            if frame_options & 32:   # START_UNBOUNDED_PRECEDING
+                return "unbounded_preceding", 0
+            if frame_options & 512:  # START_CURRENT_ROW
+                return "current_row", 0
+            if frame_options & 2048:  # START_OFFSET_PRECEDING
+                off = 0
+                if offset_node is not None:
+                    off = offset_node.val.ival
+                return "offset_preceding", off
+            if frame_options & 8192:  # START_OFFSET_FOLLOWING
+                off = 0
+                if offset_node is not None:
+                    off = offset_node.val.ival
+                return "offset_following", off
+        else:
+            if frame_options & 256:   # END_UNBOUNDED_FOLLOWING
+                return "unbounded_following", 0
+            if frame_options & 1024:  # END_CURRENT_ROW
+                return "current_row", 0
+            if frame_options & 4096:  # END_OFFSET_PRECEDING
+                off = 0
+                if offset_node is not None:
+                    off = offset_node.val.ival
+                return "offset_preceding", off
+            if frame_options & 16384:  # END_OFFSET_FOLLOWING
+                off = 0
+                if offset_node is not None:
+                    off = offset_node.val.ival
+                return "offset_following", off
+        return None, 0
 
     # -- Result conversion ---------------------------------------------
 
@@ -2247,6 +3402,31 @@ class _ScanOperator:
 
     def cost_estimate(self, stats: Any) -> float:
         return float(stats.total_docs)
+
+
+class _TableScanOperator:
+    """Scans a specific table, eagerly loading document fields.
+
+    Unlike _ScanOperator (which leaves payload.fields empty),
+    this operator populates fields from the document store so that
+    join operators can match on field values.
+    """
+
+    def __init__(self, table: Table) -> None:
+        self._table = table
+
+    def execute(self, context: Any) -> PostingList:
+        entries: list[PostingEntry] = []
+        for doc_id in sorted(self._table.document_store.doc_ids):
+            doc = self._table.document_store.get(doc_id)
+            fields = dict(doc) if doc else {}
+            entries.append(
+                PostingEntry(doc_id, Payload(score=0.0, fields=fields))
+            )
+        return PostingList(entries)
+
+    def cost_estimate(self, stats: Any) -> float:
+        return float(len(self._table.document_store.doc_ids))
 
 
 class _CalibratedKNNOperator:

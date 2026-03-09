@@ -39,6 +39,9 @@ _SQL_TYPE_MAP: dict[str, type] = {
     "real": float, "float": float, "float4": float, "float8": float,
     "double precision": float, "numeric": float, "decimal": float,
     "boolean": bool, "bool": bool,
+    "date": str, "timestamp": str, "timestamptz": str,
+    "timestamp without time zone": str, "timestamp with time zone": str,
+    "json": object, "jsonb": object,
 }
 
 _AUTO_INCREMENT_TYPES = frozenset({"serial", "bigserial"})
@@ -91,6 +94,9 @@ class ColumnDef:
     auto_increment: bool = False
     default: Any = None
     vector_dimensions: int | None = None
+    unique: bool = False
+    numeric_precision: int | None = None
+    numeric_scale: int | None = None
 
 
 class Table:
@@ -117,6 +123,9 @@ class Table:
         self.primary_key: str | None = next(
             (col.name for col in columns if col.primary_key), None
         )
+        # CHECK constraints: list of (name, evaluator_callable).
+        # Each callable takes a row dict and returns True/False.
+        self.check_constraints: list[tuple[str, Any]] = []
 
         # Filter out vector columns -- they are not stored in the
         # document store (they live in per-field HNSW indexes instead).
@@ -196,6 +205,34 @@ class Table:
                             f"column '{col_name}' in table '{self.name}'"
                         )
 
+        # -- UNIQUE constraint validation --------------------------------
+        for col_name, col_def in self.columns.items():
+            if not (col_def.unique or col_def.primary_key):
+                continue
+            if col_def.auto_increment:
+                continue
+            value = row.get(col_name)
+            if value is None:
+                continue  # NULL is allowed in UNIQUE columns
+            for existing_id in self.document_store.doc_ids:
+                existing_val = self.document_store.get_field(
+                    existing_id, col_name
+                )
+                if existing_val == value:
+                    raise ValueError(
+                        f"UNIQUE constraint violated: "
+                        f"duplicate value '{value}' for column "
+                        f"'{col_name}' in table '{self.name}'"
+                    )
+
+        # -- CHECK constraint validation --------------------------------
+        for constraint_name, check_fn in self.check_constraints:
+            if not check_fn(row):
+                raise ValueError(
+                    f"CHECK constraint '{constraint_name}' violated "
+                    f"in table '{self.name}'"
+                )
+
         # -- unknown column check -------------------------------------
         for col_name in row:
             if col_name not in self.columns:
@@ -211,6 +248,12 @@ class Table:
                 if col_def.vector_dimensions is not None:
                     vectors[col_name] = np.asarray(
                         row[col_name], dtype=np.float32
+                    )
+                elif col_def.type_name in ("json", "jsonb"):
+                    coerced[col_name] = _coerce_json(row[col_name])
+                elif col_def.numeric_scale is not None:
+                    coerced[col_name] = _coerce_numeric(
+                        row[col_name], col_def.numeric_scale
                     )
                 else:
                     coerced[col_name] = col_def.python_type(row[col_name])
@@ -356,6 +399,27 @@ class Table:
     def get_column_stats(self, col_name: str) -> ColumnStats | None:
         """Return cached statistics for a column, or None if not analyzed."""
         return self._stats.get(col_name)
+
+
+def _coerce_json(value: Any) -> Any:
+    """Coerce a value to native JSON representation (dict/list/scalar)."""
+    import json as json_mod
+
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        return json_mod.loads(value)
+    # Scalar values are valid JSON
+    return value
+
+
+def _coerce_numeric(value: Any, scale: int) -> float:
+    """Coerce a value to NUMERIC with the given scale (decimal places)."""
+    from decimal import Decimal
+
+    d = Decimal(str(value))
+    quantizer = Decimal(10) ** -scale
+    return float(d.quantize(quantizer))
 
 
 def resolve_type(type_names: tuple) -> tuple[str, type]:

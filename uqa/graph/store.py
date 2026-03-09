@@ -62,6 +62,14 @@ class GraphStore:
                 result.append(edge.source_id)
         return result
 
+    def clear(self) -> None:
+        """Remove all vertices and edges."""
+        self._vertices.clear()
+        self._edges.clear()
+        self._adj_out.clear()
+        self._adj_in.clear()
+        self._label_index.clear()
+
     def get_vertex(self, vertex_id: int) -> Vertex | None:
         return self._vertices.get(vertex_id)
 

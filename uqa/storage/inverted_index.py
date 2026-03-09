@@ -117,6 +117,13 @@ class InvertedIndex:
             del self._doc_lengths[doc_id]
             self._doc_count -= 1
 
+    def clear(self) -> None:
+        """Remove all indexed data."""
+        self._index.clear()
+        self._doc_lengths.clear()
+        self._doc_count = 0
+        self._total_length.clear()
+
     # -- Query methods -------------------------------------------------
 
     def get_posting_list(self, field: str, term: str) -> PostingList:

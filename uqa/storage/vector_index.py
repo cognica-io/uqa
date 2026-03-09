@@ -49,6 +49,19 @@ class HNSWIndex:
             np.array([vector], dtype=np.float32), np.array([internal_id])
         )
 
+    def clear(self) -> None:
+        """Reset the index by re-initializing the hnswlib graph."""
+        self._index = hnswlib.Index(space="cosine", dim=self.dimensions)
+        self._index.init_index(
+            max_elements=self._max_elements,
+            ef_construction=200,
+            M=16,
+        )
+        self._index.set_ef(50)
+        self._doc_id_to_internal.clear()
+        self._internal_to_doc_id.clear()
+        self._next_internal = 0
+
     def search_knn(self, query: NDArray, k: int) -> PostingList:
         """KNN_k operator (Definition 3.1.3)."""
         if self._next_internal == 0:

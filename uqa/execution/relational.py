@@ -37,6 +37,11 @@ class WindowSpec:
         offset: Row offset for LAG/LEAD (default 1).
         default_value: Default value for LAG/LEAD when out of bounds.
         ntile_buckets: Number of buckets for NTILE.
+        frame_start: Frame start type: "unbounded_preceding", "current_row",
+            "offset_preceding", "offset_following", or None for default.
+        frame_end: Frame end type (same options).
+        frame_start_offset: Integer offset for start (if offset type).
+        frame_end_offset: Integer offset for end (if offset type).
     """
 
     alias: str
@@ -47,6 +52,10 @@ class WindowSpec:
     offset: int = 1
     default_value: Any = None
     ntile_buckets: int = 1
+    frame_start: str | None = None
+    frame_end: str | None = None
+    frame_start_offset: int = 0
+    frame_end_offset: int = 0
 
 
 class FilterOp(PhysicalOperator):
@@ -95,6 +104,54 @@ class FilterOp(PhysicalOperator):
                 else:
                     matched = val is not None and self._predicate.evaluate(val)
                 if matched:
+                    active.append(i)
+
+            if not active:
+                continue
+
+            return batch.with_selection(active)
+
+    def close(self) -> None:
+        self._child.close()
+
+
+class ExprFilterOp(PhysicalOperator):
+    """Filter rows using an AST expression evaluated by ExprEvaluator.
+
+    Used for WHERE clauses on join results where cross-table column
+    comparisons are needed (e.g., WHERE a.id = b.user_id).
+    """
+
+    def __init__(
+        self,
+        child: PhysicalOperator,
+        where_node: Any,
+        subquery_executor: Any = None,
+    ) -> None:
+        self._child = child
+        self._where_node = where_node
+        self._subquery_executor = subquery_executor
+
+    def open(self) -> None:
+        self._child.open()
+
+    def next(self) -> Batch | None:
+        from uqa.sql.expr_evaluator import ExprEvaluator
+
+        evaluator = ExprEvaluator(
+            subquery_executor=self._subquery_executor
+        )
+
+        while True:
+            batch = self._child.next()
+            if batch is None:
+                return None
+
+            rows = batch.to_rows()
+            active: list[int] = []
+            for i, row in enumerate(rows):
+                result = evaluator.evaluate(self._where_node, row)
+                if result:
                     active.append(i)
 
             if not active:
@@ -204,12 +261,17 @@ class SortOp(PhysicalOperator):
     def __init__(
         self,
         child: PhysicalOperator,
-        sort_keys: list[tuple[str, bool]],
+        sort_keys: list[tuple[str, bool] | tuple[str, bool, bool]],
         batch_size: int = DEFAULT_BATCH_SIZE,
         spill_threshold: int = 0,
     ) -> None:
         self._child = child
-        self._sort_keys = sort_keys
+        # Normalize to 3-tuple: (col_name, is_desc, nulls_first)
+        # Default follows PostgreSQL: NULLS FIRST for DESC, NULLS LAST for ASC
+        self._sort_keys: list[tuple[str, bool, bool]] = [
+            (k[0], k[1], k[2] if len(k) > 2 else k[1])
+            for k in sort_keys
+        ]
         self._batch_size = batch_size
         self._spill_threshold = spill_threshold
         self._sorted_rows: list[dict[str, Any]] | None = None
@@ -220,11 +282,17 @@ class SortOp(PhysicalOperator):
     @staticmethod
     def _sort_rows(
         rows: list[dict[str, Any]],
-        sort_keys: list[tuple[str, bool]],
+        sort_keys: list[tuple[str, bool, bool]],
     ) -> None:
-        for col_name, desc in reversed(sort_keys):
+        for col_name, desc, nulls_first in reversed(sort_keys):
+            # XOR nulls_first with desc: reverse flips the null-position
+            # bit too, so we pre-flip it to compensate.
+            null_pos_flag = nulls_first != desc
             rows.sort(
-                key=lambda r, c=col_name: (r.get(c) is None, r.get(c)),
+                key=lambda r, c=col_name, npf=null_pos_flag: (
+                    (r.get(c) is not None) if npf else (r.get(c) is None),
+                    r.get(c),
+                ),
                 reverse=desc,
             )
 
@@ -397,15 +465,20 @@ class HashAggOp(PhysicalOperator):
         self,
         child: PhysicalOperator,
         group_columns: list[str],
-        agg_specs: list[tuple[str, str, str | None]],
+        agg_specs: list[
+            tuple[str, str, str | None]
+            | tuple[str, str, str | None, bool, Any]
+        ],
         batch_size: int = DEFAULT_BATCH_SIZE,
         spill_threshold: int = 0,
+        group_aliases: dict[str, str] | None = None,
     ) -> None:
         self._child = child
         self._group_columns = group_columns
         self._agg_specs = agg_specs
         self._batch_size = batch_size
         self._spill_threshold = spill_threshold
+        self._group_aliases = group_aliases or {}
         self._result_rows: list[dict[str, Any]] | None = None
         self._result_iter: Any = None
         self._spill_mgr: Any = None
@@ -422,13 +495,55 @@ class HashAggOp(PhysicalOperator):
             groups[()] = []
         result: list[dict[str, Any]] = []
         for key, rows in groups.items():
-            row_out: dict[str, Any] = dict(
-                zip(self._group_columns, key)
-            )
-            for alias, func_name, arg_col in self._agg_specs:
-                row_out[alias] = _compute_aggregate(
-                    func_name, arg_col, rows
+            row_out: dict[str, Any] = {}
+            for col, val in zip(self._group_columns, key):
+                row_out[col] = val
+                # Add aliased name if different
+                alias = self._group_aliases.get(col)
+                if alias and alias != col:
+                    row_out[alias] = val
+            for spec in self._agg_specs:
+                alias = spec[0]
+                func_name = spec[1]
+                arg_col = spec[2]
+                distinct = spec[3] if len(spec) > 3 else False
+                extra = spec[4] if len(spec) > 4 else None
+                filter_node = spec[5] if len(spec) > 5 else None
+                order_keys = spec[6] if len(spec) > 6 else None
+
+                agg_rows = rows
+                # Apply FILTER (WHERE ...) pre-filter
+                if filter_node is not None:
+                    from uqa.sql.expr_evaluator import ExprEvaluator
+                    evaluator = ExprEvaluator()
+                    agg_rows = [
+                        r for r in agg_rows
+                        if evaluator.evaluate(filter_node, r)
+                    ]
+                # Apply ORDER BY within aggregate
+                if order_keys:
+                    agg_rows = list(agg_rows)
+                    for col, desc in reversed(order_keys):
+                        agg_rows.sort(
+                            key=lambda r, c=col: (
+                                r.get(c) is None, r.get(c)
+                            ),
+                            reverse=desc,
+                        )
+
+                value = _compute_aggregate(
+                    func_name, arg_col, agg_rows,
+                    distinct=distinct, extra=extra,
                 )
+                row_out[alias] = value
+                # Store under natural name too (for HAVING evaluation)
+                natural = (
+                    func_name
+                    if arg_col is None
+                    else f"{func_name}_{arg_col}"
+                )
+                if natural != alias:
+                    row_out[natural] = value
             result.append(row_out)
         return result
 
@@ -897,6 +1012,58 @@ def _compute_window_function(
                 result.append(spec.default_value)
         return result
 
+    if func_name == "percent_rank":
+        if n <= 1:
+            return [0.0] * n
+        order_cols = [c for c, _ in spec.order_keys]
+        ranks: list[int] = []
+        for i in range(n):
+            if i == 0:
+                ranks.append(1)
+            else:
+                prev = partition_rows[i - 1]
+                cur = partition_rows[i]
+                if _rows_equal_on_columns(prev, cur, order_cols):
+                    ranks.append(ranks[-1])
+                else:
+                    ranks.append(i + 1)
+        return [(r - 1) / (n - 1) for r in ranks]
+
+    if func_name == "cume_dist":
+        if n == 0:
+            return []
+        order_cols = [c for c, _ in spec.order_keys]
+        result: list[float] = []
+        for i in range(n):
+            # Count rows with value <= current
+            cur = partition_rows[i]
+            count = 0
+            for j in range(n):
+                if _rows_equal_on_columns(
+                    partition_rows[j], cur, order_cols
+                ) or j <= i:
+                    # Row j is <= current if it would sort before or equal
+                    pass
+            # Simpler: find the last position of the peer group
+            last_peer = i
+            for j in range(i + 1, n):
+                if _rows_equal_on_columns(
+                    partition_rows[j], cur, order_cols
+                ):
+                    last_peer = j
+                else:
+                    break
+            result.append((last_peer + 1) / n)
+        return result
+
+    if func_name == "nth_value":
+        # ntile_buckets is reused to store the N parameter
+        nth = spec.ntile_buckets
+        if n == 0 or nth < 1 or nth > n:
+            return [None] * n
+        val = partition_rows[nth - 1].get(spec.arg_col)
+        return [val] * n
+
     if func_name == "first_value":
         if n == 0:
             return []
@@ -909,14 +1076,60 @@ def _compute_window_function(
         val = partition_rows[-1].get(spec.arg_col)
         return [val] * n
 
-    # Aggregate window functions (SUM, COUNT, AVG, MIN, MAX OVER)
-    if func_name in ("sum", "count", "avg", "min", "max"):
+    # Aggregate window functions (SUM, COUNT, AVG, MIN, MAX, STRING_AGG, etc.)
+    if func_name in ("sum", "count", "avg", "min", "max", "string_agg",
+                      "array_agg", "bool_and", "bool_or"):
+        # Check for explicit frame specification
+        if spec.frame_start is not None:
+            return _compute_framed_aggregate(
+                func_name, spec.arg_col, partition_rows, spec
+            )
         agg_val = _compute_aggregate(
             func_name, spec.arg_col, partition_rows
         )
         return [agg_val] * n
 
     raise ValueError(f"Unknown window function: {func_name}")
+
+
+def _compute_framed_aggregate(
+    func_name: str,
+    arg_col: str | None,
+    partition_rows: list[dict[str, Any]],
+    spec: WindowSpec,
+) -> list[Any]:
+    """Compute aggregate over a per-row window frame."""
+    n = len(partition_rows)
+    results: list[Any] = []
+    for i in range(n):
+        start = _resolve_frame_index(
+            i, n, spec.frame_start, spec.frame_start_offset
+        )
+        end = _resolve_frame_index(
+            i, n, spec.frame_end, spec.frame_end_offset
+        )
+        frame_rows = partition_rows[start : end + 1]
+        results.append(
+            _compute_aggregate(func_name, arg_col, frame_rows)
+        )
+    return results
+
+
+def _resolve_frame_index(
+    current: int, n: int, bound: str | None, offset: int
+) -> int:
+    """Resolve a frame bound to a concrete row index."""
+    if bound is None or bound == "unbounded_preceding":
+        return 0
+    if bound == "unbounded_following":
+        return n - 1
+    if bound == "current_row":
+        return current
+    if bound == "offset_preceding":
+        return max(0, current - offset)
+    if bound == "offset_following":
+        return min(n - 1, current + offset)
+    return current
 
 
 def _rows_equal_on_columns(
@@ -929,13 +1142,61 @@ def _rows_equal_on_columns(
 
 
 def _compute_aggregate(
-    func_name: str, arg_col: str | None, rows: list[dict[str, Any]]
+    func_name: str,
+    arg_col: str | None,
+    rows: list[dict[str, Any]],
+    distinct: bool = False,
+    extra: Any = None,
 ) -> Any:
     """Compute a single aggregate value over a group of rows."""
     if func_name == "count":
         if arg_col is None:
             return len(rows)
+        if distinct:
+            return len(
+                {r.get(arg_col) for r in rows if r.get(arg_col) is not None}
+            )
         return sum(1 for r in rows if r.get(arg_col) is not None)
+
+    if func_name == "string_agg":
+        delimiter = extra if extra is not None else ","
+        vals = [
+            str(r.get(arg_col)) for r in rows if r.get(arg_col) is not None
+        ]
+        if distinct:
+            seen: set[str] = set()
+            deduped: list[str] = []
+            for v in vals:
+                if v not in seen:
+                    seen.add(v)
+                    deduped.append(v)
+            vals = deduped
+        return str(delimiter).join(vals) if vals else None
+
+    if func_name == "array_agg":
+        vals = [r.get(arg_col) for r in rows if r.get(arg_col) is not None]
+        if distinct:
+            seen_vals: list = []
+            seen_set: set = set()
+            for v in vals:
+                key = repr(v)
+                if key not in seen_set:
+                    seen_set.add(key)
+                    seen_vals.append(v)
+            vals = seen_vals
+        return vals if vals else None
+
+    if func_name == "bool_and":
+        vals = [r.get(arg_col) for r in rows if r.get(arg_col) is not None]
+        if not vals:
+            return None
+        return all(bool(v) for v in vals)
+
+    if func_name == "bool_or":
+        vals = [r.get(arg_col) for r in rows if r.get(arg_col) is not None]
+        if not vals:
+            return None
+        return any(bool(v) for v in vals)
 
     values = [
         r.get(arg_col)

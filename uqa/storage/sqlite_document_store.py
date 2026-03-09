@@ -51,6 +51,13 @@ _AFFINITY_MAP: dict[str, str] = {
     "boolean": "INTEGER",
     "bytes": "BLOB",
     "blob": "BLOB",
+    "date": "TEXT",
+    "timestamp": "TEXT",
+    "timestamptz": "TEXT",
+    "timestamp without time zone": "TEXT",
+    "timestamp with time zone": "TEXT",
+    "json": "TEXT",
+    "jsonb": "TEXT",
 }
 
 
@@ -80,6 +87,10 @@ class SQLiteDocumentStore:
         self._table = f"_data_{table_name}"
         self._columns: list[str] = [name for name, _ in columns]
         self._col_set: frozenset[str] = frozenset(self._columns)
+        self._json_cols: frozenset[str] = frozenset(
+            name for name, type_name in columns
+            if type_name.lower() in ("json", "jsonb")
+        )
 
         # Build and execute CREATE TABLE IF NOT EXISTS
         col_defs: list[str] = ["_rowid INTEGER PRIMARY KEY"]
@@ -117,25 +128,45 @@ class SQLiteDocumentStore:
 
     def put(self, doc_id: DocId, document: dict) -> None:
         """Insert or replace a document (row) keyed by *doc_id*."""
-        values = [doc_id] + [document.get(c) for c in self._columns]
+        import json as json_mod
+
+        values = [doc_id]
+        for c in self._columns:
+            v = document.get(c)
+            if v is not None and c in self._json_cols and isinstance(
+                v, (dict, list)
+            ):
+                v = json_mod.dumps(v, ensure_ascii=False)
+            values.append(v)
         self._conn.execute(self._sql_put, values)
         self._conn.commit()
 
     def get(self, doc_id: DocId) -> dict | None:
         """Return the document as a dict, or ``None`` if absent."""
+        import json as json_mod
+
         cursor = self._conn.execute(self._sql_get, (doc_id,))
         row = cursor.fetchone()
         if row is None:
             return None
-        return {
-            col: row[i]
-            for i, col in enumerate(self._columns)
-            if row[i] is not None
-        }
+        result: dict = {}
+        for i, col in enumerate(self._columns):
+            v = row[i]
+            if v is None:
+                continue
+            if col in self._json_cols and isinstance(v, str):
+                v = json_mod.loads(v)
+            result[col] = v
+        return result
 
     def delete(self, doc_id: DocId) -> None:
         """Delete a document.  No error if *doc_id* does not exist."""
         self._conn.execute(self._sql_delete, (doc_id,))
+        self._conn.commit()
+
+    def clear(self) -> None:
+        """Remove all rows from the backing SQLite table."""
+        self._conn.execute(f"DELETE FROM {self._table}")
         self._conn.commit()
 
     def get_field(self, doc_id: DocId, field: FieldName) -> Any:
@@ -147,7 +178,11 @@ class SQLiteDocumentStore:
         row = cursor.fetchone()
         if row is None:
             return None
-        return row[0]
+        v = row[0]
+        if v is not None and field in self._json_cols and isinstance(v, str):
+            import json as json_mod
+            v = json_mod.loads(v)
+        return v
 
     def eval_path(self, doc_id: DocId, path: PathExpr) -> Any:
         """Evaluate a hierarchical path expression against a document.

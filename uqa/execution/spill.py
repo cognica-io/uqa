@@ -126,20 +126,33 @@ class _SortKey:
     __slots__ = ("row", "_parts")
 
     def __init__(
-        self, row: dict[str, Any], sort_keys: list[tuple[str, bool]]
+        self,
+        row: dict[str, Any],
+        sort_keys: list[tuple[str, bool] | tuple[str, bool, bool]],
     ) -> None:
         self.row = row
-        self._parts: list[tuple[bool, Any, bool]] = [
-            (row.get(col) is None, row.get(col), desc)
-            for col, desc in sort_keys
+        # Normalize to 3-tuple: (is_null, value, desc, nulls_first)
+        # Default follows PostgreSQL: NULLS FIRST for DESC, NULLS LAST for ASC
+        self._parts: list[tuple[bool, Any, bool, bool]] = [
+            (
+                row.get(k[0]) is None,
+                row.get(k[0]),
+                k[1],
+                k[2] if len(k) > 2 else k[1],
+            )
+            for k in sort_keys
         ]
 
     def __lt__(self, other: _SortKey) -> bool:
-        for (na, va, desc), (nb, vb, _) in zip(self._parts, other._parts):
+        for (na, va, desc, nf), (nb, vb, _, _) in zip(
+            self._parts, other._parts
+        ):
             if na != nb:
-                # ASC: non-NULL < NULL (NULL-last)
-                # DESC: NULL < non-NULL (NULL-first)
-                return na if desc else nb
+                # nulls_first: NULL sorts before non-NULL
+                # nulls_last (default): non-NULL sorts before NULL
+                if nf:
+                    return na
+                return nb
             if na:
                 continue
             if va == vb:
@@ -150,7 +163,7 @@ class _SortKey:
 
 def merge_sorted_runs(
     runs: list[Iterator[dict[str, Any]]],
-    sort_keys: list[tuple[str, bool]],
+    sort_keys: list[tuple[str, bool] | tuple[str, bool, bool]],
 ) -> Iterator[dict[str, Any]]:
     """K-way merge of pre-sorted row iterators using a min-heap."""
     heap: list[tuple[_SortKey, int, int]] = []

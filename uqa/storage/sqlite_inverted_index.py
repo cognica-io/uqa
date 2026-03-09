@@ -292,6 +292,25 @@ class SQLiteInvertedIndex:
         for field, term in affected_terms:
             self._rebuild_skip_pointers(field, term)
 
+    def clear(self) -> None:
+        """Remove all indexed data from all backing tables."""
+        for field in self._known_fields:
+            tbl = self._inverted_table_name(field)
+            self._conn.execute(f'DELETE FROM "{tbl}"')
+            skip_tbl = f"_skip_{self._table_name}_{field}"
+            self._conn.execute(
+                f'DELETE FROM "{skip_tbl}" '
+                f"WHERE EXISTS (SELECT 1 FROM sqlite_master "
+                f"WHERE type='table' AND name='{skip_tbl}')"
+            )
+        self._conn.execute(
+            f'DELETE FROM "_field_stats_{self._table_name}"'
+        )
+        self._conn.execute(
+            f'DELETE FROM "_doc_lengths_{self._table_name}"'
+        )
+        self._conn.commit()
+
     # -- Query methods -------------------------------------------------
 
     def get_posting_list(self, field: str, term: str) -> PostingList:

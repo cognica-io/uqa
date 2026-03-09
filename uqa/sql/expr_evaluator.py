@@ -31,15 +31,23 @@ from pglast.ast import (
     Float as PgFloat,
     FuncCall,
     Integer as PgInteger,
+    MinMaxExpr,
     NullTest,
     RangeVar,
+    SQLValueFunction,
     SelectStmt,
     String as PgString,
     SubLink,
     TypeCast,
 )
 from pglast.enums.parsenodes import A_Expr_Kind
-from pglast.enums.primnodes import BoolExprType, NullTestType, SubLinkType
+from pglast.enums.primnodes import (
+    BoolExprType,
+    MinMaxOp,
+    NullTestType,
+    SQLValueFunctionOp,
+    SubLinkType,
+)
 
 
 class ExprEvaluator:
@@ -91,13 +99,25 @@ class ExprEvaluator:
         if isinstance(node, SubLink):
             return self._eval_sublink(node, row)
 
+        if isinstance(node, MinMaxExpr):
+            return self._eval_min_max(node, row)
+
+        if isinstance(node, SQLValueFunction):
+            return self._eval_sql_value_function(node)
+
         raise ValueError(f"Unsupported expression node: {type(node).__name__}")
 
     # -- Leaf nodes ----------------------------------------------------
 
     @staticmethod
     def _eval_column_ref(node: ColumnRef, row: dict[str, Any]) -> Any:
-        col_name = node.fields[-1].sval
+        fields = node.fields
+        # Handle qualified references like excluded.col or table.col
+        if len(fields) >= 2 and hasattr(fields[0], "sval"):
+            qualified = f"{fields[0].sval}.{fields[-1].sval}"
+            if qualified in row:
+                return row[qualified]
+        col_name = fields[-1].sval
         return row.get(col_name)
 
     @staticmethod
@@ -164,12 +184,23 @@ class ExprEvaluator:
             matched = _like_match(str(val), pattern, case_sensitive=False)
             return not matched if op_name == "!~~*" else matched
 
+        if kind == A_Expr_Kind.AEXPR_NULLIF:
+            a = self.evaluate(node.lexpr, row)
+            b = self.evaluate(node.rexpr, row)
+            return None if a == b else a
+
         raise ValueError(f"Unsupported A_Expr kind: {kind}")
 
     def _eval_operator(self, node: A_Expr, row: dict[str, Any]) -> Any:
         op = node.name[0].sval
         left = self.evaluate(node.lexpr, row)
         right = self.evaluate(node.rexpr, row)
+
+        # JSON field access operators (Def 5.2.3 -- path evaluation)
+        if op == "->":
+            return _json_access(left, right, as_text=False)
+        if op == "->>":
+            return _json_access(left, right, as_text=True)
 
         # String concatenation
         if op == "||":
@@ -364,16 +395,87 @@ class ExprEvaluator:
             return A_Const(isnull=False, val=PgFloat(fval=str(val)))
         return A_Const(isnull=False, val=PgString(sval=str(val)))
 
+    # -- MinMaxExpr (GREATEST / LEAST) ---------------------------------
+
+    def _eval_min_max(self, node: MinMaxExpr, row: dict[str, Any]) -> Any:
+        values = [self.evaluate(a, row) for a in node.args]
+        non_null = [v for v in values if v is not None]
+        if not non_null:
+            return None
+        if MinMaxOp(node.op) == MinMaxOp.IS_GREATEST:
+            return max(non_null)
+        return min(non_null)
+
+    # -- SQLValueFunction (CURRENT_DATE, CURRENT_TIMESTAMP) -----------
+
+    @staticmethod
+    def _eval_sql_value_function(node: SQLValueFunction) -> Any:
+        from datetime import datetime, timezone
+
+        op = SQLValueFunctionOp(node.op)
+        now = datetime.now(timezone.utc)
+        if op == SQLValueFunctionOp.SVFOP_CURRENT_DATE:
+            return now.strftime("%Y-%m-%d")
+        if op in (
+            SQLValueFunctionOp.SVFOP_CURRENT_TIMESTAMP,
+            SQLValueFunctionOp.SVFOP_CURRENT_TIMESTAMP_N,
+        ):
+            return now.strftime("%Y-%m-%dT%H:%M:%S")
+        if op in (
+            SQLValueFunctionOp.SVFOP_CURRENT_TIME,
+            SQLValueFunctionOp.SVFOP_CURRENT_TIME_N,
+        ):
+            return now.strftime("%H:%M:%S")
+        if op in (
+            SQLValueFunctionOp.SVFOP_LOCALTIMESTAMP,
+            SQLValueFunctionOp.SVFOP_LOCALTIMESTAMP_N,
+        ):
+            local_now = datetime.now()
+            return local_now.strftime("%Y-%m-%dT%H:%M:%S")
+        if op in (
+            SQLValueFunctionOp.SVFOP_LOCALTIME,
+            SQLValueFunctionOp.SVFOP_LOCALTIME_N,
+        ):
+            local_now = datetime.now()
+            return local_now.strftime("%H:%M:%S")
+        raise ValueError(f"Unsupported SQLValueFunction: {op.name}")
+
     # -- FuncCall (scalar functions) -----------------------------------
+
+    _AGG_FUNCS = frozenset({
+        "count", "sum", "avg", "min", "max", "string_agg",
+        "array_agg", "bool_and", "bool_or",
+    })
 
     def _eval_func_call(self, node: FuncCall, row: dict[str, Any]) -> Any:
         func_name = node.funcname[-1].sval.lower()
+
+        # For aggregate functions (used in HAVING), look up the
+        # pre-computed value from the aggregated row.
+        if func_name in self._AGG_FUNCS:
+            col = self._agg_column_name(func_name, node)
+            if col in row:
+                return row[col]
+
         if func_name == "path_agg":
             return self._eval_path_agg(node, row)
         if func_name == "path_value":
             return self._eval_path_value(node, row)
         args = [self.evaluate(a, row) for a in (node.args or ())]
         return _call_scalar_function(func_name, args)
+
+    def _agg_column_name(self, func_name: str, node: FuncCall) -> str:
+        """Compute the natural column name for an aggregate function.
+
+        Mirrors the naming convention in _extract_agg_specs:
+        count(*) -> "count", sum(age) -> "sum_age".
+        """
+        if node.agg_star or not node.args:
+            return func_name
+        arg = node.args[0]
+        if isinstance(arg, ColumnRef):
+            return f"{func_name}_{arg.fields[-1].sval}"
+        return func_name
 
     def _eval_path_agg(self, node: FuncCall, row: dict[str, Any]) -> Any:
         """Evaluate path_agg('path', 'func') -- aggregate nested array values.
@@ -442,6 +544,32 @@ class ExprEvaluator:
 # -- Module-level helpers ------------------------------------------------
 
 
+def _json_access(obj: Any, key: Any, *, as_text: bool) -> Any:
+    """JSON field access (Paper 1, Def 5.2.3 -- path evaluation).
+
+    ``->`` returns JSON, ``->>`` returns text.
+    """
+    import json as json_mod
+
+    if obj is None:
+        return None
+    if isinstance(obj, str):
+        obj = json_mod.loads(obj)
+    if isinstance(obj, dict):
+        result = obj.get(str(key) if not isinstance(key, str) else key)
+    elif isinstance(obj, list) and isinstance(key, int):
+        result = obj[key] if 0 <= key < len(obj) else None
+    else:
+        return None
+    if result is None:
+        return None
+    if as_text:
+        if isinstance(result, (dict, list)):
+            return json_mod.dumps(result, ensure_ascii=False)
+        return str(result)
+    return result
+
+
 def _arithmetic(op: str, left: Any, right: Any) -> Any:
     if op == "+":
         return left + right
@@ -497,10 +625,23 @@ _CAST_MAP: dict[str, type] = {
     "char": str,
     "boolean": bool,
     "bool": bool,
+    "date": str,
+    "timestamp": str,
+    "timestamptz": str,
+    "json": object,
+    "jsonb": object,
 }
 
 
 def _cast_value(value: Any, type_name: str) -> Any:
+    import json as json_mod
+
+    if type_name in ("json", "jsonb"):
+        if isinstance(value, (dict, list)):
+            return value
+        if isinstance(value, str):
+            return json_mod.loads(value)
+        return value
     cast_type = _CAST_MAP.get(type_name)
     if cast_type is None:
         raise ValueError(f"Unsupported CAST target type: {type_name}")
@@ -570,6 +711,142 @@ def _call_scalar_function(name: str, args: list[Any]) -> Any:
         import math
         return math.floor(args[0])
 
+    # Additional string functions
+    if name == "initcap":
+        return str(args[0]).title() if args[0] is not None else None
+    if name == "translate":
+        if any(a is None for a in args[:3]):
+            return None
+        s, from_chars, to_chars = str(args[0]), str(args[1]), str(args[2])
+        table = str.maketrans(
+            from_chars,
+            to_chars[:len(from_chars)].ljust(len(from_chars)),
+            from_chars[len(to_chars):] if len(to_chars) < len(from_chars) else "",
+        )
+        return s.translate(table)
+    if name == "ascii":
+        if args[0] is None:
+            return None
+        s = str(args[0])
+        return ord(s[0]) if s else 0
+    if name == "chr":
+        if args[0] is None:
+            return None
+        return chr(int(args[0]))
+    if name == "starts_with":
+        if args[0] is None or args[1] is None:
+            return None
+        return str(args[0]).startswith(str(args[1]))
+    if name in ("char_length", "character_length"):
+        return len(str(args[0])) if args[0] is not None else None
+    if name == "position":
+        if args[0] is None or args[1] is None:
+            return None
+        # pglast: POSITION(sub IN str) -> position(str, sub)
+        idx = str(args[0]).find(str(args[1]))
+        return idx + 1 if idx >= 0 else 0
+    if name == "strpos":
+        if args[0] is None or args[1] is None:
+            return None
+        idx = str(args[0]).find(str(args[1]))
+        return idx + 1 if idx >= 0 else 0
+    if name == "lpad":
+        if args[0] is None:
+            return None
+        s, length = str(args[0]), int(args[1])
+        fill = str(args[2]) if len(args) > 2 and args[2] is not None else " "
+        if len(s) >= length:
+            return s[:length]
+        pad_len = length - len(s)
+        pad = (fill * (pad_len // len(fill) + 1))[:pad_len]
+        return pad + s
+    if name == "rpad":
+        if args[0] is None:
+            return None
+        s, length = str(args[0]), int(args[1])
+        fill = str(args[2]) if len(args) > 2 and args[2] is not None else " "
+        if len(s) >= length:
+            return s[:length]
+        pad_len = length - len(s)
+        pad = (fill * (pad_len // len(fill) + 1))[:pad_len]
+        return s + pad
+    if name == "repeat":
+        if args[0] is None:
+            return None
+        return str(args[0]) * int(args[1])
+    if name == "reverse":
+        return str(args[0])[::-1] if args[0] is not None else None
+    if name == "split_part":
+        if any(a is None for a in args[:3]):
+            return None
+        parts = str(args[0]).split(str(args[1]))
+        n = int(args[2])
+        return parts[n - 1] if 1 <= n <= len(parts) else ""
+
+    # Additional math functions
+    if name in ("power", "pow"):
+        if args[0] is None or args[1] is None:
+            return None
+        return args[0] ** args[1]
+    if name == "sqrt":
+        if args[0] is None:
+            return None
+        import math
+        return math.sqrt(args[0])
+    if name in ("log", "log10"):
+        if args[0] is None:
+            return None
+        import math
+        if len(args) > 1 and args[1] is not None:
+            # LOG(b, x) = log base b of x
+            return math.log(args[1]) / math.log(args[0])
+        return math.log10(args[0])
+    if name == "ln":
+        if args[0] is None:
+            return None
+        import math
+        return math.log(args[0])
+    if name == "exp":
+        if args[0] is None:
+            return None
+        import math
+        return math.exp(args[0])
+    if name == "mod":
+        if args[0] is None or args[1] is None:
+            return None
+        return args[0] % args[1] if args[1] != 0 else None
+    if name == "trunc":
+        if args[0] is None:
+            return None
+        import math
+        if len(args) > 1 and args[1] is not None:
+            factor = 10 ** int(args[1])
+            return math.trunc(args[0] * factor) / factor
+        return math.trunc(args[0])
+    if name == "sign":
+        if args[0] is None:
+            return None
+        return (args[0] > 0) - (args[0] < 0)
+    if name == "pi":
+        import math
+        return math.pi
+    if name == "random":
+        import random
+        return random.random()
+
+    # Date/time functions
+    if name == "now":
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    if name in ("extract", "date_part"):
+        if args[0] is None or args[1] is None:
+            return None
+        return _extract_datetime_field(str(args[0]).lower(), str(args[1]))
+    if name == "date_trunc":
+        if args[0] is None or args[1] is None:
+            return None
+        return _date_trunc(str(args[0]).lower(), str(args[1]))
+
     # Type checking
     if name == "typeof":
         if args[0] is None:
@@ -584,4 +861,161 @@ def _call_scalar_function(name: str, args: list[Any]) -> Any:
             return "boolean"
         return "unknown"
 
+    # JSON functions (Paper 1, Section 5.2-5.3)
+    if name == "json_build_object":
+        return _json_build_object(args)
+    if name == "jsonb_build_object":
+        return _json_build_object(args)
+    if name == "json_build_array":
+        return list(args)
+    if name == "jsonb_build_array":
+        return list(args)
+    if name == "json_typeof" or name == "jsonb_typeof":
+        return _json_typeof(args[0] if args else None)
+    if name == "json_array_length" or name == "jsonb_array_length":
+        return _json_array_length(args[0] if args else None)
+    if name in ("json_extract_path", "json_extract_path_text",
+                 "jsonb_extract_path", "jsonb_extract_path_text"):
+        as_text = name.endswith("_text")
+        return _json_extract_path(args, as_text=as_text)
+    if name in ("to_json", "to_jsonb", "row_to_json"):
+        return args[0] if args else None
+
     raise ValueError(f"Unknown scalar function: {name}")
+
+
+def _extract_datetime_field(field: str, timestamp_str: str) -> Any:
+    """Extract a field from a timestamp/date string (EXTRACT / DATE_PART)."""
+    from datetime import datetime
+
+    dt = datetime.fromisoformat(timestamp_str)
+    if field == "year":
+        return dt.year
+    if field == "month":
+        return dt.month
+    if field == "day":
+        return dt.day
+    if field == "hour":
+        return dt.hour
+    if field == "minute":
+        return dt.minute
+    if field == "second":
+        return dt.second
+    if field == "dow":
+        # PostgreSQL: Sunday=0, Monday=1, ..., Saturday=6
+        return dt.isoweekday() % 7
+    if field == "doy":
+        return dt.timetuple().tm_yday
+    if field == "epoch":
+        return dt.timestamp()
+    if field == "quarter":
+        return (dt.month - 1) // 3 + 1
+    if field == "week":
+        return dt.isocalendar()[1]
+    raise ValueError(f"Unknown EXTRACT field: {field}")
+
+
+def _date_trunc(precision: str, timestamp_str: str) -> str:
+    """Truncate a timestamp to the given precision (DATE_TRUNC)."""
+    from datetime import datetime
+
+    dt = datetime.fromisoformat(timestamp_str)
+    if precision == "year":
+        dt = dt.replace(month=1, day=1, hour=0, minute=0, second=0,
+                         microsecond=0)
+    elif precision == "month":
+        dt = dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    elif precision == "day":
+        dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif precision == "hour":
+        dt = dt.replace(minute=0, second=0, microsecond=0)
+    elif precision == "minute":
+        dt = dt.replace(second=0, microsecond=0)
+    elif precision == "second":
+        dt = dt.replace(microsecond=0)
+    else:
+        raise ValueError(f"Unknown DATE_TRUNC precision: {precision}")
+    return dt.isoformat()
+
+
+# -- JSON helpers (Paper 1, Section 5.2-5.3) ----------------------------
+
+
+def _json_build_object(args: list[Any]) -> dict:
+    """Build a JSON object from alternating key-value pairs."""
+    if len(args) % 2 != 0:
+        raise ValueError(
+            "json_build_object requires an even number of arguments"
+        )
+    result: dict = {}
+    for i in range(0, len(args), 2):
+        key = str(args[i]) if args[i] is not None else "null"
+        result[key] = args[i + 1]
+    return result
+
+
+def _json_typeof(value: Any) -> str | None:
+    """Return the JSON type name of a value."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        import json as json_mod
+        value = json_mod.loads(value)
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "number"
+    if isinstance(value, float):
+        return "number"
+    if value is None:
+        return "null"
+    return "string"
+
+
+def _json_array_length(value: Any) -> int | None:
+    """Return the number of elements in a JSON array."""
+    import json as json_mod
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = json_mod.loads(value)
+    if isinstance(value, list):
+        return len(value)
+    return None
+
+
+def _json_extract_path(args: list[Any], *, as_text: bool) -> Any:
+    """Extract a value from a JSON document by path keys.
+
+    Implements Paper 1, Definition 5.2.3 (recursive path evaluation):
+    ``eval(h, [k1, k2, ...])``
+    """
+    import json as json_mod
+
+    if not args or args[0] is None:
+        return None
+    obj = args[0]
+    if isinstance(obj, str):
+        obj = json_mod.loads(obj)
+    for key in args[1:]:
+        if key is None:
+            return None
+        if isinstance(obj, dict):
+            obj = obj.get(str(key))
+        elif isinstance(obj, list):
+            idx = int(key)
+            obj = obj[idx] if 0 <= idx < len(obj) else None
+        else:
+            return None
+        if obj is None:
+            return None
+    if as_text:
+        if isinstance(obj, (dict, list)):
+            return json_mod.dumps(obj, ensure_ascii=False)
+        return str(obj)
+    return obj

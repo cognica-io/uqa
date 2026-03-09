@@ -27,6 +27,10 @@ class DocumentStore:
     def delete(self, doc_id: DocId) -> None:
         self._documents.pop(doc_id, None)
 
+    def clear(self) -> None:
+        """Remove all documents."""
+        self._documents.clear()
+
     def get_field(self, doc_id: DocId, field: FieldName) -> Any:
         doc = self._documents.get(doc_id)
         if doc is None:
