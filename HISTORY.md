@@ -1,5 +1,113 @@
 # History
 
+## 0.6.0 (2026-03-09)
+
+PostgreSQL 17 SQL compatibility — JOINs, set operations, advanced aggregates, window frames, date/time, JSON, and 40+ scalar functions.
+
+### JOIN Support
+
+- `INNER JOIN`, `LEFT JOIN`, `RIGHT JOIN`, `FULL OUTER JOIN`, `CROSS JOIN`
+- Non-equality JOIN ON conditions (`ON a.x >= b.y AND a.x <= b.z`)
+- Multi-table JOIN chains (`A JOIN B ON ... JOIN C ON ...`)
+- Multiple FROM tables (implicit cross join / self-join)
+- Qualified column resolution with dual-keyed fields (`e.name`, `d.name`)
+- `_ExprJoinOperator` for compound/non-equality ON clauses
+
+### Set Operations
+
+- `UNION` / `UNION ALL`
+- `INTERSECT` / `INTERSECT ALL`
+- `EXCEPT` / `EXCEPT ALL`
+- Chained set operations with ORDER BY and LIMIT
+
+### Subqueries
+
+- Subquery in FROM (derived table): `SELECT ... FROM (SELECT ...) AS alias`
+- Correlated subqueries: `WHERE col > (SELECT AVG(col) FROM t2 WHERE t2.id = t1.id)`
+- EXISTS subquery: `WHERE EXISTS (SELECT 1 FROM ...)`
+- Scalar subquery in SELECT: `SELECT (SELECT COUNT(*) FROM ...) AS cnt`
+- `INSERT INTO ... SELECT`
+
+### Recursive CTEs
+
+- `WITH RECURSIVE` with positional column remapping between base case and recursive step
+- Depth tracking and hierarchical traversal
+
+### Aggregate Functions
+
+- `COUNT(DISTINCT col)`, `STRING_AGG(col, delimiter)`, `ARRAY_AGG(col)`
+- `BOOL_AND(col)`, `BOOL_OR(col)`
+- `STDDEV(col)`, `VARIANCE(col)`
+- `PERCENTILE_CONT(fraction) WITHIN GROUP (ORDER BY col)`
+- `PERCENTILE_DISC(fraction) WITHIN GROUP (ORDER BY col)`
+- `MODE() WITHIN GROUP (ORDER BY col)`
+- `JSON_OBJECT_AGG(key, value)`, `JSONB_OBJECT_AGG(key, value)`
+- Aggregate `FILTER (WHERE ...)` clause
+- Aggregate `ORDER BY` within aggregate (e.g., `STRING_AGG(col, ',' ORDER BY col)`)
+- `DISTINCT` modifier for `STRING_AGG`, `ARRAY_AGG`
+- Expression args in aggregates: `SUM(CASE WHEN ... THEN ... END)`
+- GROUP BY with computed expressions: `GROUP BY DATE_TRUNC('month', col)`
+
+### Window Functions
+
+- `PERCENT_RANK()`, `CUME_DIST()`, `NTH_VALUE(col, n)`
+- `ROWS BETWEEN` frame clause (UNBOUNDED PRECEDING, n PRECEDING, CURRENT ROW, n FOLLOWING, UNBOUNDED FOLLOWING)
+- `RANGE BETWEEN` frame clause
+- `WINDOW w AS (...)` named window definitions
+- Running totals, moving averages via window frames
+
+### Date/Time
+
+- `DATE`, `TIMESTAMP`, `TIMESTAMPTZ` column types (stored as ISO 8601 strings)
+- `EXTRACT(field FROM col)`: year, month, day, hour, minute, second, dow, doy, epoch, quarter, week
+- `DATE_PART('field', col)` alias for EXTRACT
+- `DATE_TRUNC('precision', col)`: truncation to year, month, day, hour, minute, second, quarter, week
+- `NOW()`, `CURRENT_TIMESTAMP`, `CURRENT_DATE`
+- `AGE(timestamp)`, `AGE(timestamp, timestamp)`
+
+### JSON/JSONB
+
+- `->>` operator: extract field as text
+- `->` operator: extract field as JSON
+- `#>>` operator: extract nested path as text
+- `@>` containment operator with recursive matching
+- `::jsonb` type cast for JSON literals
+
+### Scalar Functions
+
+- String: `POSITION`, `CHAR_LENGTH`/`CHARACTER_LENGTH`, `LPAD`, `RPAD`, `REPEAT`, `REVERSE`, `SPLIT_PART`, `LEFT`, `RIGHT`, `INITCAP`, `TRANSLATE`, `REPLACE`, `REGEXP_REPLACE`, `ENCODE`, `DECODE`, `MD5`, `CHR`, `ASCII`
+- Math: `POWER`/`POW`, `SQRT`, `LOG`, `LN`, `EXP`, `MOD`, `TRUNC`, `SIGN`, `PI`, `RANDOM`, `DEGREES`, `RADIANS`, `DIV`, `GCD`, `LCM`, `FACTORIAL`
+- Conditional: `GREATEST`, `LEAST`, `NULLIF`
+- Boolean literal handling (`TRUE`, `FALSE` as `PgBoolean`)
+
+### DDL/DML
+
+- `CREATE TABLE IF NOT EXISTS`
+- `CREATE TABLE AS SELECT`
+- `INSERT ... ON CONFLICT DO UPDATE` (UPSERT)
+- `DELETE ... RETURNING`
+- `UPDATE ... RETURNING`
+- `SERIAL` / `BIGSERIAL` auto-increment with sequence tracking
+- TEXT primary key support (auto-generated integer doc_id)
+- `NULLS FIRST` / `NULLS LAST` in ORDER BY
+- Column alias in ORDER BY
+- Ordinal references in ORDER BY (`ORDER BY 1, 2`)
+- `BOOLEAN` column default values (`DEFAULT TRUE/FALSE`)
+
+### Examples
+
+- `examples/sql/joins_and_subqueries.py` — 20 examples: all JOIN types, derived tables, set operations, recursive CTE, INSERT...SELECT, CREATE TABLE AS SELECT
+- `examples/sql/analytics.py` — 24 examples: advanced aggregates, window functions, JSON, date/time, string/math functions, UPSERT, DELETE RETURNING
+- `examples/fluent/multi_paradigm.py` — 5 scenarios: product discovery, recommendation engine, order analytics, fusion comparison, query plans
+
+### Tests
+
+- 1311 tests across 34 test files (up from 1000 in v0.5.0)
+- `test_pg17_features.py` — core PostgreSQL 17 features
+- `test_pg17_p1_features.py` — extended SQL compatibility
+- `test_pg17_p2_features.py` — advanced analytics and edge cases
+
+
 ## 0.5.0 (2026-03-08)
 
 Per-table storage normalization — all storage is now scoped to explicit tables with full bidirectional interop between the fluent API and SQL.

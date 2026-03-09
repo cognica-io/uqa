@@ -20,23 +20,41 @@ WHERE fuse_log_odds(
 ) AND year >= 2020
 ORDER BY _score DESC;
 
--- Graph traversal
+-- JOINs with qualified columns
+SELECT e.name, d.name AS dept, e.salary
+FROM employees e
+INNER JOIN departments d ON e.dept_id = d.id
+ORDER BY e.salary DESC;
+
+-- Window functions with frames
+SELECT rep, sale_date, amount,
+       SUM(amount) OVER (ORDER BY sale_date
+           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_total
+FROM sales;
+
+-- Recursive CTE
+WITH RECURSIVE org_tree AS (
+    SELECT id, name, 1 AS depth FROM org_chart WHERE manager_id IS NULL
+    UNION ALL
+    SELECT o.id, o.name, t.depth + 1
+    FROM org_chart o INNER JOIN org_tree t ON o.manager_id = t.id
+)
+SELECT name, depth FROM org_tree ORDER BY depth;
+
+-- Advanced aggregates with FILTER and CASE pivot
+SELECT region,
+       SUM(amount) FILTER (WHERE returned = FALSE) AS net_revenue,
+       COUNT(*) FILTER (WHERE returned = TRUE) AS return_count
+FROM sales GROUP BY region;
+
+-- Date/time functions
+SELECT DATE_TRUNC('month', sale_date) AS month,
+       COUNT(*) AS num_sales, SUM(amount) AS revenue
+FROM sales GROUP BY DATE_TRUNC('month', sale_date);
+
+-- Graph traversal and regular path queries
 SELECT _doc_id, title FROM traverse(1, 'cited_by', 2);
-
--- Regular path query
 SELECT _doc_id, title FROM rpq('cited_by/cited_by', 1);
-
--- Hierarchical data: nested array aggregation
-SELECT path_agg('items.price', 'sum') AS total FROM orders
-WHERE path_filter('shipping.city', 'Seoul');
-
--- Prepared statements
-PREPARE find_by_year AS SELECT title FROM papers WHERE year = $1;
-EXECUTE find_by_year(2024);
-
--- Window functions
-SELECT title, year, ROW_NUMBER() OVER (PARTITION BY field ORDER BY year) AS rn
-FROM papers;
 ```
 
 ## Architecture
@@ -86,7 +104,7 @@ uqa/
   planner/        Cost model, cardinality estimator, optimizer, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          999 tests across 31 test files
+  tests/          1311 tests across 34 test files
 ```
 
 ## Key Features
@@ -95,14 +113,19 @@ uqa/
 
 | Category | Syntax |
 |----------|--------|
-| DDL | `CREATE TABLE`, `DROP TABLE [IF EXISTS]`, `CREATE INDEX`, `DROP INDEX` |
-| DML | `INSERT INTO ... VALUES`, `UPDATE ... SET ... WHERE`, `DELETE FROM ... WHERE` |
-| DQL | `SELECT [DISTINCT] ... FROM ... WHERE ... GROUP BY ... HAVING ... ORDER BY ... LIMIT ... OFFSET` |
-| Joins | `INNER JOIN`, `LEFT JOIN` with `ON` condition |
-| Subqueries | `IN (SELECT ...)`, `EXISTS (SELECT ...)`, scalar subqueries, correlated subqueries |
-| CTEs | `WITH name AS (SELECT ...) SELECT ...` |
+| DDL | `CREATE TABLE [IF NOT EXISTS]`, `DROP TABLE [IF EXISTS]`, `CREATE TABLE AS SELECT`, `CREATE INDEX`, `DROP INDEX` |
+| DML | `INSERT INTO ... VALUES`, `INSERT INTO ... SELECT`, `INSERT ... ON CONFLICT DO UPDATE`, `UPDATE ... SET ... WHERE [RETURNING]`, `DELETE FROM ... WHERE [RETURNING]` |
+| DQL | `SELECT [DISTINCT] ... FROM ... WHERE ... GROUP BY ... HAVING ... ORDER BY [NULLS FIRST/LAST] ... LIMIT ... OFFSET` |
+| Joins | `INNER JOIN`, `LEFT JOIN`, `RIGHT JOIN`, `FULL OUTER JOIN`, `CROSS JOIN` with equality and non-equality `ON` conditions |
+| Set Ops | `UNION [ALL]`, `INTERSECT [ALL]`, `EXCEPT [ALL]` with chaining |
+| Subqueries | `IN (SELECT ...)`, `EXISTS (SELECT ...)`, scalar subqueries, correlated subqueries, derived tables (`FROM (SELECT ...) AS alias`) |
+| CTEs | `WITH name AS (SELECT ...)`, `WITH RECURSIVE` |
 | Views | `CREATE VIEW`, `DROP VIEW` |
-| Window | `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `NTILE`, `LAG`, `LEAD`, aggregates `OVER (PARTITION BY ... ORDER BY ...)` |
+| Window | `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `NTILE`, `LAG`, `LEAD`, `NTH_VALUE`, `PERCENT_RANK`, `CUME_DIST`, aggregates `OVER (PARTITION BY ... ORDER BY ... ROWS/RANGE BETWEEN ...)`, `WINDOW w AS (...)` |
+| Aggregates | `COUNT [DISTINCT]`, `SUM`, `AVG`, `MIN`, `MAX`, `STRING_AGG`, `ARRAY_AGG`, `BOOL_AND`, `BOOL_OR`, `STDDEV`, `VARIANCE`, `PERCENTILE_CONT/DISC`, `MODE`, `FILTER (WHERE ...)` |
+| Date/Time | `DATE`, `TIMESTAMP` types, `EXTRACT`, `DATE_TRUNC`, `DATE_PART`, `NOW()`, `CURRENT_DATE`, `CURRENT_TIMESTAMP`, `AGE` |
+| JSON | `->`, `->>`, `#>>` operators, `@>` containment, `::jsonb` cast |
+| Functions | 40+ scalar functions: string (`POSITION`, `LPAD`, `REVERSE`, ...), math (`POWER`, `SQRT`, `LN`, ...), conditional (`GREATEST`, `LEAST`, `NULLIF`) |
 | Prepared | `PREPARE name AS ...`, `EXECUTE name(params)`, `DEALLOCATE name` |
 | Utility | `EXPLAIN SELECT ...`, `ANALYZE [table]` |
 | Transactions | `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVEPOINT` |
@@ -307,15 +330,18 @@ python examples/fluent/text_search.py         # BM25, Bayesian BM25, boolean, fa
 python examples/fluent/vector_and_hybrid.py   # KNN, hybrid, vector exclusion, fusion
 python examples/fluent/graph.py               # Traversal, RPQ, pattern matching, indexes
 python examples/fluent/hierarchical.py        # Nested data, path filters, aggregation
+python examples/fluent/multi_paradigm.py      # Multi-signal fusion, graph analytics, query plans
 ```
 
 ### SQL (`examples/sql/`)
 
 ```bash
-python examples/sql/basics.py       # DDL, DML, SELECT, CTE, window, transactions, views
-python examples/sql/functions.py    # text_match, knn_match, path_agg, path_value, path_filter
-python examples/sql/graph.py        # FROM traverse/rpq, aggregates, GROUP BY, WHERE
-python examples/sql/fusion.py       # fuse_log_odds, fuse_prob_and/or/not, EXPLAIN
+python examples/sql/basics.py                 # DDL, DML, SELECT, CTE, window, transactions, views
+python examples/sql/functions.py              # text_match, knn_match, path_agg, path_value, path_filter
+python examples/sql/graph.py                  # FROM traverse/rpq, aggregates, GROUP BY, WHERE
+python examples/sql/fusion.py                 # fuse_log_odds, fuse_prob_and/or/not, EXPLAIN
+python examples/sql/joins_and_subqueries.py   # JOINs, derived tables, set operations, recursive CTE
+python examples/sql/analytics.py              # Aggregates, window functions, JSON, date/time, UPSERT
 ```
 
 ### Interactive Shell
@@ -328,7 +354,7 @@ python usql.py --db mydata.db  # Persistent
 ## Tests
 
 ```bash
-# Run all 999 tests
+# Run all tests
 python -m pytest uqa/tests/ -v
 
 # Run a specific test file
