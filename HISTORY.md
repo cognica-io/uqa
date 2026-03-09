@@ -2,7 +2,7 @@
 
 ## 0.6.0 (2026-03-09)
 
-PostgreSQL 17 SQL compatibility — JOINs, set operations, advanced aggregates, window frames, date/time, JSON, and 40+ scalar functions.
+PostgreSQL 17 SQL compatibility — P0/P1/P2 complete (84/103 features). JOINs, DDL/DML extensions, constraints, advanced aggregates, window frames, date/time, JSON, arrays, sequences, system catalogs, and 80+ scalar functions.
 
 ### JOIN Support
 
@@ -54,45 +54,83 @@ PostgreSQL 17 SQL compatibility — JOINs, set operations, advanced aggregates, 
 - `ROWS BETWEEN` frame clause (UNBOUNDED PRECEDING, n PRECEDING, CURRENT ROW, n FOLLOWING, UNBOUNDED FOLLOWING)
 - `RANGE BETWEEN` frame clause
 - `WINDOW w AS (...)` named window definitions
+- `FILTER (WHERE ...)` on window aggregate functions
 - Running totals, moving averages via window frames
 
 ### Date/Time
 
-- `DATE`, `TIMESTAMP`, `TIMESTAMPTZ` column types (stored as ISO 8601 strings)
+- `DATE`, `TIMESTAMP`, `TIMESTAMPTZ`, `TIME`, `INTERVAL` column types (stored as ISO 8601 strings)
 - `EXTRACT(field FROM col)`: year, month, day, hour, minute, second, dow, doy, epoch, quarter, week
 - `DATE_PART('field', col)` alias for EXTRACT
 - `DATE_TRUNC('precision', col)`: truncation to year, month, day, hour, minute, second, quarter, week
-- `NOW()`, `CURRENT_TIMESTAMP`, `CURRENT_DATE`
+- `NOW()`, `CURRENT_TIMESTAMP`, `CURRENT_DATE`, `CURRENT_TIME`
 - `AGE(timestamp)`, `AGE(timestamp, timestamp)`
+- `TO_CHAR`, `TO_DATE`, `TO_TIMESTAMP`, `MAKE_DATE`, `MAKE_TIMESTAMP`, `MAKE_INTERVAL`, `TO_NUMBER`
+- `OVERLAPS` operator for range overlap testing
 
 ### JSON/JSONB
 
 - `->>` operator: extract field as text
 - `->` operator: extract field as JSON
-- `#>>` operator: extract nested path as text
-- `@>` containment operator with recursive matching
+- `#>` / `#>>` operators: extract nested path as JSON / text
+- `@>` / `<@` containment operators with recursive matching
+- `?` / `?|` / `?&` key existence operators
+- `JSONB_SET(target, path, value)`: set value at JSON path
+- `JSON_BUILD_OBJECT`, `JSON_BUILD_ARRAY`, `JSON_AGG`, `JSON_OBJECT_AGG`
+- `JSON_OBJECT_KEYS`, `JSON_EXTRACT_PATH`, `JSON_TYPEOF`
+- `JSON_EACH` / `JSON_EACH_TEXT` as table functions in FROM clause
+- `JSON_ARRAY_ELEMENTS` / `JSON_ARRAY_ELEMENTS_TEXT` as table functions in FROM clause
 - `::jsonb` type cast for JSON literals
 
 ### Scalar Functions
 
-- String: `POSITION`, `CHAR_LENGTH`/`CHARACTER_LENGTH`, `LPAD`, `RPAD`, `REPEAT`, `REVERSE`, `SPLIT_PART`, `LEFT`, `RIGHT`, `INITCAP`, `TRANSLATE`, `REPLACE`, `REGEXP_REPLACE`, `ENCODE`, `DECODE`, `MD5`, `CHR`, `ASCII`
-- Math: `POWER`/`POW`, `SQRT`, `LOG`, `LN`, `EXP`, `MOD`, `TRUNC`, `SIGN`, `PI`, `RANDOM`, `DEGREES`, `RADIANS`, `DIV`, `GCD`, `LCM`, `FACTORIAL`
+- String: `POSITION`, `CHAR_LENGTH`/`CHARACTER_LENGTH`, `LPAD`, `RPAD`, `REPEAT`, `REVERSE`, `SPLIT_PART`, `LEFT`, `RIGHT`, `INITCAP`, `TRANSLATE`, `REPLACE`, `REGEXP_REPLACE`, `REGEXP_MATCH`, `STARTS_WITH`, `ENCODE`, `DECODE`, `MD5`, `CHR`, `ASCII`, `OCTET_LENGTH`, `FORMAT`, `OVERLAY`
+- Math: `POWER`/`POW`, `SQRT`, `LOG`, `LN`, `EXP`, `MOD`, `TRUNC`, `SIGN`, `PI`, `RANDOM`, `DEGREES`, `RADIANS`, `DIV`, `GCD`, `LCM`, `FACTORIAL`, `CBRT`, `WIDTH_BUCKET`, trig functions (`SIN`, `COS`, `TAN`, `ASIN`, `ACOS`, `ATAN`, `ATAN2`)
 - Conditional: `GREATEST`, `LEAST`, `NULLIF`
+- Type: `UUID`, `BYTEA`, `INTEGER[]` (array) types, `GEN_RANDOM_UUID()`
+- Array: `ARRAY_LENGTH`, `ARRAY_UPPER`, `ARRAY_LOWER`, `ARRAY_CAT`, `ARRAY_APPEND`, `ARRAY_REMOVE`, `CARDINALITY`, `UNNEST`
 - Boolean literal handling (`TRUE`, `FALSE` as `PgBoolean`)
 
 ### DDL/DML
 
 - `CREATE TABLE IF NOT EXISTS`
 - `CREATE TABLE AS SELECT`
-- `INSERT ... ON CONFLICT DO UPDATE` (UPSERT)
-- `DELETE ... RETURNING`
-- `UPDATE ... RETURNING`
+- `CREATE TEMPORARY TABLE` (in-memory storage, skips catalog persistence)
+- `ALTER TABLE`: ADD/DROP/RENAME COLUMN, RENAME TO, SET/DROP DEFAULT, SET/DROP NOT NULL, ALTER COLUMN TYPE ... USING
+- `TRUNCATE TABLE`
+- `CREATE SEQUENCE` / `NEXTVAL` / `CURRVAL` / `SETVAL`
+- Constraints: `UNIQUE`, `CHECK`, `FOREIGN KEY` (with insert/update/delete validation)
+- `INSERT ... ON CONFLICT DO NOTHING/UPDATE` (UPSERT)
+- `INSERT ... RETURNING`, `UPDATE ... RETURNING`, `DELETE ... RETURNING`
+- `UPDATE ... FROM ...` (join in UPDATE)
+- `DELETE ... USING ...` (join in DELETE)
 - `SERIAL` / `BIGSERIAL` auto-increment with sequence tracking
 - TEXT primary key support (auto-generated integer doc_id)
 - `NULLS FIRST` / `NULLS LAST` in ORDER BY
 - Column alias in ORDER BY
 - Ordinal references in ORDER BY (`ORDER BY 1, 2`)
 - `BOOLEAN` column default values (`DEFAULT TRUE/FALSE`)
+- `FETCH FIRST n ROWS ONLY` (SQL standard LIMIT alternative)
+- Standalone `VALUES` query
+
+### Table Functions
+
+- `GENERATE_SERIES(start, stop[, step])` in FROM clause
+- `UNNEST(array)` in FROM clause
+- `JSON_EACH` / `JSON_EACH_TEXT` in FROM clause
+- `JSON_ARRAY_ELEMENTS` / `JSON_ARRAY_ELEMENTS_TEXT` in FROM clause
+
+### System Catalogs
+
+- `information_schema.columns`
+- `pg_catalog.pg_tables`
+- `pg_catalog.pg_views`
+- `pg_catalog.pg_indexes`
+
+### LATERAL Subquery
+
+- `LATERAL` subquery in FROM clause with per-row re-evaluation
+- Outer row columns visible inside the lateral subquery
 
 ### Examples
 
@@ -102,10 +140,12 @@ PostgreSQL 17 SQL compatibility — JOINs, set operations, advanced aggregates, 
 
 ### Tests
 
-- 1311 tests across 34 test files (up from 1000 in v0.5.0)
-- `test_pg17_features.py` — core PostgreSQL 17 features
-- `test_pg17_p1_features.py` — extended SQL compatibility
-- `test_pg17_p2_features.py` — advanced analytics and edge cases
+- 1392 tests across 36 test files (up from 1000 in v0.5.0)
+- `test_pg17_features.py` (97 tests) — P0: core PostgreSQL 17 features
+- `test_pg17_p1_features.py` (135 tests) — P1: extended SQL compatibility
+- `test_pg17_p2_features.py` (79 tests) — P2: types, aggregates, window, JSON, DDL, sequences
+- `test_pg17_p2_remaining.py` (50 tests) — P2: JSON ops, datetime, system catalogs, values, window filter
+- `test_pg17_p2_remaining2.py` (31 tests) — P2: UPDATE FROM, DELETE USING, LATERAL, temp tables, foreign keys
 
 
 ## 0.5.0 (2026-03-08)

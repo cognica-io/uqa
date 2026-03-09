@@ -104,7 +104,7 @@ uqa/
   planner/        Cost model, cardinality estimator, optimizer, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          1311 tests across 34 test files
+  tests/          1392 tests across 36 test files
 ```
 
 ## Key Features
@@ -113,22 +113,26 @@ uqa/
 
 | Category | Syntax |
 |----------|--------|
-| DDL | `CREATE TABLE [IF NOT EXISTS]`, `DROP TABLE [IF EXISTS]`, `CREATE TABLE AS SELECT`, `CREATE INDEX`, `DROP INDEX` |
-| DML | `INSERT INTO ... VALUES`, `INSERT INTO ... SELECT`, `INSERT ... ON CONFLICT DO UPDATE`, `UPDATE ... SET ... WHERE [RETURNING]`, `DELETE FROM ... WHERE [RETURNING]` |
-| DQL | `SELECT [DISTINCT] ... FROM ... WHERE ... GROUP BY ... HAVING ... ORDER BY [NULLS FIRST/LAST] ... LIMIT ... OFFSET` |
-| Joins | `INNER JOIN`, `LEFT JOIN`, `RIGHT JOIN`, `FULL OUTER JOIN`, `CROSS JOIN` with equality and non-equality `ON` conditions |
+| DDL | `CREATE TABLE [IF NOT EXISTS]`, `CREATE TEMPORARY TABLE`, `DROP TABLE [IF EXISTS]`, `CREATE TABLE AS SELECT`, `ALTER TABLE` (ADD/DROP/RENAME COLUMN, SET/DROP DEFAULT, SET/DROP NOT NULL, ALTER TYPE USING), `TRUNCATE TABLE`, `CREATE INDEX`, `DROP INDEX`, `CREATE SEQUENCE`/`NEXTVAL`/`CURRVAL`/`SETVAL` |
+| Constraints | `PRIMARY KEY`, `NOT NULL`, `DEFAULT`, `UNIQUE`, `CHECK`, `FOREIGN KEY` (with insert/update/delete validation) |
+| DML | `INSERT INTO ... VALUES`, `INSERT INTO ... SELECT`, `INSERT ... ON CONFLICT DO NOTHING/UPDATE`, `INSERT ... RETURNING`, `UPDATE ... SET ... WHERE [RETURNING]`, `UPDATE ... FROM` (join), `DELETE FROM ... WHERE [RETURNING]`, `DELETE ... USING` (join) |
+| DQL | `SELECT [DISTINCT] ... FROM ... WHERE ... GROUP BY ... HAVING ... ORDER BY [NULLS FIRST/LAST] ... LIMIT ... OFFSET`, `FETCH FIRST n ROWS ONLY`, standalone `VALUES` |
+| Joins | `INNER JOIN`, `LEFT JOIN`, `RIGHT JOIN`, `FULL OUTER JOIN`, `CROSS JOIN` with equality and non-equality `ON` conditions, `LATERAL` subquery |
 | Set Ops | `UNION [ALL]`, `INTERSECT [ALL]`, `EXCEPT [ALL]` with chaining |
-| Subqueries | `IN (SELECT ...)`, `EXISTS (SELECT ...)`, scalar subqueries, correlated subqueries, derived tables (`FROM (SELECT ...) AS alias`) |
+| Subqueries | `IN (SELECT ...)`, `EXISTS (SELECT ...)`, scalar subqueries, correlated subqueries, derived tables (`FROM (SELECT ...) AS alias`), `LATERAL` |
 | CTEs | `WITH name AS (SELECT ...)`, `WITH RECURSIVE` |
 | Views | `CREATE VIEW`, `DROP VIEW` |
-| Window | `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `NTILE`, `LAG`, `LEAD`, `NTH_VALUE`, `PERCENT_RANK`, `CUME_DIST`, aggregates `OVER (PARTITION BY ... ORDER BY ... ROWS/RANGE BETWEEN ...)`, `WINDOW w AS (...)` |
-| Aggregates | `COUNT [DISTINCT]`, `SUM`, `AVG`, `MIN`, `MAX`, `STRING_AGG`, `ARRAY_AGG`, `BOOL_AND`, `BOOL_OR`, `STDDEV`, `VARIANCE`, `PERCENTILE_CONT/DISC`, `MODE`, `FILTER (WHERE ...)` |
-| Date/Time | `DATE`, `TIMESTAMP` types, `EXTRACT`, `DATE_TRUNC`, `DATE_PART`, `NOW()`, `CURRENT_DATE`, `CURRENT_TIMESTAMP`, `AGE` |
-| JSON | `->`, `->>`, `#>>` operators, `@>` containment, `::jsonb` cast |
-| Functions | 40+ scalar functions: string (`POSITION`, `LPAD`, `REVERSE`, ...), math (`POWER`, `SQRT`, `LN`, ...), conditional (`GREATEST`, `LEAST`, `NULLIF`) |
+| Window | `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `NTILE`, `LAG`, `LEAD`, `NTH_VALUE`, `PERCENT_RANK`, `CUME_DIST`, aggregates `OVER (PARTITION BY ... ORDER BY ... ROWS/RANGE BETWEEN ...)`, `WINDOW w AS (...)`, `FILTER (WHERE ...)` on window aggregates |
+| Aggregates | `COUNT [DISTINCT]`, `SUM`, `AVG`, `MIN`, `MAX`, `STRING_AGG`, `ARRAY_AGG`, `BOOL_AND`/`EVERY`, `BOOL_OR`, `STDDEV`/`VARIANCE`, `PERCENTILE_CONT/DISC`, `MODE`, `JSON_OBJECT_AGG`, `FILTER (WHERE ...)`, `ORDER BY` within aggregate |
+| Types | `INTEGER`, `BIGINT`, `SERIAL`, `TEXT`, `VARCHAR`, `REAL`, `FLOAT`, `DOUBLE PRECISION`, `NUMERIC(p,s)`, `BOOLEAN`, `DATE`, `TIME`, `TIMESTAMP`, `TIMESTAMPTZ`, `INTERVAL`, `JSON`/`JSONB`, `UUID`, `BYTEA`, `INTEGER[]` (arrays), `VECTOR(N)` |
+| Date/Time | `EXTRACT`, `DATE_TRUNC`, `DATE_PART`, `NOW()`, `CURRENT_DATE`, `CURRENT_TIMESTAMP`, `CURRENT_TIME`, `AGE`, `TO_CHAR`, `TO_DATE`, `TO_TIMESTAMP`, `MAKE_DATE`, `MAKE_TIMESTAMP`, `MAKE_INTERVAL`, `TO_NUMBER`, `OVERLAPS` |
+| JSON | `->`, `->>`, `#>`, `#>>` operators, `@>` / `<@` containment, `?` / `?|` / `?&` key existence, `JSONB_SET`, `JSON_BUILD_OBJECT`, `JSON_BUILD_ARRAY`, `JSON_OBJECT_KEYS`, `JSON_EXTRACT_PATH`, `JSON_TYPEOF`, `JSON_AGG`, `::jsonb` cast |
+| Table Funcs | `GENERATE_SERIES`, `UNNEST`, `JSON_EACH`/`JSON_EACH_TEXT`, `JSON_ARRAY_ELEMENTS`/`JSON_ARRAY_ELEMENTS_TEXT` |
+| Functions | 80+ scalar functions: string (`POSITION`, `LPAD`, `REVERSE`, `MD5`, `OVERLAY`, `REGEXP_MATCH`, ...), math (`POWER`, `SQRT`, `LN`, `CBRT`, `GCD`, `LCM`, trig, ...), conditional (`GREATEST`, `LEAST`, `NULLIF`) |
 | Prepared | `PREPARE name AS ...`, `EXECUTE name(params)`, `DEALLOCATE name` |
 | Utility | `EXPLAIN SELECT ...`, `ANALYZE [table]` |
 | Transactions | `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVEPOINT` |
+| System | `information_schema.columns`, `pg_catalog.pg_tables`, `pg_catalog.pg_views`, `pg_catalog.pg_indexes` |
 
 ### Extended WHERE Functions
 
@@ -164,6 +168,10 @@ uqa/
 | `traverse(start, 'label', hops)` | BFS graph traversal |
 | `rpq('path_expr', start)` | Regular path query (NFA simulation) |
 | `text_search('query', 'field', 'table')` | Table-scoped full-text search |
+| `generate_series(start, stop[, step])` | Generate a series of values |
+| `unnest(array)` | Expand an array to a set of rows |
+| `json_each(json)` / `json_each_text(json)` | Expand JSON object to key/value rows |
+| `json_array_elements(json)` | Expand JSON array to a set of rows |
 
 ### Persistence
 

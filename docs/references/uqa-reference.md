@@ -482,6 +482,41 @@ ORDER BY _score DESC;
 | `field` | string | Field to search |
 | `table` | string | Table name (optional; defaults to current table context) |
 
+#### `generate_series(start, stop[, step])`
+
+Generates a series of values from `start` to `stop` with an optional `step` increment. Returns rows with a single `generate_series` column.
+
+```sql
+SELECT * FROM generate_series(1, 5);
+SELECT * FROM generate_series(0, 100, 10);
+```
+
+#### `unnest(array)`
+
+Expands an array to a set of rows. Returns rows with a single `unnest` column.
+
+```sql
+SELECT * FROM unnest(ARRAY[1, 2, 3]);
+```
+
+#### `json_each(json)` / `json_each_text(json)`
+
+Expands a JSON object into a set of key/value rows. `json_each` returns values as JSON; `json_each_text` returns values as text.
+
+```sql
+SELECT key, value FROM json_each('{"a": 1, "b": 2}');
+SELECT key, value FROM json_each_text('{"name": "Alice", "age": "30"}');
+```
+
+#### `json_array_elements(json)` / `json_array_elements_text(json)`
+
+Expands a JSON array into a set of rows. Each row contains a single `value` column.
+
+```sql
+SELECT value FROM json_array_elements('[1, 2, 3]');
+SELECT value FROM json_array_elements_text('["a", "b", "c"]');
+```
+
 
 ## 5. Architecture
 
@@ -535,13 +570,20 @@ All storage backends have two implementations: an in-memory variant for ephemera
 
 The SQL compiler uses pglast (PostgreSQL parser) to parse SQL into an AST, then compiles each statement into the appropriate operation:
 
-- **DDL**: CREATE/DROP TABLE, VIEW, INDEX; PREPARE/EXECUTE/DEALLOCATE
-- **DML**: INSERT, UPDATE, DELETE with WHERE filtering
-- **DQL**: SELECT with DISTINCT, WHERE, GROUP BY, HAVING, ORDER BY, LIMIT, OFFSET
-- **Joins**: INNER JOIN, LEFT JOIN with ON conditions
-- **Subqueries**: IN, EXISTS, scalar, correlated
-- **CTEs**: WITH ... AS
-- **Window functions**: ROW_NUMBER, RANK, DENSE_RANK, NTILE, LAG, LEAD
+- **DDL**: CREATE/DROP TABLE (IF NOT EXISTS/IF EXISTS), CREATE TEMPORARY TABLE, CREATE TABLE AS SELECT, ALTER TABLE (ADD/DROP/RENAME COLUMN, SET/DROP DEFAULT, SET/DROP NOT NULL, ALTER TYPE USING), TRUNCATE TABLE, CREATE/DROP INDEX, CREATE/DROP VIEW, CREATE SEQUENCE/NEXTVAL/CURRVAL/SETVAL, PREPARE/EXECUTE/DEALLOCATE
+- **Constraints**: PRIMARY KEY, NOT NULL, DEFAULT, UNIQUE, CHECK, FOREIGN KEY
+- **DML**: INSERT (VALUES, SELECT, ON CONFLICT DO NOTHING/UPDATE, RETURNING), UPDATE (SET, FROM join, RETURNING), DELETE (WHERE, USING join, RETURNING)
+- **DQL**: SELECT with DISTINCT, WHERE, GROUP BY, HAVING, ORDER BY (NULLS FIRST/LAST), LIMIT, OFFSET, FETCH FIRST n ROWS ONLY, standalone VALUES
+- **Joins**: INNER, LEFT, RIGHT, FULL OUTER, CROSS JOIN with equality and non-equality ON conditions, LATERAL subquery
+- **Subqueries**: IN, EXISTS, scalar, correlated, LATERAL
+- **CTEs**: WITH ... AS, WITH RECURSIVE
+- **Window functions**: ROW_NUMBER, RANK, DENSE_RANK, NTILE, LAG, LEAD, NTH_VALUE, PERCENT_RANK, CUME_DIST with ROWS/RANGE BETWEEN frames, WINDOW w AS (...), FILTER (WHERE ...) on window aggregates
+- **Aggregates**: COUNT/SUM/AVG/MIN/MAX, STRING_AGG, ARRAY_AGG, BOOL_AND/EVERY, BOOL_OR, STDDEV, VARIANCE, PERCENTILE_CONT/DISC, MODE, JSON_OBJECT_AGG, FILTER (WHERE ...), ORDER BY within aggregate
+- **Types**: INTEGER, BIGINT, SERIAL, TEXT, VARCHAR, REAL, FLOAT, DOUBLE PRECISION, NUMERIC(p,s), BOOLEAN, DATE, TIME, TIMESTAMP, TIMESTAMPTZ, INTERVAL, JSON/JSONB, UUID, BYTEA, INTEGER[] (arrays), VECTOR(N)
+- **JSON**: ->, ->>, #>, #>> operators, @>/<@ containment, ?/?|/?& key existence, JSONB_SET, JSON_BUILD_OBJECT/ARRAY, JSON_OBJECT_KEYS, JSON_EXTRACT_PATH, JSON_TYPEOF, JSON_AGG, JSON_EACH, JSON_ARRAY_ELEMENTS
+- **Date/Time**: EXTRACT, DATE_TRUNC, DATE_PART, NOW, CURRENT_DATE/TIME/TIMESTAMP, AGE, TO_CHAR/TO_DATE/TO_TIMESTAMP, MAKE_DATE/MAKE_TIMESTAMP/MAKE_INTERVAL, TO_NUMBER, OVERLAPS
+- **Table functions**: GENERATE_SERIES, UNNEST, JSON_EACH/JSON_EACH_TEXT, JSON_ARRAY_ELEMENTS/JSON_ARRAY_ELEMENTS_TEXT
+- **System catalogs**: information_schema.columns, pg_catalog.pg_tables, pg_catalog.pg_views, pg_catalog.pg_indexes
 - **Transactions**: BEGIN, COMMIT, ROLLBACK, SAVEPOINT
 - **Utility**: EXPLAIN, ANALYZE
 
@@ -635,7 +677,7 @@ CREATE TABLE papers (
 );
 ```
 
-Supported column types: `INTEGER`, `BIGINT`, `SERIAL`, `TEXT`, `VARCHAR`, `REAL`, `FLOAT`, `DOUBLE PRECISION`, `NUMERIC`, `BOOLEAN`, `VECTOR(N)`. The `VECTOR(N)` type creates a per-field HNSW index with N dimensions for use with `knn_match()`.
+Supported column types: `INTEGER`, `BIGINT`, `SERIAL`, `BIGSERIAL`, `TEXT`, `VARCHAR`, `REAL`, `FLOAT`, `DOUBLE PRECISION`, `NUMERIC(p,s)`, `BOOLEAN`, `DATE`, `TIME`, `TIMESTAMP`, `TIMESTAMPTZ`, `INTERVAL`, `JSON`, `JSONB`, `UUID`, `BYTEA`, `INTEGER[]` (arrays), `VECTOR(N)`. The `VECTOR(N)` type creates a per-field HNSW index with N dimensions for use with `knn_match()`.
 
 #### Data Manipulation
 
@@ -645,9 +687,25 @@ INSERT INTO papers (title, year, field, citations) VALUES
     ('bert pre-training', 2019, 'NLP', 75000),
     ('graph neural networks', 2018, 'graph', 45000);
 
-UPDATE papers SET citations = 95000 WHERE title = 'attention is all you need';
+-- UPSERT
+INSERT INTO papers (id, title, year) VALUES (1, 'updated title', 2017)
+ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title;
 
-DELETE FROM papers WHERE citations < 1000;
+-- RETURNING
+INSERT INTO papers (title, year) VALUES ('new paper', 2025) RETURNING *;
+
+UPDATE papers SET citations = 95000
+WHERE title = 'attention is all you need' RETURNING id, citations;
+
+-- UPDATE with FROM join
+UPDATE papers SET citations = s.total
+FROM (SELECT paper_id, SUM(count) AS total FROM citations GROUP BY paper_id) s
+WHERE papers.id = s.paper_id;
+
+DELETE FROM papers WHERE citations < 1000 RETURNING id, title;
+
+-- DELETE with USING join
+DELETE FROM papers USING blacklist WHERE papers.id = blacklist.paper_id;
 ```
 
 #### Relational Queries
@@ -660,9 +718,15 @@ SELECT title, year FROM papers WHERE year >= 2018 ORDER BY year DESC LIMIT 10;
 SELECT field, COUNT(*) AS cnt, AVG(citations) AS avg_cites
 FROM papers GROUP BY field HAVING COUNT(*) > 1;
 
--- Joins
+-- Joins (INNER, LEFT, RIGHT, FULL OUTER, CROSS)
 SELECT p.title, a.name
 FROM papers p INNER JOIN authors a ON p.id = a.paper_id;
+
+-- LATERAL subquery
+SELECT p.title, top.cnt
+FROM papers p, LATERAL (
+    SELECT COUNT(*) AS cnt FROM citations c WHERE c.paper_id = p.id
+) top;
 
 -- Subqueries
 SELECT title FROM papers
@@ -1044,6 +1108,8 @@ python -m pytest uqa/tests/ -v
 python -m pytest uqa/tests/test_sql.py -v
 ```
 
+1392 tests across 36 test files.
+
 Key test areas:
 
 | Test file | Coverage |
@@ -1062,6 +1128,11 @@ Key test areas:
 | `test_cost_optimizer.py` | Cardinality estimation, rewrite rules |
 | `test_parallel.py` | Parallel execution correctness |
 | `test_integration.py` | End-to-end scenarios |
+| `test_pg17_features.py` | P0: core PostgreSQL 17 features (97 tests) |
+| `test_pg17_p1_features.py` | P1: extended SQL compatibility (135 tests) |
+| `test_pg17_p2_features.py` | P2: types, aggregates, window, JSON, DDL (79 tests) |
+| `test_pg17_p2_remaining.py` | P2: JSON ops, datetime, catalogs, values (50 tests) |
+| `test_pg17_p2_remaining2.py` | P2: UPDATE FROM, LATERAL, temp tables, FK (31 tests) |
 
 
 ## 10. References

@@ -57,6 +57,7 @@ class WindowSpec:
     frame_start_offset: int = 0
     frame_end_offset: int = 0
     frame_type: str = "rows"  # "rows" or "range"
+    filter_node: Any = None
 
 
 class FilterOp(PhysicalOperator):
@@ -1088,13 +1089,22 @@ def _compute_window_function(
     # Aggregate window functions (SUM, COUNT, AVG, MIN, MAX, STRING_AGG, etc.)
     if func_name in ("sum", "count", "avg", "min", "max", "string_agg",
                       "array_agg", "bool_and", "bool_or"):
+        # Apply FILTER (WHERE ...) if present
+        filtered_rows = partition_rows
+        if spec.filter_node is not None:
+            from uqa.sql.expr_evaluator import ExprEvaluator
+            evaluator = ExprEvaluator()
+            filtered_rows = [
+                r for r in partition_rows
+                if evaluator.evaluate(spec.filter_node, r)
+            ]
         # Check for explicit frame specification
         if spec.frame_start is not None:
             return _compute_framed_aggregate(
-                func_name, spec.arg_col, partition_rows, spec
+                func_name, spec.arg_col, filtered_rows, spec
             )
         agg_val = _compute_aggregate(
-            func_name, spec.arg_col, partition_rows
+            func_name, spec.arg_col, filtered_rows
         )
         return [agg_val] * n
 

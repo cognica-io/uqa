@@ -8,10 +8,15 @@
 
 Supported statements:
   DDL:
-    CREATE TABLE name (col type [PRIMARY KEY] [NOT NULL] [DEFAULT val], ...)
+    CREATE [TEMPORARY | TEMP] TABLE name (col type [constraints], ...)
+    CREATE [TEMP] TABLE name AS SELECT ...
     DROP TABLE [IF EXISTS] name
     CREATE VIEW name AS SELECT ...
     DROP VIEW [IF EXISTS] name
+  Constraints:
+    PRIMARY KEY, NOT NULL, DEFAULT val, UNIQUE, CHECK (expr)
+    REFERENCES parent(col)           -- column-level FOREIGN KEY
+    FOREIGN KEY (col) REFERENCES parent(col) -- table-level FOREIGN KEY
   DML:
     INSERT INTO name (col, ...) VALUES (val, ...), ...
     UPDATE name SET col = expr, ... [WHERE ...]
@@ -94,6 +99,7 @@ from pglast.ast import (
     CoalesceExpr,
     ColumnDef as PgColumnDef,
     ColumnRef,
+    Constraint as PgConstraint,
     CreateSeqStmt,
     CreateStmt,
     CreateTableAsStmt,
@@ -152,7 +158,13 @@ from uqa.core.types import (
     PostingEntry,
     Predicate,
 )
-from uqa.sql.table import ColumnDef, Table, resolve_type, _AUTO_INCREMENT_TYPES
+from uqa.sql.table import (
+    ColumnDef,
+    ForeignKeyDef,
+    Table,
+    resolve_type,
+    _AUTO_INCREMENT_TYPES,
+)
 
 if TYPE_CHECKING:
     from uqa.engine import Engine
@@ -308,14 +320,45 @@ class SQLCompiler:
 
         columns: list[ColumnDef] = []
         check_exprs: list[tuple[str, Any]] = []
+        fk_defs: list[ForeignKeyDef] = []
         for elt in stmt.tableElts:
-            col, check_expr = self._parse_column_def(elt)
+            # Table-level constraints (e.g., FOREIGN KEY (...) REFERENCES ...)
+            if isinstance(elt, PgConstraint):
+                ct = ConstrType(elt.contype)
+                if ct == ConstrType.CONSTR_FOREIGN:
+                    ref_table = elt.pktable.relname
+                    fk_cols = (
+                        [attr.sval for attr in elt.fk_attrs]
+                        if elt.fk_attrs else []
+                    )
+                    pk_cols = (
+                        [attr.sval for attr in elt.pk_attrs]
+                        if elt.pk_attrs else []
+                    )
+                    for fk_col, pk_col in zip(fk_cols, pk_cols):
+                        fk_defs.append(ForeignKeyDef(
+                            column=fk_col,
+                            ref_table=ref_table,
+                            ref_column=pk_col,
+                        ))
+                continue
+
+            col, check_expr, fk_def = self._parse_column_def(elt)
             columns.append(col)
             if check_expr is not None:
                 check_exprs.append((col.name, check_expr))
+            if fk_def is not None:
+                fk_defs.append(fk_def)
 
-        catalog = self._engine._catalog
-        conn = catalog.conn if catalog is not None else None
+        # Temporary tables always use in-memory storage, even when
+        # the engine has a persistent catalog.
+        is_temp = stmt.relation.relpersistence == 't'
+        if is_temp:
+            conn = None
+        else:
+            catalog = self._engine._catalog
+            conn = catalog.conn if catalog is not None else None
+
         table = Table(table_name, columns, conn=conn)
 
         # Register CHECK constraints with ExprEvaluator closures
@@ -327,10 +370,17 @@ class SQLCompiler:
                     (name, lambda row, e=expr, ev=evaluator: ev.evaluate(e, row))
                 )
 
+        # Register FOREIGN KEY constraints and validators
+        if fk_defs:
+            table.foreign_keys.extend(fk_defs)
+            self._register_fk_validators(table, fk_defs)
+
         self._engine._tables[table_name] = table
 
-        if catalog is not None:
-            catalog.save_table_schema(
+        if is_temp:
+            self._engine._temp_tables.add(table_name)
+        elif self._engine._catalog is not None:
+            self._engine._catalog.save_table_schema(
                 table_name,
                 [
                     {
@@ -386,13 +436,21 @@ class SQLCompiler:
                 python_type=py_type,
             ))
 
-        catalog = self._engine._catalog
-        conn = catalog.conn if catalog is not None else None
+        # Temporary tables always use in-memory storage
+        is_temp = stmt.into.rel.relpersistence == 't'
+        if is_temp:
+            conn = None
+        else:
+            catalog = self._engine._catalog
+            conn = catalog.conn if catalog is not None else None
+
         table = Table(table_name, columns, conn=conn)
         self._engine._tables[table_name] = table
 
-        if catalog is not None:
-            catalog.save_table_schema(
+        if is_temp:
+            self._engine._temp_tables.add(table_name)
+        elif self._engine._catalog is not None:
+            self._engine._catalog.save_table_schema(
                 table_name,
                 [
                     {
@@ -442,7 +500,14 @@ class SQLCompiler:
         }
         return SQLResult([], [])
 
-    def _parse_column_def(self, node: Any) -> tuple[ColumnDef, Any]:
+    def _parse_column_def(
+        self, node: Any,
+    ) -> tuple[ColumnDef, Any, ForeignKeyDef | None]:
+        """Parse a ColumnDef node into (ColumnDef, check_expr, fk_def).
+
+        Returns a triple of column definition, optional CHECK expression
+        AST node, and optional FOREIGN KEY definition.
+        """
         col_name: str = node.colname
         type_names = node.typeName.names
         raw_type, python_type = resolve_type(
@@ -466,6 +531,7 @@ class SQLCompiler:
         default = None
         unique = False
         check_expr = None
+        fk_def: ForeignKeyDef | None = None
 
         if node.constraints:
             for constraint in node.constraints:
@@ -481,6 +547,19 @@ class SQLCompiler:
                     unique = True
                 elif ct == ConstrType.CONSTR_CHECK:
                     check_expr = constraint.raw_expr
+                elif ct == ConstrType.CONSTR_FOREIGN:
+                    ref_table = constraint.pktable.relname
+                    ref_col = (
+                        constraint.pk_attrs[0].sval
+                        if constraint.pk_attrs
+                        else None
+                    )
+                    if ref_col is not None:
+                        fk_def = ForeignKeyDef(
+                            column=col_name,
+                            ref_table=ref_table,
+                            ref_column=ref_col,
+                        )
 
         auto_increment = raw_type in _AUTO_INCREMENT_TYPES
 
@@ -508,7 +587,216 @@ class SQLCompiler:
             unique=unique,
             numeric_precision=numeric_precision,
             numeric_scale=numeric_scale,
-        ), check_expr
+        ), check_expr, fk_def
+
+    def _register_fk_validators(
+        self, table: Table, fk_defs: list[ForeignKeyDef],
+    ) -> None:
+        """Install insert/delete/update validator closures for FK constraints.
+
+        Each closure captures the engine reference so it can look up the
+        referenced (parent) table at validation time.
+        """
+        engine = self._engine
+
+        for fk in fk_defs:
+            fk_col = fk.column
+            ref_table_name = fk.ref_table
+            ref_col = fk.ref_column
+            child_table_name = table.name
+
+            # -- INSERT validator: new FK value must exist in parent ----
+            def _validate_insert(
+                row: dict[str, Any],
+                _fk_col: str = fk_col,
+                _ref_table: str = ref_table_name,
+                _ref_col: str = ref_col,
+                _child_table: str = child_table_name,
+                _engine: Any = engine,
+            ) -> None:
+                value = row.get(_fk_col)
+                if value is None:
+                    return  # NULL FK is allowed
+                parent = _engine._tables.get(_ref_table)
+                if parent is None:
+                    raise ValueError(
+                        f"FOREIGN KEY constraint violated: "
+                        f"referenced table '{_ref_table}' does not exist"
+                    )
+                for doc_id in parent.document_store.doc_ids:
+                    if parent.document_store.get_field(doc_id, _ref_col) == value:
+                        return
+                raise ValueError(
+                    f"FOREIGN KEY constraint violated: "
+                    f"key ({_fk_col})=({value}) in table "
+                    f"'{_child_table}' is not present in "
+                    f"table '{_ref_table}'"
+                )
+
+            table.fk_insert_validators.append(_validate_insert)
+
+            # -- DELETE validator on parent: block if children exist ----
+            def _validate_delete(
+                doc_id: int,
+                _fk_col: str = fk_col,
+                _ref_table: str = ref_table_name,
+                _ref_col: str = ref_col,
+                _child_table: str = child_table_name,
+                _engine: Any = engine,
+            ) -> None:
+                parent = _engine._tables.get(_ref_table)
+                if parent is None:
+                    return
+                ref_value = parent.document_store.get_field(doc_id, _ref_col)
+                if ref_value is None:
+                    return
+                child = _engine._tables.get(_child_table)
+                if child is None:
+                    return
+                for child_id in child.document_store.doc_ids:
+                    child_val = child.document_store.get_field(
+                        child_id, _fk_col
+                    )
+                    if child_val == ref_value:
+                        raise ValueError(
+                            f"FOREIGN KEY constraint violated: "
+                            f"key ({_ref_col})=({ref_value}) in table "
+                            f"'{_ref_table}' is still referenced from "
+                            f"table '{_child_table}'"
+                        )
+
+            # Register on the parent table (if it exists now).
+            # Also defer: if the parent is created later, the
+            # validator is registered when the parent is available.
+            parent_table = engine._tables.get(ref_table_name)
+            if parent_table is not None:
+                parent_table.fk_delete_validators.append(_validate_delete)
+            # Store the validator for deferred registration as well.
+            table._pending_parent_delete_validators = getattr(
+                table, "_pending_parent_delete_validators", []
+            )
+            table._pending_parent_delete_validators.append(
+                (ref_table_name, _validate_delete)
+            )
+
+            # -- UPDATE validator: combined insert + parent checks -----
+            def _validate_update(
+                old_doc: dict[str, Any],
+                new_doc: dict[str, Any],
+                _fk_col: str = fk_col,
+                _ref_table: str = ref_table_name,
+                _ref_col: str = ref_col,
+                _child_table: str = child_table_name,
+                _engine: Any = engine,
+            ) -> None:
+                new_value = new_doc.get(_fk_col)
+                old_value = old_doc.get(_fk_col)
+                # If FK column did not change, nothing to validate
+                if new_value == old_value:
+                    return
+                if new_value is None:
+                    return  # Setting FK to NULL is allowed
+                parent = _engine._tables.get(_ref_table)
+                if parent is None:
+                    raise ValueError(
+                        f"FOREIGN KEY constraint violated: "
+                        f"referenced table '{_ref_table}' does not exist"
+                    )
+                for doc_id in parent.document_store.doc_ids:
+                    if parent.document_store.get_field(doc_id, _ref_col) == new_value:
+                        return
+                raise ValueError(
+                    f"FOREIGN KEY constraint violated: "
+                    f"key ({_fk_col})=({new_value}) in table "
+                    f"'{_child_table}' is not present in "
+                    f"table '{_ref_table}'"
+                )
+
+            table.fk_update_validators.append(_validate_update)
+
+            # -- UPDATE validator on parent: block PK change if
+            #    children reference old value -------------------------
+            def _validate_parent_update(
+                old_doc: dict[str, Any],
+                new_doc: dict[str, Any],
+                _fk_col: str = fk_col,
+                _ref_table: str = ref_table_name,
+                _ref_col: str = ref_col,
+                _child_table: str = child_table_name,
+                _engine: Any = engine,
+            ) -> None:
+                old_value = old_doc.get(_ref_col)
+                new_value = new_doc.get(_ref_col)
+                if old_value == new_value:
+                    return
+                if old_value is None:
+                    return
+                child = _engine._tables.get(_child_table)
+                if child is None:
+                    return
+                for child_id in child.document_store.doc_ids:
+                    child_val = child.document_store.get_field(
+                        child_id, _fk_col
+                    )
+                    if child_val == old_value:
+                        raise ValueError(
+                            f"FOREIGN KEY constraint violated: "
+                            f"key ({_ref_col})=({old_value}) in table "
+                            f"'{_ref_table}' is still referenced from "
+                            f"table '{_child_table}'"
+                        )
+
+            if parent_table is not None:
+                parent_table.fk_update_validators.append(
+                    _validate_parent_update
+                )
+            table._pending_parent_update_validators = getattr(
+                table, "_pending_parent_update_validators", []
+            )
+            table._pending_parent_update_validators.append(
+                (ref_table_name, _validate_parent_update)
+            )
+
+        # Attempt deferred registration of parent validators
+        # for all FK defs that reference tables created after
+        # the child table.
+        self._resolve_pending_fk_validators()
+
+    def _resolve_pending_fk_validators(self) -> None:
+        """Register any pending parent-side FK validators.
+
+        When a child table is created before its parent, the delete
+        and update validators for the parent cannot be installed
+        immediately.  This method iterates all tables and installs
+        any pending validators whose parent tables now exist.
+        """
+        engine = self._engine
+        for table in engine._tables.values():
+            pending_del = getattr(
+                table, "_pending_parent_delete_validators", []
+            )
+            remaining_del: list[tuple[str, Any]] = []
+            for ref_table_name, validator in pending_del:
+                parent = engine._tables.get(ref_table_name)
+                if parent is not None:
+                    if validator not in parent.fk_delete_validators:
+                        parent.fk_delete_validators.append(validator)
+                else:
+                    remaining_del.append((ref_table_name, validator))
+            table._pending_parent_delete_validators = remaining_del
+
+            pending_upd = getattr(
+                table, "_pending_parent_update_validators", []
+            )
+            remaining_upd: list[tuple[str, Any]] = []
+            for ref_table_name, validator in pending_upd:
+                parent = engine._tables.get(ref_table_name)
+                if parent is not None:
+                    if validator not in parent.fk_update_validators:
+                        parent.fk_update_validators.append(validator)
+                else:
+                    remaining_upd.append((ref_table_name, validator))
+            table._pending_parent_update_validators = remaining_upd
 
     def _compile_drop(self, stmt: DropStmt) -> SQLResult:
         """Dispatch DROP TABLE / DROP INDEX / DROP VIEW based on removeType."""
@@ -527,6 +815,7 @@ class SQLCompiler:
                 if index_manager is not None:
                     index_manager.drop_indexes_for_table(table_name)
                 del self._engine._tables[table_name]
+                self._engine._temp_tables.discard(table_name)
                 if self._engine._catalog is not None:
                     self._engine._catalog.drop_table_schema(table_name)
             elif not stmt.missing_ok:
@@ -559,7 +848,9 @@ class SQLCompiler:
             at = AlterTableType(cmd.subtype)
 
             if at == AlterTableType.AT_AddColumn:
-                col_def, check_expr = self._parse_column_def(cmd.def_)
+                col_def, check_expr, fk_def = self._parse_column_def(
+                    cmd.def_
+                )
                 if col_def.name in table.columns:
                     raise ValueError(
                         f"Column '{col_def.name}' already exists "
@@ -573,6 +864,9 @@ class SQLCompiler:
                         (col_def.name,
                          lambda row, e=check_expr, v=ev: v.evaluate(e, row))
                     )
+                if fk_def is not None:
+                    table.foreign_keys.append(fk_def)
+                    self._register_fk_validators(table, [fk_def])
 
             elif at == AlterTableType.AT_DropColumn:
                 col_name = cmd.name
@@ -999,6 +1293,10 @@ class SQLCompiler:
         if table is None:
             raise ValueError(f"Table '{table_name}' does not exist")
 
+        # Multi-table UPDATE: UPDATE t1 SET ... FROM t2 WHERE ...
+        if stmt.fromClause is not None:
+            return self._compile_update_from(stmt, table)
+
         # Find matching doc_ids via WHERE clause
         ctx = self._context_for_table(table)
         if stmt.whereClause is not None:
@@ -1051,6 +1349,10 @@ class SQLCompiler:
                 else:
                     new_doc.pop(col_name, None)
 
+            # Validate FOREIGN KEY constraints for the update
+            for fk_validator in table.fk_update_validators:
+                fk_validator(old_doc, new_doc)
+
             # Remove old inverted index entries
             table.inverted_index.remove_document(doc_id)
 
@@ -1078,6 +1380,131 @@ class SQLCompiler:
             return SQLResult(cols, returning_rows)
         return SQLResult(["updated"], [{"updated": updated}])
 
+    def _compile_update_from(
+        self, stmt: UpdateStmt, table: Table
+    ) -> SQLResult:
+        """UPDATE t1 SET col = expr FROM t2 [, t3, ...] WHERE condition."""
+        import itertools
+        from uqa.sql.expr_evaluator import ExprEvaluator
+
+        table_name = stmt.relation.relname
+        table_alias = (
+            stmt.relation.alias.aliasname
+            if stmt.relation.alias is not None
+            else table_name
+        )
+
+        # Resolve FROM tables
+        from_tables: list[tuple[Table, str]] = []
+        for from_node in stmt.fromClause:
+            ft, _op, fa = self._resolve_from_single(from_node)
+            if ft is None:
+                raise ValueError("UPDATE FROM requires table references")
+            from_tables.append((ft, fa or ft.name))
+
+        evaluator = ExprEvaluator(subquery_executor=self._compile_select)
+
+        # Parse SET clause
+        set_targets: list[tuple[str, Any]] = []
+        for target in stmt.targetList:
+            col_name = target.name
+            if col_name not in table.columns:
+                raise ValueError(
+                    f"Unknown column '{col_name}' for table '{table_name}'"
+                )
+            set_targets.append((col_name, target.val))
+
+        returning_rows: list[dict[str, Any]] = []
+        updated = 0
+
+        # Nested-loop join: for each target row, check against FROM rows
+        for doc_id in list(table.document_store.doc_ids):
+            target_doc = table.document_store.get(doc_id)
+            if target_doc is None:
+                continue
+
+            # Build qualified row for the target table
+            target_row = dict(target_doc)
+            for k, v in list(target_doc.items()):
+                target_row[f"{table_alias}.{k}"] = v
+
+            # Try all combinations of FROM rows
+            from_row_lists: list[list[dict[str, Any]]] = []
+            for ft, fa in from_tables:
+                ft_rows: list[dict[str, Any]] = []
+                for fid in ft.document_store.doc_ids:
+                    fdoc = ft.document_store.get(fid)
+                    if fdoc is not None:
+                        qualified: dict[str, Any] = dict(fdoc)
+                        for k, v in list(fdoc.items()):
+                            qualified[f"{fa}.{k}"] = v
+                        ft_rows.append(qualified)
+                from_row_lists.append(ft_rows)
+
+            # Cartesian product of FROM rows (usually just 1 FROM table)
+            from_combos = (
+                list(itertools.product(*from_row_lists))
+                if from_row_lists
+                else [()]
+            )
+
+            for combo in from_combos:
+                merged = dict(target_row)
+                for from_row in combo:
+                    merged.update(from_row)
+
+                if stmt.whereClause is not None:
+                    if not evaluator.evaluate(stmt.whereClause, merged):
+                        continue
+
+                # Apply SET expressions
+                new_doc = dict(target_doc)
+                for col_name, val_node in set_targets:
+                    new_value = evaluator.evaluate(val_node, merged)
+                    col_def = table.columns[col_name]
+                    if new_value is not None:
+                        new_doc[col_name] = col_def.python_type(new_value)
+                    elif col_def.not_null:
+                        raise ValueError(
+                            f"NOT NULL constraint violated: "
+                            f"column '{col_name}' in table '{table_name}'"
+                        )
+                    else:
+                        new_doc.pop(col_name, None)
+
+                table.inverted_index.remove_document(doc_id)
+                table.document_store.put(doc_id, new_doc)
+                text_fields = {
+                    k: v for k, v in new_doc.items()
+                    if isinstance(v, str)
+                }
+                if text_fields:
+                    table.inverted_index.add_document(doc_id, text_fields)
+
+                if stmt.returningList:
+                    returning_rows.append(
+                        self._project_returning(
+                            new_doc, stmt.returningList, table
+                        )
+                    )
+                updated += 1
+                break  # Only update once per target row
+
+        # Clean up expanded FROM tables
+        for name in list(self._expanded_views):
+            if name in self._shadowed_tables:
+                self._engine._tables[name] = (
+                    self._shadowed_tables.pop(name)
+                )
+            else:
+                self._engine._tables.pop(name, None)
+        self._expanded_views.clear()
+
+        if stmt.returningList:
+            cols = self._returning_columns(stmt.returningList, table)
+            return SQLResult(cols, returning_rows)
+        return SQLResult(["updated"], [{"updated": updated}])
+
     # ==================================================================
     # DML: DELETE
     # ==================================================================
@@ -1087,6 +1514,10 @@ class SQLCompiler:
         table = self._engine._tables.get(table_name)
         if table is None:
             raise ValueError(f"Table '{table_name}' does not exist")
+
+        # Multi-table DELETE: DELETE FROM t1 USING t2 WHERE ...
+        if stmt.usingClause is not None:
+            return self._compile_delete_using(stmt, table)
 
         # Find matching doc_ids via WHERE clause
         ctx = self._context_for_table(table)
@@ -1104,6 +1535,11 @@ class SQLCompiler:
                 return SQLResult(cols, [])
             return SQLResult(["deleted"], [{"deleted": 0}])
 
+        # Validate FOREIGN KEY constraints before deletion
+        for doc_id in matching_ids:
+            for fk_validator in table.fk_delete_validators:
+                fk_validator(doc_id)
+
         returning_rows: list[dict[str, Any]] = []
         deleted = 0
         for doc_id in matching_ids:
@@ -1119,6 +1555,99 @@ class SQLCompiler:
             table.inverted_index.remove_document(doc_id)
             table.document_store.delete(doc_id)
             deleted += 1
+
+        if stmt.returningList:
+            cols = self._returning_columns(stmt.returningList, table)
+            return SQLResult(cols, returning_rows)
+        return SQLResult(["deleted"], [{"deleted": deleted}])
+
+    def _compile_delete_using(
+        self, stmt: DeleteStmt, table: Table
+    ) -> SQLResult:
+        """DELETE FROM t1 USING t2 [, t3, ...] WHERE condition."""
+        import itertools
+        from uqa.sql.expr_evaluator import ExprEvaluator
+
+        table_name = stmt.relation.relname
+        table_alias = (
+            stmt.relation.alias.aliasname
+            if stmt.relation.alias is not None
+            else table_name
+        )
+
+        # Resolve USING tables
+        using_tables: list[tuple[Table, str]] = []
+        for using_node in stmt.usingClause:
+            ut, _op, ua = self._resolve_from_single(using_node)
+            if ut is None:
+                raise ValueError("DELETE USING requires table references")
+            using_tables.append((ut, ua or ut.name))
+
+        evaluator = ExprEvaluator(subquery_executor=self._compile_select)
+
+        returning_rows: list[dict[str, Any]] = []
+        to_delete: list[int] = []
+
+        for doc_id in list(table.document_store.doc_ids):
+            target_doc = table.document_store.get(doc_id)
+            if target_doc is None:
+                continue
+
+            target_row = dict(target_doc)
+            for k, v in list(target_doc.items()):
+                target_row[f"{table_alias}.{k}"] = v
+
+            using_row_lists: list[list[dict[str, Any]]] = []
+            for ut, ua in using_tables:
+                ut_rows: list[dict[str, Any]] = []
+                for uid in ut.document_store.doc_ids:
+                    udoc = ut.document_store.get(uid)
+                    if udoc is not None:
+                        qualified: dict[str, Any] = dict(udoc)
+                        for k, v in list(udoc.items()):
+                            qualified[f"{ua}.{k}"] = v
+                        ut_rows.append(qualified)
+                using_row_lists.append(ut_rows)
+
+            using_combos = (
+                list(itertools.product(*using_row_lists))
+                if using_row_lists
+                else [()]
+            )
+
+            for combo in using_combos:
+                merged = dict(target_row)
+                for using_row in combo:
+                    merged.update(using_row)
+
+                if stmt.whereClause is not None:
+                    if not evaluator.evaluate(stmt.whereClause, merged):
+                        continue
+
+                if stmt.returningList:
+                    returning_rows.append(
+                        self._project_returning(
+                            target_doc, stmt.returningList, table
+                        )
+                    )
+                to_delete.append(doc_id)
+                break  # Only delete once per row
+
+        deleted = 0
+        for doc_id in to_delete:
+            table.inverted_index.remove_document(doc_id)
+            table.document_store.delete(doc_id)
+            deleted += 1
+
+        # Clean up expanded USING tables
+        for name in list(self._expanded_views):
+            if name in self._shadowed_tables:
+                self._engine._tables[name] = (
+                    self._shadowed_tables.pop(name)
+                )
+            else:
+                self._engine._tables.pop(name, None)
+        self._expanded_views.clear()
 
         if stmt.returningList:
             cols = self._returning_columns(stmt.returningList, table)
@@ -2165,6 +2694,10 @@ class SQLCompiler:
     def _compile_select_body(
         self, stmt: SelectStmt, *, explain: bool = False
     ) -> SQLResult:
+        # Handle standalone VALUES
+        if stmt.valuesLists is not None:
+            return self._compile_values(stmt)
+
         # 0. Handle set operations (UNION / INTERSECT / EXCEPT)
         if stmt.op is not None and stmt.op != SetOperation.SETOP_NONE:
             return self._compile_set_operation(stmt)
@@ -2211,6 +2744,55 @@ class SQLCompiler:
             deferred_where=deferred_where,
             join_source=join_source,
         )
+
+    def _compile_values(self, stmt: SelectStmt) -> SQLResult:
+        """Handle standalone VALUES (1, 'a'), (2, 'b') queries."""
+        rows: list[dict[str, Any]] = []
+        num_cols = len(stmt.valuesLists[0]) if stmt.valuesLists else 0
+        columns = [f"column{i + 1}" for i in range(num_cols)]
+
+        for row_values in stmt.valuesLists:
+            row: dict[str, Any] = {}
+            for i, val_node in enumerate(row_values):
+                row[columns[i]] = self._extract_insert_value(val_node)
+            rows.append(row)
+
+        # Apply ORDER BY if present
+        if stmt.sortClause is not None:
+            from uqa.execution.relational import SortOp
+            sort_keys: list[tuple[str, bool, bool]] = []
+            for s in stmt.sortClause:
+                is_desc = s.sortby_dir == SortByDir.SORTBY_DESC
+                if s.sortby_nulls == SortByNulls.SORTBY_NULLS_FIRST:
+                    nulls_first = True
+                elif s.sortby_nulls == SortByNulls.SORTBY_NULLS_LAST:
+                    nulls_first = False
+                else:
+                    nulls_first = is_desc
+                if (isinstance(s.node, A_Const)
+                        and isinstance(s.node.val, PgInteger)):
+                    ordinal = s.node.val.ival
+                    if 1 <= ordinal <= num_cols:
+                        col = columns[ordinal - 1]
+                    else:
+                        raise ValueError(
+                            f"ORDER BY position {ordinal} is not in "
+                            f"select list"
+                        )
+                else:
+                    col = self._extract_column_name(s.node)
+                sort_keys.append((col, is_desc, nulls_first))
+            SortOp._sort_rows(rows, sort_keys)
+
+        # Apply LIMIT/OFFSET
+        if stmt.limitCount is not None:
+            offset = 0
+            if stmt.limitOffset is not None:
+                offset = self._extract_int_value(stmt.limitOffset)
+            limit = self._extract_int_value(stmt.limitCount)
+            rows = rows[offset:offset + limit]
+
+        return SQLResult(columns, rows)
 
     # -- Set operations (UNION / INTERSECT / EXCEPT) -------------------
 
@@ -2650,6 +3232,8 @@ class SQLCompiler:
             return self._build_pg_tables()
         if view_name == "pg_views":
             return self._build_pg_views()
+        if view_name == "pg_indexes":
+            return self._build_pg_indexes()
         raise ValueError(f"Unknown pg_catalog view: '{view_name}'")
 
     def _build_pg_tables(self) -> tuple[Table, None]:
@@ -2688,6 +3272,32 @@ class SQLCompiler:
         self._expanded_views.append(name)
         return table, None
 
+    def _build_pg_indexes(self) -> tuple[Table, None]:
+        """Build pg_catalog.pg_indexes from engine state."""
+        columns = ["schemaname", "tablename", "indexname", "tablespace", "indexdef"]
+        rows: list[dict[str, Any]] = []
+        index_manager = getattr(self._engine, "_index_manager", None)
+        if index_manager is not None:
+            for idx in index_manager._indexes.values():
+                idx_def = idx.index_def
+                rows.append({
+                    "schemaname": "public",
+                    "tablename": idx_def.table_name,
+                    "indexname": idx_def.name,
+                    "tablespace": "",
+                    "indexdef": (
+                        f"CREATE INDEX {idx_def.name} ON "
+                        f"{idx_def.table_name} "
+                        f"({', '.join(idx_def.columns)})"
+                    ),
+                })
+        result = SQLResult(columns, rows)
+        name = "_pg_indexes"
+        table = self._result_to_table(name, result)
+        self._engine._tables[name] = table
+        self._expanded_views.append(name)
+        return table, None
+
     # -- FROM clause ---------------------------------------------------
 
     def _resolve_from(
@@ -2716,6 +3326,16 @@ class SQLCompiler:
             op = _TableScanOperator(table, alias=alias)
 
         for node in from_clause[1:]:
+            # LATERAL subquery: re-evaluate per left row
+            if isinstance(node, RangeSubselect) and node.lateral:
+                lateral_alias = (
+                    node.alias.aliasname if node.alias else "_lateral"
+                )
+                op = _LateralJoinOperator(
+                    op, node.subquery, lateral_alias, self
+                )
+                continue
+
             right_table, right_op, right_alias = (
                 self._resolve_from_single(node)
             )
@@ -2830,6 +3450,11 @@ class SQLCompiler:
             return self._build_generate_series(node, args)
         if name == "unnest":
             return self._build_unnest(node, args)
+        if name in ("json_each", "jsonb_each", "json_each_text", "jsonb_each_text"):
+            return self._build_json_each(node, args, as_text=name.endswith("_text"))
+        if name in ("json_array_elements", "jsonb_array_elements",
+                     "json_array_elements_text", "jsonb_array_elements_text"):
+            return self._build_json_array_elements(node, args, as_text=name.endswith("_text"))
         raise ValueError(f"Unknown table function: {name}")
 
     @staticmethod
@@ -2848,7 +3473,10 @@ class SQLCompiler:
         from uqa.joins.base import JoinOperator
         from uqa.joins.cross import CrossJoinOperator
         return isinstance(
-            op, (JoinOperator, CrossJoinOperator, _ExprJoinOperator)
+            op, (
+                JoinOperator, CrossJoinOperator,
+                _ExprJoinOperator, _LateralJoinOperator,
+            )
         )
 
     def _build_traverse_from(
@@ -3029,6 +3657,106 @@ class SQLCompiler:
         self._expanded_views.append(alias_name)
         return table, None
 
+    def _build_json_each(
+        self, node: RangeFunction, args: tuple, *, as_text: bool = False
+    ) -> tuple[Table | None, Any]:
+        """Build json_each(json) / json_each_text(json) as a table function."""
+        from uqa.sql.expr_evaluator import ExprEvaluator
+        from uqa.sql.table import ColumnDef as SqlColumnDef
+
+        if not args:
+            raise ValueError("json_each requires 1 argument")
+
+        evaluator = ExprEvaluator()
+        obj = evaluator.evaluate(args[0], {})
+        if isinstance(obj, str):
+            import json as json_mod
+            obj = json_mod.loads(obj)
+        if not isinstance(obj, dict):
+            raise ValueError("json_each argument must be a JSON object")
+
+        # Determine column names from alias
+        key_col = "key"
+        val_col = "value"
+        if node.alias is not None:
+            if node.alias.colnames and len(node.alias.colnames) >= 2:
+                key_col = node.alias.colnames[0].sval
+                val_col = node.alias.colnames[1].sval
+            alias_name = node.alias.aliasname
+        else:
+            alias_name = "json_each"
+
+        import json as json_mod_inner
+
+        cols = [
+            SqlColumnDef(
+                name=key_col, type_name="text", python_type=str
+            ),
+            SqlColumnDef(
+                name=val_col, type_name="text", python_type=str
+            ),
+        ]
+        table = Table(alias_name, cols)
+        for k, v in obj.items():
+            if as_text:
+                val = str(v)
+            elif isinstance(v, str):
+                val = v
+            else:
+                val = json_mod_inner.dumps(v)
+            table.insert({key_col: k, val_col: val})
+
+        self._engine._tables[alias_name] = table
+        self._expanded_views.append(alias_name)
+        return table, None
+
+    def _build_json_array_elements(
+        self, node: RangeFunction, args: tuple, *, as_text: bool = False
+    ) -> tuple[Table | None, Any]:
+        """Build json_array_elements(json) as a table function."""
+        from uqa.sql.expr_evaluator import ExprEvaluator
+        from uqa.sql.table import ColumnDef as SqlColumnDef
+
+        if not args:
+            raise ValueError("json_array_elements requires 1 argument")
+
+        evaluator = ExprEvaluator()
+        arr = evaluator.evaluate(args[0], {})
+        if isinstance(arr, str):
+            import json as json_mod
+            arr = json_mod.loads(arr)
+        if not isinstance(arr, list):
+            raise ValueError(
+                "json_array_elements argument must be a JSON array"
+            )
+
+        col_name = "value"
+        if node.alias is not None:
+            if node.alias.colnames:
+                col_name = node.alias.colnames[0].sval
+            alias_name = node.alias.aliasname
+        else:
+            alias_name = "json_array_elements"
+
+        import json as json_mod_inner
+
+        col = SqlColumnDef(
+            name=col_name, type_name="text", python_type=str
+        )
+        table = Table(alias_name, [col])
+        for val in arr:
+            if as_text:
+                actual = str(val)
+            elif isinstance(val, str):
+                actual = val
+            else:
+                actual = json_mod_inner.dumps(val)
+            table.insert({col_name: actual})
+
+        self._engine._tables[alias_name] = table
+        self._expanded_views.append(alias_name)
+        return table, None
+
     # -- JOIN ----------------------------------------------------------
 
     def _resolve_join(
@@ -3046,6 +3774,22 @@ class SQLCompiler:
         left_table, left_op, left_alias = self._resolve_from_single(
             node.larg
         )
+
+        # LATERAL subquery on the right side of a JOIN
+        if isinstance(node.rarg, RangeSubselect) and node.rarg.lateral:
+            if left_op is None and left_table is not None:
+                left_op = _TableScanOperator(left_table, alias=left_alias)
+            elif left_op is None:
+                left_op = _ScanOperator()
+            lateral_alias = (
+                node.rarg.alias.aliasname
+                if node.rarg.alias else "_lateral"
+            )
+            lateral_op = _LateralJoinOperator(
+                left_op, node.rarg.subquery, lateral_alias, self
+            )
+            return left_table, lateral_op
+
         right_table, right_op, right_alias = self._resolve_from_single(
             node.rarg
         )
@@ -3809,6 +4553,7 @@ class SQLCompiler:
                 frame_start_offset=frame_start_offset,
                 frame_end_offset=frame_end_offset,
                 frame_type=frame_type,
+                filter_node=val.agg_filter,
             ))
 
         return specs
@@ -4269,6 +5014,99 @@ class _ExprJoinOperator:
                     )
                 )
         return GeneralizedPostingList(result)
+
+
+
+class _LateralJoinOperator:
+    """LATERAL subquery join operator.
+
+    For each row from the left source, executes the subquery with that
+    row's columns available as correlated references, then produces
+    the cross product of left rows with their corresponding subquery
+    results.
+    """
+
+    def __init__(
+        self,
+        left: object,
+        subquery: Any,
+        alias: str,
+        compiler: SQLCompiler,
+    ) -> None:
+        self._left = left
+        self._subquery = subquery
+        self._alias = alias
+        self._compiler = compiler
+
+    def execute(self, context: object) -> Any:
+        from uqa.core.posting_list import GeneralizedPostingList
+        from uqa.core.types import GeneralizedPostingEntry, Payload
+
+        left_entries = _get_join_entries(self._left, context)
+        result: list = []
+        alias = self._alias
+
+        for left_entry in left_entries:
+            left_fields = left_entry.payload.fields
+
+            # Inject left row columns into a temporary table so the
+            # subquery WHERE clause can reference them via ExprEvaluator.
+            # We create a temporary table with a single row that holds
+            # the left side columns, then execute the subquery.
+            sub_result = self._execute_lateral_subquery(left_fields)
+
+            for row in sub_result.rows:
+                # Build qualified right-side fields
+                right_fields: dict[str, Any] = {}
+                for k, v in row.items():
+                    right_fields[k] = v
+                    right_fields[f"{alias}.{k}"] = v
+
+                merged = {**left_fields, **right_fields}
+                result.append(
+                    GeneralizedPostingEntry(
+                        doc_ids=(_entry_doc_id(left_entry),),
+                        payload=Payload(
+                            score=left_entry.payload.score,
+                            fields=merged,
+                        ),
+                    )
+                )
+
+        return GeneralizedPostingList(result)
+
+    def _execute_lateral_subquery(
+        self, left_fields: dict[str, Any]
+    ) -> SQLResult:
+        """Execute the lateral subquery with left-row columns injected.
+
+        Rewrites the subquery AST by replacing outer ColumnRef nodes
+        (references to columns from the left-side tables) with
+        A_Const nodes containing the actual values from the current
+        left row.  This is the same approach used for correlated
+        subqueries.
+        """
+        import copy
+        from uqa.sql.expr_evaluator import ExprEvaluator
+
+        evaluator = ExprEvaluator()
+
+        # Build outer_row dict for substitution (unqualified keys)
+        outer_row: dict[str, Any] = {}
+        for k, v in left_fields.items():
+            if "." not in k:
+                outer_row[k] = v
+
+        # Deep-copy the subquery AST and substitute outer references
+        subquery_copy = copy.deepcopy(self._subquery)
+        rewritten = evaluator._substitute_correlated_refs(
+            subquery_copy, outer_row
+        )
+
+        return self._compiler._compile_select(rewritten)
+
+    def cost_estimate(self, stats: Any) -> float:
+        return 1000.0
 
 
 class _CalibratedKNNOperator:

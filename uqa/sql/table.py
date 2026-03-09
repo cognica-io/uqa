@@ -101,6 +101,19 @@ class ColumnDef:
     numeric_scale: int | None = None
 
 
+@dataclass(slots=True)
+class ForeignKeyDef:
+    """Foreign key constraint definition.
+
+    Represents a REFERENCES constraint from *column* in this table
+    to *ref_column* in *ref_table*.
+    """
+
+    column: str
+    ref_table: str
+    ref_column: str
+
+
 class Table:
     """A named table with schema, backed by UQA storage.
 
@@ -128,6 +141,23 @@ class Table:
         # CHECK constraints: list of (name, evaluator_callable).
         # Each callable takes a row dict and returns True/False.
         self.check_constraints: list[tuple[str, Any]] = []
+
+        # FOREIGN KEY constraints: structural definitions.
+        self.foreign_keys: list[ForeignKeyDef] = []
+
+        # FK validators: list of callables installed by the compiler.
+        # Each callable takes a row dict, raises ValueError on violation.
+        self.fk_insert_validators: list[Any] = []
+
+        # FK delete validators: list of callables installed by the
+        # compiler.  Each callable takes a doc_id, raises ValueError
+        # if child rows reference this row.
+        self.fk_delete_validators: list[Any] = []
+
+        # FK update validators: list of callables installed by the
+        # compiler.  Each callable takes (old_doc, new_doc), raises
+        # ValueError on violation.
+        self.fk_update_validators: list[Any] = []
 
         # Filter out vector columns -- they are not stored in the
         # document store (they live in per-field HNSW indexes instead).
@@ -242,6 +272,10 @@ class Table:
                     f"CHECK constraint '{constraint_name}' violated "
                     f"in table '{self.name}'"
                 )
+
+        # -- FOREIGN KEY constraint validation -------------------------
+        for fk_validator in self.fk_insert_validators:
+            fk_validator(row)
 
         # -- unknown column check -------------------------------------
         for col_name in row:

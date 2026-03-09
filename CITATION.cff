@@ -24,3 +24,5 @@ keywords:
   - bayesian-bm25
   - posting-list
   - multi-paradigm-database
+  - postgresql-compatible
+  - sql-engine

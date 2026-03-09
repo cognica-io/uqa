@@ -45,6 +45,7 @@ class Engine:
         self._views: dict[str, Any] = {}  # name -> SelectStmt AST
         self._prepared: dict[str, Any] = {}  # name -> PrepareStmt AST
         self._sequences: dict[str, dict[str, int]] = {}
+        self._temp_tables: set[str] = set()
 
         # Persistence and transactions
         self._catalog: Catalog | None = None
@@ -307,10 +308,19 @@ class Engine:
         return compiler.execute(query, params=params)
 
     def close(self) -> None:
-        """Close the persistent catalog (no-op if in-memory only)."""
+        """Close the engine and clean up resources.
+
+        Drops all temporary tables and closes the persistent catalog.
+        """
         if self._transaction is not None and self._transaction.active:
             self._transaction.rollback()
             self._transaction = None
+
+        # Drop all temporary tables (session-scoped)
+        for table_name in list(self._temp_tables):
+            self._tables.pop(table_name, None)
+        self._temp_tables.clear()
+
         if self._catalog is not None:
             self._catalog.close()
             self._catalog = None

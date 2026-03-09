@@ -219,6 +219,16 @@ class ExprEvaluator:
             return _json_contains(left, right)
         if op == "<@":
             return _json_contains(right, left)
+        if op == "?":
+            return _json_has_key(left, right)
+        if op == "?|":
+            return _json_has_any_key(left, right)
+        if op == "?&":
+            return _json_has_all_keys(left, right)
+
+        if op == "overlaps":
+            # (start1, end1) OVERLAPS (start2, end2) comes as special operator
+            return _overlaps(left, right)
 
         # String concatenation
         if op == "||":
@@ -702,6 +712,66 @@ def _json_contains(container: Any, contained: Any) -> bool:
     return container == contained
 
 
+def _json_has_key(obj: Any, key: Any) -> bool:
+    """JSONB ? operator: does the object contain the key?"""
+    if obj is None:
+        return False
+    if isinstance(obj, str):
+        import json as json_mod
+        obj = json_mod.loads(obj)
+    if isinstance(obj, dict):
+        return str(key) in obj
+    if isinstance(obj, list):
+        return key in obj
+    return False
+
+
+def _json_has_any_key(obj: Any, keys: Any) -> bool:
+    """JSONB ?| operator: does the object contain any of the keys?"""
+    if obj is None or keys is None:
+        return False
+    if isinstance(obj, str):
+        import json as json_mod
+        obj = json_mod.loads(obj)
+    if not isinstance(keys, list):
+        keys = [keys]
+    if isinstance(obj, dict):
+        return any(str(k) in obj for k in keys)
+    return False
+
+
+def _json_has_all_keys(obj: Any, keys: Any) -> bool:
+    """JSONB ?& operator: does the object contain all of the keys?"""
+    if obj is None or keys is None:
+        return False
+    if isinstance(obj, str):
+        import json as json_mod
+        obj = json_mod.loads(obj)
+    if not isinstance(keys, list):
+        keys = [keys]
+    if isinstance(obj, dict):
+        return all(str(k) in obj for k in keys)
+    return False
+
+
+def _overlaps(range1: Any, range2: Any) -> bool:
+    """Test whether two date/time ranges overlap (OVERLAPS operator)."""
+    from datetime import datetime
+    if range1 is None or range2 is None:
+        return False
+    if isinstance(range1, (list, tuple)) and isinstance(range2, (list, tuple)):
+        s1 = datetime.fromisoformat(str(range1[0]))
+        e1 = datetime.fromisoformat(str(range1[1]))
+        s2 = datetime.fromisoformat(str(range2[0]))
+        e2 = datetime.fromisoformat(str(range2[1]))
+        if s1 > e1:
+            s1, e1 = e1, s1
+        if s2 > e2:
+            s2, e2 = e2, s2
+        return s1 < e2 and s2 < e1
+    return False
+
+
 def _arithmetic(op: str, left: Any, right: Any) -> Any:
     if op == "+":
         return left + right
@@ -1127,6 +1197,61 @@ def _call_scalar_function(name: str, args: list[Any]) -> Any:
         if args[0] is None or args[1] is None:
             return None
         return _date_trunc(str(args[0]).lower(), str(args[1]))
+
+    if name == "make_timestamp":
+        if any(a is None for a in args[:6]):
+            return None
+        y, m, d = int(args[0]), int(args[1]), int(args[2])
+        h, mi, s = int(args[3]), int(args[4]), float(args[5])
+        sec = int(s)
+        usec = int((s - sec) * 1_000_000)
+        from datetime import datetime
+        dt = datetime(y, m, d, h, mi, sec, usec)
+        return dt.isoformat()
+
+    if name == "make_interval":
+        # make_interval(years, months, weeks, days, hours, mins, secs)
+        from datetime import timedelta
+        years = int(args[0]) if len(args) > 0 and args[0] is not None else 0
+        months = int(args[1]) if len(args) > 1 and args[1] is not None else 0
+        weeks = int(args[2]) if len(args) > 2 and args[2] is not None else 0
+        days = int(args[3]) if len(args) > 3 and args[3] is not None else 0
+        hours = int(args[4]) if len(args) > 4 and args[4] is not None else 0
+        mins = int(args[5]) if len(args) > 5 and args[5] is not None else 0
+        secs = float(args[6]) if len(args) > 6 and args[6] is not None else 0
+        total_days = years * 365 + months * 30 + weeks * 7 + days
+        td = timedelta(days=total_days, hours=hours, minutes=mins, seconds=secs)
+        total_seconds = int(td.total_seconds())
+        h_part = total_seconds // 3600
+        m_part = (total_seconds % 3600) // 60
+        s_part = total_seconds % 60
+        return f"{h_part:02d}:{m_part:02d}:{s_part:02d}"
+
+    if name == "to_number":
+        if args[0] is None:
+            return None
+        import re
+        s = str(args[0])
+        # Strip non-numeric characters except digits, dots, minus
+        cleaned = re.sub(r"[^\d.\-]", "", s)
+        if not cleaned or cleaned == "-":
+            return 0
+        return float(cleaned)
+
+    if name == "overlaps":
+        if len(args) < 4 or any(a is None for a in args[:4]):
+            return None
+        from datetime import datetime
+        s1 = datetime.fromisoformat(str(args[0]))
+        e1 = datetime.fromisoformat(str(args[1]))
+        s2 = datetime.fromisoformat(str(args[2]))
+        e2 = datetime.fromisoformat(str(args[3]))
+        # Ensure start <= end for each range
+        if s1 > e1:
+            s1, e1 = e1, s1
+        if s2 > e2:
+            s2, e2 = e2, s2
+        return s1 < e2 and s2 < e1
 
     # Type checking
     if name == "typeof":
