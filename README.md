@@ -172,11 +172,13 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 | Store | SQLite Table | Description |
 |-------|-------------|-------------|
 | Documents | `_data_{table}` | Typed columns per table |
-| Inverted Index | `_inverted_{table}_{field}` | Per-field posting lists |
-| Vectors | `_vectors` | HNSW vectors (float32 blobs) |
-| Graph | `_graph_vertices`, `_graph_edges` | Adjacency-indexed graph |
+| Inverted Index | `_inverted_{table}_{field}` | Per-table per-field posting lists |
+| Field Stats | `_field_stats_{table}` | Per-table field-level statistics (BM25) |
+| Doc Lengths | `_doc_lengths_{table}` | Per-table per-document token lengths (BM25) |
+| Vectors | In-memory HNSW per VECTOR column | Per-field `HNSWIndex` within each table |
+| Graph | `_graph_vertices_{table}`, `_graph_edges_{table}` | Per-table adjacency-indexed graph |
 | B-tree Indexes | SQLite indexes on `_data_{table}` | `CREATE INDEX` support |
-| Statistics | `_column_stats` | Histograms, MCVs for optimizer |
+| Statistics | `_column_stats` | Per-table histograms and MCVs for optimizer |
 
 ### Query Optimizer
 
