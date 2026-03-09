@@ -44,6 +44,7 @@ class Engine:
         self._tables: dict[str, Any] = {}
         self._views: dict[str, Any] = {}  # name -> SelectStmt AST
         self._prepared: dict[str, Any] = {}  # name -> PrepareStmt AST
+        self._sequences: dict[str, dict[str, int]] = {}
 
         # Persistence and transactions
         self._catalog: Catalog | None = None

@@ -58,6 +58,8 @@ _AFFINITY_MAP: dict[str, str] = {
     "timestamp with time zone": "TEXT",
     "json": "TEXT",
     "jsonb": "TEXT",
+    "uuid": "TEXT",
+    "bytea": "BLOB",
 }
 
 
@@ -90,6 +92,7 @@ class SQLiteDocumentStore:
         self._json_cols: frozenset[str] = frozenset(
             name for name, type_name in columns
             if type_name.lower() in ("json", "jsonb")
+            or type_name.lower().endswith("[]")
         )
 
         # Build and execute CREATE TABLE IF NOT EXISTS

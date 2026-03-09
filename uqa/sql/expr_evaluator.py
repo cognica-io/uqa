@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import Any
 
 from pglast.ast import (
+    A_ArrayExpr,
     A_Const,
     A_Expr,
     BoolExpr,
@@ -63,9 +64,12 @@ class ExprEvaluator:
     """
 
     def __init__(
-        self, subquery_executor: Any = None
+        self,
+        subquery_executor: Any = None,
+        sequences: dict | None = None,
     ) -> None:
         self._subquery_executor = subquery_executor
+        self._sequences = sequences
 
     def evaluate(self, node: Any, row: dict[str, Any]) -> Any:
         """Evaluate *node* against *row* and return the result."""
@@ -98,6 +102,11 @@ class ExprEvaluator:
 
         if isinstance(node, SubLink):
             return self._eval_sublink(node, row)
+
+        if isinstance(node, A_ArrayExpr):
+            if node.elements is None:
+                return []
+            return [self.evaluate(e, row) for e in node.elements]
 
         if isinstance(node, MinMaxExpr):
             return self._eval_min_max(node, row)
@@ -201,6 +210,12 @@ class ExprEvaluator:
             return _json_access(left, right, as_text=False)
         if op == "->>":
             return _json_access(left, right, as_text=True)
+        if op in ("#>", "#>>"):
+            return _json_path_access(left, right, as_text=(op == "#>>"))
+        if op == "@>":
+            return _json_contains(left, right)
+        if op == "<@":
+            return _json_contains(right, left)
 
         # String concatenation
         if op == "||":
@@ -256,6 +271,11 @@ class ExprEvaluator:
 
     def _eval_type_cast(self, node: TypeCast, row: dict[str, Any]) -> Any:
         value = self.evaluate(node.arg, row)
+        # Array type cast (e.g. ARRAY[]::integer[])
+        if node.typeName.arrayBounds is not None:
+            if value is None:
+                return None
+            return value if isinstance(value, list) else [value]
         if value is None:
             return None
         type_name = node.typeName.names[-1].sval.lower()
@@ -445,6 +465,10 @@ class ExprEvaluator:
     _AGG_FUNCS = frozenset({
         "count", "sum", "avg", "min", "max", "string_agg",
         "array_agg", "bool_and", "bool_or",
+        "stddev", "stddev_pop", "stddev_samp",
+        "variance", "var_pop", "var_samp",
+        "percentile_cont", "percentile_disc", "mode",
+        "json_object_agg", "jsonb_object_agg",
     })
 
     def _eval_func_call(self, node: FuncCall, row: dict[str, Any]) -> Any:
@@ -456,6 +480,10 @@ class ExprEvaluator:
             col = self._agg_column_name(func_name, node)
             if col in row:
                 return row[col]
+
+        # Sequence functions
+        if func_name in ("nextval", "currval", "setval"):
+            return self._eval_sequence_func(func_name, node, row)
 
         if func_name == "path_agg":
             return self._eval_path_agg(node, row)
@@ -476,6 +504,29 @@ class ExprEvaluator:
         if isinstance(arg, ColumnRef):
             return f"{func_name}_{arg.fields[-1].sval}"
         return func_name
+
+    def _eval_sequence_func(
+        self, func_name: str, node: FuncCall, row: dict[str, Any]
+    ) -> Any:
+        if self._sequences is None:
+            raise ValueError("No sequence store available")
+        args = [self.evaluate(a, row) for a in (node.args or ())]
+        seq_name = str(args[0]) if args else ""
+        seq = self._sequences.get(seq_name)
+        if seq is None:
+            raise ValueError(f"Sequence '{seq_name}' does not exist")
+
+        if func_name == "nextval":
+            seq["current"] += seq["increment"]
+            return seq["current"]
+        if func_name == "currval":
+            return seq["current"]
+        if func_name == "setval":
+            if len(args) < 2:
+                raise ValueError("setval() requires 2 arguments")
+            seq["current"] = int(args[1])
+            return seq["current"]
+        raise ValueError(f"Unknown sequence function: {func_name}")
 
     def _eval_path_agg(self, node: FuncCall, row: dict[str, Any]) -> Any:
         """Evaluate path_agg('path', 'func') -- aggregate nested array values.
@@ -570,6 +621,78 @@ def _json_access(obj: Any, key: Any, *, as_text: bool) -> Any:
     return result
 
 
+def _json_path_access(obj: Any, path_str: Any, *, as_text: bool) -> Any:
+    """JSON path access via #> / #>> operators.
+
+    Path is a PostgreSQL text array literal like '{a,b,c}'.
+    Follows Def 5.2.3 recursive path evaluation.
+    """
+    import json as json_mod
+
+    if obj is None or path_str is None:
+        return None
+    if isinstance(obj, str):
+        obj = json_mod.loads(obj)
+
+    # Parse PostgreSQL array literal '{a,b,c}' into keys
+    path = str(path_str).strip("{}")
+    keys = [k.strip() for k in path.split(",")]
+
+    for key in keys:
+        if obj is None:
+            return None
+        if isinstance(obj, dict):
+            obj = obj.get(key)
+        elif isinstance(obj, list):
+            try:
+                obj = obj[int(key)]
+            except (ValueError, IndexError):
+                return None
+        else:
+            return None
+
+    if obj is None:
+        return None
+    if as_text:
+        if isinstance(obj, (dict, list)):
+            return json_mod.dumps(obj, ensure_ascii=False)
+        return str(obj)
+    return obj
+
+
+def _json_contains(container: Any, contained: Any) -> bool:
+    """JSON containment test (@> operator).
+
+    Returns True if *container* contains *contained* at every level.
+    """
+    import json as json_mod
+
+    if container is None or contained is None:
+        return False
+    if isinstance(container, str):
+        container = json_mod.loads(container)
+    if isinstance(contained, str):
+        contained = json_mod.loads(contained)
+
+    if isinstance(contained, dict):
+        if not isinstance(container, dict):
+            return False
+        for key, val in contained.items():
+            if key not in container:
+                return False
+            if not _json_contains(container[key], val):
+                return False
+        return True
+    if isinstance(contained, list):
+        if not isinstance(container, list):
+            return False
+        for item in contained:
+            if not any(_json_contains(c, item) for c in container):
+                return False
+        return True
+    return container == contained
+
+
 def _arithmetic(op: str, left: Any, right: Any) -> Any:
     if op == "+":
         return left + right
@@ -630,6 +753,8 @@ _CAST_MAP: dict[str, type] = {
     "timestamptz": str,
     "json": object,
     "jsonb": object,
+    "uuid": str,
+    "bytea": bytes,
 }
 
 
@@ -642,6 +767,12 @@ def _cast_value(value: Any, type_name: str) -> Any:
         if isinstance(value, str):
             return json_mod.loads(value)
         return value
+    if type_name == "uuid":
+        return str(value)
+    if type_name == "bytea":
+        if isinstance(value, bytes):
+            return value
+        return str(value).encode("utf-8")
     cast_type = _CAST_MAP.get(type_name)
     if cast_type is None:
         raise ValueError(f"Unsupported CAST target type: {type_name}")
@@ -750,6 +881,69 @@ def _call_scalar_function(name: str, args: list[Any]) -> Any:
             return None
         idx = str(args[0]).find(str(args[1]))
         return idx + 1 if idx >= 0 else 0
+    if name == "octet_length":
+        if args[0] is None:
+            return None
+        return len(str(args[0]).encode("utf-8"))
+    if name == "md5":
+        if args[0] is None:
+            return None
+        import hashlib
+        return hashlib.md5(str(args[0]).encode("utf-8")).hexdigest()
+    if name == "format":
+        if args[0] is None:
+            return None
+        fmt = str(args[0])
+        # PostgreSQL uses %s for strings, %I for identifiers, %L for literals
+        # Map to Python format: replace %s with %s, %I and %L with %s
+        fmt = fmt.replace("%I", "%s").replace("%L", "'%s'")
+        return fmt % tuple(args[1:])
+    if name == "regexp_match":
+        if args[0] is None or args[1] is None:
+            return None
+        import re
+        m = re.search(str(args[1]), str(args[0]))
+        if m is None:
+            return None
+        groups = m.groups()
+        return list(groups) if groups else [m.group()]
+    if name == "regexp_matches":
+        if args[0] is None or args[1] is None:
+            return None
+        import re
+        flags_str = str(args[2]) if len(args) > 2 and args[2] is not None else ""
+        flags = re.DOTALL if "s" in flags_str else 0
+        if "i" in flags_str:
+            flags |= re.IGNORECASE
+        if "g" in flags_str:
+            return [
+                list(m) if isinstance(m, tuple) else [m]
+                for m in re.findall(str(args[1]), str(args[0]), flags)
+            ]
+        m = re.search(str(args[1]), str(args[0]), flags)
+        if m is None:
+            return None
+        groups = m.groups()
+        return [list(groups)] if groups else [[m.group()]]
+    if name == "regexp_replace":
+        if args[0] is None or args[1] is None:
+            return None
+        import re
+        replacement = str(args[2]) if len(args) > 2 and args[2] is not None else ""
+        flags_str = str(args[3]) if len(args) > 3 and args[3] is not None else ""
+        count = 0 if "g" in flags_str else 1
+        flags = 0
+        if "i" in flags_str:
+            flags |= re.IGNORECASE
+        return re.sub(str(args[1]), replacement, str(args[0]), count=count, flags=flags)
+    if name == "overlay":
+        if args[0] is None or args[1] is None or args[2] is None:
+            return None
+        s = str(args[0])
+        repl = str(args[1])
+        pos = int(args[2]) - 1  # 1-based to 0-based
+        length = int(args[3]) if len(args) > 3 and args[3] is not None else len(repl)
+        return s[:pos] + repl + s[pos + length:]
     if name == "lpad":
         if args[0] is None:
             return None
@@ -833,6 +1027,84 @@ def _call_scalar_function(name: str, args: list[Any]) -> Any:
     if name == "random":
         import random
         return random.random()
+    if name == "cbrt":
+        if args[0] is None:
+            return None
+        v = args[0]
+        return -((-v) ** (1.0 / 3.0)) if v < 0 else v ** (1.0 / 3.0)
+    if name == "degrees":
+        if args[0] is None:
+            return None
+        import math
+        return math.degrees(args[0])
+    if name == "radians":
+        if args[0] is None:
+            return None
+        import math
+        return math.radians(args[0])
+    if name == "sin":
+        if args[0] is None:
+            return None
+        import math
+        return math.sin(args[0])
+    if name == "cos":
+        if args[0] is None:
+            return None
+        import math
+        return math.cos(args[0])
+    if name == "tan":
+        if args[0] is None:
+            return None
+        import math
+        return math.tan(args[0])
+    if name == "asin":
+        if args[0] is None:
+            return None
+        import math
+        return math.asin(args[0])
+    if name == "acos":
+        if args[0] is None:
+            return None
+        import math
+        return math.acos(args[0])
+    if name == "atan":
+        if args[0] is None:
+            return None
+        import math
+        return math.atan(args[0])
+    if name == "atan2":
+        if args[0] is None or args[1] is None:
+            return None
+        import math
+        return math.atan2(args[0], args[1])
+    if name == "div":
+        if args[0] is None or args[1] is None:
+            return None
+        if args[1] == 0:
+            return None
+        return int(args[0] // args[1])
+    if name == "gcd":
+        if args[0] is None or args[1] is None:
+            return None
+        import math
+        return math.gcd(int(args[0]), int(args[1]))
+    if name == "lcm":
+        if args[0] is None or args[1] is None:
+            return None
+        import math
+        a, b = int(args[0]), int(args[1])
+        return abs(a * b) // math.gcd(a, b) if a and b else 0
+    if name == "width_bucket":
+        if any(a is None for a in args[:4]):
+            return None
+        val, lo, hi, n = args[0], args[1], args[2], int(args[3])
+        if hi == lo or n <= 0:
+            return None
+        if val < lo:
+            return 0
+        if val >= hi:
+            return n + 1
+        return int((val - lo) / ((hi - lo) / n)) + 1
 
     # Date/time functions
     if name == "now":
@@ -880,6 +1152,87 @@ def _call_scalar_function(name: str, args: list[Any]) -> Any:
         return _json_extract_path(args, as_text=as_text)
     if name in ("to_json", "to_jsonb", "row_to_json"):
         return args[0] if args else None
+    if name in ("jsonb_set", "jsonb_insert"):
+        return _jsonb_set(args)
+    if name in ("json_each", "jsonb_each", "json_each_text", "jsonb_each_text"):
+        return _json_each(args, as_text=name.endswith("_text"))
+    if name in ("json_array_elements", "jsonb_array_elements",
+                "json_array_elements_text", "jsonb_array_elements_text"):
+        return _json_array_elements(args, as_text=name.endswith("_text"))
+    if name in ("json_object_keys", "jsonb_object_keys"):
+        if not args or args[0] is None:
+            return None
+        obj = args[0]
+        if isinstance(obj, str):
+            import json as json_mod
+            obj = json_mod.loads(obj)
+        if isinstance(obj, dict):
+            return list(obj.keys())
+        return None
+
+    # UUID functions
+    if name == "gen_random_uuid":
+        import uuid
+        return str(uuid.uuid4())
+
+    # Array functions
+    if name == "array_length":
+        if not args or args[0] is None:
+            return None
+        arr = args[0]
+        if isinstance(arr, str):
+            import json as json_mod
+            arr = json_mod.loads(arr)
+        if not isinstance(arr, list):
+            return None
+        return len(arr)
+    if name == "array_upper":
+        if not args or args[0] is None:
+            return None
+        arr = args[0]
+        if isinstance(arr, str):
+            import json as json_mod
+            arr = json_mod.loads(arr)
+        if not isinstance(arr, list) or not arr:
+            return None
+        return len(arr)
+    if name == "array_lower":
+        if not args or args[0] is None:
+            return None
+        arr = args[0]
+        if isinstance(arr, str):
+            import json as json_mod
+            arr = json_mod.loads(arr)
+        if not isinstance(arr, list) or not arr:
+            return None
+        return 1
+    if name == "array_cat":
+        if len(args) < 2:
+            return None
+        a = args[0] if isinstance(args[0], list) else []
+        b = args[1] if isinstance(args[1], list) else []
+        return a + b
+    if name == "array_append":
+        if not args or args[0] is None:
+            return None
+        arr = args[0] if isinstance(args[0], list) else [args[0]]
+        return arr + [args[1]] if len(args) > 1 else arr
+    if name == "array_remove":
+        if not args or args[0] is None:
+            return None
+        arr = args[0] if isinstance(args[0], list) else []
+        val = args[1] if len(args) > 1 else None
+        return [x for x in arr if x != val]
+    if name == "cardinality":
+        if not args or args[0] is None:
+            return None
+        arr = args[0]
+        if isinstance(arr, str):
+            import json as json_mod
+            arr = json_mod.loads(arr)
+        if not isinstance(arr, list):
+            return None
+        return len(arr)
 
     raise ValueError(f"Unknown scalar function: {name}")
 
@@ -1019,3 +1372,95 @@ def _json_extract_path(args: list[Any], *, as_text: bool) -> Any:
             return json_mod.dumps(obj, ensure_ascii=False)
         return str(obj)
     return obj
+
+
+def _jsonb_set(args: list[Any]) -> Any:
+    """Implement JSONB_SET(target, path, new_value [, create_if_missing]).
+
+    Sets a value in a JSON document at the given path.
+    """
+    import json as json_mod
+
+    if len(args) < 3 or args[0] is None:
+        return None
+    target = args[0]
+    if isinstance(target, str):
+        target = json_mod.loads(target)
+
+    path_str = str(args[1]).strip("{}")
+    keys = [k.strip() for k in path_str.split(",")]
+    new_value = args[2]
+    create = bool(args[3]) if len(args) > 3 else True
+
+    import copy
+    result = copy.deepcopy(target)
+    obj = result
+    for i, key in enumerate(keys[:-1]):
+        if isinstance(obj, dict):
+            if key not in obj:
+                if not create:
+                    return result
+                obj[key] = {}
+            obj = obj[key]
+        elif isinstance(obj, list):
+            try:
+                obj = obj[int(key)]
+            except (ValueError, IndexError):
+                return result
+        else:
+            return result
+
+    last_key = keys[-1]
+    if isinstance(obj, dict):
+        if last_key in obj or create:
+            obj[last_key] = new_value
+    elif isinstance(obj, list):
+        try:
+            obj[int(last_key)] = new_value
+        except (ValueError, IndexError):
+            pass
+    return result
+
+
+def _json_each(args: list[Any], *, as_text: bool) -> list[dict]:
+    """Expand a JSON object into key-value rows."""
+    import json as json_mod
+
+    if not args or args[0] is None:
+        return []
+    obj = args[0]
+    if isinstance(obj, str):
+        obj = json_mod.loads(obj)
+    if not isinstance(obj, dict):
+        return []
+    rows = []
+    for k, v in obj.items():
+        if as_text:
+            if isinstance(v, (dict, list)):
+                v = json_mod.dumps(v, ensure_ascii=False)
+            else:
+                v = str(v) if v is not None else None
+        rows.append({"key": k, "value": v})
+    return rows
+
+
+def _json_array_elements(args: list[Any], *, as_text: bool) -> list[Any]:
+    """Expand a JSON array into individual elements."""
+    import json as json_mod
+
+    if not args or args[0] is None:
+        return []
+    arr = args[0]
+    if isinstance(arr, str):
+        arr = json_mod.loads(arr)
+    if not isinstance(arr, list):
+        return []
+    if as_text:
+        result_list = []
+        for v in arr:
+            if isinstance(v, (dict, list)):
+                result_list.append(json_mod.dumps(v, ensure_ascii=False))
+            else:
+                result_list.append(str(v) if v is not None else None)
+        return result_list
+    return arr

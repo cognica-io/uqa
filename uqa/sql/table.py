@@ -42,6 +42,8 @@ _SQL_TYPE_MAP: dict[str, type] = {
     "date": str, "timestamp": str, "timestamptz": str,
     "timestamp without time zone": str, "timestamp with time zone": str,
     "json": object, "jsonb": object,
+    "uuid": str,
+    "bytea": bytes,
 }
 
 _AUTO_INCREMENT_TYPES = frozenset({"serial", "bigserial"})
@@ -251,6 +253,10 @@ class Table:
                     )
                 elif col_def.type_name in ("json", "jsonb"):
                     coerced[col_name] = _coerce_json(row[col_name])
+                elif col_def.type_name.endswith("[]"):
+                    coerced[col_name] = _coerce_array(row[col_name])
+                elif col_def.type_name == "bytea":
+                    coerced[col_name] = _coerce_bytea(row[col_name])
                 elif col_def.numeric_scale is not None:
                     coerced[col_name] = _coerce_numeric(
                         row[col_name], col_def.numeric_scale
@@ -413,6 +419,23 @@ def _coerce_json(value: Any) -> Any:
     return value
 
 
+def _coerce_bytea(value: Any) -> bytes:
+    """Coerce a value to bytes (BYTEA type)."""
+    if isinstance(value, bytes):
+        return value
+    return str(value).encode("utf-8")
+
+
+def _coerce_array(value: Any) -> list:
+    """Coerce a value to a list (array type)."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        import json as json_mod
+        return json_mod.loads(value)
+    return [value]
+
+
 def _coerce_numeric(value: Any, scale: int) -> float:
     """Coerce a value to NUMERIC with the given scale (decimal places)."""
     from decimal import Decimal
@@ -422,12 +445,22 @@ def _coerce_numeric(value: Any, scale: int) -> float:
     return float(d.quantize(quantizer))
 
 
-def resolve_type(type_names: tuple) -> tuple[str, type]:
-    """Map a pglast TypeName.names tuple to (canonical_name, python_type)."""
-    # TypeName.names is e.g. ('pg_catalog', 'int4') or ('text',)
+def resolve_type(
+    type_names: tuple, array_bounds: tuple | None = None
+) -> tuple[str, type]:
+    """Map a pglast TypeName.names tuple to (canonical_name, python_type).
+
+    When *array_bounds* is set the column is an array type (e.g. TEXT[]).
+    """
     raw = type_names[-1].sval.lower()
     if raw == "vector":
         return raw, list
+    if array_bounds is not None:
+        # Array column: e.g. TEXT[] -> element type is "text"
+        base = _SQL_TYPE_MAP.get(raw)
+        if base is None:
+            raise ValueError(f"Unsupported array element type: {raw}")
+        return f"{raw}[]", list
     python_type = _SQL_TYPE_MAP.get(raw)
     if python_type is None:
         raise ValueError(f"Unsupported column type: {raw}")

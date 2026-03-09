@@ -56,6 +56,7 @@ class WindowSpec:
     frame_end: str | None = None
     frame_start_offset: int = 0
     frame_end_offset: int = 0
+    frame_type: str = "rows"  # "rows" or "range"
 
 
 class FilterOp(PhysicalOperator):
@@ -210,10 +211,12 @@ class ExprProjectOp(PhysicalOperator):
         child: PhysicalOperator,
         targets: list[tuple[str, Any]],
         subquery_executor: Any = None,
+        sequences: dict | None = None,
     ) -> None:
         self._child = child
         self._targets = targets
         self._subquery_executor = subquery_executor
+        self._sequences = sequences
 
     def open(self) -> None:
         self._child.open()
@@ -229,7 +232,8 @@ class ExprProjectOp(PhysicalOperator):
         input_rows = batch.to_rows()
 
         evaluator = ExprEvaluator(
-            subquery_executor=self._subquery_executor
+            subquery_executor=self._subquery_executor,
+            sequences=self._sequences,
         )
         output_rows: list[dict[str, Any]] = []
         for row in input_rows:
@@ -1101,6 +1105,25 @@ def _compute_framed_aggregate(
     """Compute aggregate over a per-row window frame."""
     n = len(partition_rows)
     results: list[Any] = []
+
+    if spec.frame_type == "range" and spec.order_keys:
+        # RANGE frame: "current_row" means all peers (same ORDER BY value)
+        order_col = spec.order_keys[0][0]
+        for i in range(n):
+            start = _resolve_range_frame_index(
+                i, n, partition_rows, order_col,
+                spec.frame_start, spec.frame_start_offset, is_start=True,
+            )
+            end = _resolve_range_frame_index(
+                i, n, partition_rows, order_col,
+                spec.frame_end, spec.frame_end_offset, is_start=False,
+            )
+            frame_rows = partition_rows[start : end + 1]
+            results.append(
+                _compute_aggregate(func_name, arg_col, frame_rows)
+            )
+        return results
+
     for i in range(n):
         start = _resolve_frame_index(
             i, n, spec.frame_start, spec.frame_start_offset
@@ -1129,6 +1152,72 @@ def _resolve_frame_index(
         return max(0, current - offset)
     if bound == "offset_following":
         return min(n - 1, current + offset)
+    return current
+
+
+def _resolve_range_frame_index(
+    current: int,
+    n: int,
+    rows: list[dict[str, Any]],
+    order_col: str,
+    bound: str | None,
+    offset: int,
+    *,
+    is_start: bool,
+) -> int:
+    """Resolve a RANGE frame bound using ORDER BY values.
+
+    In RANGE mode, "current_row" means the first/last peer (rows with
+    the same ORDER BY value), not the physical current row.
+    """
+    if bound is None or bound == "unbounded_preceding":
+        return 0
+    if bound == "unbounded_following":
+        return n - 1
+    if bound == "current_row":
+        cur_val = rows[current].get(order_col)
+        if is_start:
+            # Find first row with same value
+            idx = current
+            while idx > 0 and rows[idx - 1].get(order_col) == cur_val:
+                idx -= 1
+            return idx
+        else:
+            # Find last row with same value
+            idx = current
+            while idx < n - 1 and rows[idx + 1].get(order_col) == cur_val:
+                idx += 1
+            return idx
+    if bound == "offset_preceding":
+        cur_val = rows[current].get(order_col)
+        if cur_val is None:
+            return 0 if is_start else current
+        target = cur_val - offset
+        if is_start:
+            for idx in range(n):
+                if rows[idx].get(order_col) is not None and rows[idx].get(order_col) >= target:
+                    return idx
+            return n
+        else:
+            for idx in range(n - 1, -1, -1):
+                if rows[idx].get(order_col) is not None and rows[idx].get(order_col) <= target:
+                    return idx
+            return -1
+    if bound == "offset_following":
+        cur_val = rows[current].get(order_col)
+        if cur_val is None:
+            return current if is_start else n - 1
+        target = cur_val + offset
+        if is_start:
+            for idx in range(n):
+                if rows[idx].get(order_col) is not None and rows[idx].get(order_col) >= target:
+                    return idx
+            return n
+        else:
+            for idx in range(n - 1, -1, -1):
+                if rows[idx].get(order_col) is not None and rows[idx].get(order_col) <= target:
+                    return idx
+            return -1
     return current
 
 
@@ -1198,6 +1287,25 @@ def _compute_aggregate(
             return None
         return any(bool(v) for v in vals)
 
+    if func_name in ("json_object_agg", "jsonb_object_agg"):
+        # extra holds the value column name
+        val_col = extra
+        result: dict = {}
+        for r in rows:
+            k = r.get(arg_col)
+            if k is None:
+                continue
+            result[str(k)] = r.get(val_col)
+        return result if result else None
+
+    if func_name == "mode":
+        # arg_col comes from WITHIN GROUP (ORDER BY col)
+        vals = [r.get(arg_col) for r in rows if r.get(arg_col) is not None]
+        if not vals:
+            return None
+        from collections import Counter
+        return Counter(vals).most_common(1)[0][0]
+
     values = [
         r.get(arg_col)
         for r in rows
@@ -1213,4 +1321,40 @@ def _compute_aggregate(
         return min(values)
     if func_name == "max":
         return max(values)
+
+    if func_name in ("stddev", "stddev_samp"):
+        if len(values) < 2:
+            return None
+        mean = sum(values) / len(values)
+        variance = sum((v - mean) ** 2 for v in values) / (len(values) - 1)
+        return variance ** 0.5
+    if func_name == "stddev_pop":
+        mean = sum(values) / len(values)
+        variance = sum((v - mean) ** 2 for v in values) / len(values)
+        return variance ** 0.5
+    if func_name in ("variance", "var_samp"):
+        if len(values) < 2:
+            return None
+        mean = sum(values) / len(values)
+        return sum((v - mean) ** 2 for v in values) / (len(values) - 1)
+    if func_name == "var_pop":
+        mean = sum(values) / len(values)
+        return sum((v - mean) ** 2 for v in values) / len(values)
+
+    if func_name == "percentile_cont":
+        fraction = float(extra)
+        sorted_vals = sorted(values)
+        n = len(sorted_vals)
+        pos = fraction * (n - 1)
+        lo = int(pos)
+        hi = min(lo + 1, n - 1)
+        frac = pos - lo
+        return sorted_vals[lo] + frac * (sorted_vals[hi] - sorted_vals[lo])
+    if func_name == "percentile_disc":
+        fraction = float(extra)
+        sorted_vals = sorted(values)
+        n = len(sorted_vals)
+        idx = int(fraction * (n - 1))
+        return sorted_vals[idx]
+
     raise ValueError(f"Unknown aggregate: {func_name}")

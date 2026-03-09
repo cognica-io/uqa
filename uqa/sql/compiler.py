@@ -94,7 +94,9 @@ from pglast.ast import (
     CoalesceExpr,
     ColumnDef as PgColumnDef,
     ColumnRef,
+    CreateSeqStmt,
     CreateStmt,
+    CreateTableAsStmt,
     DeleteStmt,
     DropStmt,
     ExplainStmt,
@@ -218,6 +220,10 @@ def _format_value(val: Any) -> str:
 _AGG_FUNC_NAMES = frozenset({
     "count", "sum", "avg", "min", "max", "string_agg",
     "array_agg", "bool_and", "bool_or",
+    "stddev", "stddev_pop", "stddev_samp",
+    "variance", "var_pop", "var_samp",
+    "percentile_cont", "percentile_disc", "mode",
+    "json_object_agg", "jsonb_object_agg",
 })
 
 
@@ -276,6 +282,10 @@ class SQLCompiler:
             return self._compile_execute(stmt)
         if isinstance(stmt, DeallocateStmt):
             return self._compile_deallocate(stmt)
+        if isinstance(stmt, CreateTableAsStmt):
+            return self._compile_create_table_as(stmt)
+        if isinstance(stmt, CreateSeqStmt):
+            return self._compile_create_sequence(stmt)
         raise ValueError(f"Unsupported statement: {type(stmt).__name__}")
 
     def _get_table(self, table_name: str) -> Table:
@@ -339,10 +349,106 @@ class SQLCompiler:
 
         return SQLResult([], [])
 
+    def _compile_create_table_as(self, stmt: CreateTableAsStmt) -> SQLResult:
+        """CREATE TABLE name AS SELECT ... / CREATE TEMP TABLE ..."""
+        table_name = stmt.into.rel.relname
+        if table_name in self._engine._tables:
+            raise ValueError(f"Table '{table_name}' already exists")
+
+        result = self._compile_select(stmt.query)
+
+        # Infer column definitions from query result
+        columns: list[ColumnDef] = []
+        for col_name in result.columns:
+            # Infer type from first row value
+            py_type = str
+            type_name = "text"
+            if result.rows:
+                sample = result.rows[0].get(col_name)
+                if isinstance(sample, int):
+                    py_type = int
+                    type_name = "integer"
+                elif isinstance(sample, float):
+                    py_type = float
+                    type_name = "real"
+                elif isinstance(sample, bool):
+                    py_type = bool
+                    type_name = "boolean"
+                elif isinstance(sample, list):
+                    py_type = list
+                    type_name = "text[]"
+                elif isinstance(sample, dict):
+                    py_type = object
+                    type_name = "jsonb"
+            columns.append(ColumnDef(
+                name=col_name,
+                type_name=type_name,
+                python_type=py_type,
+            ))
+
+        catalog = self._engine._catalog
+        conn = catalog.conn if catalog is not None else None
+        table = Table(table_name, columns, conn=conn)
+        self._engine._tables[table_name] = table
+
+        if catalog is not None:
+            catalog.save_table_schema(
+                table_name,
+                [
+                    {
+                        "name": col.name,
+                        "type_name": col.type_name,
+                        "primary_key": col.primary_key,
+                        "not_null": col.not_null,
+                        "auto_increment": col.auto_increment,
+                        "default": col.default,
+                        "vector_dimensions": col.vector_dimensions,
+                        "unique": col.unique,
+                    }
+                    for col in columns
+                ],
+            )
+
+        # Insert result rows
+        inserted = 0
+        internal = {"_doc_id", "_score"}
+        for row in result.rows:
+            clean = {k: v for k, v in row.items() if k not in internal}
+            table.insert(clean)
+            inserted += 1
+
+        return SQLResult(["inserted"], [{"inserted": inserted}])
+
+    def _compile_create_sequence(self, stmt: CreateSeqStmt) -> SQLResult:
+        """CREATE SEQUENCE name [START n] [INCREMENT n] [MINVALUE n] [MAXVALUE n]."""
+        seq_name = stmt.sequence.relname
+        if seq_name in self._engine._sequences:
+            if stmt.if_not_exists:
+                return SQLResult([], [])
+            raise ValueError(f"Sequence '{seq_name}' already exists")
+
+        start = 1
+        increment = 1
+        if stmt.options:
+            for opt in stmt.options:
+                if opt.defname == "start":
+                    start = opt.arg.ival
+                elif opt.defname == "increment":
+                    increment = opt.arg.ival
+
+        self._engine._sequences[seq_name] = {
+            "current": start - increment,
+            "start": start,
+            "increment": increment,
+        }
+        return SQLResult([], [])
+
     def _parse_column_def(self, node: Any) -> tuple[ColumnDef, Any]:
         col_name: str = node.colname
         type_names = node.typeName.names
-        raw_type, python_type = resolve_type(type_names)
+        raw_type, python_type = resolve_type(
+            type_names, node.typeName.arrayBounds
+        )
 
         # VECTOR(N) -- extract dimensions from type modifier
         vector_dimensions: int | None = None
@@ -527,6 +633,33 @@ class SQLCompiler:
                         f"in table '{table_name}'"
                     )
                 table.columns[col_name].not_null = False
+
+            elif at == AlterTableType.AT_AlterColumnType:
+                col_name = cmd.name
+                if col_name not in table.columns:
+                    raise ValueError(
+                        f"Column '{col_name}' does not exist "
+                        f"in table '{table_name}'"
+                    )
+                new_type_names = cmd.def_.typeName.names
+                new_type, new_python_type = resolve_type(
+                    new_type_names, cmd.def_.typeName.arrayBounds
+                )
+                col_def = table.columns[col_name]
+                col_def.type_name = new_type
+                col_def.python_type = new_python_type
+                # Coerce existing data to the new type
+                for doc_id in list(table.document_store.doc_ids):
+                    val = table.document_store.get_field(doc_id, col_name)
+                    if val is not None:
+                        try:
+                            coerced = new_python_type(val)
+                        except (ValueError, TypeError):
+                            coerced = val
+                        doc = table.document_store.get(doc_id)
+                        if doc is not None:
+                            doc[col_name] = coerced
+                            table.document_store.put(doc_id, doc)
 
             else:
                 raise ValueError(
@@ -1284,7 +1417,9 @@ class SQLCompiler:
 
         if has_window:
             # Window functions: compute window values, then project
-            win_specs = self._extract_window_specs(stmt.targetList)
+            win_specs = self._extract_window_specs(
+                stmt.targetList, stmt.windowClause
+            )
             physical = WindowOp(
                 physical, win_specs,
                 spill_threshold=self._engine.spill_threshold,
@@ -1351,6 +1486,7 @@ class SQLCompiler:
                     physical = ExprProjectOp(
                         physical, targets,
                         subquery_executor=self._compile_select,
+                        sequences=self._engine._sequences,
                     )
                     expected_cols = [name for name, _ in targets]
                 else:
@@ -1476,8 +1612,8 @@ class SQLCompiler:
                           "traverse_match"):
                     continue
                 return True
-            if isinstance(val, (A_Const, A_Expr, CaseExpr, TypeCast,
-                                CoalesceExpr, NullTest, SubLink,
+            if isinstance(val, (A_Const, A_ArrayExpr, A_Expr, CaseExpr,
+                                TypeCast, CoalesceExpr, NullTest, SubLink,
                                 MinMaxExpr, SQLValueFunction)):
                 return True
         return False
@@ -2305,6 +2441,54 @@ class SQLCompiler:
         self._expanded_views.append(name)
         return table, None
 
+    # -- pg_catalog virtual tables --------------------------------------
+
+    def _build_pg_catalog_table(
+        self, view_name: str,
+    ) -> tuple[Table, None]:
+        """Build virtual pg_catalog tables from engine metadata."""
+        if view_name == "pg_tables":
+            return self._build_pg_tables()
+        if view_name == "pg_views":
+            return self._build_pg_views()
+        raise ValueError(f"Unknown pg_catalog view: '{view_name}'")
+
+    def _build_pg_tables(self) -> tuple[Table, None]:
+        """Build pg_catalog.pg_tables from engine state."""
+        columns = ["schemaname", "tablename", "tableowner", "tablespace"]
+        rows: list[dict[str, Any]] = []
+        for tname in sorted(self._engine._tables):
+            rows.append({
+                "schemaname": "public",
+                "tablename": tname,
+                "tableowner": "",
+                "tablespace": "",
+            })
+        result = SQLResult(columns, rows)
+        name = "_pg_tables"
+        table = self._result_to_table(name, result)
+        self._engine._tables[name] = table
+        self._expanded_views.append(name)
+        return table, None
+
+    def _build_pg_views(self) -> tuple[Table, None]:
+        """Build pg_catalog.pg_views from engine state."""
+        columns = ["schemaname", "viewname", "viewowner", "definition"]
+        rows: list[dict[str, Any]] = []
+        for vname in sorted(self._engine._views):
+            rows.append({
+                "schemaname": "public",
+                "viewname": vname,
+                "viewowner": "",
+                "definition": "",
+            })
+        result = SQLResult(columns, rows)
+        name = "_pg_views"
+        table = self._result_to_table(name, result)
+        self._engine._tables[name] = table
+        self._expanded_views.append(name)
+        return table, None
+
     # -- FROM clause ---------------------------------------------------
 
     def _resolve_from(
@@ -2347,11 +2531,13 @@ class SQLCompiler:
     ) -> tuple[Table | None, Any]:
         """Resolve a single FROM clause item."""
         if isinstance(node, RangeVar):
-            # Virtual information_schema tables
+            # Virtual schema tables
             if node.schemaname == "information_schema":
                 return self._build_information_schema_table(
                     node.relname
                 )
+            if node.schemaname == "pg_catalog":
+                return self._build_pg_catalog_table(node.relname)
             table_name = node.relname
             table = self._engine._tables.get(table_name)
             if table is None:
@@ -2419,6 +2605,8 @@ class SQLCompiler:
             return self._build_text_search_from(args)
         if name == "generate_series":
             return self._build_generate_series(node, args)
+        if name == "unnest":
+            return self._build_unnest(node, args)
         raise ValueError(f"Unknown table function: {name}")
 
     @staticmethod
@@ -2564,6 +2752,52 @@ class SQLCompiler:
         )
         table = Table(alias_name, [col])
         for i, val in enumerate(values, 1):
+            table.insert({col_name: val})
+
+        self._engine._tables[alias_name] = table
+        self._expanded_views.append(alias_name)
+        return table, None
+
+    def _build_unnest(
+        self, node: RangeFunction, args: tuple
+    ) -> tuple[Table | None, Any]:
+        """Build unnest(array) as a table function."""
+        from uqa.sql.expr_evaluator import ExprEvaluator
+        from uqa.sql.table import ColumnDef as SqlColumnDef
+
+        if not args:
+            raise ValueError("unnest requires at least 1 argument")
+
+        evaluator = ExprEvaluator()
+        arr = evaluator.evaluate(args[0], {})
+        if not isinstance(arr, list):
+            arr = [arr]
+
+        # Determine column name from alias
+        col_name = "unnest"
+        if node.alias is not None:
+            if node.alias.colnames:
+                col_name = node.alias.colnames[0].sval
+            alias_name = node.alias.aliasname
+        else:
+            alias_name = "unnest"
+
+        col_type = "text"
+        python_type: type = str
+        if arr and isinstance(arr[0], int):
+            col_type = "integer"
+            python_type = int
+        elif arr and isinstance(arr[0], float):
+            col_type = "real"
+            python_type = float
+
+        col = SqlColumnDef(
+            name=col_name,
+            type_name=col_type,
+            python_type=python_type,
+        )
+        table = Table(alias_name, [col])
+        for val in arr:
             table.insert({col_name: val})
 
         self._engine._tables[alias_name] = table
@@ -3124,15 +3358,27 @@ class SQLCompiler:
             func_name = func.funcname[-1].sval.lower()
             if func_name not in _AGG_FUNC_NAMES or func.over is not None:
                 continue
-            arg_col = (
-                None
-                if func.agg_star
-                else self._extract_column_name(func.args[0])
-            )
             distinct = bool(func.agg_distinct)
             extra: Any = None
-            if func_name == "string_agg" and func.args and len(func.args) > 1:
-                extra = self._extract_const_value(func.args[1])
+
+            # Ordered-set aggregates: arg_col from WITHIN GROUP (ORDER BY)
+            if func_name in ("percentile_cont", "percentile_disc"):
+                extra = self._extract_const_value(func.args[0])
+                arg_col = self._extract_column_name(func.agg_order[0].node)
+            elif func_name == "mode":
+                arg_col = self._extract_column_name(func.agg_order[0].node)
+            elif func_name in ("json_object_agg", "jsonb_object_agg"):
+                arg_col = self._extract_column_name(func.args[0])
+                extra = self._extract_column_name(func.args[1])
+            else:
+                arg_col = (
+                    None
+                    if func.agg_star
+                    else self._extract_column_name(func.args[0])
+                )
+                if func_name == "string_agg" and func.args and len(func.args) > 1:
+                    extra = self._extract_const_value(func.args[1])
+
             alias = target.name or (
                 func_name if arg_col is None else f"{func_name}_{arg_col}"
             )
@@ -3166,11 +3412,17 @@ class SQLCompiler:
         )
 
     def _extract_window_specs(
-        self, target_list: tuple
+        self, target_list: tuple, window_clause: tuple | None = None
     ) -> list[WindowSpec]:
         """Extract window function specs from the target list."""
         from uqa.execution.relational import WindowSpec
         from uqa.sql.expr_evaluator import ExprEvaluator
+
+        # Build named window lookup from WINDOW clause
+        named_windows: dict[str, Any] = {}
+        if window_clause:
+            for wdef in window_clause:
+                named_windows[wdef.name] = wdef
 
         specs: list[WindowSpec] = []
         for target in target_list:
@@ -3181,6 +3433,31 @@ class SQLCompiler:
             func_name = val.funcname[-1].sval.lower()
             alias = target.name or func_name
             win = val.over
+
+            # Resolve named window reference (OVER (w))
+            if win.refname and win.refname in named_windows:
+                base = named_windows[win.refname]
+                # Merge: the inline OVER can add partition/order to the base
+                if not win.partitionClause and base.partitionClause:
+                    win = win.__class__(
+                        partitionClause=base.partitionClause,
+                        orderClause=win.orderClause or base.orderClause,
+                        frameOptions=win.frameOptions if (win.frameOptions or 0) & 1 else base.frameOptions,
+                        startOffset=win.startOffset or base.startOffset,
+                        endOffset=win.endOffset or base.endOffset,
+                    )
+                elif not win.orderClause and base.orderClause:
+                    win = win.__class__(
+                        partitionClause=win.partitionClause or base.partitionClause,
+                        orderClause=base.orderClause,
+                        frameOptions=win.frameOptions if (win.frameOptions or 0) & 1 else base.frameOptions,
+                        startOffset=win.startOffset or base.startOffset,
+                        endOffset=win.endOffset or base.endOffset,
+                    )
+            elif win.name and win.name in named_windows and not win.partitionClause and not win.orderClause:
+                # OVER w (bare name, already resolved by pglast in some cases)
+                base = named_windows[win.name]
+                win = base
 
             # Partition columns
             part_cols: list[str] = []
@@ -3237,8 +3514,11 @@ class SQLCompiler:
             # Parse window frame
             frame_start, frame_end = None, None
             frame_start_offset, frame_end_offset = 0, 0
+            frame_type = "rows"
             fo = win.frameOptions or 0
             if fo & 1:  # NONDEFAULT
+                if fo & 2:  # RANGE
+                    frame_type = "range"
                 frame_start, frame_start_offset = (
                     self._parse_frame_bound(fo, "start", win.startOffset)
                 )
@@ -3259,6 +3539,7 @@ class SQLCompiler:
                 frame_end=frame_end,
                 frame_start_offset=frame_start_offset,
                 frame_end_offset=frame_end_offset,
+                frame_type=frame_type,
             ))
 
         return specs
@@ -3386,10 +3667,20 @@ class SQLCompiler:
     def _extract_insert_value(self, node: Any) -> Any:
         """Extract a value from an INSERT VALUES clause.
 
-        Handles A_Const (scalars) and A_ArrayExpr (vector literals).
+        Handles A_Const (scalars), A_ArrayExpr (vector/array literals),
+        and TypeCast (e.g. '...'::jsonb).
         """
         if isinstance(node, A_ArrayExpr):
+            if node.elements is None:
+                return []
             return [self._extract_const_value(elem) for elem in node.elements]
+        if isinstance(node, TypeCast):
+            from uqa.sql.expr_evaluator import ExprEvaluator, _cast_value
+            value = self._extract_insert_value(node.arg)
+            type_name = node.typeName.names[-1].sval.lower()
+            if node.typeName.arrayBounds is not None:
+                return value if isinstance(value, list) else [value]
+            return _cast_value(value, type_name)
         return self._extract_const_value(node)
 
 
