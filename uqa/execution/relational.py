@@ -148,6 +148,11 @@ class ExprFilterOp(PhysicalOperator):
             if batch is None:
                 return None
 
+            # Compact first so selection indices align with the rows
+            # returned by to_rows(). Without this, stacked filters
+            # produce indices relative to the compacted rows but
+            # apply them to the original (pre-compact) RecordBatch.
+            batch = batch.compact()
             rows = batch.to_rows()
             active: list[int] = []
             for i, row in enumerate(rows):

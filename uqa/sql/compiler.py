@@ -409,11 +409,10 @@ class SQLCompiler:
                 ],
             )
 
-        # Insert result rows
+        # Insert result rows (use only declared columns)
         inserted = 0
-        internal = {"_doc_id", "_score"}
         for row in result.rows:
-            clean = {k: v for k, v in row.items() if k not in internal}
+            clean = {c: row.get(c) for c in result.columns}
             table.insert(clean)
             inserted += 1
 
@@ -1369,12 +1368,17 @@ class SQLCompiler:
         ctx: ExecutionContext,
         table: Table | None,
         deferred_where: Any = None,
+        join_source: bool = False,
     ) -> SQLResult:
         """Execute relational operations via physical operators.
 
         Builds a Volcano-model operator tree for GROUP BY, PROJECT,
         DISTINCT, ORDER BY, and LIMIT, then executes it to produce
         the final result.
+
+        When *join_source* is True, qualified column references (e.g.
+        ``e.name``) are available in the row data, and projection is
+        routed through ExprProjectOp for correct qualified lookup.
         """
         from uqa.execution.batch import DataType, _SQL_TO_DTYPE
         from uqa.execution.scan import PostingListScanOp
@@ -1448,10 +1452,23 @@ class SQLCompiler:
             group_cols = self._resolve_group_by_cols(
                 stmt.groupClause, stmt.targetList
             )
+            agg_specs = self._extract_agg_specs(stmt.targetList)
+
+            # When GROUP BY has computed expressions or aggregates
+            # have expression args, pre-compute them via ExprProjectOp
+            # so HashAggOp can group/aggregate by named columns.
+            pre_targets = self._build_pre_agg_targets(
+                stmt.groupClause, group_cols, agg_specs, table
+            )
+            if pre_targets:
+                physical = ExprProjectOp(
+                    physical, pre_targets,
+                    subquery_executor=self._compile_select,
+                )
+
             group_aliases = self._build_group_aliases(
                 group_cols, stmt.targetList
             )
-            agg_specs = self._extract_agg_specs(stmt.targetList)
             physical = HashAggOp(
                 physical, group_cols, agg_specs,
                 spill_threshold=self._engine.spill_threshold,
@@ -1465,10 +1482,24 @@ class SQLCompiler:
                     subquery_executor=self._compile_select,
                 )
 
-            # expected_cols: use SELECT aliases for group cols
-            expected_cols = self._resolve_select_column_names(
+            # Non-aggregate computed expressions in SELECT (e.g.,
+            # POSITION('o' IN rep) with GROUP BY rep) need evaluation
+            # after HashAggOp.  Build ExprProjectOp targets for the
+            # full SELECT list when such expressions are present.
+            post_group_targets = self._build_post_group_targets(
                 stmt.targetList, group_cols, agg_specs
             )
+            if post_group_targets:
+                physical = ExprProjectOp(
+                    physical, post_group_targets,
+                    subquery_executor=self._compile_select,
+                )
+                expected_cols = [name for name, _ in post_group_targets]
+            else:
+                # expected_cols: use SELECT aliases for group cols
+                expected_cols = self._resolve_select_column_names(
+                    stmt.targetList, group_cols, agg_specs
+                )
 
         elif is_agg_only:
             agg_specs = self._extract_agg_specs(stmt.targetList)
@@ -1481,7 +1512,11 @@ class SQLCompiler:
         else:
             is_star = self._is_select_star(stmt.targetList)
             if not is_star:
-                if self._has_computed_expressions(stmt.targetList):
+                use_expr = (
+                    join_source
+                    or self._has_computed_expressions(stmt.targetList)
+                )
+                if use_expr:
                     targets = self._build_expr_targets(stmt.targetList)
                     physical = ExprProjectOp(
                         physical, targets,
@@ -1625,18 +1660,43 @@ class SQLCompiler:
 
         For text_match/bayesian_match function calls, wraps the node
         so the ExprEvaluator reads ``_score`` from the row instead.
+
+        When multiple columns share the same unqualified name (e.g.
+        ``e.name`` and ``d.name`` in a JOIN), the output names are
+        disambiguated using qualified forms to avoid dict key collisions.
         """
-        targets: list[tuple[str, Any]] = []
+        # First pass: collect inferred names and detect duplicates
+        raw: list[tuple[str, str | None, Any]] = []
+        name_counts: dict[str, int] = {}
         for target in target_list:
             name = self._infer_target_name(target)
+            # Qualified name for ColumnRef with table alias
+            qual_name: str | None = None
             val = target.val
+            if (
+                target.name is None
+                and isinstance(val, ColumnRef)
+                and len(val.fields) >= 2
+                and hasattr(val.fields[0], "sval")
+            ):
+                qual_name = (
+                    f"{val.fields[0].sval}.{val.fields[-1].sval}"
+                )
+            raw.append((name, qual_name, val))
+            name_counts[name] = name_counts.get(name, 0) + 1
+
+        # Second pass: build targets with disambiguation
+        targets: list[tuple[str, Any]] = []
+        for name, qual_name, val in raw:
+            output_name = name
+            if name_counts[name] > 1 and qual_name is not None:
+                output_name = qual_name
             # text_match/bayesian_match -> read _score column
             if isinstance(val, FuncCall):
                 fn = val.funcname[-1].sval.lower()
                 if fn in ("text_match", "bayesian_match"):
-                    from pglast.ast import ColumnRef, String as PgStr
-                    val = ColumnRef(fields=(PgStr(sval="_score"),))
-            targets.append((name, val))
+                    val = ColumnRef(fields=(PgString(sval="_score"),))
+            targets.append((output_name, val))
         return targets
 
     def _infer_target_name(self, target: Any) -> str:
@@ -1742,6 +1802,58 @@ class SQLCompiler:
                     aliases[col] = target.name
         return aliases
 
+    def _build_post_group_targets(
+        self,
+        target_list: tuple | None,
+        group_cols: list[str],
+        agg_specs: list[tuple],
+    ) -> list[tuple[str, Any]] | None:
+        """Build ExprProjectOp targets for non-aggregate computed
+        expressions in a GROUP BY SELECT list.
+
+        Returns ``None`` when all SELECT targets are plain columns or
+        aggregates (no post-group computation needed).
+        """
+        if not target_list:
+            return None
+
+        agg_aliases = {spec[0] for spec in agg_specs}
+        has_computed = False
+        for target in target_list:
+            if isinstance(target.val, FuncCall):
+                fn = target.val.funcname[-1].sval.lower()
+                if fn not in _AGG_FUNC_NAMES or target.val.over is not None:
+                    has_computed = True
+                    break
+            elif not isinstance(target.val, ColumnRef):
+                name = target.name or "?column?"
+                if name not in agg_aliases:
+                    has_computed = True
+                    break
+
+        if not has_computed:
+            return None
+
+        # Build targets for the full SELECT list.  Group columns and
+        # aggregate results are referenced by their output names from
+        # HashAggOp; computed expressions are evaluated from those.
+        group_set = set(group_cols)
+        targets: list[tuple[str, Any]] = []
+        for target in target_list:
+            name = target.name or self._infer_target_name(target)
+            if name in agg_aliases or name in group_set:
+                # Aggregate or group column: pass through by name
+                ref = ColumnRef(fields=[PgString(sval=name)])
+                targets.append((name, ref))
+            elif isinstance(target.val, ColumnRef):
+                col = self._extract_column_name(target.val)
+                ref = ColumnRef(fields=[PgString(sval=col)])
+                targets.append((name, ref))
+            else:
+                # Computed expression: evaluate from HashAggOp output
+                targets.append((name, target.val))
+        return targets
+
     def _resolve_select_column_names(
         self,
         target_list: tuple | None,
@@ -1766,8 +1878,12 @@ class SQLCompiler:
                     if func.agg_star:
                         natural = fn
                     elif func.args:
+                        col_arg = None
+                        for a in func.args:
+                            if isinstance(a, ColumnRef):
+                                col_arg = self._extract_column_name(a)
                         natural = (
-                            f"{fn}_{self._extract_column_name(func.args[0])}"
+                            f"{fn}_{col_arg}" if col_arg else fn
                         )
                     else:
                         natural = fn
@@ -1779,6 +1895,48 @@ class SQLCompiler:
         if not cols:
             cols = group_cols + [a for a, *_ in agg_specs]
         return cols
+
+    def _build_pre_agg_targets(
+        self,
+        group_clause: tuple,
+        group_cols: list[str],
+        agg_specs: list[tuple],
+        table: Any,
+    ) -> list[tuple[str, Any]] | None:
+        """Build ExprProjectOp targets to pre-compute expressions
+        before HashAggOp.
+
+        Covers two cases:
+        - GROUP BY with FuncCall (e.g., DATE_TRUNC)
+        - Aggregate args that are expressions (e.g., SUM(CASE ...))
+
+        Returns ``None`` when no pre-computation is needed.
+        """
+        expr_targets: list[tuple[str, Any]] = []
+
+        # GROUP BY computed expressions
+        for idx, g in enumerate(group_clause):
+            if isinstance(g, FuncCall):
+                expr_targets.append((group_cols[idx], g))
+
+        # Aggregate expression args (8th element of spec tuple)
+        for spec in agg_specs:
+            if len(spec) > 7 and spec[7] is not None:
+                expr_targets.append((spec[2], spec[7]))
+
+        if not expr_targets:
+            return None
+
+        # Pass through all raw table columns, then append
+        # the computed expression columns.
+        targets: list[tuple[str, Any]] = []
+        col_names = list(table.columns.keys()) if table else []
+        for col_name in col_names:
+            ref = ColumnRef(fields=[PgString(sval=col_name)])
+            targets.append((col_name, ref))
+        for alias, node in expr_targets:
+            targets.append((alias, node))
+        return targets
 
     def _resolve_group_by_cols(
         self, group_clause: tuple, target_list: tuple | None,
@@ -1799,7 +1957,14 @@ class SQLCompiler:
                     if target.val.agg_star:
                         name = fn
                     elif target.val.args:
-                        name = f"{fn}_{self._extract_column_name(target.val.args[0])}"
+                        # First arg may not be a ColumnRef (e.g.,
+                        # DATE_TRUNC('month', col)).  Fall back to the
+                        # last ColumnRef arg, then to just the func name.
+                        col_arg = None
+                        for a in target.val.args:
+                            if isinstance(a, ColumnRef):
+                                col_arg = self._extract_column_name(a)
+                        name = f"{fn}_{col_arg}" if col_arg else fn
                     else:
                         name = fn
                     select_cols.append(target.name or name)
@@ -1825,6 +1990,33 @@ class SQLCompiler:
                 col = self._extract_column_name(g)
                 # Check alias map
                 result.append(alias_map.get(col, col))
+                continue
+
+            # FuncCall in GROUP BY: match against SELECT targets by
+            # function name and use the SELECT alias.
+            if isinstance(g, FuncCall):
+                g_fn = g.funcname[-1].sval.lower()
+                matched = None
+                if target_list:
+                    for target in target_list:
+                        if (
+                            isinstance(target.val, FuncCall)
+                            and target.val.funcname[-1].sval.lower() == g_fn
+                            and target.name
+                        ):
+                            matched = target.name
+                            break
+                if matched:
+                    result.append(matched)
+                else:
+                    # Generate name from func + last ColumnRef arg
+                    col_arg = None
+                    if g.args:
+                        for a in g.args:
+                            if isinstance(a, ColumnRef):
+                                col_arg = self._extract_column_name(a)
+                    name = f"{g_fn}_{col_arg}" if col_arg else g_fn
+                    result.append(name)
                 continue
 
             # Fallback: try extracting column name
@@ -2015,7 +2207,9 @@ class SQLCompiler:
 
         # 6-12. Execute relational operations via physical operators
         return self._execute_relational(
-            stmt, pl, ctx, table, deferred_where=deferred_where
+            stmt, pl, ctx, table,
+            deferred_where=deferred_where,
+            join_source=join_source,
         )
 
     # -- Set operations (UNION / INTERSECT / EXCEPT) -------------------
@@ -2258,17 +2452,18 @@ class SQLCompiler:
             # Execute recursive case
             rec_result = self._compile_select(query.rarg)
 
-            # Remap columns
+            # Remap recursive result columns to match base case columns.
+            # alias_cols takes priority; otherwise remap positionally
+            # to the base case column names (handles cases like
+            # ``t.depth + 1`` producing ``?column?`` instead of ``depth``).
+            target_cols = alias_cols or columns
             new_rows = []
             for row in rec_result.rows:
-                if alias_cols:
-                    remapped = {}
-                    for i, acol in enumerate(alias_cols):
-                        if i < len(rec_result.columns):
-                            remapped[acol] = row.get(rec_result.columns[i])
-                    new_rows.append(remapped)
-                else:
-                    new_rows.append(row)
+                remapped = {}
+                for i, tcol in enumerate(target_cols):
+                    if i < len(rec_result.columns):
+                        remapped[tcol] = row.get(rec_result.columns[i])
+                new_rows.append(remapped)
 
             if not new_rows:
                 break
@@ -2333,12 +2528,16 @@ class SQLCompiler:
         col_defs: list[ColumnDef] = []
         for col_name in result.columns:
             py_type: type = str
-            if result.rows:
-                sample = result.rows[0].get(col_name)
-                if isinstance(sample, int):
-                    py_type = int
-                elif isinstance(sample, float):
-                    py_type = float
+            for row in result.rows:
+                sample = row.get(col_name)
+                if sample is not None:
+                    if isinstance(sample, bool):
+                        py_type = str  # bool before int (bool is subclass)
+                    elif isinstance(sample, int):
+                        py_type = int
+                    elif isinstance(sample, float):
+                        py_type = float
+                    break
             col_defs.append(ColumnDef(
                 name=col_name,
                 type_name=_type_map.get(py_type, "text"),
@@ -2506,19 +2705,24 @@ class SQLCompiler:
             return None, None
 
         if len(from_clause) == 1:
-            return self._resolve_from_single(from_clause[0])
+            table, op, _alias = self._resolve_from_single(from_clause[0])
+            return table, op
 
         # Multiple FROM sources -> implicit CROSS JOIN chain
         from uqa.joins.cross import CrossJoinOperator
 
-        table, op = self._resolve_from_single(from_clause[0])
+        table, op, alias = self._resolve_from_single(from_clause[0])
         if op is None:
-            op = _TableScanOperator(table)
+            op = _TableScanOperator(table, alias=alias)
 
         for node in from_clause[1:]:
-            right_table, right_op = self._resolve_from_single(node)
+            right_table, right_op, right_alias = (
+                self._resolve_from_single(node)
+            )
             if right_op is None:
-                right_op = _TableScanOperator(right_table)
+                right_op = _TableScanOperator(
+                    right_table, alias=right_alias
+                )
             op = CrossJoinOperator(op, right_op)
             # Keep first resolved table as context source
             if table is None:
@@ -2528,33 +2732,52 @@ class SQLCompiler:
 
     def _resolve_from_single(
         self, node: Any
-    ) -> tuple[Table | None, Any]:
-        """Resolve a single FROM clause item."""
+    ) -> tuple[Table | None, Any, str | None]:
+        """Resolve a single FROM clause item.
+
+        Returns ``(table, operator, alias)`` where *alias* is the
+        table alias (e.g. ``e`` in ``FROM employees e``) or the table
+        name itself when no alias is specified.
+        """
         if isinstance(node, RangeVar):
+            alias = (
+                node.alias.aliasname
+                if node.alias is not None
+                else node.relname
+            )
             # Virtual schema tables
             if node.schemaname == "information_schema":
-                return self._build_information_schema_table(
+                tbl, op = self._build_information_schema_table(
                     node.relname
                 )
+                return tbl, op, alias
             if node.schemaname == "pg_catalog":
-                return self._build_pg_catalog_table(node.relname)
+                tbl, op = self._build_pg_catalog_table(node.relname)
+                return tbl, op, alias
             table_name = node.relname
             table = self._engine._tables.get(table_name)
             if table is None:
                 view_query = self._engine._views.get(table_name)
                 if view_query is not None:
-                    return self._expand_view(table_name, view_query)
+                    tbl, op = self._expand_view(table_name, view_query)
+                    return tbl, op, alias
                 raise ValueError(f"Table '{table_name}' does not exist")
-            return table, None
+            return table, None, alias
 
         if isinstance(node, RangeFunction):
-            return self._compile_from_function(node)
+            tbl, op = self._compile_from_function(node)
+            return tbl, op, None
 
         if isinstance(node, JoinExpr):
-            return self._resolve_join(node)
+            tbl, op = self._resolve_join(node)
+            return tbl, op, None
 
         if isinstance(node, RangeSubselect):
-            return self._materialize_derived_table(node)
+            tbl, op = self._materialize_derived_table(node)
+            alias = (
+                node.alias.aliasname if node.alias else None
+            )
+            return tbl, op, alias
 
         raise ValueError(f"Unsupported FROM clause: {type(node).__name__}")
 
@@ -2619,12 +2842,14 @@ class SQLCompiler:
 
     @staticmethod
     def _is_join_operator(op: Any) -> bool:
-        """Return True if op is a join operator (cross, inner, outer)."""
+        """Return True if op is a join operator (cross, inner, outer, expr)."""
         if op is None:
             return False
         from uqa.joins.base import JoinOperator
         from uqa.joins.cross import CrossJoinOperator
-        return isinstance(op, (JoinOperator, CrossJoinOperator))
+        return isinstance(
+            op, (JoinOperator, CrossJoinOperator, _ExprJoinOperator)
+        )
 
     def _build_traverse_from(
         self, args: tuple
@@ -2818,17 +3043,21 @@ class SQLCompiler:
             RightOuterJoinOperator,
         )
 
-        left_table, left_op = self._resolve_from_node(node.larg)
-        right_table, right_op = self._resolve_from_node(node.rarg)
+        left_table, left_op, left_alias = self._resolve_from_single(
+            node.larg
+        )
+        right_table, right_op, right_alias = self._resolve_from_single(
+            node.rarg
+        )
 
         table = left_table or right_table
 
         if left_op is None and left_table is not None:
-            left_op = _TableScanOperator(left_table)
+            left_op = _TableScanOperator(left_table, alias=left_alias)
         elif left_op is None:
             left_op = _ScanOperator()
         if right_op is None and right_table is not None:
-            right_op = _TableScanOperator(right_table)
+            right_op = _TableScanOperator(right_table, alias=right_alias)
         elif right_op is None:
             right_op = _ScanOperator()
 
@@ -2839,39 +3068,73 @@ class SQLCompiler:
         if jt == JoinType.JOIN_INNER and quals is None:
             return table, CrossJoinOperator(left_op, right_op)
 
-        if not isinstance(quals, A_Expr):
-            raise ValueError("JOIN ON must be a simple column equality")
-        left_field = self._extract_column_name(quals.lexpr)
-        right_field = self._extract_column_name(quals.rexpr)
-        condition = JoinCondition(left_field, right_field)
+        # Simple equality ON: use efficient hash join
+        if isinstance(quals, A_Expr):
+            op_name = quals.name[-1].sval if quals.name else None
+            if op_name == "=":
+                left_field, right_field = self._resolve_join_on_fields(
+                    quals.lexpr, quals.rexpr,
+                    left_alias, right_alias,
+                )
+                condition = JoinCondition(left_field, right_field)
 
-        if jt == JoinType.JOIN_INNER:
-            return table, InnerJoinOperator(left_op, right_op, condition)
-        if jt == JoinType.JOIN_LEFT:
-            return table, LeftOuterJoinOperator(left_op, right_op, condition)
-        if jt == JoinType.JOIN_RIGHT:
-            return table, RightOuterJoinOperator(left_op, right_op, condition)
-        if jt == JoinType.JOIN_FULL:
-            return table, FullOuterJoinOperator(left_op, right_op, condition)
-        raise ValueError(f"Unsupported join type: {jt}")
+                if jt == JoinType.JOIN_INNER:
+                    return table, InnerJoinOperator(
+                        left_op, right_op, condition
+                    )
+                if jt == JoinType.JOIN_LEFT:
+                    return table, LeftOuterJoinOperator(
+                        left_op, right_op, condition
+                    )
+                if jt == JoinType.JOIN_RIGHT:
+                    return table, RightOuterJoinOperator(
+                        left_op, right_op, condition
+                    )
+                if jt == JoinType.JOIN_FULL:
+                    return table, FullOuterJoinOperator(
+                        left_op, right_op, condition
+                    )
 
-    def _resolve_from_node(self, node: Any) -> tuple[Table | None, Any]:
-        if isinstance(node, RangeVar):
-            table_name = node.relname
-            table = self._engine._tables.get(table_name)
-            if table is None:
-                view_query = self._engine._views.get(table_name)
-                if view_query is not None:
-                    return self._expand_view(table_name, view_query)
-                raise ValueError(f"Table '{table_name}' does not exist")
-            return table, None
-        if isinstance(node, RangeFunction):
-            return self._compile_from_function(node)
-        if isinstance(node, JoinExpr):
-            return self._resolve_join(node)
-        if isinstance(node, RangeSubselect):
-            return self._materialize_derived_table(node)
-        raise ValueError(f"Unsupported FROM node: {type(node).__name__}")
+        # Complex ON (compound conditions, non-equality):
+        # use nested-loop join with expression evaluation
+        if quals is None:
+            raise ValueError("Non-CROSS JOIN requires ON clause")
+        return table, _ExprJoinOperator(left_op, right_op, quals, jt)
+
+    @staticmethod
+    def _resolve_join_on_fields(
+        lexpr: Any,
+        rexpr: Any,
+        left_alias: str | None,
+        right_alias: str | None,
+    ) -> tuple[str, str]:
+        """Map ON clause operands to (left_field, right_field).
+
+        PostgreSQL treats ``ON p.x = e.y`` the same as ``ON e.y = p.x``.
+        This method checks the table qualifiers to ensure the returned
+        fields match the FROM clause order (left table, right table),
+        regardless of the operand order in the ON expression.
+        """
+        l_col = lexpr.fields[-1].sval if isinstance(lexpr, ColumnRef) else str(lexpr)
+        r_col = rexpr.fields[-1].sval if isinstance(rexpr, ColumnRef) else str(rexpr)
+
+        l_qual = (
+            lexpr.fields[0].sval
+            if isinstance(lexpr, ColumnRef) and len(lexpr.fields) >= 2
+            else None
+        )
+        r_qual = (
+            rexpr.fields[0].sval
+            if isinstance(rexpr, ColumnRef) and len(rexpr.fields) >= 2
+            else None
+        )
+
+        # Match qualifiers to table aliases to determine correct order
+        if l_qual == right_alias and r_qual == left_alias:
+            # ON clause operands are swapped relative to FROM order
+            return r_col, l_col
+        # Default: assume ON clause order matches FROM order
+        return l_col, r_col
 
     # -- WHERE clause --------------------------------------------------
 
@@ -3360,6 +3623,7 @@ class SQLCompiler:
                 continue
             distinct = bool(func.agg_distinct)
             extra: Any = None
+            agg_expr_node: Any = None
 
             # Ordered-set aggregates: arg_col from WITHIN GROUP (ORDER BY)
             if func_name in ("percentile_cont", "percentile_disc"):
@@ -3371,11 +3635,16 @@ class SQLCompiler:
                 arg_col = self._extract_column_name(func.args[0])
                 extra = self._extract_column_name(func.args[1])
             else:
-                arg_col = (
-                    None
-                    if func.agg_star
-                    else self._extract_column_name(func.args[0])
-                )
+                if func.agg_star:
+                    arg_col = None
+                elif isinstance(func.args[0], ColumnRef):
+                    arg_col = self._extract_column_name(func.args[0])
+                else:
+                    # Expression arg (CaseExpr, A_Expr, etc.)
+                    # Generate a synthetic column name; the expression
+                    # will be pre-computed via ExprProjectOp.
+                    arg_col = f"__agg_expr_{len(specs)}"
+                    agg_expr_node = func.args[0]
                 if func_name == "string_agg" and func.args and len(func.args) > 1:
                     extra = self._extract_const_value(func.args[1])
 
@@ -3396,7 +3665,7 @@ class SQLCompiler:
 
             specs.append((
                 alias, func_name, arg_col, distinct, extra,
-                filter_node, order_keys,
+                filter_node, order_keys, agg_expr_node,
             ))
         return specs
 
@@ -3701,16 +3970,42 @@ class _TableScanOperator:
     Unlike _ScanOperator (which leaves payload.fields empty),
     this operator populates fields from the document store so that
     join operators can match on field values.
+
+    When *alias* is provided (e.g. ``"e"`` from ``FROM employees e``),
+    fields are dual-keyed: both qualified (``e.name``) and unqualified
+    (``name``) keys are stored.  This allows downstream join operators
+    to merge fields without collision on qualified keys, while
+    ExprEvaluator resolves ``e.name`` via qualified lookup.
     """
 
-    def __init__(self, table: Table) -> None:
+    def __init__(
+        self, table: Table, alias: str | None = None
+    ) -> None:
         self._table = table
+        self._alias = alias
 
     def execute(self, context: Any) -> PostingList:
         entries: list[PostingEntry] = []
+        alias = self._alias
+        # Pre-fetch column names so NULL columns are explicitly present.
+        # The document store may omit NULL values; for JOIN semantics
+        # we need them to prevent unqualified fallback to the wrong table.
+        col_names = (
+            list(self._table.columns.keys())
+            if self._table.columns
+            else []
+        )
         for doc_id in sorted(self._table.document_store.doc_ids):
             doc = self._table.document_store.get(doc_id)
             fields = dict(doc) if doc else {}
+            for col_name in col_names:
+                if col_name not in fields:
+                    fields[col_name] = None
+            if alias:
+                qualified = {
+                    f"{alias}.{k}": v for k, v in fields.items()
+                }
+                fields = {**qualified, **fields}
             entries.append(
                 PostingEntry(doc_id, Payload(score=0.0, fields=fields))
             )
@@ -3718,6 +4013,262 @@ class _TableScanOperator:
 
     def cost_estimate(self, stats: Any) -> float:
         return float(len(self._table.document_store.doc_ids))
+
+
+def _entry_doc_id(entry: object) -> int:
+    """Extract doc_id from either PostingEntry or GeneralizedPostingEntry."""
+    if hasattr(entry, "doc_ids"):
+        return entry.doc_ids[0]
+    return entry.doc_id
+
+
+def _get_join_entries(source: object, context: object) -> list:
+    """Execute a source operator and return its entries as a list."""
+    if hasattr(source, "execute"):
+        pl = source.execute(context)
+        return list(pl)
+    return list(source)
+
+
+class _ExprJoinOperator:
+    """Nested-loop join with arbitrary ON expression evaluation.
+
+    Used for non-equality join conditions (e.g. ``ON a.x >= b.y``)
+    and compound conditions (e.g. ``ON a.x >= b.y AND a.x <= b.z``).
+    Falls back to O(N*M) nested loop since hash join requires equality.
+    """
+
+    def __init__(
+        self,
+        left: object,
+        right: object,
+        quals: Any,
+        join_type: int,
+    ) -> None:
+        self._left = left
+        self._right = right
+        self._quals = quals
+        self._join_type = join_type
+
+    def execute(self, context: object) -> Any:
+        from uqa.core.posting_list import GeneralizedPostingList
+        from uqa.core.types import GeneralizedPostingEntry, Payload
+        from uqa.sql.expr_evaluator import ExprEvaluator
+
+        evaluator = ExprEvaluator()
+        left_entries = _get_join_entries(self._left, context)
+        right_entries = _get_join_entries(self._right, context)
+
+        jt = self._join_type
+        quals = self._quals
+
+        if jt == JoinType.JOIN_INNER:
+            return self._inner(
+                evaluator, quals, left_entries, right_entries
+            )
+        if jt == JoinType.JOIN_LEFT:
+            return self._left_outer(
+                evaluator, quals, left_entries, right_entries
+            )
+        if jt == JoinType.JOIN_RIGHT:
+            return self._right_outer(
+                evaluator, quals, left_entries, right_entries
+            )
+        if jt == JoinType.JOIN_FULL:
+            return self._full_outer(
+                evaluator, quals, left_entries, right_entries
+            )
+        raise ValueError(f"Unsupported join type for expression join: {jt}")
+
+    @staticmethod
+    def _inner(
+        evaluator: Any,
+        quals: Any,
+        left_entries: list,
+        right_entries: list,
+    ) -> Any:
+        from uqa.core.posting_list import GeneralizedPostingList
+        from uqa.core.types import GeneralizedPostingEntry, Payload
+
+        result: list = []
+        for left in left_entries:
+            for right in right_entries:
+                merged = {
+                    **left.payload.fields,
+                    **right.payload.fields,
+                }
+                if evaluator.evaluate(quals, merged):
+                    result.append(
+                        GeneralizedPostingEntry(
+                            doc_ids=(
+                                _entry_doc_id(left),
+                                _entry_doc_id(right),
+                            ),
+                            payload=Payload(
+                                score=(
+                                    left.payload.score
+                                    + right.payload.score
+                                ),
+                                fields=merged,
+                            ),
+                        )
+                    )
+        return GeneralizedPostingList(result)
+
+    @staticmethod
+    def _left_outer(
+        evaluator: Any,
+        quals: Any,
+        left_entries: list,
+        right_entries: list,
+    ) -> Any:
+        from uqa.core.posting_list import GeneralizedPostingList
+        from uqa.core.types import GeneralizedPostingEntry, Payload
+
+        result: list = []
+        for left in left_entries:
+            matched = False
+            for right in right_entries:
+                merged = {
+                    **left.payload.fields,
+                    **right.payload.fields,
+                }
+                if evaluator.evaluate(quals, merged):
+                    matched = True
+                    result.append(
+                        GeneralizedPostingEntry(
+                            doc_ids=(
+                                _entry_doc_id(left),
+                                _entry_doc_id(right),
+                            ),
+                            payload=Payload(
+                                score=(
+                                    left.payload.score
+                                    + right.payload.score
+                                ),
+                                fields=merged,
+                            ),
+                        )
+                    )
+            if not matched:
+                result.append(
+                    GeneralizedPostingEntry(
+                        doc_ids=(_entry_doc_id(left),),
+                        payload=Payload(
+                            score=left.payload.score,
+                            fields=dict(left.payload.fields),
+                        ),
+                    )
+                )
+        return GeneralizedPostingList(result)
+
+    @staticmethod
+    def _right_outer(
+        evaluator: Any,
+        quals: Any,
+        left_entries: list,
+        right_entries: list,
+    ) -> Any:
+        from uqa.core.posting_list import GeneralizedPostingList
+        from uqa.core.types import GeneralizedPostingEntry, Payload
+
+        result: list = []
+        matched_right: set = set()
+        for left in left_entries:
+            for right in right_entries:
+                merged = {
+                    **left.payload.fields,
+                    **right.payload.fields,
+                }
+                if evaluator.evaluate(quals, merged):
+                    matched_right.add(_entry_doc_id(right))
+                    result.append(
+                        GeneralizedPostingEntry(
+                            doc_ids=(
+                                _entry_doc_id(left),
+                                _entry_doc_id(right),
+                            ),
+                            payload=Payload(
+                                score=(
+                                    left.payload.score
+                                    + right.payload.score
+                                ),
+                                fields=merged,
+                            ),
+                        )
+                    )
+        for right in right_entries:
+            if _entry_doc_id(right) not in matched_right:
+                result.append(
+                    GeneralizedPostingEntry(
+                        doc_ids=(_entry_doc_id(right),),
+                        payload=Payload(
+                            score=right.payload.score,
+                            fields=dict(right.payload.fields),
+                        ),
+                    )
+                )
+        return GeneralizedPostingList(result)
+
+    @staticmethod
+    def _full_outer(
+        evaluator: Any,
+        quals: Any,
+        left_entries: list,
+        right_entries: list,
+    ) -> Any:
+        from uqa.core.posting_list import GeneralizedPostingList
+        from uqa.core.types import GeneralizedPostingEntry, Payload
+
+        result: list = []
+        matched_right: set = set()
+        for left in left_entries:
+            matched = False
+            for right in right_entries:
+                merged = {
+                    **left.payload.fields,
+                    **right.payload.fields,
+                }
+                if evaluator.evaluate(quals, merged):
+                    matched = True
+                    matched_right.add(_entry_doc_id(right))
+                    result.append(
+                        GeneralizedPostingEntry(
+                            doc_ids=(
+                                _entry_doc_id(left),
+                                _entry_doc_id(right),
+                            ),
+                            payload=Payload(
+                                score=(
+                                    left.payload.score
+                                    + right.payload.score
+                                ),
+                                fields=merged,
+                            ),
+                        )
+                    )
+            if not matched:
+                result.append(
+                    GeneralizedPostingEntry(
+                        doc_ids=(_entry_doc_id(left),),
+                        payload=Payload(
+                            score=left.payload.score,
+                            fields=dict(left.payload.fields),
+                        ),
+                    )
+                )
+        for right in right_entries:
+            if _entry_doc_id(right) not in matched_right:
+                result.append(
+                    GeneralizedPostingEntry(
+                        doc_ids=(_entry_doc_id(right),),
+                        payload=Payload(
+                            score=right.payload.score,
+                            fields=dict(right.payload.fields),
+                        ),
+                    )
+                )
+        return GeneralizedPostingList(result)
 
 
 class _CalibratedKNNOperator:

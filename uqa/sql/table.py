@@ -188,8 +188,16 @@ class Table:
                         f"Missing primary key '{self.primary_key}' "
                         f"for table '{self.name}'"
                     )
-                doc_id = int(row[self.primary_key])
-                self._next_id = max(self._next_id, doc_id + 1)
+                pk_val = row[self.primary_key]
+                if isinstance(pk_val, int):
+                    doc_id = pk_val
+                    self._next_id = max(self._next_id, doc_id + 1)
+                else:
+                    # Non-integer PK (e.g., TEXT): auto-generate doc_id.
+                    # Uniqueness is enforced by the UNIQUE constraint
+                    # check below.
+                    doc_id = self._next_id
+                    self._next_id += 1
         else:
             doc_id = self._next_id
             self._next_id += 1

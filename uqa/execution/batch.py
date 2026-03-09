@@ -211,14 +211,25 @@ class Batch:
 
         Columns not present in the batch are silently skipped.
         If *aliases* is provided, columns are renamed accordingly.
+
+        For qualified column names (``table.col``), falls back to the
+        unqualified name (``col``) when the qualified name is not
+        found.  This supports both JOIN contexts (where fields are
+        qualified) and non-JOIN contexts (unqualified fields).
         """
         aliases = aliases or {}
         schema_names = self._rb.schema.names
         arrays: list[pa.Array] = []
         names: list[str] = []
         for col_name in columns:
-            if col_name in schema_names:
-                arrays.append(self._rb.column(col_name))
+            resolved = col_name
+            if col_name not in schema_names and "." in col_name:
+                # Qualified name not found; try unqualified fallback
+                unqualified = col_name.rsplit(".", 1)[-1]
+                if unqualified in schema_names:
+                    resolved = unqualified
+            if resolved in schema_names:
+                arrays.append(self._rb.column(resolved))
                 names.append(aliases.get(col_name, col_name))
         return Batch(pa.RecordBatch.from_arrays(arrays, names=names))
 

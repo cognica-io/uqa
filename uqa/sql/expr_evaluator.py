@@ -26,6 +26,7 @@ from pglast.ast import (
     A_Const,
     A_Expr,
     BoolExpr,
+    Boolean as PgBoolean,
     CaseExpr,
     CoalesceExpr,
     ColumnRef,
@@ -140,6 +141,8 @@ class ExprEvaluator:
             return float(val.fval)
         if isinstance(val, PgString):
             return val.sval
+        if isinstance(val, PgBoolean):
+            return val.boolval
         raise ValueError(f"Unknown A_Const value type: {type(val).__name__}")
 
     # -- A_Expr (arithmetic, comparison, concatenation) ----------------
@@ -670,9 +673,15 @@ def _json_contains(container: Any, contained: Any) -> bool:
     if container is None or contained is None:
         return False
     if isinstance(container, str):
-        container = json_mod.loads(container)
+        # Only parse if it looks like a JSON object/array, not a
+        # plain scalar string (which would fail json.loads).
+        stripped = container.strip()
+        if stripped and stripped[0] in ('{', '['):
+            container = json_mod.loads(container)
     if isinstance(contained, str):
-        contained = json_mod.loads(contained)
+        stripped = contained.strip()
+        if stripped and stripped[0] in ('{', '['):
+            contained = json_mod.loads(contained)
 
     if isinstance(contained, dict):
         if not isinstance(container, dict):
