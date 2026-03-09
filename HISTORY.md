@@ -1,8 +1,58 @@
 # History
 
+## 0.7.0 (2026-03-09)
+
+Statistical aggregates, regression functions, and extended scalar/DDL support.
+
+### Statistical Aggregates
+
+- `CORR(y, x)`: Pearson correlation coefficient
+- `COVAR_POP(y, x)` / `COVAR_SAMP(y, x)`: population and sample covariance
+- `REGR_SLOPE(y, x)` / `REGR_INTERCEPT(y, x)`: linear regression slope and intercept
+- `REGR_R2(y, x)`: coefficient of determination
+- `REGR_COUNT(y, x)` / `REGR_AVGX(y, x)` / `REGR_AVGY(y, x)`: regression count and averages
+- `REGR_SXX(y, x)` / `REGR_SYY(y, x)` / `REGR_SXY(y, x)`: regression sum of squares
+- All two-argument aggregates handle NULL pairs correctly (skip when either is NULL)
+
+### String Functions
+
+- `ENCODE(data, format)` / `DECODE(data, format)`: binary-to-text encoding (base64, hex, escape)
+- `REGEXP_SPLIT_TO_ARRAY(string, pattern [, flags])`: split by regex into an array
+- `REGEXP_SPLIT_TO_TABLE(string, pattern [, flags])`: split by regex into rows (FROM clause)
+
+### Math Functions
+
+- `MIN_SCALE(numeric)`: minimum decimal digits needed to represent a value
+- `TRIM_SCALE(numeric)`: remove trailing zeros from a numeric value
+
+### Date/Time Functions
+
+- `ISFINITE(date/timestamp/interval)`: test whether a value is finite
+- `CLOCK_TIMESTAMP()`: current timestamp (changes during statement execution)
+- `TIMEOFDAY()`: current date and time as text string
+
+### JSON Functions
+
+- `JSONB_STRIP_NULLS(json)`: recursively remove null-valued keys from JSON objects
+
+### DDL
+
+- `ALTER SEQUENCE`: RESTART [WITH n], INCREMENT BY n, START WITH n
+- `TABLE name`: shorthand for `SELECT * FROM name` (already supported by pglast)
+
+### System Catalogs
+
+- `pg_catalog.pg_type`: PostgreSQL-compatible type catalog with OIDs
+
+### Tests
+
+- 1423 tests across 40 test files (up from 1392 in v0.6.0)
+- 31 new tests: regression functions, covariance/correlation, regexp_split_to_table, pg_type, ALTER SEQUENCE, TABLE shorthand
+
+
 ## 0.6.0 (2026-03-09)
 
-PostgreSQL 17 SQL compatibility — P0/P1/P2 complete (84/103 features). JOINs, DDL/DML extensions, constraints, advanced aggregates, window frames, date/time, JSON, arrays, sequences, system catalogs, and 80+ scalar functions.
+PostgreSQL 17 SQL compatibility — JOINs, DDL/DML extensions, constraints, advanced aggregates, window frames, date/time, JSON, arrays, sequences, system catalogs, and 80+ scalar functions.
 
 ### JOIN Support
 
@@ -140,12 +190,8 @@ PostgreSQL 17 SQL compatibility — P0/P1/P2 complete (84/103 features). JOINs, 
 
 ### Tests
 
-- 1392 tests across 36 test files (up from 1000 in v0.5.0)
-- `test_pg17_features.py` (97 tests) — P0: core PostgreSQL 17 features
-- `test_pg17_p1_features.py` (135 tests) — P1: extended SQL compatibility
-- `test_pg17_p2_features.py` (79 tests) — P2: types, aggregates, window, JSON, DDL, sequences
-- `test_pg17_p2_remaining.py` (50 tests) — P2: JSON ops, datetime, system catalogs, values, window filter
-- `test_pg17_p2_remaining2.py` (31 tests) — P2: UPDATE FROM, DELETE USING, LATERAL, temp tables, foreign keys
+- 1423 tests across 40 feature-based test files (up from 1000 in v0.5.0)
+- Tests organized by feature: `test_ddl.py`, `test_aggregates.py`, `test_scalar_functions.py`, `test_datetime.py`, `test_json.py`, `test_types.py`, `test_sequence.py`, `test_sql_joins.py`, `test_table_functions.py`, `test_window.py`, `test_update_delete.py`, `test_cte.py`, `test_catalog.py`
 
 
 ## 0.5.0 (2026-03-08)

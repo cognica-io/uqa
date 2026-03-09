@@ -499,6 +499,21 @@ Expands an array to a set of rows. Returns rows with a single `unnest` column.
 SELECT * FROM unnest(ARRAY[1, 2, 3]);
 ```
 
+#### `regexp_split_to_table(string, pattern [, flags])`
+
+Splits a string by a regular expression pattern and returns one row per part.
+
+```sql
+SELECT value FROM regexp_split_to_table('one,two,three', ',');
+SELECT value FROM regexp_split_to_table('Hello   World', '\s+');
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `string` | string | The string to split |
+| `pattern` | string | Regular expression pattern to split on |
+| `flags` | string | Optional flags: `i` (case-insensitive), `m` (multiline), `s` (dotall) |
+
 #### `json_each(json)` / `json_each_text(json)`
 
 Expands a JSON object into a set of key/value rows. `json_each` returns values as JSON; `json_each_text` returns values as text.
@@ -570,7 +585,7 @@ All storage backends have two implementations: an in-memory variant for ephemera
 
 The SQL compiler uses pglast (PostgreSQL parser) to parse SQL into an AST, then compiles each statement into the appropriate operation:
 
-- **DDL**: CREATE/DROP TABLE (IF NOT EXISTS/IF EXISTS), CREATE TEMPORARY TABLE, CREATE TABLE AS SELECT, ALTER TABLE (ADD/DROP/RENAME COLUMN, SET/DROP DEFAULT, SET/DROP NOT NULL, ALTER TYPE USING), TRUNCATE TABLE, CREATE/DROP INDEX, CREATE/DROP VIEW, CREATE SEQUENCE/NEXTVAL/CURRVAL/SETVAL, PREPARE/EXECUTE/DEALLOCATE
+- **DDL**: CREATE/DROP TABLE (IF NOT EXISTS/IF EXISTS), CREATE TEMPORARY TABLE, CREATE TABLE AS SELECT, ALTER TABLE (ADD/DROP/RENAME COLUMN, SET/DROP DEFAULT, SET/DROP NOT NULL, ALTER TYPE USING), TRUNCATE TABLE, CREATE/DROP INDEX, CREATE/DROP VIEW, CREATE SEQUENCE/NEXTVAL/CURRVAL/SETVAL, ALTER SEQUENCE, TABLE name, PREPARE/EXECUTE/DEALLOCATE
 - **Constraints**: PRIMARY KEY, NOT NULL, DEFAULT, UNIQUE, CHECK, FOREIGN KEY
 - **DML**: INSERT (VALUES, SELECT, ON CONFLICT DO NOTHING/UPDATE, RETURNING), UPDATE (SET, FROM join, RETURNING), DELETE (WHERE, USING join, RETURNING)
 - **DQL**: SELECT with DISTINCT, WHERE, GROUP BY, HAVING, ORDER BY (NULLS FIRST/LAST), LIMIT, OFFSET, FETCH FIRST n ROWS ONLY, standalone VALUES
@@ -578,12 +593,12 @@ The SQL compiler uses pglast (PostgreSQL parser) to parse SQL into an AST, then 
 - **Subqueries**: IN, EXISTS, scalar, correlated, LATERAL
 - **CTEs**: WITH ... AS, WITH RECURSIVE
 - **Window functions**: ROW_NUMBER, RANK, DENSE_RANK, NTILE, LAG, LEAD, NTH_VALUE, PERCENT_RANK, CUME_DIST with ROWS/RANGE BETWEEN frames, WINDOW w AS (...), FILTER (WHERE ...) on window aggregates
-- **Aggregates**: COUNT/SUM/AVG/MIN/MAX, STRING_AGG, ARRAY_AGG, BOOL_AND/EVERY, BOOL_OR, STDDEV, VARIANCE, PERCENTILE_CONT/DISC, MODE, JSON_OBJECT_AGG, FILTER (WHERE ...), ORDER BY within aggregate
+- **Aggregates**: COUNT/SUM/AVG/MIN/MAX, STRING_AGG, ARRAY_AGG, BOOL_AND/EVERY, BOOL_OR, STDDEV, VARIANCE, PERCENTILE_CONT/DISC, MODE, JSON_OBJECT_AGG, CORR, COVAR_POP/SAMP, REGR_* (10 functions), FILTER (WHERE ...), ORDER BY within aggregate
 - **Types**: INTEGER, BIGINT, SERIAL, TEXT, VARCHAR, REAL, FLOAT, DOUBLE PRECISION, NUMERIC(p,s), BOOLEAN, DATE, TIME, TIMESTAMP, TIMESTAMPTZ, INTERVAL, JSON/JSONB, UUID, BYTEA, INTEGER[] (arrays), VECTOR(N)
-- **JSON**: ->, ->>, #>, #>> operators, @>/<@ containment, ?/?|/?& key existence, JSONB_SET, JSON_BUILD_OBJECT/ARRAY, JSON_OBJECT_KEYS, JSON_EXTRACT_PATH, JSON_TYPEOF, JSON_AGG, JSON_EACH, JSON_ARRAY_ELEMENTS
-- **Date/Time**: EXTRACT, DATE_TRUNC, DATE_PART, NOW, CURRENT_DATE/TIME/TIMESTAMP, AGE, TO_CHAR/TO_DATE/TO_TIMESTAMP, MAKE_DATE/MAKE_TIMESTAMP/MAKE_INTERVAL, TO_NUMBER, OVERLAPS
-- **Table functions**: GENERATE_SERIES, UNNEST, JSON_EACH/JSON_EACH_TEXT, JSON_ARRAY_ELEMENTS/JSON_ARRAY_ELEMENTS_TEXT
-- **System catalogs**: information_schema.columns, pg_catalog.pg_tables, pg_catalog.pg_views, pg_catalog.pg_indexes
+- **JSON**: ->, ->>, #>, #>> operators, @>/<@ containment, ?/?|/?& key existence, JSONB_SET, JSONB_STRIP_NULLS, JSON_BUILD_OBJECT/ARRAY, JSON_OBJECT_KEYS, JSON_EXTRACT_PATH, JSON_TYPEOF, JSON_AGG, JSON_EACH, JSON_ARRAY_ELEMENTS
+- **Date/Time**: EXTRACT, DATE_TRUNC, DATE_PART, NOW, CURRENT_DATE/TIME/TIMESTAMP, CLOCK_TIMESTAMP, TIMEOFDAY, AGE, TO_CHAR/TO_DATE/TO_TIMESTAMP, MAKE_DATE/MAKE_TIMESTAMP/MAKE_INTERVAL, TO_NUMBER, OVERLAPS, ISFINITE
+- **Table functions**: GENERATE_SERIES, UNNEST, REGEXP_SPLIT_TO_TABLE, JSON_EACH/JSON_EACH_TEXT, JSON_ARRAY_ELEMENTS/JSON_ARRAY_ELEMENTS_TEXT
+- **System catalogs**: information_schema.columns, pg_catalog.pg_tables, pg_catalog.pg_views, pg_catalog.pg_indexes, pg_catalog.pg_type
 - **Transactions**: BEGIN, COMMIT, ROLLBACK, SAVEPOINT
 - **Utility**: EXPLAIN, ANALYZE
 
@@ -957,7 +972,7 @@ print(plan)
 
 ### 6.5 Programmatic Document API
 
-The Engine provides a direct document API for adding and removing documents, graph vertices, and edges. All operations require an explicit table name -- there is no global store.
+The Engine provides a direct document API for adding and removing documents, graph vertices, and edges. All operations require an explicit table name — there is no global store.
 
 ```python
 import numpy as np
@@ -1108,31 +1123,7 @@ python -m pytest uqa/tests/ -v
 python -m pytest uqa/tests/test_sql.py -v
 ```
 
-1392 tests across 36 test files.
-
-Key test areas:
-
-| Test file | Coverage |
-|-----------|----------|
-| `test_posting_list.py` | Core PostingList algebra |
-| `test_operators.py` | All operator types |
-| `test_scoring.py` | BM25, Bayesian BM25, vector scoring |
-| `test_fusion.py` | Log-odds, probabilistic boolean fusion |
-| `test_sql.py` | SQL compilation and execution |
-| `test_execution.py` | Physical operators, Volcano iterator |
-| `test_joins.py` | All join types |
-| `test_graph.py` | Graph store, traversal, pattern matching, RPQ |
-| `test_index.py` | Inverted index, skip pointers, block-max |
-| `test_sqlite_*.py` | SQLite backend persistence |
-| `test_transaction.py` | BEGIN, COMMIT, ROLLBACK, SAVEPOINT |
-| `test_cost_optimizer.py` | Cardinality estimation, rewrite rules |
-| `test_parallel.py` | Parallel execution correctness |
-| `test_integration.py` | End-to-end scenarios |
-| `test_pg17_features.py` | P0: core PostgreSQL 17 features (97 tests) |
-| `test_pg17_p1_features.py` | P1: extended SQL compatibility (135 tests) |
-| `test_pg17_p2_features.py` | P2: types, aggregates, window, JSON, DDL (79 tests) |
-| `test_pg17_p2_remaining.py` | P2: JSON ops, datetime, catalogs, values (50 tests) |
-| `test_pg17_p2_remaining2.py` | P2: UPDATE FROM, LATERAL, temp tables, FK (31 tests) |
+1423 tests across 40 test files covering core algebra, operators, scoring, fusion, SQL compilation, physical execution, joins, graph operations, SQLite persistence, transactions, cost optimization, parallel execution, PostgreSQL 17 compatibility, and end-to-end integration.
 
 
 ## 10. References

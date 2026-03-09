@@ -8,6 +8,9 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+
 import numpy as np
 import pytest
 
@@ -1023,3 +1026,848 @@ class TestSQLGraphAggregates:
         )
         # Kleene star: all reachable from CEO via manages (including CEO)
         assert len(result.rows) >= 5
+
+
+# ==================================================================
+# REGEXP_SPLIT_TO_TABLE
+# ==================================================================
+
+class TestRegexpSplitToTable:
+    def test_basic_split(self) -> None:
+        e = Engine()
+        result = e.sql(
+            "SELECT * FROM regexp_split_to_table("
+            "'hello world foo', '\\s+') AS t(word)"
+        )
+        words = [r["word"] for r in result.rows]
+        assert words == ["hello", "world", "foo"]
+
+    def test_comma_split(self) -> None:
+        e = Engine()
+        result = e.sql(
+            "SELECT * FROM regexp_split_to_table("
+            "'a,b,c', ',') AS t(item)"
+        )
+        items = [r["item"] for r in result.rows]
+        assert items == ["a", "b", "c"]
+
+    def test_empty_parts(self) -> None:
+        e = Engine()
+        result = e.sql(
+            "SELECT * FROM regexp_split_to_table("
+            "'a,,b', ',') AS t(v)"
+        )
+        vals = [r["v"] for r in result.rows]
+        assert vals == ["a", "", "b"]
+
+    def test_flags_case_insensitive(self) -> None:
+        e = Engine()
+        result = e.sql(
+            "SELECT * FROM regexp_split_to_table("
+            "'AXbXc', 'x', 'i') AS t(part)"
+        )
+        parts = [r["part"] for r in result.rows]
+        assert parts == ["A", "b", "c"]
+
+    def test_default_column_name(self) -> None:
+        e = Engine()
+        result = e.sql(
+            "SELECT regexp_split_to_table "
+            "FROM regexp_split_to_table('a-b', '-')"
+        )
+        vals = [r["regexp_split_to_table"] for r in result.rows]
+        assert vals == ["a", "b"]
+
+
+# ==================================================================
+# CORR / COVAR_POP / COVAR_SAMP
+# ==================================================================
+
+class TestCovarianceCorrelation:
+    @pytest.fixture
+    def stats_engine(self) -> Engine:
+        e = Engine()
+        e.sql("CREATE TABLE xy (x REAL, y REAL)")
+        # y = 2x, perfect linear relationship
+        e.sql("INSERT INTO xy VALUES (1, 2), (2, 4), (3, 6), (4, 8), (5, 10)")
+        return e
+
+    def test_corr_perfect(self, stats_engine: Engine) -> None:
+        r = stats_engine.sql("SELECT corr(y, x) AS c FROM xy")
+        assert abs(r.rows[0]["c"] - 1.0) < 1e-10
+
+    def test_covar_pop(self, stats_engine: Engine) -> None:
+        r = stats_engine.sql("SELECT covar_pop(y, x) AS cp FROM xy")
+        assert abs(r.rows[0]["cp"] - 4.0) < 1e-10
+
+    def test_covar_samp(self, stats_engine: Engine) -> None:
+        r = stats_engine.sql("SELECT covar_samp(y, x) AS cs FROM xy")
+        assert abs(r.rows[0]["cs"] - 5.0) < 1e-10
+
+    def test_corr_constant_returns_null(self) -> None:
+        e = Engine()
+        e.sql("CREATE TABLE c (x REAL, y REAL)")
+        e.sql("INSERT INTO c VALUES (1, 5), (2, 5), (3, 5)")
+        r = e.sql("SELECT corr(y, x) AS c FROM c")
+        assert r.rows[0]["c"] is None
+
+    def test_covar_samp_single_row(self) -> None:
+        e = Engine()
+        e.sql("CREATE TABLE s (x REAL, y REAL)")
+        e.sql("INSERT INTO s VALUES (1, 2)")
+        r = e.sql("SELECT covar_samp(y, x) AS cs FROM s")
+        assert r.rows[0]["cs"] is None
+
+
+# ==================================================================
+# REGR_* regression functions
+# ==================================================================
+
+class TestRegressionFunctions:
+    @pytest.fixture
+    def regr_engine(self) -> Engine:
+        e = Engine()
+        e.sql("CREATE TABLE pts (x REAL, y REAL)")
+        # y = 2x + 1
+        e.sql(
+            "INSERT INTO pts VALUES "
+            "(1, 3), (2, 5), (3, 7), (4, 9), (5, 11)"
+        )
+        return e
+
+    def test_regr_count(self, regr_engine: Engine) -> None:
+        r = regr_engine.sql("SELECT regr_count(y, x) AS rc FROM pts")
+        assert r.rows[0]["rc"] == 5
+
+    def test_regr_avgx(self, regr_engine: Engine) -> None:
+        r = regr_engine.sql("SELECT regr_avgx(y, x) AS ax FROM pts")
+        assert abs(r.rows[0]["ax"] - 3.0) < 1e-10
+
+    def test_regr_avgy(self, regr_engine: Engine) -> None:
+        r = regr_engine.sql("SELECT regr_avgy(y, x) AS ay FROM pts")
+        assert abs(r.rows[0]["ay"] - 7.0) < 1e-10
+
+    def test_regr_slope(self, regr_engine: Engine) -> None:
+        r = regr_engine.sql("SELECT regr_slope(y, x) AS s FROM pts")
+        assert abs(r.rows[0]["s"] - 2.0) < 1e-10
+
+    def test_regr_intercept(self, regr_engine: Engine) -> None:
+        r = regr_engine.sql("SELECT regr_intercept(y, x) AS i FROM pts")
+        assert abs(r.rows[0]["i"] - 1.0) < 1e-10
+
+    def test_regr_r2(self, regr_engine: Engine) -> None:
+        r = regr_engine.sql("SELECT regr_r2(y, x) AS r2 FROM pts")
+        assert abs(r.rows[0]["r2"] - 1.0) < 1e-10
+
+    def test_regr_sxx(self, regr_engine: Engine) -> None:
+        r = regr_engine.sql("SELECT regr_sxx(y, x) AS sxx FROM pts")
+        assert abs(r.rows[0]["sxx"] - 10.0) < 1e-10
+
+    def test_regr_syy(self, regr_engine: Engine) -> None:
+        r = regr_engine.sql("SELECT regr_syy(y, x) AS syy FROM pts")
+        assert abs(r.rows[0]["syy"] - 40.0) < 1e-10
+
+    def test_regr_sxy(self, regr_engine: Engine) -> None:
+        r = regr_engine.sql("SELECT regr_sxy(y, x) AS sxy FROM pts")
+        assert abs(r.rows[0]["sxy"] - 20.0) < 1e-10
+
+    def test_regr_slope_constant_x_null(self) -> None:
+        e = Engine()
+        e.sql("CREATE TABLE cx (x REAL, y REAL)")
+        e.sql("INSERT INTO cx VALUES (5, 1), (5, 2), (5, 3)")
+        r = e.sql("SELECT regr_slope(y, x) AS s FROM cx")
+        assert r.rows[0]["s"] is None
+
+    def test_regr_r2_constant_y_null(self) -> None:
+        e = Engine()
+        e.sql("CREATE TABLE cy (x REAL, y REAL)")
+        e.sql("INSERT INTO cy VALUES (1, 5), (2, 5), (3, 5)")
+        r = e.sql("SELECT regr_r2(y, x) AS r2 FROM cy")
+        assert r.rows[0]["r2"] is None
+
+
+# ==================================================================
+# pg_catalog.pg_type
+# ==================================================================
+
+class TestPgType:
+    def test_pg_type_exists(self) -> None:
+        e = Engine()
+        r = e.sql("SELECT COUNT(*) AS cnt FROM pg_catalog.pg_type")
+        assert r.rows[0]["cnt"] >= 18
+
+    def test_pg_type_integer_oid(self) -> None:
+        e = Engine()
+        r = e.sql(
+            "SELECT oid, typlen FROM pg_catalog.pg_type "
+            "WHERE typname = 'integer'"
+        )
+        assert len(r.rows) == 1
+        assert r.rows[0]["oid"] == 23
+        assert r.rows[0]["typlen"] == 4
+
+    def test_pg_type_text(self) -> None:
+        e = Engine()
+        r = e.sql(
+            "SELECT oid, typcategory FROM pg_catalog.pg_type "
+            "WHERE typname = 'text'"
+        )
+        assert len(r.rows) == 1
+        assert r.rows[0]["oid"] == 25
+        assert r.rows[0]["typcategory"] == "S"
+
+    def test_pg_type_numeric_category(self) -> None:
+        e = Engine()
+        r = e.sql(
+            "SELECT typname FROM pg_catalog.pg_type "
+            "WHERE typcategory = 'N' ORDER BY oid"
+        )
+        names = [row["typname"] for row in r.rows]
+        assert "integer" in names
+        assert "real" in names
+        assert "numeric" in names
+
+
+# ==================================================================
+# ALTER SEQUENCE
+# ==================================================================
+
+class TestAlterSequence:
+    def test_restart_with_value(self) -> None:
+        e = Engine()
+        e.sql("CREATE SEQUENCE seq1 START 1 INCREMENT 1")
+        e.sql("SELECT nextval('seq1')")
+        e.sql("SELECT nextval('seq1')")
+        e.sql("ALTER SEQUENCE seq1 RESTART WITH 10")
+        r = e.sql("SELECT nextval('seq1') AS v")
+        assert r.rows[0]["v"] == 10
+
+    def test_restart_without_value(self) -> None:
+        e = Engine()
+        e.sql("CREATE SEQUENCE seq2 START 5 INCREMENT 1")
+        e.sql("SELECT nextval('seq2')")
+        e.sql("SELECT nextval('seq2')")
+        e.sql("ALTER SEQUENCE seq2 RESTART")
+        r = e.sql("SELECT nextval('seq2') AS v")
+        assert r.rows[0]["v"] == 5
+
+    def test_alter_increment(self) -> None:
+        e = Engine()
+        e.sql("CREATE SEQUENCE seq3 START 1 INCREMENT 1")
+        e.sql("ALTER SEQUENCE seq3 INCREMENT BY 3")
+        e.sql("ALTER SEQUENCE seq3 RESTART")
+        r = e.sql("SELECT nextval('seq3') AS v")
+        assert r.rows[0]["v"] == 1
+        r = e.sql("SELECT nextval('seq3') AS v")
+        assert r.rows[0]["v"] == 4
+
+    def test_alter_nonexistent_sequence_raises(self) -> None:
+        e = Engine()
+        with pytest.raises(ValueError, match="does not exist"):
+            e.sql("ALTER SEQUENCE nosuchseq RESTART")
+
+    def test_alter_start(self) -> None:
+        e = Engine()
+        e.sql("CREATE SEQUENCE seq4 START 1 INCREMENT 1")
+        e.sql("ALTER SEQUENCE seq4 START WITH 100")
+        # START only affects what RESTART (without value) uses
+        e.sql("ALTER SEQUENCE seq4 RESTART")
+        r = e.sql("SELECT nextval('seq4') AS v")
+        assert r.rows[0]["v"] == 100
+
+
+# ==================================================================
+# TABLE name (shorthand for SELECT * FROM name)
+# ==================================================================
+
+class TestTableShorthand:
+    def test_table_returns_all_rows(self) -> None:
+        e = Engine()
+        e.sql("CREATE TABLE t1 (id INTEGER, name TEXT)")
+        e.sql("INSERT INTO t1 VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+        r = e.sql("TABLE t1")
+        assert len(r.rows) == 3
+        names = sorted(row["name"] for row in r.rows)
+        assert names == ["a", "b", "c"]
+
+
+# ==================================================================
+# Fixtures for appended PG17 test classes
+# ==================================================================
+
+
+@pytest.fixture
+def pg17_engine():
+    return Engine()
+
+
+@pytest.fixture
+def engine_with_data(pg17_engine):
+    pg17_engine.sql("CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)")
+    pg17_engine.sql("INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30)")
+    pg17_engine.sql("INSERT INTO users (id, name, age) VALUES (2, 'Bob', 25)")
+    pg17_engine.sql("INSERT INTO users (id, name, age) VALUES (3, 'Carol', 35)")
+    pg17_engine.sql("INSERT INTO users (id, name, age) VALUES (4, 'Dave', 25)")
+    return pg17_engine
+
+
+@pytest.fixture
+def engine_with_table(pg17_engine):
+    pg17_engine.sql(
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER, name TEXT)"
+    )
+    pg17_engine.sql("INSERT INTO t (id, val, name) VALUES (1, 10, 'alpha')")
+    pg17_engine.sql("INSERT INTO t (id, val, name) VALUES (2, 20, 'bravo')")
+    pg17_engine.sql("INSERT INTO t (id, val, name) VALUES (3, 30, 'charlie')")
+    return pg17_engine
+
+
+# ==================================================================
+# CREATE TABLE IF NOT EXISTS
+# ==================================================================
+
+
+class TestCreateTableIfNotExists:
+    def test_basic_if_not_exists(self, pg17_engine):
+        pg17_engine.sql("CREATE TABLE t (id INTEGER)")
+        # Should not raise
+        result = pg17_engine.sql("CREATE TABLE IF NOT EXISTS t (id INTEGER)")
+        assert result.rows == []
+        assert result.columns == []
+
+    def test_if_not_exists_returns_empty(self, pg17_engine):
+        pg17_engine.sql("CREATE TABLE t (id INTEGER)")
+        result = pg17_engine.sql("CREATE TABLE IF NOT EXISTS t (id INTEGER)")
+        assert result.rows == []
+
+    def test_without_if_not_exists_raises(self, pg17_engine):
+        pg17_engine.sql("CREATE TABLE t (id INTEGER)")
+        with pytest.raises(ValueError, match="already exists"):
+            pg17_engine.sql("CREATE TABLE t (id INTEGER)")
+
+    def test_if_not_exists_preserves_data(self, pg17_engine):
+        pg17_engine.sql("CREATE TABLE t (id INTEGER, val TEXT)")
+        pg17_engine.sql("INSERT INTO t (id, val) VALUES (1, 'hello')")
+        pg17_engine.sql("CREATE TABLE IF NOT EXISTS t (id INTEGER, val TEXT)")
+        result = pg17_engine.sql("SELECT val FROM t WHERE id = 1")
+        assert result.rows[0]["val"] == "hello"
+
+
+# ==================================================================
+# NULLS FIRST / NULLS LAST
+# ==================================================================
+
+
+class TestNullsOrdering:
+    @pytest.fixture
+    def null_data(self, pg17_engine):
+        pg17_engine.sql("CREATE TABLE t (id INTEGER, val INTEGER)")
+        pg17_engine.sql("INSERT INTO t (id, val) VALUES (1, 10)")
+        pg17_engine.sql("INSERT INTO t (id, val) VALUES (2, 20)")
+        pg17_engine.sql("INSERT INTO t (id) VALUES (3)")  # val is NULL
+        pg17_engine.sql("INSERT INTO t (id, val) VALUES (4, 5)")
+        return pg17_engine
+
+    def test_nulls_first_asc(self, null_data):
+        result = null_data.sql(
+            "SELECT id, val FROM t ORDER BY val ASC NULLS FIRST"
+        )
+        vals = [r["val"] for r in result.rows]
+        assert vals[0] is None
+        assert vals[1:] == [5, 10, 20]
+
+    def test_nulls_last_asc(self, null_data):
+        result = null_data.sql(
+            "SELECT id, val FROM t ORDER BY val ASC NULLS LAST"
+        )
+        vals = [r["val"] for r in result.rows]
+        assert vals[-1] is None
+        assert vals[:-1] == [5, 10, 20]
+
+    def test_nulls_first_desc(self, null_data):
+        result = null_data.sql(
+            "SELECT id, val FROM t ORDER BY val DESC NULLS FIRST"
+        )
+        vals = [r["val"] for r in result.rows]
+        assert vals[0] is None
+        assert vals[1:] == [20, 10, 5]
+
+    def test_nulls_last_desc(self, null_data):
+        result = null_data.sql(
+            "SELECT id, val FROM t ORDER BY val DESC NULLS LAST"
+        )
+        vals = [r["val"] for r in result.rows]
+        assert vals[-1] is None
+        assert vals[:-1] == [20, 10, 5]
+
+    def test_default_nulls_last(self, null_data):
+        result = null_data.sql(
+            "SELECT id, val FROM t ORDER BY val ASC"
+        )
+        vals = [r["val"] for r in result.rows]
+        # Default: NULLs last for ASC
+        assert vals[-1] is None
+
+
+# ==================================================================
+# Column alias in ORDER BY
+# ==================================================================
+
+
+class TestColumnAliasOrderBy:
+    def test_order_by_alias(self, engine_with_data):
+        result = engine_with_data.sql(
+            "SELECT name, age AS user_age FROM users ORDER BY user_age DESC"
+        )
+        ages = [r["user_age"] for r in result.rows]
+        assert ages == [35, 30, 25, 25]
+
+    def test_order_by_ordinal(self, engine_with_data):
+        result = engine_with_data.sql(
+            "SELECT name, age FROM users ORDER BY 2 ASC"
+        )
+        ages = [r["age"] for r in result.rows]
+        assert ages == [25, 25, 30, 35]
+
+    def test_order_by_ordinal_desc(self, engine_with_data):
+        result = engine_with_data.sql(
+            "SELECT name, age FROM users ORDER BY 2 DESC, 1 ASC"
+        )
+        names = [r["name"] for r in result.rows]
+        assert names[0] == "Carol"  # age 35
+        assert names[-1] in ("Bob", "Dave")  # age 25
+
+    def test_order_by_invalid_ordinal(self, engine_with_data):
+        with pytest.raises(ValueError, match="not in select list"):
+            engine_with_data.sql(
+                "SELECT name FROM users ORDER BY 5"
+            )
+
+
+# ==================================================================
+# INSERT INTO ... SELECT
+# ==================================================================
+
+
+class TestInsertSelect:
+    def test_insert_select_basic(self, engine_with_data):
+        engine_with_data.sql(
+            "CREATE TABLE users_copy (id INTEGER, name TEXT, age INTEGER)"
+        )
+        result = engine_with_data.sql(
+            "INSERT INTO users_copy (id, name, age) "
+            "SELECT id, name, age FROM users"
+        )
+        assert result.rows[0]["inserted"] == 4
+
+        result = engine_with_data.sql(
+            "SELECT COUNT(*) AS cnt FROM users_copy"
+        )
+        assert result.rows[0]["cnt"] == 4
+
+    def test_insert_select_with_where(self, engine_with_data):
+        engine_with_data.sql(
+            "CREATE TABLE young (id INTEGER, name TEXT, age INTEGER)"
+        )
+        engine_with_data.sql(
+            "INSERT INTO young (id, name, age) "
+            "SELECT id, name, age FROM users WHERE age < 30"
+        )
+        result = engine_with_data.sql(
+            "SELECT COUNT(*) AS cnt FROM young"
+        )
+        assert result.rows[0]["cnt"] == 2
+
+    def test_insert_select_with_columns(self, engine_with_data):
+        engine_with_data.sql(
+            "CREATE TABLE names (name TEXT)"
+        )
+        engine_with_data.sql(
+            "INSERT INTO names (name) SELECT name FROM users"
+        )
+        result = engine_with_data.sql(
+            "SELECT COUNT(*) AS cnt FROM names"
+        )
+        assert result.rows[0]["cnt"] == 4
+
+    def test_insert_select_empty(self, engine_with_data):
+        engine_with_data.sql(
+            "CREATE TABLE empty (id INTEGER, name TEXT, age INTEGER)"
+        )
+        result = engine_with_data.sql(
+            "INSERT INTO empty (id, name, age) "
+            "SELECT id, name, age FROM users WHERE age > 100"
+        )
+        assert result.rows[0]["inserted"] == 0
+
+
+# ==================================================================
+# Derived tables (subquery in FROM)
+# ==================================================================
+
+
+class TestDerivedTables:
+    def test_simple_derived_table(self, engine_with_data):
+        result = engine_with_data.sql(
+            "SELECT name, age FROM "
+            "(SELECT name, age FROM users WHERE age >= 30) AS older"
+        )
+        assert len(result.rows) == 2
+        names = {r["name"] for r in result.rows}
+        assert names == {"Alice", "Carol"}
+
+    def test_derived_table_with_where(self, engine_with_data):
+        result = engine_with_data.sql(
+            "SELECT name FROM "
+            "(SELECT name, age FROM users) AS t "
+            "WHERE age = 25"
+        )
+        names = {r["name"] for r in result.rows}
+        assert names == {"Bob", "Dave"}
+
+    def test_derived_table_with_aggregation(self, engine_with_data):
+        result = engine_with_data.sql(
+            "SELECT COUNT(*) AS cnt FROM "
+            "(SELECT name FROM users WHERE age > 25) AS t"
+        )
+        assert result.rows[0]["cnt"] == 2
+
+    def test_nested_derived_tables(self, engine_with_data):
+        result = engine_with_data.sql(
+            "SELECT name FROM "
+            "(SELECT name, age FROM "
+            " (SELECT name, age FROM users) AS inner_t "
+            " WHERE age >= 30"
+            ") AS outer_t"
+        )
+        names = {r["name"] for r in result.rows}
+        assert names == {"Alice", "Carol"}
+
+
+# ==================================================================
+# Derived table alias collision
+# ==================================================================
+
+
+class TestDerivedTableAliasCollision:
+    def test_alias_does_not_destroy_real_table(self, pg17_engine):
+        pg17_engine.sql(
+            "CREATE TABLE users (id INTEGER, name TEXT)"
+        )
+        pg17_engine.sql(
+            "INSERT INTO users (id, name) VALUES (1, 'Alice')"
+        )
+        pg17_engine.sql(
+            "INSERT INTO users (id, name) VALUES (2, 'Bob')"
+        )
+        # Use alias "users" -- same as the real table name
+        result = pg17_engine.sql(
+            "SELECT name FROM "
+            "(SELECT id, name FROM users WHERE id = 1) AS users"
+        )
+        assert result.rows[0]["name"] == "Alice"
+
+        # Real table must still be intact after the query
+        result = pg17_engine.sql("SELECT COUNT(*) AS cnt FROM users")
+        assert result.rows[0]["cnt"] == 2
+
+
+# ==================================================================
+# UNION / INTERSECT / EXCEPT
+# ==================================================================
+
+
+class TestSetOperations:
+    @pytest.fixture
+    def two_tables(self, pg17_engine):
+        pg17_engine.sql(
+            "CREATE TABLE t1 (id INTEGER, val TEXT)"
+        )
+        pg17_engine.sql(
+            "CREATE TABLE t2 (id INTEGER, val TEXT)"
+        )
+        pg17_engine.sql("INSERT INTO t1 (id, val) VALUES (1, 'a')")
+        pg17_engine.sql("INSERT INTO t1 (id, val) VALUES (2, 'b')")
+        pg17_engine.sql("INSERT INTO t1 (id, val) VALUES (3, 'c')")
+        pg17_engine.sql("INSERT INTO t2 (id, val) VALUES (2, 'b')")
+        pg17_engine.sql("INSERT INTO t2 (id, val) VALUES (3, 'c')")
+        pg17_engine.sql("INSERT INTO t2 (id, val) VALUES (4, 'd')")
+        return pg17_engine
+
+    def test_union_all(self, two_tables):
+        result = two_tables.sql(
+            "SELECT id, val FROM t1 UNION ALL SELECT id, val FROM t2"
+        )
+        assert len(result.rows) == 6
+
+    def test_union_distinct(self, two_tables):
+        result = two_tables.sql(
+            "SELECT id, val FROM t1 UNION SELECT id, val FROM t2"
+        )
+        assert len(result.rows) == 4  # 1a, 2b, 3c, 4d
+
+    def test_intersect(self, two_tables):
+        result = two_tables.sql(
+            "SELECT id, val FROM t1 INTERSECT SELECT id, val FROM t2"
+        )
+        assert len(result.rows) == 2  # 2b, 3c
+
+    def test_intersect_all(self, two_tables):
+        result = two_tables.sql(
+            "SELECT id, val FROM t1 INTERSECT ALL SELECT id, val FROM t2"
+        )
+        assert len(result.rows) == 2
+
+    def test_except(self, two_tables):
+        result = two_tables.sql(
+            "SELECT id, val FROM t1 EXCEPT SELECT id, val FROM t2"
+        )
+        assert len(result.rows) == 1
+        assert result.rows[0]["val"] == "a"
+
+    def test_except_all(self, two_tables):
+        result = two_tables.sql(
+            "SELECT id, val FROM t1 EXCEPT ALL SELECT id, val FROM t2"
+        )
+        assert len(result.rows) == 1
+        assert result.rows[0]["val"] == "a"
+
+    def test_union_with_order_by(self, two_tables):
+        result = two_tables.sql(
+            "SELECT id, val FROM t1 "
+            "UNION ALL "
+            "SELECT id, val FROM t2 "
+            "ORDER BY 1"
+        )
+        ids = [r["id"] for r in result.rows]
+        assert ids == sorted(ids)
+
+    def test_union_with_limit(self, two_tables):
+        result = two_tables.sql(
+            "SELECT id, val FROM t1 "
+            "UNION ALL "
+            "SELECT id, val FROM t2 "
+            "ORDER BY 1 "
+            "LIMIT 3"
+        )
+        assert len(result.rows) == 3
+
+    def test_column_count_mismatch_error(self, two_tables):
+        with pytest.raises(ValueError, match="column count mismatch"):
+            two_tables.sql(
+                "SELECT id, val FROM t1 UNION SELECT id FROM t2"
+            )
+
+    def test_chained_union(self, two_tables):
+        two_tables.sql("CREATE TABLE t3 (id INTEGER, val TEXT)")
+        two_tables.sql("INSERT INTO t3 (id, val) VALUES (5, 'e')")
+        result = two_tables.sql(
+            "SELECT id, val FROM t1 "
+            "UNION ALL SELECT id, val FROM t2 "
+            "UNION ALL SELECT id, val FROM t3"
+        )
+        assert len(result.rows) == 7  # 3 + 3 + 1
+
+
+# ==================================================================
+# CREATE TABLE AS
+# ==================================================================
+
+
+class TestCreateTableAs:
+    def test_basic(self, engine_with_table):
+        engine_with_table.sql("CREATE TABLE t2 AS SELECT id, val FROM t")
+        result = engine_with_table.sql(
+            "SELECT id, val FROM t2 ORDER BY id"
+        )
+        assert len(result.rows) == 3
+        assert result.rows[0]["id"] == 1
+        assert result.rows[0]["val"] == 10
+
+    def test_with_where(self, engine_with_table):
+        engine_with_table.sql(
+            "CREATE TABLE t2 AS SELECT id, val FROM t WHERE val > 15"
+        )
+        result = engine_with_table.sql(
+            "SELECT id, val FROM t2 ORDER BY id"
+        )
+        assert len(result.rows) == 2
+
+    def test_with_expression(self, engine_with_table):
+        engine_with_table.sql(
+            "CREATE TABLE t2 AS SELECT id, val * 2 AS doubled FROM t"
+        )
+        result = engine_with_table.sql(
+            "SELECT id, doubled FROM t2 ORDER BY id"
+        )
+        assert result.rows[0]["doubled"] == 20
+
+
+# ==================================================================
+# FETCH FIRST
+# ==================================================================
+
+
+class TestFetchFirst:
+    def test_basic(self, engine_with_table):
+        result = engine_with_table.sql(
+            "SELECT id, val FROM t ORDER BY id FETCH FIRST 2 ROWS ONLY"
+        )
+        assert len(result.rows) == 2
+
+    def test_fetch_first_1(self, engine_with_table):
+        result = engine_with_table.sql(
+            "SELECT id FROM t ORDER BY id FETCH FIRST 1 ROW ONLY"
+        )
+        assert len(result.rows) == 1
+
+
+# ==================================================================
+# Standalone VALUES
+# ==================================================================
+
+
+class TestStandaloneValues:
+    """Test standalone VALUES queries (without INSERT)."""
+
+    def test_basic(self):
+        e = Engine()
+        r = e.sql("VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+        assert len(r.rows) == 3
+        assert r.rows[0]["column1"] == 1
+        assert r.rows[0]["column2"] == "a"
+        assert r.rows[2]["column1"] == 3
+        assert r.rows[2]["column2"] == "c"
+
+    def test_single_column(self):
+        e = Engine()
+        r = e.sql("VALUES (10), (20), (30)")
+        assert len(r.rows) == 3
+        assert r.rows[0]["column1"] == 10
+        assert r.rows[1]["column1"] == 20
+        assert r.rows[2]["column1"] == 30
+
+    def test_with_order_by(self):
+        e = Engine()
+        r = e.sql("VALUES (3, 'c'), (1, 'a'), (2, 'b') ORDER BY 1")
+        assert r.rows[0]["column1"] == 1
+        assert r.rows[1]["column1"] == 2
+        assert r.rows[2]["column1"] == 3
+
+    def test_with_limit(self):
+        e = Engine()
+        r = e.sql("VALUES (1), (2), (3), (4), (5) LIMIT 3")
+        assert len(r.rows) == 3
+
+    def test_mixed_types(self):
+        e = Engine()
+        r = e.sql("VALUES (1, 'hello', 3.14), (2, 'world', 2.72)")
+        assert len(r.rows) == 2
+        assert r.rows[0]["column1"] == 1
+        assert r.rows[0]["column2"] == "hello"
+        assert abs(r.rows[0]["column3"] - 3.14) < 0.001
+
+    def test_single_row(self):
+        e = Engine()
+        r = e.sql("VALUES (42, 'only')")
+        assert len(r.rows) == 1
+        assert r.rows[0]["column1"] == 42
+        assert r.rows[0]["column2"] == "only"
+
+
+# ==================================================================
+# VALUES in INSERT
+# ==================================================================
+
+
+class TestValuesInInsert:
+    """Ensure standalone VALUES does not break INSERT INTO ... VALUES."""
+
+    def test_insert_still_works(self):
+        e = Engine()
+        e.sql("CREATE TABLE t (id INT, val TEXT)")
+        e.sql("INSERT INTO t VALUES (1, 'a'), (2, 'b')")
+        r = e.sql("SELECT id, val FROM t ORDER BY id")
+        assert len(r.rows) == 2
+        assert r.rows[0]["id"] == 1
+        assert r.rows[0]["val"] == "a"
+        assert r.rows[1]["id"] == 2
+        assert r.rows[1]["val"] == "b"
+
+    def test_insert_single_row(self):
+        e = Engine()
+        e.sql("CREATE TABLE t (id INT PRIMARY KEY, val TEXT)")
+        e.sql("INSERT INTO t VALUES (42, 'answer')")
+        r = e.sql("SELECT id, val FROM t")
+        assert len(r.rows) == 1
+        assert r.rows[0]["id"] == 42
+
+
+# ==================================================================
+# CREATE TEMPORARY TABLE
+# ==================================================================
+
+
+class TestCreateTemporaryTable:
+    def test_basic_temp_table(self):
+        e = Engine()
+        e.sql("CREATE TEMPORARY TABLE tmp (id INT PRIMARY KEY, val TEXT)")
+        e.sql("INSERT INTO tmp VALUES (1, 'hello')")
+        r = e.sql("SELECT id, val FROM tmp")
+        assert len(r.rows) == 1
+        assert r.rows[0]["val"] == "hello"
+
+    def test_temp_table_dropped_on_close(self):
+        e = Engine()
+        e.sql("CREATE TEMP TABLE tmp (id INT, val TEXT)")
+        e.sql("INSERT INTO tmp VALUES (1, 'test')")
+        assert "tmp" in e._tables
+        e.close()
+        assert "tmp" not in e._tables
+
+    def test_temp_table_not_persisted(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test.db")
+            e = Engine(db_path=db_path)
+            e.sql("CREATE TABLE perm (id INT PRIMARY KEY)")
+            e.sql("CREATE TEMP TABLE tmp (id INT PRIMARY KEY)")
+            e.sql("INSERT INTO perm VALUES (1)")
+            e.sql("INSERT INTO tmp VALUES (1)")
+            e.close()
+
+            # Re-open: permanent table should exist, temp should not
+            e2 = Engine(db_path=db_path)
+            r = e2.sql("SELECT id FROM perm")
+            assert len(r.rows) == 1
+            with pytest.raises(ValueError, match="does not exist"):
+                e2.sql("SELECT id FROM tmp")
+            e2.close()
+
+    def test_temp_table_create_as_select(self):
+        e = Engine()
+        e.sql("CREATE TABLE src (id INT PRIMARY KEY, val INT)")
+        e.sql("INSERT INTO src VALUES (1, 10)")
+        e.sql("INSERT INTO src VALUES (2, 20)")
+        e.sql(
+            "CREATE TEMP TABLE tmp AS "
+            "SELECT id, val FROM src WHERE val > 10"
+        )
+        r = e.sql("SELECT id, val FROM tmp")
+        assert len(r.rows) == 1
+        assert r.rows[0]["val"] == 20
+
+    def test_temp_table_insert_and_query(self):
+        """Temp tables support normal DML operations."""
+        e = Engine()
+        e.sql(
+            "CREATE TEMPORARY TABLE staging "
+            "(id INT PRIMARY KEY, status TEXT)"
+        )
+        e.sql("INSERT INTO staging VALUES (1, 'pending')")
+        e.sql("INSERT INTO staging VALUES (2, 'done')")
+        e.sql("UPDATE staging SET status = 'done' WHERE id = 1")
+        r = e.sql(
+            "SELECT id, status FROM staging ORDER BY id"
+        )
+        assert r.rows[0]["status"] == "done"
+        assert r.rows[1]["status"] == "done"

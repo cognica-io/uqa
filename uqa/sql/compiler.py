@@ -13,6 +13,8 @@ Supported statements:
     DROP TABLE [IF EXISTS] name
     CREATE VIEW name AS SELECT ...
     DROP VIEW [IF EXISTS] name
+    CREATE SEQUENCE name [START n] [INCREMENT n]
+    ALTER SEQUENCE name [RESTART [WITH n]] [INCREMENT [BY] n] [START [WITH] n]
   Constraints:
     PRIMARY KEY, NOT NULL, DEFAULT val, UNIQUE, CHECK (expr)
     REFERENCES parent(col)           -- column-level FOREIGN KEY
@@ -78,6 +80,7 @@ SELECT scalar functions:
 FROM-clause table functions:
   traverse(start_id, 'label', max_hops) -- graph traversal
   rpq('path_expr', start_id)            -- regular path query
+  regexp_split_to_table(str, pattern [, flags]) -- split string by regex
 """
 
 from __future__ import annotations
@@ -92,6 +95,7 @@ from pglast.ast import (
     A_Const,
     A_Expr,
     A_Star,
+    AlterSeqStmt,
     AlterTableStmt,
     BoolExpr,
     Boolean as PgBoolean,
@@ -236,6 +240,18 @@ _AGG_FUNC_NAMES = frozenset({
     "variance", "var_pop", "var_samp",
     "percentile_cont", "percentile_disc", "mode",
     "json_object_agg", "jsonb_object_agg",
+    "corr", "covar_pop", "covar_samp",
+    "regr_count", "regr_avgx", "regr_avgy",
+    "regr_sxx", "regr_syy", "regr_sxy",
+    "regr_slope", "regr_intercept", "regr_r2",
+})
+
+# Two-argument statistical aggregates where extra carries the x column.
+_TWO_ARG_STAT_AGGS = frozenset({
+    "corr", "covar_pop", "covar_samp",
+    "regr_count", "regr_avgx", "regr_avgy",
+    "regr_sxx", "regr_syy", "regr_sxy",
+    "regr_slope", "regr_intercept", "regr_r2",
 })
 
 
@@ -298,6 +314,8 @@ class SQLCompiler:
             return self._compile_create_table_as(stmt)
         if isinstance(stmt, CreateSeqStmt):
             return self._compile_create_sequence(stmt)
+        if isinstance(stmt, AlterSeqStmt):
+            return self._compile_alter_sequence(stmt)
         raise ValueError(f"Unsupported statement: {type(stmt).__name__}")
 
     def _get_table(self, table_name: str) -> Table:
@@ -498,6 +516,28 @@ class SQLCompiler:
             "start": start,
             "increment": increment,
         }
+        return SQLResult([], [])
+
+    def _compile_alter_sequence(self, stmt: AlterSeqStmt) -> SQLResult:
+        """ALTER SEQUENCE name [RESTART [WITH n]] [INCREMENT [BY] n] [START [WITH] n]."""
+        seq_name = stmt.sequence.relname
+        seq = self._engine._sequences.get(seq_name)
+        if seq is None:
+            raise ValueError(f"Sequence '{seq_name}' does not exist")
+
+        if stmt.options:
+            for opt in stmt.options:
+                if opt.defname == "restart":
+                    if opt.arg is not None:
+                        restart_val = opt.arg.ival
+                    else:
+                        restart_val = seq["start"]
+                    seq["current"] = restart_val - seq["increment"]
+                elif opt.defname == "increment":
+                    seq["increment"] = opt.arg.ival
+                elif opt.defname == "start":
+                    seq["start"] = opt.arg.ival
+
         return SQLResult([], [])
 
     def _parse_column_def(
@@ -3234,6 +3274,8 @@ class SQLCompiler:
             return self._build_pg_views()
         if view_name == "pg_indexes":
             return self._build_pg_indexes()
+        if view_name == "pg_type":
+            return self._build_pg_type()
         raise ValueError(f"Unknown pg_catalog view: '{view_name}'")
 
     def _build_pg_tables(self) -> tuple[Table, None]:
@@ -3293,6 +3335,52 @@ class SQLCompiler:
                 })
         result = SQLResult(columns, rows)
         name = "_pg_indexes"
+        table = self._result_to_table(name, result)
+        self._engine._tables[name] = table
+        self._expanded_views.append(name)
+        return table, None
+
+    def _build_pg_type(self) -> tuple[Table, None]:
+        """Build pg_catalog.pg_type with UQA-supported types."""
+        columns = [
+            "oid", "typname", "typnamespace", "typlen",
+            "typtype", "typcategory",
+        ]
+        # PostgreSQL-compatible OIDs for supported types
+        type_entries = [
+            (16, "boolean", 11, 1, "b", "B"),
+            (17, "bytea", 11, -1, "b", "U"),
+            (20, "bigint", 11, 8, "b", "N"),
+            (21, "smallint", 11, 2, "b", "N"),
+            (23, "integer", 11, 4, "b", "N"),
+            (25, "text", 11, -1, "b", "S"),
+            (114, "json", 11, -1, "b", "U"),
+            (142, "xml", 11, -1, "b", "U"),
+            (700, "real", 11, 4, "b", "N"),
+            (701, "float8", 11, 8, "b", "N"),
+            (1043, "varchar", 11, -1, "b", "S"),
+            (1082, "date", 11, 4, "b", "D"),
+            (1083, "time", 11, 8, "b", "D"),
+            (1114, "timestamp", 11, 8, "b", "D"),
+            (1184, "timestamptz", 11, 8, "b", "D"),
+            (1186, "interval", 11, 16, "b", "T"),
+            (1700, "numeric", 11, -1, "b", "N"),
+            (2950, "uuid", 11, 16, "b", "U"),
+            (3802, "jsonb", 11, -1, "b", "U"),
+            (16385, "vector", 11, -1, "b", "U"),
+        ]
+        rows: list[dict[str, Any]] = []
+        for oid, typname, ns, typlen, typtype, typcat in type_entries:
+            rows.append({
+                "oid": oid,
+                "typname": typname,
+                "typnamespace": ns,
+                "typlen": typlen,
+                "typtype": typtype,
+                "typcategory": typcat,
+            })
+        result = SQLResult(columns, rows)
+        name = "_pg_type"
         table = self._result_to_table(name, result)
         self._engine._tables[name] = table
         self._expanded_views.append(name)
@@ -3455,6 +3543,8 @@ class SQLCompiler:
         if name in ("json_array_elements", "jsonb_array_elements",
                      "json_array_elements_text", "jsonb_array_elements_text"):
             return self._build_json_array_elements(node, args, as_text=name.endswith("_text"))
+        if name == "regexp_split_to_table":
+            return self._build_regexp_split_to_table(node, args)
         raise ValueError(f"Unknown table function: {name}")
 
     @staticmethod
@@ -3651,6 +3741,65 @@ class SQLCompiler:
         )
         table = Table(alias_name, [col])
         for val in arr:
+            table.insert({col_name: val})
+
+        self._engine._tables[alias_name] = table
+        self._expanded_views.append(alias_name)
+        return table, None
+
+    def _build_regexp_split_to_table(
+        self, node: RangeFunction, args: tuple
+    ) -> tuple[Table | None, Any]:
+        """Build regexp_split_to_table(string, pattern [, flags]) as a table function."""
+        import re as re_mod
+        from uqa.sql.table import ColumnDef as SqlColumnDef
+
+        if len(args) < 2:
+            raise ValueError(
+                "regexp_split_to_table requires at least 2 arguments"
+            )
+
+        string_val = self._extract_const_value(args[0])
+        pattern_val = self._extract_const_value(args[1])
+        if not isinstance(string_val, str):
+            string_val = str(string_val)
+        if not isinstance(pattern_val, str):
+            pattern_val = str(pattern_val)
+
+        flags = 0
+        if len(args) > 2:
+            flag_str = self._extract_const_value(args[2])
+            if isinstance(flag_str, str):
+                for ch in flag_str:
+                    if ch == "i":
+                        flags |= re_mod.IGNORECASE
+                    elif ch == "g":
+                        pass  # global is default for split
+                    elif ch == "m":
+                        flags |= re_mod.MULTILINE
+                    elif ch == "s":
+                        flags |= re_mod.DOTALL
+                    elif ch == "x":
+                        flags |= re_mod.VERBOSE
+
+        parts = re_mod.split(pattern_val, string_val, flags=flags)
+
+        # Determine column name from alias
+        col_name = "regexp_split_to_table"
+        if node.alias is not None:
+            if node.alias.colnames:
+                col_name = node.alias.colnames[0].sval
+            alias_name = node.alias.aliasname
+        else:
+            alias_name = "regexp_split_to_table"
+
+        col = SqlColumnDef(
+            name=col_name,
+            type_name="text",
+            python_type=str,
+        )
+        table = Table(alias_name, [col])
+        for val in parts:
             table.insert({col_name: val})
 
         self._engine._tables[alias_name] = table
@@ -4376,6 +4525,10 @@ class SQLCompiler:
             elif func_name == "mode":
                 arg_col = self._extract_column_name(func.agg_order[0].node)
             elif func_name in ("json_object_agg", "jsonb_object_agg"):
+                arg_col = self._extract_column_name(func.args[0])
+                extra = self._extract_column_name(func.args[1])
+            elif func_name in _TWO_ARG_STAT_AGGS:
+                # Two-argument statistical aggregates: (y, x)
                 arg_col = self._extract_column_name(func.args[0])
                 extra = self._extract_column_name(func.args[1])
             else:

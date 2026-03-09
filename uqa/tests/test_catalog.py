@@ -8,7 +8,11 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+
 import numpy as np
+import pytest
 
 from uqa.core.types import Edge, Vertex
 from uqa.engine import Engine
@@ -907,3 +911,188 @@ class TestEnginePersistenceBackwardCompat:
         pl = idx.get_posting_list("title", "hello")
         assert all(e.doc_id != 1 for e in pl.entries)
         engine.close()
+
+
+# ======================================================================
+# Fixtures for appended PG17 test classes
+# ======================================================================
+
+
+@pytest.fixture
+def pg17_engine():
+    return Engine()
+
+
+@pytest.fixture
+def engine_with_table(pg17_engine):
+    pg17_engine.sql(
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER, name TEXT)"
+    )
+    pg17_engine.sql("INSERT INTO t (id, val, name) VALUES (1, 10, 'alpha')")
+    pg17_engine.sql("INSERT INTO t (id, val, name) VALUES (2, 20, 'bravo')")
+    pg17_engine.sql("INSERT INTO t (id, val, name) VALUES (3, 30, 'charlie')")
+    return pg17_engine
+
+
+# ======================================================================
+# information_schema
+# ======================================================================
+
+
+class TestInformationSchema:
+    def test_tables_lists_tables(self, pg17_engine):
+        pg17_engine.sql("CREATE TABLE users (id INTEGER PRIMARY KEY)")
+        pg17_engine.sql("CREATE TABLE orders (id INTEGER PRIMARY KEY)")
+        result = pg17_engine.sql(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'public' ORDER BY table_name"
+        )
+        names = [r["table_name"] for r in result.rows]
+        assert "users" in names
+        assert "orders" in names
+
+    def test_tables_shows_views(self, pg17_engine):
+        pg17_engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
+        pg17_engine.sql("CREATE VIEW v AS SELECT id FROM t")
+        result = pg17_engine.sql(
+            "SELECT table_name, table_type "
+            "FROM information_schema.tables "
+            "WHERE table_name IN ('t', 'v') "
+            "ORDER BY table_name"
+        )
+        by_name = {r["table_name"]: r["table_type"] for r in result.rows}
+        assert by_name["t"] == "BASE TABLE"
+        assert by_name["v"] == "VIEW"
+
+    def test_columns_lists_columns(self, pg17_engine):
+        pg17_engine.sql(
+            "CREATE TABLE users ("
+            "  id INTEGER PRIMARY KEY, name TEXT, age INTEGER"
+            ")"
+        )
+        result = pg17_engine.sql(
+            "SELECT column_name, data_type, ordinal_position "
+            "FROM information_schema.columns "
+            "WHERE table_name = 'users' "
+            "ORDER BY ordinal_position"
+        )
+        cols = [(r["column_name"], r["data_type"]) for r in result.rows]
+        assert cols == [("id", "integer"), ("name", "text"), ("age", "integer")]
+
+    def test_columns_is_nullable(self, pg17_engine):
+        pg17_engine.sql(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT NOT NULL)"
+        )
+        result = pg17_engine.sql(
+            "SELECT column_name, is_nullable "
+            "FROM information_schema.columns "
+            "WHERE table_name = 't' "
+            "ORDER BY ordinal_position"
+        )
+        by_col = {r["column_name"]: r["is_nullable"] for r in result.rows}
+        assert by_col["id"] == "NO"
+        assert by_col["val"] == "NO"
+
+
+# ======================================================================
+# pg_catalog
+# ======================================================================
+
+
+class TestPGCatalog:
+    def test_pg_tables(self, engine_with_table):
+        result = engine_with_table.sql(
+            "SELECT tablename FROM pg_catalog.pg_tables "
+            "WHERE schemaname = 'public'"
+        )
+        names = {r["tablename"] for r in result.rows}
+        assert "t" in names
+
+    def test_pg_views(self, pg17_engine):
+        pg17_engine.sql("CREATE TABLE base (id SERIAL PRIMARY KEY, val INT)")
+        pg17_engine.sql("CREATE VIEW v1 AS SELECT id FROM base")
+        result = pg17_engine.sql(
+            "SELECT viewname FROM pg_catalog.pg_views "
+            "WHERE schemaname = 'public'"
+        )
+        names = {r["viewname"] for r in result.rows}
+        assert "v1" in names
+
+
+# ======================================================================
+# pg_catalog.pg_indexes
+# ======================================================================
+
+
+class TestPGIndexes:
+    """Test pg_catalog.pg_indexes virtual table.
+
+    Requires a persistent engine (db_path) since CREATE INDEX depends
+    on the IndexManager which requires SQLite storage.
+    """
+
+    def test_basic(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test.db")
+            e = Engine(db_path=db_path)
+            e.sql("CREATE TABLE items (id INT PRIMARY KEY, name TEXT)")
+            e.sql("CREATE INDEX idx_name ON items (name)")
+            r = e.sql("SELECT * FROM pg_catalog.pg_indexes")
+            assert len(r.rows) >= 1
+            idx_row = [
+                row for row in r.rows if row["indexname"] == "idx_name"
+            ]
+            assert len(idx_row) == 1
+            assert idx_row[0]["tablename"] == "items"
+            assert idx_row[0]["schemaname"] == "public"
+
+    def test_index_definition(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test.db")
+            e = Engine(db_path=db_path)
+            e.sql("CREATE TABLE products (id INT PRIMARY KEY, price INT)")
+            e.sql("CREATE INDEX idx_price ON products (price)")
+            r = e.sql("SELECT * FROM pg_catalog.pg_indexes")
+            idx_row = [
+                row for row in r.rows if row["indexname"] == "idx_price"
+            ]
+            assert len(idx_row) == 1
+            assert "price" in idx_row[0]["indexdef"]
+
+    def test_no_indexes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test.db")
+            e = Engine(db_path=db_path)
+            e.sql("CREATE TABLE items (id INT PRIMARY KEY)")
+            r = e.sql("SELECT * FROM pg_catalog.pg_indexes")
+            assert len(r.rows) == 0
+
+    def test_multiple_indexes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test.db")
+            e = Engine(db_path=db_path)
+            e.sql(
+                "CREATE TABLE employees "
+                "(id INT PRIMARY KEY, name TEXT, dept TEXT)"
+            )
+            e.sql("CREATE INDEX idx_emp_name ON employees (name)")
+            e.sql("CREATE INDEX idx_emp_dept ON employees (dept)")
+            r = e.sql("SELECT * FROM pg_catalog.pg_indexes")
+            names = {row["indexname"] for row in r.rows}
+            assert "idx_emp_name" in names
+            assert "idx_emp_dept" in names
+
+    def test_filter_by_tablename(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test.db")
+            e = Engine(db_path=db_path)
+            e.sql("CREATE TABLE t1 (id INT PRIMARY KEY, a TEXT)")
+            e.sql("CREATE TABLE t2 (id INT PRIMARY KEY, b TEXT)")
+            e.sql("CREATE INDEX idx_a ON t1 (a)")
+            e.sql("CREATE INDEX idx_b ON t2 (b)")
+            r = e.sql(
+                "SELECT indexname FROM pg_catalog.pg_indexes "
+                "WHERE tablename = 't1'"
+            )
+            assert len(r.rows) == 1
+            assert r.rows[0]["indexname"] == "idx_a"

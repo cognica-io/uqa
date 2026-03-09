@@ -175,3 +175,90 @@ class TestCTEWithSubquery:
             "SELECT dept_id FROM dept_ids ORDER BY dept_id"
         )
         assert [row["dept_id"] for row in r.rows] == [1, 2, 3]
+
+
+# ==================================================================
+# Fixture for appended PG17 test classes
+# ==================================================================
+
+
+@pytest.fixture
+def pg17_engine():
+    return Engine()
+
+
+# ==================================================================
+# WITH RECURSIVE
+# ==================================================================
+
+
+class TestWithRecursive:
+    def test_recursive_count(self, pg17_engine):
+        result = pg17_engine.sql(
+            "WITH RECURSIVE cnt(x) AS ("
+            "  SELECT 1"
+            "  UNION ALL"
+            "  SELECT x + 1 FROM cnt WHERE x < 5"
+            ") SELECT x FROM cnt"
+        )
+        values = [r["x"] for r in result.rows]
+        assert values == [1, 2, 3, 4, 5]
+
+    def test_recursive_union_dedup(self, pg17_engine):
+        # UNION (not ALL) should deduplicate
+        result = pg17_engine.sql(
+            "WITH RECURSIVE seq(n) AS ("
+            "  SELECT 1"
+            "  UNION"
+            "  SELECT n + 1 FROM seq WHERE n < 3"
+            ") SELECT n FROM seq"
+        )
+        values = sorted(r["n"] for r in result.rows)
+        assert values == [1, 2, 3]
+
+    def test_recursive_hierarchy(self, pg17_engine):
+        pg17_engine.sql(
+            "CREATE TABLE employees ("
+            "  eid INTEGER PRIMARY KEY, ename TEXT, manager_id INTEGER"
+            ")"
+        )
+        pg17_engine.sql(
+            "INSERT INTO employees (eid, ename, manager_id) "
+            "VALUES (1, 'CEO', 0)"
+        )
+        pg17_engine.sql(
+            "INSERT INTO employees (eid, ename, manager_id) "
+            "VALUES (2, 'VP', 1)"
+        )
+        pg17_engine.sql(
+            "INSERT INTO employees (eid, ename, manager_id) "
+            "VALUES (3, 'Manager', 2)"
+        )
+        pg17_engine.sql(
+            "INSERT INTO employees (eid, ename, manager_id) "
+            "VALUES (4, 'Developer', 3)"
+        )
+        # Use distinct column names to avoid collision in join
+        result = pg17_engine.sql(
+            "WITH RECURSIVE chain(cid, cname, lvl) AS ("
+            "  SELECT eid, ename, 0 FROM employees WHERE eid = 1"
+            "  UNION ALL"
+            "  SELECT e.eid, e.ename, c.lvl + 1 "
+            "  FROM employees e "
+            "  INNER JOIN chain c ON e.manager_id = c.cid"
+            ") SELECT cname, lvl FROM chain"
+        )
+        assert len(result.rows) == 4
+        names = {r["cname"] for r in result.rows}
+        assert names == {"CEO", "VP", "Manager", "Developer"}
+
+    def test_recursive_empty_base(self, pg17_engine):
+        pg17_engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)")
+        result = pg17_engine.sql(
+            "WITH RECURSIVE r(n) AS ("
+            "  SELECT id FROM t WHERE id = 999"
+            "  UNION ALL"
+            "  SELECT n + 1 FROM r WHERE n < 5"
+            ") SELECT n FROM r"
+        )
+        assert len(result.rows) == 0

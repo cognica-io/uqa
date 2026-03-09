@@ -1055,6 +1055,66 @@ def _call_scalar_function(name: str, args: list[Any]) -> Any:
         parts = str(args[0]).split(str(args[1]))
         n = int(args[2])
         return parts[n - 1] if 1 <= n <= len(parts) else ""
+    if name == "encode":
+        if args[0] is None or args[1] is None:
+            return None
+        import base64
+        data = args[0]
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        fmt = str(args[1]).lower()
+        if fmt == "base64":
+            return base64.b64encode(data).decode("ascii")
+        if fmt == "hex":
+            return data.hex()
+        if fmt == "escape":
+            # PostgreSQL escape format: printable ASCII as-is, others as \\NNN octal
+            parts = []
+            for b in data:
+                if 32 <= b < 127 and b != 92:  # printable, not backslash
+                    parts.append(chr(b))
+                else:
+                    parts.append("\\%03o" % b)
+            return "".join(parts)
+        raise ValueError(f"Unsupported encode format: {fmt}")
+    if name == "decode":
+        if args[0] is None or args[1] is None:
+            return None
+        import base64
+        import re
+        text = str(args[0])
+        fmt = str(args[1]).lower()
+        if fmt == "base64":
+            return base64.b64decode(text)
+        if fmt == "hex":
+            return bytes.fromhex(text)
+        if fmt == "escape":
+            # Reverse of escape encoding: \\NNN octal sequences back to bytes
+            result = bytearray()
+            i = 0
+            while i < len(text):
+                if text[i] == "\\" and i + 3 < len(text) and re.match(
+                    r"[0-7]{3}", text[i + 1 : i + 4]
+                ):
+                    result.append(int(text[i + 1 : i + 4], 8))
+                    i += 4
+                else:
+                    result.append(ord(text[i]))
+                    i += 1
+            return bytes(result)
+        raise ValueError(f"Unsupported decode format: {fmt}")
+    if name == "regexp_split_to_array":
+        if args[0] is None or args[1] is None:
+            return None
+        import re
+        text = str(args[0])
+        pattern = str(args[1])
+        flags = 0
+        if len(args) > 2 and args[2] is not None:
+            flags_str = str(args[2])
+            if "i" in flags_str:
+                flags |= re.IGNORECASE
+        return re.split(pattern, text, flags=flags)
 
     # Additional math functions
     if name in ("power", "pow"):
@@ -1184,6 +1244,23 @@ def _call_scalar_function(name: str, args: list[Any]) -> Any:
         if val >= hi:
             return n + 1
         return int((val - lo) / ((hi - lo) / n)) + 1
+    if name == "min_scale":
+        if args[0] is None:
+            return None
+        from decimal import Decimal
+        d = Decimal(str(args[0])).normalize()
+        # normalize() removes trailing zeros; the exponent tells us the scale
+        exp = d.as_tuple().exponent
+        return -exp if exp < 0 else 0
+    if name == "trim_scale":
+        if args[0] is None:
+            return None
+        from decimal import Decimal
+        d = Decimal(str(args[0])).normalize()
+        # Convert back: if no fractional part, return int; otherwise float
+        if d == d.to_integral_value():
+            return int(d)
+        return float(d)
 
     # Date/time functions
     if name == "now":
@@ -1252,6 +1329,24 @@ def _call_scalar_function(name: str, args: list[Any]) -> Any:
         if s2 > e2:
             s2, e2 = e2, s2
         return s1 < e2 and s2 < e1
+    if name == "isfinite":
+        if args[0] is None:
+            return None
+        val = str(args[0]).strip().lower()
+        return val not in ("infinity", "-infinity")
+    if name == "clock_timestamp":
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    if name == "timeofday":
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        # PostgreSQL format: "Wed Mar 09 15:30:00.123456 2026 UTC"
+        weekday = now.strftime("%a")
+        month = now.strftime("%b")
+        day = now.strftime("%d")
+        time_part = now.strftime("%H:%M:%S.%f")
+        year = now.strftime("%Y")
+        return f"{weekday} {month} {day} {time_part} {year} UTC"
 
     # Type checking
     if name == "typeof":
@@ -1303,6 +1398,25 @@ def _call_scalar_function(name: str, args: list[Any]) -> Any:
         if isinstance(obj, dict):
             return list(obj.keys())
         return None
+    if name in ("jsonb_strip_nulls", "json_strip_nulls"):
+        if not args or args[0] is None:
+            return None
+        import json as json_mod
+        obj = args[0]
+        if isinstance(obj, str):
+            obj = json_mod.loads(obj)
+
+        def _strip_nulls(v: Any) -> Any:
+            if isinstance(v, dict):
+                return {
+                    k: _strip_nulls(val)
+                    for k, val in v.items()
+                    if val is not None
+                }
+            # Do NOT recurse into arrays per PostgreSQL semantics
+            return v
+
+        return _strip_nulls(obj)
 
     # UUID functions
     if name == "gen_random_uuid":

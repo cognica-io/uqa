@@ -400,3 +400,437 @@ class TestCombinedOperations:
         engine.sql("DELETE FROM products WHERE id = 3")
         r = engine.sql("SELECT COUNT(*) AS cnt FROM products")
         assert r.rows[0]["cnt"] == 2
+
+
+# ==================================================================
+# Fixtures for appended PG17 test classes
+# ==================================================================
+
+
+@pytest.fixture
+def pg17_engine():
+    return Engine()
+
+
+@pytest.fixture
+def engine_with_table(pg17_engine):
+    pg17_engine.sql(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)"
+    )
+    pg17_engine.sql("INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30)")
+    pg17_engine.sql("INSERT INTO users (id, name, age) VALUES (2, 'Bob', 25)")
+    pg17_engine.sql("INSERT INTO users (id, name, age) VALUES (3, 'Carol', 35)")
+    return pg17_engine
+
+
+# ==================================================================
+# INSERT ... RETURNING
+# ==================================================================
+
+
+class TestInsertReturning:
+    def test_returning_star(self, pg17_engine):
+        pg17_engine.sql(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)"
+        )
+        result = pg17_engine.sql(
+            "INSERT INTO t (id, name, age) VALUES (1, 'Alice', 30) "
+            "RETURNING *"
+        )
+        assert len(result.rows) == 1
+        assert result.rows[0]["id"] == 1
+        assert result.rows[0]["name"] == "Alice"
+        assert result.rows[0]["age"] == 30
+
+    def test_returning_specific_columns(self, pg17_engine):
+        pg17_engine.sql(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)"
+        )
+        result = pg17_engine.sql(
+            "INSERT INTO t (id, name, age) VALUES (1, 'Alice', 30) "
+            "RETURNING id, name"
+        )
+        assert result.columns == ["id", "name"]
+        assert result.rows[0]["id"] == 1
+        assert result.rows[0]["name"] == "Alice"
+        assert "age" not in result.rows[0]
+
+    def test_returning_with_alias(self, pg17_engine):
+        pg17_engine.sql(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)"
+        )
+        result = pg17_engine.sql(
+            "INSERT INTO t (id, name) VALUES (1, 'Alice') "
+            "RETURNING id AS user_id, name AS user_name"
+        )
+        assert result.rows[0]["user_id"] == 1
+        assert result.rows[0]["user_name"] == "Alice"
+
+    def test_returning_multi_row(self, pg17_engine):
+        pg17_engine.sql(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)"
+        )
+        result = pg17_engine.sql(
+            "INSERT INTO t (id, name) VALUES (1, 'Alice'), (2, 'Bob') "
+            "RETURNING id, name"
+        )
+        assert len(result.rows) == 2
+        ids = [r["id"] for r in result.rows]
+        assert 1 in ids
+        assert 2 in ids
+
+    def test_returning_serial(self, pg17_engine):
+        pg17_engine.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, name TEXT)")
+        result = pg17_engine.sql(
+            "INSERT INTO t (name) VALUES ('Alice') RETURNING id"
+        )
+        assert result.rows[0]["id"] == 1
+
+
+# ==================================================================
+# UPDATE ... RETURNING
+# ==================================================================
+
+
+class TestUpdateReturning:
+    def test_returning_updated_values(self, engine_with_table):
+        result = engine_with_table.sql(
+            "UPDATE users SET age = 31 WHERE id = 1 RETURNING id, age"
+        )
+        assert len(result.rows) == 1
+        assert result.rows[0]["id"] == 1
+        assert result.rows[0]["age"] == 31
+
+    def test_returning_star(self, engine_with_table):
+        result = engine_with_table.sql(
+            "UPDATE users SET age = 99 WHERE id = 2 RETURNING *"
+        )
+        assert result.rows[0]["id"] == 2
+        assert result.rows[0]["name"] == "Bob"
+        assert result.rows[0]["age"] == 99
+
+    def test_returning_multiple_rows(self, engine_with_table):
+        result = engine_with_table.sql(
+            "UPDATE users SET age = age + 1 WHERE age < 35 "
+            "RETURNING id, age"
+        )
+        assert len(result.rows) == 2
+        for row in result.rows:
+            if row["id"] == 1:
+                assert row["age"] == 31
+            elif row["id"] == 2:
+                assert row["age"] == 26
+
+    def test_returning_no_match(self, engine_with_table):
+        result = engine_with_table.sql(
+            "UPDATE users SET age = 0 WHERE id = 999 RETURNING id"
+        )
+        assert len(result.rows) == 0
+
+
+# ==================================================================
+# DELETE ... RETURNING
+# ==================================================================
+
+
+class TestDeleteReturning:
+    def test_returning_deleted_row(self, engine_with_table):
+        result = engine_with_table.sql(
+            "DELETE FROM users WHERE id = 1 RETURNING *"
+        )
+        assert len(result.rows) == 1
+        assert result.rows[0]["id"] == 1
+        assert result.rows[0]["name"] == "Alice"
+        # Verify row is actually gone
+        check = engine_with_table.sql(
+            "SELECT COUNT(*) AS cnt FROM users WHERE id = 1"
+        )
+        assert check.rows[0]["cnt"] == 0
+
+    def test_returning_specific_columns(self, engine_with_table):
+        result = engine_with_table.sql(
+            "DELETE FROM users WHERE id = 2 RETURNING name"
+        )
+        assert result.columns == ["name"]
+        assert result.rows[0]["name"] == "Bob"
+
+    def test_returning_multiple_deletes(self, engine_with_table):
+        result = engine_with_table.sql(
+            "DELETE FROM users WHERE age >= 30 RETURNING id, name"
+        )
+        assert len(result.rows) == 2
+        names = {r["name"] for r in result.rows}
+        assert names == {"Alice", "Carol"}
+
+    def test_returning_no_match(self, engine_with_table):
+        result = engine_with_table.sql(
+            "DELETE FROM users WHERE id = 999 RETURNING id"
+        )
+        assert result.columns == ["id"]
+        assert len(result.rows) == 0
+
+
+# ==================================================================
+# INSERT ... ON CONFLICT DO NOTHING
+# ==================================================================
+
+
+class TestOnConflictDoNothing:
+    def test_skip_on_conflict(self, pg17_engine):
+        pg17_engine.sql(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)"
+        )
+        pg17_engine.sql("INSERT INTO t (id, name) VALUES (1, 'Alice')")
+        pg17_engine.sql(
+            "INSERT INTO t (id, name) VALUES (1, 'Bob') "
+            "ON CONFLICT (id) DO NOTHING"
+        )
+        result = pg17_engine.sql("SELECT name FROM t WHERE id = 1")
+        assert result.rows[0]["name"] == "Alice"
+
+    def test_insert_non_conflicting(self, pg17_engine):
+        pg17_engine.sql(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)"
+        )
+        pg17_engine.sql("INSERT INTO t (id, name) VALUES (1, 'Alice')")
+        pg17_engine.sql(
+            "INSERT INTO t (id, name) VALUES (2, 'Bob') "
+            "ON CONFLICT (id) DO NOTHING"
+        )
+        result = pg17_engine.sql("SELECT COUNT(*) AS cnt FROM t")
+        assert result.rows[0]["cnt"] == 2
+
+    def test_multi_row_partial_conflict(self, pg17_engine):
+        pg17_engine.sql(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)"
+        )
+        pg17_engine.sql("INSERT INTO t (id, name) VALUES (1, 'Alice')")
+        pg17_engine.sql(
+            "INSERT INTO t (id, name) VALUES (1, 'Dup'), (2, 'Bob') "
+            "ON CONFLICT (id) DO NOTHING"
+        )
+        result = pg17_engine.sql(
+            "SELECT COUNT(*) AS cnt FROM t"
+        )
+        assert result.rows[0]["cnt"] == 2
+        result = pg17_engine.sql("SELECT name FROM t WHERE id = 1")
+        assert result.rows[0]["name"] == "Alice"
+
+
+# ==================================================================
+# INSERT ... ON CONFLICT DO UPDATE (UPSERT)
+# ==================================================================
+
+
+class TestOnConflictDoUpdate:
+    def test_upsert_basic(self, pg17_engine):
+        pg17_engine.sql(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, score INTEGER)"
+        )
+        pg17_engine.sql(
+            "INSERT INTO t (id, name, score) VALUES (1, 'Alice', 100)"
+        )
+        pg17_engine.sql(
+            "INSERT INTO t (id, name, score) VALUES (1, 'Alice', 200) "
+            "ON CONFLICT (id) DO UPDATE SET score = excluded.score"
+        )
+        result = pg17_engine.sql("SELECT score FROM t WHERE id = 1")
+        assert result.rows[0]["score"] == 200
+
+    def test_upsert_multiple_set_columns(self, pg17_engine):
+        pg17_engine.sql(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, score INTEGER)"
+        )
+        pg17_engine.sql(
+            "INSERT INTO t (id, name, score) VALUES (1, 'Alice', 100)"
+        )
+        pg17_engine.sql(
+            "INSERT INTO t (id, name, score) VALUES (1, 'Alicia', 200) "
+            "ON CONFLICT (id) DO UPDATE "
+            "SET name = excluded.name, score = excluded.score"
+        )
+        result = pg17_engine.sql("SELECT name, score FROM t WHERE id = 1")
+        assert result.rows[0]["name"] == "Alicia"
+        assert result.rows[0]["score"] == 200
+
+    def test_upsert_no_conflict_inserts(self, pg17_engine):
+        pg17_engine.sql(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)"
+        )
+        pg17_engine.sql(
+            "INSERT INTO t (id, name) VALUES (1, 'Alice') "
+            "ON CONFLICT (id) DO UPDATE SET name = excluded.name"
+        )
+        result = pg17_engine.sql("SELECT name FROM t WHERE id = 1")
+        assert result.rows[0]["name"] == "Alice"
+
+    def test_upsert_with_returning(self, pg17_engine):
+        pg17_engine.sql(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, score INTEGER)"
+        )
+        pg17_engine.sql(
+            "INSERT INTO t (id, name, score) VALUES (1, 'Alice', 100)"
+        )
+        result = pg17_engine.sql(
+            "INSERT INTO t (id, name, score) VALUES (1, 'Alice', 200) "
+            "ON CONFLICT (id) DO UPDATE SET score = excluded.score "
+            "RETURNING id, score"
+        )
+        assert len(result.rows) == 1
+        assert result.rows[0]["id"] == 1
+        assert result.rows[0]["score"] == 200
+
+    def test_upsert_on_unique_column(self, pg17_engine):
+        pg17_engine.sql(
+            "CREATE TABLE t (id INTEGER, email TEXT UNIQUE, name TEXT)"
+        )
+        pg17_engine.sql(
+            "INSERT INTO t (id, email, name) VALUES (1, 'a@b.com', 'Alice')"
+        )
+        pg17_engine.sql(
+            "INSERT INTO t (id, email, name) "
+            "VALUES (2, 'a@b.com', 'Bob') "
+            "ON CONFLICT (email) DO UPDATE SET name = excluded.name"
+        )
+        result = pg17_engine.sql("SELECT name FROM t WHERE email = 'a@b.com'")
+        assert result.rows[0]["name"] == "Bob"
+        result = pg17_engine.sql("SELECT COUNT(*) AS cnt FROM t")
+        assert result.rows[0]["cnt"] == 1
+
+
+# ==================================================================
+# UPDATE ... FROM
+# ==================================================================
+
+
+class TestUpdateFrom:
+    @pytest.fixture
+    def uf_engine(self):
+        e = Engine()
+        e.sql(
+            "CREATE TABLE employees "
+            "(id INT PRIMARY KEY, name TEXT, dept_id INT, salary INT)"
+        )
+        e.sql(
+            "CREATE TABLE departments "
+            "(id INT PRIMARY KEY, name TEXT, budget INT)"
+        )
+        e.sql("INSERT INTO departments VALUES (1, 'Engineering', 100000)")
+        e.sql("INSERT INTO departments VALUES (2, 'Sales', 50000)")
+        e.sql("INSERT INTO employees VALUES (1, 'Alice', 1, 50000)")
+        e.sql("INSERT INTO employees VALUES (2, 'Bob', 2, 40000)")
+        e.sql("INSERT INTO employees VALUES (3, 'Charlie', 1, 60000)")
+        yield e
+
+    def test_basic_update_from(self, uf_engine):
+        uf_engine.sql(
+            "UPDATE employees SET salary = departments.budget / 2 "
+            "FROM departments "
+            "WHERE employees.dept_id = departments.id "
+            "AND departments.name = 'Engineering'"
+        )
+        r = uf_engine.sql(
+            "SELECT id, name, dept_id, salary "
+            "FROM employees ORDER BY id"
+        )
+        # Alice: Engineering budget 100000 / 2 = 50000
+        assert r.rows[0]["salary"] == 50000
+        # Bob: Sales, not updated
+        assert r.rows[1]["salary"] == 40000
+        # Charlie: Engineering budget 100000 / 2 = 50000
+        assert r.rows[2]["salary"] == 50000
+
+    def test_update_from_returning(self, uf_engine):
+        r = uf_engine.sql(
+            "UPDATE employees SET salary = 99999 "
+            "FROM departments "
+            "WHERE employees.dept_id = departments.id "
+            "AND departments.name = 'Sales' "
+            "RETURNING employees.id, employees.salary"
+        )
+        assert len(r.rows) == 1
+        assert r.rows[0]["id"] == 2
+        assert r.rows[0]["salary"] == 99999
+
+    def test_update_from_no_match(self, uf_engine):
+        r = uf_engine.sql(
+            "UPDATE employees SET salary = 0 "
+            "FROM departments "
+            "WHERE employees.dept_id = departments.id "
+            "AND departments.name = 'Marketing'"
+        )
+        assert r.rows[0]["updated"] == 0
+
+    def test_update_from_multiple_matches(self, uf_engine):
+        """UPDATE FROM updates both Engineering employees."""
+        uf_engine.sql(
+            "UPDATE employees SET salary = salary + 1000 "
+            "FROM departments "
+            "WHERE employees.dept_id = departments.id "
+            "AND departments.name = 'Engineering'"
+        )
+        r = uf_engine.sql(
+            "SELECT id, salary FROM employees ORDER BY id"
+        )
+        assert r.rows[0]["salary"] == 51000  # Alice
+        assert r.rows[1]["salary"] == 40000  # Bob unchanged
+        assert r.rows[2]["salary"] == 61000  # Charlie
+
+
+# ==================================================================
+# DELETE ... USING
+# ==================================================================
+
+
+class TestDeleteUsing:
+    @pytest.fixture
+    def du_engine(self):
+        e = Engine()
+        e.sql(
+            "CREATE TABLE orders "
+            "(id INT PRIMARY KEY, customer_id INT, total INT)"
+        )
+        e.sql("CREATE TABLE blacklist (customer_id INT PRIMARY KEY)")
+        e.sql("INSERT INTO orders VALUES (1, 10, 100)")
+        e.sql("INSERT INTO orders VALUES (2, 20, 200)")
+        e.sql("INSERT INTO orders VALUES (3, 10, 300)")
+        e.sql("INSERT INTO blacklist VALUES (10)")
+        yield e
+
+    def test_basic_delete_using(self, du_engine):
+        du_engine.sql(
+            "DELETE FROM orders USING blacklist "
+            "WHERE orders.customer_id = blacklist.customer_id"
+        )
+        r = du_engine.sql("SELECT id, customer_id, total FROM orders ORDER BY id")
+        assert len(r.rows) == 1
+        assert r.rows[0]["id"] == 2
+
+    def test_delete_using_returning(self, du_engine):
+        r = du_engine.sql(
+            "DELETE FROM orders USING blacklist "
+            "WHERE orders.customer_id = blacklist.customer_id "
+            "RETURNING orders.id"
+        )
+        assert len(r.rows) == 2
+        ids = {row["id"] for row in r.rows}
+        assert ids == {1, 3}
+
+    def test_delete_using_no_match(self, du_engine):
+        du_engine.sql("DELETE FROM blacklist WHERE customer_id = 10")
+        r = du_engine.sql(
+            "DELETE FROM orders USING blacklist "
+            "WHERE orders.customer_id = blacklist.customer_id"
+        )
+        assert r.rows[0]["deleted"] == 0
+
+    def test_delete_using_preserves_unmatched(self, du_engine):
+        """Rows not matching the USING condition remain intact."""
+        du_engine.sql(
+            "DELETE FROM orders USING blacklist "
+            "WHERE orders.customer_id = blacklist.customer_id"
+        )
+        r = du_engine.sql("SELECT id, customer_id, total FROM orders")
+        assert len(r.rows) == 1
+        assert r.rows[0]["customer_id"] == 20
+        assert r.rows[0]["total"] == 200

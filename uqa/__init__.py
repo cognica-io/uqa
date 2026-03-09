@@ -22,7 +22,7 @@ def __getattr__(name: str):
     raise AttributeError(f"module 'uqa' has no attribute {name!r}")
 
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 __all__ = [
     "Engine",

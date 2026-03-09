@@ -1372,4 +1372,77 @@ def _compute_aggregate(
         idx = int(fraction * (n - 1))
         return sorted_vals[idx]
 
+    # -- Two-argument statistical aggregates (corr, covar, regr) --------
+    # These require both arg_col (y) and extra (x column name).
+    if func_name in (
+        "covar_pop", "covar_samp", "corr",
+        "regr_count", "regr_avgx", "regr_avgy",
+        "regr_sxx", "regr_syy", "regr_sxy",
+        "regr_slope", "regr_intercept", "regr_r2",
+    ):
+        x_col = extra
+        # Collect paired (y, x) where both are non-null numeric values
+        pairs = [
+            (r.get(arg_col), r.get(x_col))
+            for r in rows
+            if isinstance(r.get(arg_col), (int, float))
+            and isinstance(r.get(x_col), (int, float))
+        ]
+        n = len(pairs)
+        if n == 0:
+            return None
+
+        if func_name == "regr_count":
+            return n
+
+        ys = [p[0] for p in pairs]
+        xs = [p[1] for p in pairs]
+        mean_y = sum(ys) / n
+        mean_x = sum(xs) / n
+
+        if func_name == "regr_avgx":
+            return mean_x
+        if func_name == "regr_avgy":
+            return mean_y
+
+        sxy = sum((yi - mean_y) * (xi - mean_x) for yi, xi in pairs)
+        sxx = sum((xi - mean_x) ** 2 for xi in xs)
+        syy = sum((yi - mean_y) ** 2 for yi in ys)
+
+        if func_name == "covar_pop":
+            return sxy / n
+        if func_name == "covar_samp":
+            if n < 2:
+                return None
+            return sxy / (n - 1)
+
+        if func_name == "regr_sxy":
+            return sxy
+        if func_name == "regr_sxx":
+            return sxx
+        if func_name == "regr_syy":
+            return syy
+
+        if func_name == "regr_slope":
+            if sxx == 0:
+                return None
+            return sxy / sxx
+        if func_name == "regr_intercept":
+            if sxx == 0:
+                return None
+            slope = sxy / sxx
+            return mean_y - slope * mean_x
+
+        if func_name == "corr":
+            stddev_y = syy ** 0.5
+            stddev_x = sxx ** 0.5
+            if stddev_y == 0 or stddev_x == 0:
+                return None
+            return sxy / (stddev_y * stddev_x)
+
+        if func_name == "regr_r2":
+            if sxx == 0 or syy == 0:
+                return None
+            return (sxy ** 2) / (sxx * syy)
+
     raise ValueError(f"Unknown aggregate: {func_name}")
