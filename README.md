@@ -2,7 +2,7 @@
 
 A database prototype that unifies **relational**, **text retrieval**, **vector search**, and **graph query** paradigms under a single algebraic structure, using posting lists as the universal abstraction. SQL interface targets **PostgreSQL 17** compatibility.
 
-> **Status:** UQA is currently a research prototype under active development. The long-term goal is to evolve it into a production-grade unified query engine. APIs and internals may change as the project matures.
+> **Status:** The unified query algebra theory behind this project is already implemented in production as [Cognica Database](https://cognica.io), a commercial multi-paradigm database engine built in C++20/23. UQA is the research prototype that originated the theory, now open-sourced for academic and experimental use. It is under active development with the goal of becoming a standalone production-grade project. APIs and internals may change as the project matures.
 
 ## Background
 
