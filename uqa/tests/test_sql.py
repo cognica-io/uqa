@@ -472,6 +472,7 @@ class TestSQLResult:
         assert "vision transformer for image recognition" in titles
 
 
+
 # ==================================================================
 # EXPLAIN / ANALYZE
 # ==================================================================

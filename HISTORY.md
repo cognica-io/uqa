@@ -1,5 +1,36 @@
 # History
 
+## 0.9.1 (2026-03-10)
+
+Arrow and Parquet export with zero-copy optimization.
+
+### SQLResult Export
+
+- `to_arrow()` — convert query results to a `pyarrow.Table`
+- `to_parquet(path)` — write query results to a Parquet file
+- Zero-copy path: physical execution engine preserves original Arrow `RecordBatch` objects, so `to_arrow()` calls `pa.Table.from_batches()` without intermediate dict conversion
+- Lazy row materialization: `SQLResult.rows` property converts from batches on first access only
+- Generator-based `__iter__` — iterates over results without materializing all rows at once
+- Automatic type inference: int64, float64, string, bool, timestamp, date, time, duration, binary, list
+
+### QueryBuilder Export
+
+- `execute_arrow()` — execute fluent query and return a `pyarrow.Table` with `_doc_id`, `_score`, and field columns
+- `execute_parquet(path)` — execute fluent query and write results to a Parquet file
+- `PostingList` to Arrow conversion via `_posting_list_to_arrow()` helper
+
+### Tests
+
+- 1659 tests across 44 test files (up from 1646 in v0.9.0)
+- `test_query_builder.py` with 7 tests: `execute_arrow` (4), `execute_parquet` (3)
+- `test_sql.py` — 6 new tests: `to_arrow` (4), `to_parquet` (2)
+
+### Examples
+
+- `examples/sql/export.py` — 10 examples: Arrow conversion, column access, Parquet write/read, type preservation, aggregation, empty results, lazy iteration, JOIN export
+- `examples/fluent/export.py` — 8 examples: text search to Arrow, BM25/Bayesian BM25 scoring, Parquet round-trip, empty results, Arrow compute
+
+
 ## 0.9.0 (2026-03-10)
 
 Lucene-style text analysis pipeline with configurable analyzers.

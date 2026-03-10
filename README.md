@@ -183,7 +183,7 @@ uqa/
   planner/        Cost model, cardinality estimator, optimizer, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          1646 tests across 43 test files
+  tests/          1659 tests across 44 test files
 ```
 
 ## Key Features
@@ -419,6 +419,28 @@ total = team.vertex_aggregate("salary", "sum")
 facets = engine.query(table="papers").facet("status")
 ```
 
+### Arrow / Parquet Export
+
+```python
+# SQL result -> Arrow Table (zero-copy from execution engine)
+result = engine.sql("SELECT title, year FROM papers ORDER BY year")
+arrow_table = result.to_arrow()
+
+# SQL result -> Parquet file
+result.to_parquet("papers.parquet")
+
+# Fluent API -> Arrow Table
+arrow_table = (
+    engine.query(table="papers")
+    .term("attention", field="title")
+    .score_bm25("attention")
+    .execute_arrow()
+)
+
+# Fluent API -> Parquet file
+engine.query(table="papers").term("attention", field="title").execute_parquet("results.parquet")
+```
+
 ## Examples
 
 ### Fluent API (`examples/fluent/`)
@@ -430,6 +452,7 @@ python examples/fluent/graph.py               # Traversal, RPQ, pattern matching
 python examples/fluent/hierarchical.py        # Nested data, path filters, aggregation
 python examples/fluent/multi_paradigm.py      # Multi-signal fusion, graph analytics, query plans
 python examples/fluent/analysis.py            # Text analysis pipeline, tokenizers, filters, stemming
+python examples/fluent/export.py              # Arrow/Parquet export from fluent queries
 ```
 
 ### SQL (`examples/sql/`)
@@ -442,6 +465,7 @@ python examples/sql/fusion.py                 # fuse_log_odds, fuse_prob_and/or/
 python examples/sql/joins_and_subqueries.py   # JOINs, derived tables, set operations, recursive CTE
 python examples/sql/analytics.py              # Aggregates, window functions, JSON, date/time, UPSERT
 python examples/sql/analysis.py               # Text analyzers via SQL: create, list, drop, persistence
+python examples/sql/export.py                 # Arrow/Parquet export from SQL queries
 ```
 
 ### Interactive Shell

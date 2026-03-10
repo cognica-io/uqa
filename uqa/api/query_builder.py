@@ -14,8 +14,45 @@ from numpy.typing import NDArray
 from uqa.core.types import PathExpr, Predicate
 
 if TYPE_CHECKING:
+    import pyarrow as pa
+
     from uqa.core.posting_list import GeneralizedPostingList, PostingList
     from uqa.engine import Engine
+
+
+def _posting_list_to_arrow(pl: PostingList) -> "pa.Table":
+    """Convert a PostingList to a ``pyarrow.Table``."""
+    import pyarrow as pa
+
+    from uqa.sql.compiler import _infer_arrow_type
+
+    if not pl:
+        return pa.table({"_doc_id": pa.array([], type=pa.int64()),
+                         "_score": pa.array([], type=pa.float64())})
+
+    doc_ids: list[int] = []
+    scores: list[float] = []
+    field_values: dict[str, list[Any]] = {}
+
+    for entry in pl:
+        doc_ids.append(entry.doc_id)
+        scores.append(entry.payload.score)
+        for k, v in entry.payload.fields.items():
+            if k not in field_values:
+                field_values[k] = [None] * len(doc_ids[:-1])
+            field_values[k].append(v)
+        for k in field_values:
+            if k not in entry.payload.fields:
+                field_values[k].append(None)
+
+    arrays: dict[str, pa.Array] = {
+        "_doc_id": pa.array(doc_ids, type=pa.int64()),
+        "_score": pa.array(scores, type=pa.float64()),
+    }
+    for k, vals in field_values.items():
+        arrays[k] = pa.array(vals, type=_infer_arrow_type(vals))
+
+    return pa.table(arrays)
 
 
 class AggregateResult:
@@ -441,6 +478,16 @@ class QueryBuilder:
 
         executor = PlanExecutor(ctx)
         return executor.execute(optimized)
+
+    def execute_arrow(self) -> "pa.Table":
+        """Execute and return results as a ``pyarrow.Table``."""
+        return _posting_list_to_arrow(self.execute())
+
+    def execute_parquet(self, path: str) -> None:
+        """Execute and write results to a Parquet file at *path*."""
+        import pyarrow.parquet as pq
+
+        pq.write_table(self.execute_arrow(), path)
 
     def explain(self) -> str:
         from uqa.planner.executor import PlanExecutor

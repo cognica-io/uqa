@@ -1151,7 +1151,50 @@ plan = engine.query(table="papers").term("attention").explain()
 print(plan)
 ```
 
-### 6.5 Programmatic Document API
+### 6.5 Arrow / Parquet Export
+
+Query results can be exported to Apache Arrow tables and Parquet files. When the result originates from the physical execution engine, Arrow RecordBatches are preserved and `to_arrow()` performs a zero-copy conversion without intermediate dict materialization.
+
+#### SQL API
+
+```python
+result = engine.sql("SELECT title, year FROM papers ORDER BY year")
+
+# Convert to Arrow Table (zero-copy when batches are available)
+arrow_table = result.to_arrow()
+print(arrow_table.schema)    # int64, string, etc.
+print(arrow_table.num_rows)
+
+# Write to Parquet
+result.to_parquet("papers.parquet")
+
+# Lazy iteration (generator-based, does not materialize all rows)
+for row in result:
+    print(row["title"])
+```
+
+#### QueryBuilder API
+
+```python
+# Execute and return Arrow Table directly
+arrow_table = (
+    engine.query(table="papers")
+    .term("attention", field="title")
+    .score_bm25("attention")
+    .execute_arrow()
+)
+
+# Execute and write to Parquet
+(
+    engine.query(table="papers")
+    .term("attention", field="title")
+    .execute_parquet("search_results.parquet")
+)
+```
+
+The Arrow table from `execute_arrow()` includes `_doc_id` (int64), `_score` (float64), and any document field columns present in the posting list payload.
+
+### 6.6 Programmatic Document API
 
 The Engine provides a direct document API for adding and removing documents, graph vertices, and edges. All operations require an explicit table name — there is no global store.
 
@@ -1204,7 +1247,7 @@ engine.save_scoring_params("text_signal", {"alpha": 1.0, "beta": 3.5})
 params = engine.load_scoring_params("text_signal")
 ```
 
-### 6.6 Interactive SQL Shell
+### 6.7 Interactive SQL Shell
 
 UQA includes an interactive SQL shell with syntax highlighting and autocompletion.
 
@@ -1225,7 +1268,7 @@ Shell commands:
 | `\reset` | Reset the engine |
 | `\q` | Quit |
 
-### 6.7 Transactions
+### 6.8 Transactions
 
 UQA supports ACID transactions with savepoints through the SQL interface and the programmatic API.
 
@@ -1282,6 +1325,7 @@ Example scripts are provided in the `examples/` directory:
 | `graph.py` | Traversal, RPQ, pattern matching, graph indexes |
 | `hierarchical.py` | Nested data, path filters, path aggregation |
 | `analysis.py` | Text analysis pipeline, tokenizers, filters, stemming, per-field analyzers |
+| `export.py` | Arrow/Parquet export from fluent queries, BM25 scoring, round-trip |
 
 ### SQL (`examples/sql/`)
 
@@ -1292,6 +1336,7 @@ Example scripts are provided in the `examples/` directory:
 | `graph.py` | FROM traverse/rpq, aggregates, GROUP BY, WHERE |
 | `fusion.py` | fuse_log_odds, fuse_prob_and/or/not, EXPLAIN |
 | `analysis.py` | Text analyzers via SQL: create, list, drop, persistence |
+| `export.py` | Arrow/Parquet export from SQL queries, type preservation, JOIN export |
 
 
 ## 9. Testing
@@ -1306,7 +1351,7 @@ python -m pytest uqa/tests/ -v
 python -m pytest uqa/tests/test_sql.py -v
 ```
 
-1646 tests across 43 test files covering core algebra, operators, scoring, fusion, SQL compilation, physical execution, joins, graph operations, openCypher graph queries, SQLite persistence, transactions, cost optimization, parallel execution, PostgreSQL 17 compatibility, text analysis pipeline, and end-to-end integration.
+1659 tests across 44 test files covering core algebra, operators, scoring, fusion, SQL compilation, physical execution, joins, graph operations, openCypher graph queries, SQLite persistence, transactions, cost optimization, parallel execution, PostgreSQL 17 compatibility, text analysis pipeline, Arrow/Parquet export, and end-to-end integration.
 
 
 ## 10. References
