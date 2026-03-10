@@ -554,7 +554,7 @@ SELECT * FROM drop_graph('social');
 
 Apache AGE compatible openCypher query execution. Embeds a Cypher query in the SQL FROM clause, executing it against a named graph and returning results as a virtual table. Column names and types are specified in the `AS` clause.
 
-The Cypher compiler uses `GraphPostingList` as the core abstraction -- every clause transforms a posting list where each entry represents a binding row, consistent with UQA's posting-list-based architecture.
+The Cypher compiler uses `GraphPostingList` as the core abstraction — every clause transforms a posting list where each entry represents a binding row, consistent with UQA's posting-list-based architecture.
 
 ```sql
 -- Create vertices and relationships

@@ -23,7 +23,7 @@ Lucene-style text analysis pipeline with configurable analyzers.
 
 - `LowerCaseFilter`: case normalization
 - `StopWordFilter(language, custom_words)`: stop word removal with English built-in list
-- `PorterStemFilter`: Porter stemming algorithm (M. F. Porter, 1980) -- morphological normalization
+- `PorterStemFilter`: Porter stemming algorithm (M. F. Porter, 1980) — morphological normalization
 - `ASCIIFoldingFilter`: fold Unicode to ASCII equivalents (NFKD normalization)
 - `SynonymFilter(synonyms)`: expand tokens with synonym alternatives
 - `EdgeNGramFilter(min_gram, max_gram)`: prefix n-grams for autocomplete/typeahead
@@ -50,15 +50,15 @@ Lucene-style text analysis pipeline with configurable analyzers.
 
 ### SQL Table Functions
 
-- `create_analyzer('name', 'config_json')` -- create a named analyzer from JSON configuration
-- `drop_analyzer('name')` -- remove a custom analyzer
-- `list_analyzers()` -- enumerate all registered analyzers (built-in + custom)
+- `create_analyzer('name', 'config_json')` — create a named analyzer from JSON configuration
+- `drop_analyzer('name')` — remove a custom analyzer
+- `list_analyzers()` — enumerate all registered analyzers (built-in + custom)
 
 ### Engine API
 
-- `engine.create_analyzer(name, config)` -- create and persist a named analyzer
-- `engine.drop_analyzer(name)` -- drop a named analyzer
-- `engine.set_table_analyzer(table, field, analyzer_name)` -- assign analyzer to a table field
+- `engine.create_analyzer(name, config)` — create and persist a named analyzer
+- `engine.drop_analyzer(name)` — drop a named analyzer
+- `engine.set_table_analyzer(table, field, analyzer_name)` — assign analyzer to a table field
 
 ### Catalog Persistence
 
@@ -78,8 +78,8 @@ Lucene-style text analysis pipeline with configurable analyzers.
 
 ### Examples
 
-- `examples/fluent/analysis.py` -- 14 examples: built-in analyzers, custom pipelines, stemming, autocomplete, synonyms, ASCII folding, per-field analyzers, BM25 scoring, serialization
-- `examples/sql/analysis.py` -- 11 examples: SQL table functions, analyzer assignment, persistence across sessions
+- `examples/fluent/analysis.py` — 14 examples: built-in analyzers, custom pipelines, stemming, autocomplete, synonyms, ASCII folding, per-field analyzers, BM25 scoring, serialization
+- `examples/sql/analysis.py` — 11 examples: SQL table functions, analyzer assignment, persistence across sessions
 
 
 ## 0.8.0 (2026-03-10)
@@ -89,7 +89,7 @@ Apache AGE compatible graph query with openCypher and named graphs.
 ### Graph Query Language (openCypher)
 
 - Cypher lexer, recursive-descent parser, and AST for the openCypher subset
-- `CypherCompiler` executes through `GraphPostingList` (binding table pattern) -- every clause transforms a posting list, consistent with UQA's core thesis
+- `CypherCompiler` executes through `GraphPostingList` (binding table pattern) — every clause transforms a posting list, consistent with UQA's core thesis
 - Clauses: `MATCH`, `OPTIONAL MATCH`, `CREATE`, `MERGE` (with `ON CREATE SET` / `ON MATCH SET`), `SET`, `DELETE` / `DETACH DELETE`, `RETURN`, `WITH`, `UNWIND`
 - `RETURN` modifiers: `ORDER BY`, `DESC`, `LIMIT`, `SKIP`, `DISTINCT`, aliases (`AS`), expressions
 - Pattern matching: node patterns `(n:Label {props})`, relationship patterns `-[r:TYPE*min..max]->`, variable-length paths, cross-label matching, anonymous nodes
@@ -98,14 +98,14 @@ Apache AGE compatible graph query with openCypher and named graphs.
 
 ### Named Graphs
 
-- `create_graph('name')` SQL function -- creates an isolated graph namespace with dedicated SQLite-backed storage
-- `drop_graph('name')` SQL function -- removes a named graph and its storage
+- `create_graph('name')` SQL function — creates an isolated graph namespace with dedicated SQLite-backed storage
+- `drop_graph('name')` SQL function — removes a named graph and its storage
 - Named graph persistence via `_named_graphs` catalog table
 - Named graphs restore automatically on engine restart
 
 ### SQL Integration (Apache AGE compatible)
 
-- `cypher('graph_name', $$ MATCH ... RETURN ... $$) AS (col1 agtype, col2 agtype)` -- embed Cypher queries in SQL FROM clause
+- `cypher('graph_name', $$ MATCH ... RETURN ... $$) AS (col1 agtype, col2 agtype)` — embed Cypher queries in SQL FROM clause
 - Column type inference from Cypher result values (integer, real, boolean, text) instead of hardcoding text
 - Positional column mapping between Cypher result keys and AS clause column names
 - SQL WHERE, ORDER BY, GROUP BY, JOIN work on cypher() results like any other table
@@ -115,8 +115,8 @@ Apache AGE compatible graph query with openCypher and named graphs.
 - Added required `label` field to `Vertex` datatype (between `vertex_id` and `properties`)
 - `vertices_by_label(label)` for efficient label-based vertex retrieval
 - SQLite label index on `_graph_vertices` tables
-- `remove_vertex(vertex_id)` -- removes vertex and all incident edges (both in-memory and SQLite)
-- `remove_edge(edge_id)` -- removes single edge (both in-memory and SQLite)
+- `remove_vertex(vertex_id)` — removes vertex and all incident edges (both in-memory and SQLite)
+- `remove_edge(edge_id)` — removes single edge (both in-memory and SQLite)
 - Auto-incrementing vertex/edge ID generators (`next_vertex_id()`, `next_edge_id()`)
 
 ### Tests
@@ -139,15 +139,15 @@ PostgreSQL compatibility fixes and SQLite thread safety.
 
 ### Execution Engine
 
-- Fixed window functions ignoring default frame when `ORDER BY` is present -- now applies SQL-standard `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`
+- Fixed window functions ignoring default frame when `ORDER BY` is present — now applies SQL-standard `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`
 
 ### Scalar Functions
 
 - Fixed `LTRIM`/`RTRIM`/`BTRIM` ignoring the character-set argument
-- Added `CONCAT_WS(separator, str1, str2, ...)` -- concatenate with separator, skipping NULLs
-- Added `TO_CHAR`, `TO_DATE`, `TO_TIMESTAMP` -- date/time formatting and parsing with PostgreSQL format strings
-- Added `MAKE_DATE(year, month, day)` -- construct a date from components
-- Added `AGE(timestamp, timestamp)` -- compute interval between two timestamps
+- Added `CONCAT_WS(separator, str1, str2, ...)` — concatenate with separator, skipping NULLs
+- Added `TO_CHAR`, `TO_DATE`, `TO_TIMESTAMP` — date/time formatting and parsing with PostgreSQL format strings
+- Added `MAKE_DATE(year, month, day)` — construct a date from components
+- Added `AGE(timestamp, timestamp)` — compute interval between two timestamps
 
 ### Type System
 
@@ -159,7 +159,7 @@ PostgreSQL compatibility fixes and SQLite thread safety.
 
 - Fixed SQLite thread safety: `ManagedConnection` now serializes all operations with a threading lock and provides atomic `execute_fetchall`/`execute_fetchone` methods
 - `SQLiteInvertedIndex` and `SQLiteDocumentStore` use atomic fetch methods to prevent cursor interleaving under concurrent access from the parallel executor
-- Fixed `test_text_search_works_after_restart` -- the last remaining test failure
+- Fixed `test_text_search_works_after_restart` — the last remaining test failure
 
 ### Batch Processing
 
