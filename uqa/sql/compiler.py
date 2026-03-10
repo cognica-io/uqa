@@ -2267,6 +2267,7 @@ class SQLCompiler:
         )
         has_window = self._has_window_functions(stmt.targetList)
         expected_cols: list[str] | None = None
+        defer_proj = False
 
         if has_window:
             # Window functions: compute window values, then project
@@ -2384,28 +2385,41 @@ class SQLCompiler:
         else:
             is_star = self._is_select_star(stmt.targetList)
             if not is_star:
+                # Check whether ORDER BY references columns outside
+                # the SELECT list.  If so, defer projection until
+                # after the sort so the sort keys are still available.
+                defer_proj = False
+                if stmt.sortClause is not None:
+                    sort_keys_pre = self._build_sort_keys(
+                        stmt.sortClause, stmt.targetList,
+                    )
+                    defer_proj = self._sort_needs_extra_cols(
+                        sort_keys_pre, stmt.targetList,
+                    )
+
                 use_expr = (
                     join_source
                     or self._has_computed_expressions(stmt.targetList)
                 )
-                if use_expr:
-                    targets = self._build_expr_targets(stmt.targetList)
-                    physical = ExprProjectOp(
-                        physical, targets,
-                        subquery_executor=self._compile_select,
-                        sequences=self._engine._sequences,
-                    )
-                    expected_cols = [name for name, _ in targets]
-                else:
-                    proj_cols, proj_aliases = (
-                        self._resolve_projection_cols(stmt.targetList)
-                    )
-                    physical = ProjectOp(
-                        physical, proj_cols, proj_aliases
-                    )
-                    expected_cols = [
-                        proj_aliases.get(c, c) for c in proj_cols
-                    ]
+                if not defer_proj:
+                    if use_expr:
+                        targets = self._build_expr_targets(stmt.targetList)
+                        physical = ExprProjectOp(
+                            physical, targets,
+                            subquery_executor=self._compile_select,
+                            sequences=self._engine._sequences,
+                        )
+                        expected_cols = [name for name, _ in targets]
+                    else:
+                        proj_cols, proj_aliases = (
+                            self._resolve_projection_cols(stmt.targetList)
+                        )
+                        physical = ProjectOp(
+                            physical, proj_cols, proj_aliases
+                        )
+                        expected_cols = [
+                            proj_aliases.get(c, c) for c in proj_cols
+                        ]
 
         # DISTINCT
         if stmt.distinctClause is not None:
@@ -2430,6 +2444,28 @@ class SQLCompiler:
                 physical, sort_keys,
                 spill_threshold=self._engine.spill_threshold,
             )
+
+        # Deferred projection: apply after ORDER BY so sort keys
+        # that reference non-projected columns are available.
+        if defer_proj:
+            if use_expr:
+                targets = self._build_expr_targets(stmt.targetList)
+                physical = ExprProjectOp(
+                    physical, targets,
+                    subquery_executor=self._compile_select,
+                    sequences=self._engine._sequences,
+                )
+                expected_cols = [name for name, _ in targets]
+            else:
+                proj_cols, proj_aliases = (
+                    self._resolve_projection_cols(stmt.targetList)
+                )
+                physical = ProjectOp(
+                    physical, proj_cols, proj_aliases
+                )
+                expected_cols = [
+                    proj_aliases.get(c, c) for c in proj_cols
+                ]
 
         # LIMIT / OFFSET
         if stmt.limitCount is not None:
@@ -2667,6 +2703,33 @@ class SQLCompiler:
 
             sort_keys.append((col, is_desc, nulls_first))
         return sort_keys
+
+    @staticmethod
+    def _sort_needs_extra_cols(
+        sort_keys: list[tuple[str, bool, bool]],
+        target_list: tuple | None,
+    ) -> bool:
+        """Return True if ORDER BY references columns not in SELECT."""
+        if target_list is None:
+            return False
+        projected: set[str] = set()
+        for target in target_list:
+            if isinstance(target.val, A_Star):
+                return False
+            if isinstance(target.val, ColumnRef):
+                fields = target.val.fields
+                if isinstance(fields[-1], A_Star):
+                    return False
+                col = fields[-1].sval if hasattr(fields[-1], "sval") else str(fields[-1])
+                projected.add(col)
+                if target.name:
+                    projected.add(target.name)
+            elif target.name:
+                projected.add(target.name)
+        for col_name, _, _ in sort_keys:
+            if col_name not in projected:
+                return True
+        return False
 
     def _build_group_aliases(
         self,

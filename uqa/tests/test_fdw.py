@@ -482,10 +482,12 @@ class TestDuckDBFDWBasicQueries:
 
     def test_order_by_desc(self, fdw_engine):
         result = fdw_engine.sql(
-            "SELECT name, value FROM data ORDER BY value DESC"
+            "SELECT name FROM data ORDER BY value DESC"
         )
-        assert result.rows[0]["name"] == "eve"
-        assert result.rows[4]["name"] == "alice"
+        assert [r["name"] for r in result.rows] == [
+            "eve", "dave", "carol", "bob", "alice",
+        ]
+        assert list(result.rows[0].keys()) == ["name"]
 
     def test_limit(self, fdw_engine):
         result = fdw_engine.sql(
