@@ -3560,6 +3560,12 @@ class SQLCompiler:
         name = func_call.funcname[-1].sval.lower()
         args = func_call.args or ()
 
+        if name == "cypher":
+            return self._build_cypher_from(node, args)
+        if name == "create_graph":
+            return self._build_create_graph(args)
+        if name == "drop_graph":
+            return self._build_drop_graph(args)
         if name == "traverse":
             return self._build_traverse_from(args)
         if name == "rpq":
@@ -3656,6 +3662,147 @@ class SQLCompiler:
             raise ValueError(f"Table '{table_name}' does not exist")
         return table, RegularPathQueryOperator(parse_rpq(expr), start_vertex=start)
 
+    def _build_create_graph(
+        self, args: tuple
+    ) -> tuple[Table | None, Any]:
+        """Handle ``SELECT * FROM create_graph('name')``."""
+        from uqa.sql.table import ColumnDef as SQLColumnDef
+
+        if not args:
+            raise ValueError("create_graph() requires a graph name argument")
+        name = self._extract_string_value(args[0])
+        self._engine.create_graph(name)
+        # Return a single-row result like AGE
+        table = Table("_create_graph", [
+            SQLColumnDef(name="create_graph", type_name="text", python_type=str),
+        ])
+        table.insert({"create_graph": f"graph '{name}' created"})
+        self._engine._tables["_create_graph"] = table
+        self._expanded_views.append("_create_graph")
+        return table, None
+
+    def _build_drop_graph(
+        self, args: tuple
+    ) -> tuple[Table | None, Any]:
+        """Handle ``SELECT * FROM drop_graph('name')`` or ``drop_graph('name', true)``."""
+        from uqa.sql.table import ColumnDef as SQLColumnDef
+
+        if not args:
+            raise ValueError("drop_graph() requires a graph name argument")
+        name = self._extract_string_value(args[0])
+        self._engine.drop_graph(name)
+        table = Table("_drop_graph", [
+            SQLColumnDef(name="drop_graph", type_name="text", python_type=str),
+        ])
+        table.insert({"drop_graph": f"graph '{name}' dropped"})
+        self._engine._tables["_drop_graph"] = table
+        self._expanded_views.append("_drop_graph")
+        return table, None
+
+    def _build_cypher_from(
+        self, node: RangeFunction, args: tuple
+    ) -> tuple[Table | None, Any]:
+        """Build cypher() FROM-clause (Apache AGE compatible).
+
+        Usage::
+
+            SELECT * FROM cypher('graph_name', $$
+                MATCH (n:Person) RETURN n.name, n.age
+            $$) AS (name agtype, age agtype)
+
+        The Cypher query is parsed and executed against the named graph.
+        Results are materialized into a temporary Table so they enter the
+        standard posting-list SQL pipeline.
+        """
+        from uqa.graph.cypher.parser import parse_cypher
+        from uqa.graph.cypher.compiler import CypherCompiler
+        from uqa.sql.table import ColumnDef as SQLColumnDef
+
+        if len(args) < 2:
+            raise ValueError(
+                "cypher() requires 2 arguments: "
+                "cypher('graph_name', $$ query $$)"
+            )
+        graph_name = self._extract_string_value(args[0])
+        cypher_source = self._extract_string_value(args[1])
+
+        graph = self._engine.get_graph(graph_name)
+        ast = parse_cypher(cypher_source)
+        compiler = CypherCompiler(graph, params=self._cypher_params())
+        rows = compiler.execute(ast)
+
+        # Determine column names from AS clause or from result keys.
+        # pglast puts ``AS t(name agtype, age agtype)`` column defs in
+        # ``node.coldeflist`` (ColumnDef.colname), not alias.colnames.
+        col_names: list[str] = []
+        if node.coldeflist:
+            col_names = [cd.colname for cd in node.coldeflist]
+        elif node.alias is not None and node.alias.colnames:
+            col_names = [c.sval for c in node.alias.colnames]
+        elif rows:
+            col_names = list(rows[0].keys())
+
+        alias_name = (
+            node.alias.aliasname if node.alias is not None else "_cypher"
+        )
+
+        # Build positional mapping: AS column names may differ from
+        # Cypher result keys (e.g. AS (name agtype) vs n.name).
+        cypher_keys = list(rows[0].keys()) if rows else []
+
+        # Infer column types from the first result row.
+        def _infer_sql_type(
+            value: Any,
+        ) -> tuple[str, type]:
+            if isinstance(value, bool):
+                return "boolean", bool
+            if isinstance(value, int):
+                return "integer", int
+            if isinstance(value, float):
+                return "real", float
+            return "text", str
+
+        if rows:
+            sample = rows[0]
+            sample_values = [
+                sample.get(cn) if cn in sample
+                else (sample.get(cypher_keys[i]) if i < len(cypher_keys) else None)
+                for i, cn in enumerate(col_names)
+            ]
+            columns = [
+                SQLColumnDef(
+                    name=cn,
+                    type_name=_infer_sql_type(sv)[0],
+                    python_type=_infer_sql_type(sv)[1],
+                )
+                for cn, sv in zip(col_names, sample_values)
+            ]
+        else:
+            columns = [
+                SQLColumnDef(name=cn, type_name="text", python_type=str)
+                for cn in col_names
+            ]
+        table = Table(alias_name, columns)
+        for row in rows:
+            insert_data: dict[str, Any] = {}
+            for i, cn in enumerate(col_names):
+                if cn in row:
+                    insert_data[cn] = row[cn]
+                elif i < len(cypher_keys):
+                    insert_data[cn] = row.get(cypher_keys[i])
+            table.insert(insert_data)
+
+        self._engine._tables[alias_name] = table
+        self._expanded_views.append(alias_name)
+        return table, None
+
+    def _cypher_params(self) -> dict[str, Any]:
+        """Convert SQL positional params ($1, $2) to Cypher named params."""
+        result: dict[str, Any] = {}
+        for i, val in enumerate(self._params, 1):
+            result[str(i)] = val
+        return result
+
     def _build_text_search_from(
         self, args: tuple
     ) -> tuple[Table | None, Any]:
@@ -3717,10 +3864,10 @@ class SQLCompiler:
         else:
             alias_name = "generate_series"
 
-        from uqa.sql.table import ColumnDef as SqlColumnDef
+        from uqa.sql.table import ColumnDef as SQLColumnDef
         col_type = "integer" if all(isinstance(v, int) for v in values) else "real"
         python_type = int if col_type == "integer" else float
-        col = SqlColumnDef(
+        col = SQLColumnDef(
             name=col_name,
             type_name=col_type,
             python_type=python_type,
@@ -3738,7 +3885,7 @@ class SQLCompiler:
     ) -> tuple[Table | None, Any]:
         """Build unnest(array) as a table function."""
         from uqa.sql.expr_evaluator import ExprEvaluator
-        from uqa.sql.table import ColumnDef as SqlColumnDef
+        from uqa.sql.table import ColumnDef as SQLColumnDef
 
         if not args:
             raise ValueError("unnest requires at least 1 argument")
@@ -3766,7 +3913,7 @@ class SQLCompiler:
             col_type = "real"
             python_type = float
 
-        col = SqlColumnDef(
+        col = SQLColumnDef(
             name=col_name,
             type_name=col_type,
             python_type=python_type,
@@ -3784,7 +3931,7 @@ class SQLCompiler:
     ) -> tuple[Table | None, Any]:
         """Build regexp_split_to_table(string, pattern [, flags]) as a table function."""
         import re as re_mod
-        from uqa.sql.table import ColumnDef as SqlColumnDef
+        from uqa.sql.table import ColumnDef as SQLColumnDef
 
         if len(args) < 2:
             raise ValueError(
@@ -3825,7 +3972,7 @@ class SQLCompiler:
         else:
             alias_name = "regexp_split_to_table"
 
-        col = SqlColumnDef(
+        col = SQLColumnDef(
             name=col_name,
             type_name="text",
             python_type=str,
@@ -3843,7 +3990,7 @@ class SQLCompiler:
     ) -> tuple[Table | None, Any]:
         """Build json_each(json) / json_each_text(json) as a table function."""
         from uqa.sql.expr_evaluator import ExprEvaluator
-        from uqa.sql.table import ColumnDef as SqlColumnDef
+        from uqa.sql.table import ColumnDef as SQLColumnDef
 
         if not args:
             raise ValueError("json_each requires 1 argument")
@@ -3870,10 +4017,10 @@ class SQLCompiler:
         import json as json_mod_inner
 
         cols = [
-            SqlColumnDef(
+            SQLColumnDef(
                 name=key_col, type_name="text", python_type=str
             ),
-            SqlColumnDef(
+            SQLColumnDef(
                 name=val_col, type_name="text", python_type=str
             ),
         ]
@@ -3896,7 +4043,7 @@ class SQLCompiler:
     ) -> tuple[Table | None, Any]:
         """Build json_array_elements(json) as a table function."""
         from uqa.sql.expr_evaluator import ExprEvaluator
-        from uqa.sql.table import ColumnDef as SqlColumnDef
+        from uqa.sql.table import ColumnDef as SQLColumnDef
 
         if not args:
             raise ValueError("json_array_elements requires 1 argument")
@@ -3921,7 +4068,7 @@ class SQLCompiler:
 
         import json as json_mod_inner
 
-        col = SqlColumnDef(
+        col = SQLColumnDef(
             name=col_name, type_name="text", python_type=str
         )
         table = Table(alias_name, [col])

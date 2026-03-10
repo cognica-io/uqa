@@ -670,11 +670,11 @@ class TestEnginePersistenceAPI:
                 )
             """)
             engine.add_graph_vertex(
-                Vertex(vertex_id=1, properties={"name": "A"}),
+                Vertex(vertex_id=1, label="", properties={"name": "A"}),
                 table="graph_data",
             )
             engine.add_graph_vertex(
-                Vertex(vertex_id=2, properties={"name": "B"}),
+                Vertex(vertex_id=2, label="", properties={"name": "B"}),
                 table="graph_data",
             )
             engine.add_graph_edge(

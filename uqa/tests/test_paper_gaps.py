@@ -66,11 +66,11 @@ def _make_doc_store_with_fields(docs: list[dict]) -> object:
 
 def _make_graph() -> GraphStore:
     vertices = [
-        Vertex(1, {"name": "Alice", "age": 30, "dept": "eng"}),
-        Vertex(2, {"name": "Bob", "age": 25, "dept": "eng"}),
-        Vertex(3, {"name": "Charlie", "age": 35, "dept": "sales"}),
-        Vertex(4, {"name": "Diana", "age": 28, "dept": "eng"}),
-        Vertex(5, {"name": "Eve", "age": 32, "dept": "sales"}),
+        Vertex(1, "", {"name": "Alice", "age": 30, "dept": "eng"}),
+        Vertex(2, "", {"name": "Bob", "age": 25, "dept": "eng"}),
+        Vertex(3, "", {"name": "Charlie", "age": 35, "dept": "sales"}),
+        Vertex(4, "", {"name": "Diana", "age": 28, "dept": "eng"}),
+        Vertex(5, "", {"name": "Eve", "age": 32, "dept": "sales"}),
     ]
     edges = [
         Edge(1, 1, 2, "knows", {"weight": 0.9}),

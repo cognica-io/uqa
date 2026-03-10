@@ -47,9 +47,10 @@ class GeneralizedPostingEntry:
 
 @dataclass(frozen=True, slots=True)
 class Vertex:
-    """Graph vertex with properties."""
+    """Graph vertex with label and properties."""
 
     vertex_id: int
+    label: str
     properties: dict[str, Any] = field(default_factory=dict)
 
 

@@ -410,9 +410,9 @@ class TestVertexEmbeddingOperator:
         v1 = np.array([1.0, 0.0, 0.0])
         v2 = np.array([0.9, 0.1, 0.0])
         v3 = np.array([0.0, 0.0, 1.0])
-        store.add_vertex(Vertex(1, {"embedding": v1}))
-        store.add_vertex(Vertex(2, {"embedding": v2}))
-        store.add_vertex(Vertex(3, {"embedding": v3}))
+        store.add_vertex(Vertex(1, "", {"embedding": v1}))
+        store.add_vertex(Vertex(2, "", {"embedding": v2}))
+        store.add_vertex(Vertex(3, "", {"embedding": v3}))
         ctx = _ExecutionContext(store)
 
         query = np.array([1.0, 0.0, 0.0])
@@ -426,7 +426,7 @@ class TestVertexEmbeddingOperator:
 
     def test_no_embedding_field(self) -> None:
         store = GraphStore()
-        store.add_vertex(Vertex(1, {"name": "Alice"}))
+        store.add_vertex(Vertex(1, "", {"name": "Alice"}))
         ctx = _ExecutionContext(store)
 
         query = np.array([1.0, 0.0])
@@ -437,7 +437,7 @@ class TestVertexEmbeddingOperator:
     def test_sorted_output(self) -> None:
         store = GraphStore()
         for i in [5, 3, 1]:
-            store.add_vertex(Vertex(i, {"embedding": np.array([1.0, 0.0])}))
+            store.add_vertex(Vertex(i, "", {"embedding": np.array([1.0, 0.0])}))
         ctx = _ExecutionContext(store)
 
         query = np.array([1.0, 0.0])
@@ -454,9 +454,9 @@ class TestVectorEnhancedMatchOperator:
     def test_pattern_match_with_vector_scoring(self) -> None:
         store = GraphStore()
         v_embed = np.array([1.0, 0.0])
-        store.add_vertex(Vertex(1, {"embedding": v_embed}))
-        store.add_vertex(Vertex(2, {"embedding": np.array([0.9, 0.1])}))
-        store.add_vertex(Vertex(3, {"embedding": np.array([0.0, 1.0])}))
+        store.add_vertex(Vertex(1, "", {"embedding": v_embed}))
+        store.add_vertex(Vertex(2, "", {"embedding": np.array([0.9, 0.1])}))
+        store.add_vertex(Vertex(3, "", {"embedding": np.array([0.0, 1.0])}))
         store.add_edge(Edge(1, 1, 2, "knows"))
         store.add_edge(Edge(2, 1, 3, "knows"))
         ctx = _ExecutionContext(store)
@@ -477,8 +477,8 @@ class TestVectorEnhancedMatchOperator:
 
     def test_threshold_filtering(self) -> None:
         store = GraphStore()
-        store.add_vertex(Vertex(1, {"embedding": np.array([1.0, 0.0])}))
-        store.add_vertex(Vertex(2, {"embedding": np.array([0.0, 1.0])}))
+        store.add_vertex(Vertex(1, "", {"embedding": np.array([1.0, 0.0])}))
+        store.add_vertex(Vertex(2, "", {"embedding": np.array([0.0, 1.0])}))
         store.add_edge(Edge(1, 1, 2, "link"))
         ctx = _ExecutionContext(store)
 

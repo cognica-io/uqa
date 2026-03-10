@@ -52,7 +52,7 @@ class ToGraphOperator:
         for doc in documents:
             vid = doc.get(self.id_field, 0)
             props = {k: v for k, v in doc.items() if k != self.id_field}
-            graph.add_vertex(Vertex(vid, props))
+            graph.add_vertex(Vertex(vid, "", props))
 
         for doc in documents:
             vid = doc.get(self.id_field, 0)
@@ -312,7 +312,7 @@ class TextToGraphOperator:
         token_to_id: dict[str, int] = {}
         for vid, token in enumerate(sorted(token_set), start=1):
             token_to_id[token] = vid
-            graph.add_vertex(Vertex(vid, {"token": token}))
+            graph.add_vertex(Vertex(vid, "", {"token": token}))
 
         edge_id = 1
         for (t1, t2), weight in cooccurrences.items():

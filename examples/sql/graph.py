@@ -36,14 +36,14 @@ gs = engine._tables["employees"].graph_store
 
 # Employees
 employees = [
-    Vertex(1, {"name": "Alice", "role": "ceo", "dept": "Executive", "salary": 250000, "years": 15}),
-    Vertex(2, {"name": "Bob", "role": "vp", "dept": "Engineering", "salary": 180000, "years": 12}),
-    Vertex(3, {"name": "Carol", "role": "vp", "dept": "Sales", "salary": 170000, "years": 10}),
-    Vertex(4, {"name": "Dave", "role": "engineer", "dept": "Engineering", "salary": 130000, "years": 6}),
-    Vertex(5, {"name": "Eve", "role": "engineer", "dept": "Engineering", "salary": 125000, "years": 4}),
-    Vertex(6, {"name": "Frank", "role": "engineer", "dept": "Engineering", "salary": 120000, "years": 3}),
-    Vertex(7, {"name": "Grace", "role": "sales", "dept": "Sales", "salary": 110000, "years": 5}),
-    Vertex(8, {"name": "Hank", "role": "sales", "dept": "Sales", "salary": 105000, "years": 2}),
+    Vertex(1, "", {"name": "Alice", "role": "ceo", "dept": "Executive", "salary": 250000, "years": 15}),
+    Vertex(2, "", {"name": "Bob", "role": "vp", "dept": "Engineering", "salary": 180000, "years": 12}),
+    Vertex(3, "", {"name": "Carol", "role": "vp", "dept": "Sales", "salary": 170000, "years": 10}),
+    Vertex(4, "", {"name": "Dave", "role": "engineer", "dept": "Engineering", "salary": 130000, "years": 6}),
+    Vertex(5, "", {"name": "Eve", "role": "engineer", "dept": "Engineering", "salary": 125000, "years": 4}),
+    Vertex(6, "", {"name": "Frank", "role": "engineer", "dept": "Engineering", "salary": 120000, "years": 3}),
+    Vertex(7, "", {"name": "Grace", "role": "sales", "dept": "Sales", "salary": 110000, "years": 5}),
+    Vertex(8, "", {"name": "Hank", "role": "sales", "dept": "Sales", "salary": 105000, "years": 2}),
 ]
 for v in employees:
     gs.add_vertex(v)

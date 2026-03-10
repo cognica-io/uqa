@@ -962,12 +962,12 @@ class TestSQLGraphAggregates:
         e = Engine()
         e.sql("CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, role TEXT, salary INTEGER)")
         # Build org chart: CEO -> VP -> Engineers
-        e.add_graph_vertex(Vertex(1, {"name": "CEO", "role": "executive", "salary": 200000}), table="employees")
-        e.add_graph_vertex(Vertex(2, {"name": "VP-Eng", "role": "vp", "salary": 150000}), table="employees")
-        e.add_graph_vertex(Vertex(3, {"name": "VP-Sales", "role": "vp", "salary": 140000}), table="employees")
-        e.add_graph_vertex(Vertex(4, {"name": "Alice", "role": "engineer", "salary": 120000}), table="employees")
-        e.add_graph_vertex(Vertex(5, {"name": "Bob", "role": "engineer", "salary": 110000}), table="employees")
-        e.add_graph_vertex(Vertex(6, {"name": "Carol", "role": "sales", "salary": 100000}), table="employees")
+        e.add_graph_vertex(Vertex(1, "", {"name": "CEO", "role": "executive", "salary": 200000}), table="employees")
+        e.add_graph_vertex(Vertex(2, "", {"name": "VP-Eng", "role": "vp", "salary": 150000}), table="employees")
+        e.add_graph_vertex(Vertex(3, "", {"name": "VP-Sales", "role": "vp", "salary": 140000}), table="employees")
+        e.add_graph_vertex(Vertex(4, "", {"name": "Alice", "role": "engineer", "salary": 120000}), table="employees")
+        e.add_graph_vertex(Vertex(5, "", {"name": "Bob", "role": "engineer", "salary": 110000}), table="employees")
+        e.add_graph_vertex(Vertex(6, "", {"name": "Carol", "role": "sales", "salary": 100000}), table="employees")
 
         e.add_graph_edge(Edge(1, 1, 2, "manages"), table="employees")
         e.add_graph_edge(Edge(2, 1, 3, "manages"), table="employees")

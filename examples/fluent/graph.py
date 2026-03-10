@@ -34,30 +34,30 @@ gs = engine._tables["network"].graph_store
 
 # -- Vertices: employees --
 employees = [
-    Vertex(1, {"name": "Alice", "role": "ceo", "salary": 250000, "years": 15}),
-    Vertex(2, {"name": "Bob", "role": "vp_eng", "salary": 180000, "years": 12}),
-    Vertex(3, {"name": "Carol", "role": "vp_sales", "salary": 170000, "years": 10}),
-    Vertex(4, {"name": "Dave", "role": "engineer", "salary": 130000, "years": 6}),
-    Vertex(5, {"name": "Eve", "role": "engineer", "salary": 125000, "years": 4}),
-    Vertex(6, {"name": "Frank", "role": "engineer", "salary": 120000, "years": 3}),
-    Vertex(7, {"name": "Grace", "role": "sales", "salary": 110000, "years": 5}),
-    Vertex(8, {"name": "Hank", "role": "sales", "salary": 105000, "years": 2}),
+    Vertex(1, "", {"name": "Alice", "role": "ceo", "salary": 250000, "years": 15}),
+    Vertex(2, "", {"name": "Bob", "role": "vp_eng", "salary": 180000, "years": 12}),
+    Vertex(3, "", {"name": "Carol", "role": "vp_sales", "salary": 170000, "years": 10}),
+    Vertex(4, "", {"name": "Dave", "role": "engineer", "salary": 130000, "years": 6}),
+    Vertex(5, "", {"name": "Eve", "role": "engineer", "salary": 125000, "years": 4}),
+    Vertex(6, "", {"name": "Frank", "role": "engineer", "salary": 120000, "years": 3}),
+    Vertex(7, "", {"name": "Grace", "role": "sales", "salary": 110000, "years": 5}),
+    Vertex(8, "", {"name": "Hank", "role": "sales", "salary": 105000, "years": 2}),
 ]
 
 # -- Vertices: departments, projects, skills --
 departments = [
-    Vertex(101, {"name": "Engineering", "budget": 2000000}),
-    Vertex(102, {"name": "Sales", "budget": 1500000}),
+    Vertex(101, "", {"name": "Engineering", "budget": 2000000}),
+    Vertex(102, "", {"name": "Sales", "budget": 1500000}),
 ]
 projects = [
-    Vertex(201, {"name": "Project Alpha", "status": "active"}),
-    Vertex(202, {"name": "Project Beta", "status": "active"}),
-    Vertex(203, {"name": "Project Gamma", "status": "completed"}),
+    Vertex(201, "", {"name": "Project Alpha", "status": "active"}),
+    Vertex(202, "", {"name": "Project Beta", "status": "active"}),
+    Vertex(203, "", {"name": "Project Gamma", "status": "completed"}),
 ]
 skills = [
-    Vertex(301, {"name": "Python"}),
-    Vertex(302, {"name": "Rust"}),
-    Vertex(303, {"name": "SQL"}),
+    Vertex(301, "", {"name": "Python"}),
+    Vertex(302, "", {"name": "Rust"}),
+    Vertex(303, "", {"name": "SQL"}),
 ]
 
 for v in employees + departments + projects + skills:

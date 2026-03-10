@@ -37,9 +37,9 @@ def _make_catalog(tmp_path) -> Catalog:
 
 def _sample_vertices() -> list[Vertex]:
     return [
-        Vertex(1, {"name": "Alice", "age": 30}),
-        Vertex(2, {"name": "Bob", "age": 25}),
-        Vertex(3, {"name": "Charlie", "age": 35}),
+        Vertex(1, "", {"name": "Alice", "age": 30}),
+        Vertex(2, "", {"name": "Bob", "age": 25}),
+        Vertex(3, "", {"name": "Charlie", "age": 35}),
     ]
 
 
@@ -102,7 +102,7 @@ class TestWriteThrough:
     def test_add_vertex_persisted(self, tmp_path):
         catalog = _make_catalog(tmp_path)
         store = SQLiteGraphStore(catalog.conn)
-        store.add_vertex(Vertex(1, {"name": "Alice"}))
+        store.add_vertex(Vertex(1, "", {"name": "Alice"}))
 
         row = catalog.conn.execute(
             "SELECT vertex_id, properties_json FROM _graph_vertices "
@@ -115,8 +115,8 @@ class TestWriteThrough:
     def test_add_edge_persisted(self, tmp_path):
         catalog = _make_catalog(tmp_path)
         store = SQLiteGraphStore(catalog.conn)
-        store.add_vertex(Vertex(1, {"name": "Alice"}))
-        store.add_vertex(Vertex(2, {"name": "Bob"}))
+        store.add_vertex(Vertex(1, "", {"name": "Alice"}))
+        store.add_vertex(Vertex(2, "", {"name": "Bob"}))
         store.add_edge(Edge(1, 1, 2, "knows", {"since": 2020}))
 
         row = catalog.conn.execute(
@@ -330,10 +330,10 @@ class TestEngineIntegration:
         with Engine(db_path=db) as engine:
             engine.sql(self._TABLE_DDL)
             engine.add_graph_vertex(
-                Vertex(1, {"name": "Alice", "age": 30}), table="g"
+                Vertex(1, "", {"name": "Alice", "age": 30}), table="g"
             )
             engine.add_graph_vertex(
-                Vertex(2, {"name": "Bob", "age": 25}), table="g"
+                Vertex(2, "", {"name": "Bob", "age": 25}), table="g"
             )
             engine.add_graph_edge(
                 Edge(1, 1, 2, "knows", {"since": 2020}), table="g"
@@ -359,10 +359,10 @@ class TestEngineIntegration:
         db = str(tmp_path / "test.db")
         with Engine(db_path=db) as engine:
             engine.sql(self._TABLE_DDL)
-            engine.add_graph_vertex(Vertex(1, {"name": "Alice"}), table="g")
-            engine.add_graph_vertex(Vertex(2, {"name": "Bob"}), table="g")
+            engine.add_graph_vertex(Vertex(1, "", {"name": "Alice"}), table="g")
+            engine.add_graph_vertex(Vertex(2, "", {"name": "Bob"}), table="g")
             engine.add_graph_vertex(
-                Vertex(3, {"name": "Charlie"}), table="g"
+                Vertex(3, "", {"name": "Charlie"}), table="g"
             )
             engine.add_graph_edge(Edge(1, 1, 2, "knows", {}), table="g")
             engine.add_graph_edge(Edge(2, 2, 3, "knows", {}), table="g")
@@ -381,10 +381,10 @@ class TestEngineIntegration:
         db = str(tmp_path / "test.db")
         with Engine(db_path=db) as engine:
             engine.sql(self._TABLE_DDL)
-            engine.add_graph_vertex(Vertex(1, {"name": "Alice"}), table="g")
-            engine.add_graph_vertex(Vertex(2, {"name": "Bob"}), table="g")
+            engine.add_graph_vertex(Vertex(1, "", {"name": "Alice"}), table="g")
+            engine.add_graph_vertex(Vertex(2, "", {"name": "Bob"}), table="g")
             engine.add_graph_vertex(
-                Vertex(3, {"name": "Charlie"}), table="g"
+                Vertex(3, "", {"name": "Charlie"}), table="g"
             )
             engine.add_graph_edge(Edge(1, 1, 2, "knows", {}), table="g")
             engine.add_graph_edge(Edge(2, 1, 3, "knows", {}), table="g")
@@ -406,9 +406,9 @@ class TestEngineIntegration:
         db = str(tmp_path / "test.db")
         with Engine(db_path=db) as engine:
             engine.sql(self._TABLE_DDL)
-            engine.add_graph_vertex(Vertex(1, {"name": "A"}), table="g")
-            engine.add_graph_vertex(Vertex(2, {"name": "B"}), table="g")
-            engine.add_graph_vertex(Vertex(3, {"name": "C"}), table="g")
+            engine.add_graph_vertex(Vertex(1, "", {"name": "A"}), table="g")
+            engine.add_graph_vertex(Vertex(2, "", {"name": "B"}), table="g")
+            engine.add_graph_vertex(Vertex(3, "", {"name": "C"}), table="g")
             engine.add_graph_edge(Edge(1, 1, 2, "knows", {}), table="g")
             engine.add_graph_edge(Edge(2, 2, 3, "follows", {}), table="g")
 

@@ -107,7 +107,7 @@ for pid, name, desc, cat, price, rating, stock in catalog:
 # -- "also_bought" graph edges --
 gs = engine._tables["products"].graph_store
 for pid, name, desc, cat, price, rating, stock in catalog:
-    gs.add_vertex(Vertex(pid, {
+    gs.add_vertex(Vertex(pid, "", {
         "name": name, "category": cat, "price": price, "rating": rating,
     }))
 

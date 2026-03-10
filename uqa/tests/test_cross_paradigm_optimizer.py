@@ -586,7 +586,7 @@ class TestSQLCrossParadigmOptimizer:
             ")"
         )
         for i in range(1, 4):
-            e.add_graph_vertex(Vertex(i, {"name": f"v{i}"}), table="docs")
+            e.add_graph_vertex(Vertex(i, "", {"name": f"v{i}"}), table="docs")
         e.add_graph_edge(Edge(1, 1, 2, "knows"), table="docs")
         e.add_graph_edge(Edge(2, 2, 3, "knows"), table="docs")
 

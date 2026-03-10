@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS _documents (
 );
 CREATE TABLE IF NOT EXISTS _graph_vertices (
     vertex_id       INTEGER PRIMARY KEY,
+    label           TEXT    NOT NULL DEFAULT '',
     properties_json TEXT    NOT NULL
 );
 CREATE TABLE IF NOT EXISTS _graph_edges (
@@ -106,6 +107,10 @@ CREATE TABLE IF NOT EXISTS _catalog_indexes (
     columns    TEXT NOT NULL,
     parameters TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS _named_graphs (
+    name TEXT PRIMARY KEY
+);
+CREATE INDEX IF NOT EXISTS _graph_vertices_label ON _graph_vertices (label);
 CREATE INDEX IF NOT EXISTS _graph_edges_out ON _graph_edges (source_id, label);
 CREATE INDEX IF NOT EXISTS _graph_edges_in ON _graph_edges (target_id, label);
 CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
@@ -597,6 +602,30 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
             (name, idx_type, tbl, json.loads(cols), json.loads(params))
             for name, idx_type, tbl, cols, params in rows
         ]
+
+    # -- Named graphs --------------------------------------------------
+
+    def save_named_graph(self, name: str) -> None:
+        """Register a named graph in the catalog."""
+        self._conn.execute(
+            "INSERT OR IGNORE INTO _named_graphs (name) VALUES (?)",
+            (name,),
+        )
+        self._auto_commit()
+
+    def drop_named_graph(self, name: str) -> None:
+        """Remove a named graph from the catalog."""
+        self._conn.execute(
+            "DELETE FROM _named_graphs WHERE name = ?", (name,)
+        )
+        self._auto_commit()
+
+    def load_named_graphs(self) -> list[str]:
+        """Return the names of all registered named graphs."""
+        rows = self._conn.execute(
+            "SELECT name FROM _named_graphs"
+        ).fetchall()
+        return [r[0] for r in rows]
 
     # -- Lifecycle -----------------------------------------------------
 

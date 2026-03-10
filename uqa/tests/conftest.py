@@ -103,11 +103,11 @@ def sample_vectors() -> dict[int, np.ndarray]:
 @pytest.fixture
 def sample_graph_vertices() -> list[Vertex]:
     return [
-        Vertex(1, {"name": "Alice", "age": 30}),
-        Vertex(2, {"name": "Bob", "age": 25}),
-        Vertex(3, {"name": "Charlie", "age": 35}),
-        Vertex(4, {"name": "Diana", "age": 28}),
-        Vertex(5, {"name": "Eve", "age": 32}),
+        Vertex(1, "", {"name": "Alice", "age": 30}),
+        Vertex(2, "", {"name": "Bob", "age": 25}),
+        Vertex(3, "", {"name": "Charlie", "age": 35}),
+        Vertex(4, "", {"name": "Diana", "age": 28}),
+        Vertex(5, "", {"name": "Eve", "age": 32}),
     ]
 
 

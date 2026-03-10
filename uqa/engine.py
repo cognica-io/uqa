@@ -12,9 +12,11 @@ from numpy.typing import NDArray
 
 from uqa.api.query_builder import QueryBuilder
 from uqa.core.types import DocId, Edge, Payload, PostingEntry, Vertex
+from uqa.graph.store import GraphStore
 from uqa.storage.catalog import Catalog
 from uqa.planner.parallel import ParallelExecutor
 from uqa.storage.index_manager import IndexManager
+from uqa.storage.sqlite_graph_store import SQLiteGraphStore
 from uqa.storage.transaction import Transaction
 from uqa.sql.table import ColumnDef, ColumnStats, Table, _SQL_TYPE_MAP
 
@@ -46,6 +48,7 @@ class Engine:
         self._prepared: dict[str, Any] = {}  # name -> PrepareStmt AST
         self._sequences: dict[str, dict[str, int]] = {}
         self._temp_tables: set[str] = set()
+        self._named_graphs: dict[str, GraphStore] = {}
 
         # Persistence and transactions
         self._catalog: Catalog | None = None
@@ -124,6 +127,12 @@ class Engine:
                 )
 
             self._tables[name] = table
+
+        # -- Named graphs ----------------------------------------------
+        for graph_name in catalog.load_named_graphs():
+            self._named_graphs[graph_name] = SQLiteGraphStore(
+                catalog.conn, table_name=f"_graph_{graph_name}"
+            )
 
         # -- Indexes ---------------------------------------------------
         if self._index_manager is not None:
@@ -243,6 +252,48 @@ class Engine:
         if tbl is None:
             raise ValueError(f"Table '{table}' does not exist")
         tbl.graph_store.add_edge(edge)
+
+    # -- Named graph management ----------------------------------------
+
+    def create_graph(self, name: str) -> GraphStore:
+        """Create a named graph (Apache AGE ``create_graph``)."""
+        if name in self._named_graphs:
+            raise ValueError(f"Graph '{name}' already exists")
+        if self._catalog is not None:
+            store: GraphStore = SQLiteGraphStore(
+                self._catalog.conn, table_name=f"_graph_{name}"
+            )
+            self._catalog.save_named_graph(name)
+        else:
+            store = GraphStore()
+        self._named_graphs[name] = store
+        return store
+
+    def drop_graph(self, name: str) -> None:
+        """Drop a named graph and all its data."""
+        store = self._named_graphs.pop(name, None)
+        if store is None:
+            raise ValueError(f"Graph '{name}' does not exist")
+        store.clear()
+        if self._catalog is not None:
+            self._catalog.drop_named_graph(name)
+            # Drop the per-graph SQLite tables
+            conn = self._catalog.conn
+            prefix = f"_graph_{name}"
+            conn.execute(f'DROP TABLE IF EXISTS "_graph_vertices_{prefix}"')
+            conn.execute(f'DROP TABLE IF EXISTS "_graph_edges_{prefix}"')
+            conn.commit()
+
+    def get_graph(self, name: str) -> GraphStore:
+        """Return the named graph store, raising if it does not exist."""
+        store = self._named_graphs.get(name)
+        if store is None:
+            raise ValueError(f"Graph '{name}' does not exist")
+        return store
+
+    def has_graph(self, name: str) -> bool:
+        """Return True if a named graph with *name* exists."""
+        return name in self._named_graphs
 
     # -- Scoring parameters (Papers 3-4) -------------------------------
 

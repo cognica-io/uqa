@@ -60,14 +60,14 @@ def engine_with_docs() -> Engine:
         engine.add_document(i, doc, table="papers", embedding=embedding)
 
     vertices = [
-        Vertex(1, {"type": "paper", "title": "neural network basics"}),
-        Vertex(2, {"type": "paper", "title": "transformer architecture"}),
-        Vertex(3, {"type": "paper", "title": "graph neural networks"}),
-        Vertex(4, {"type": "paper", "title": "bayesian optimization"}),
-        Vertex(5, {"type": "paper", "title": "reinforcement learning"}),
-        Vertex(6, {"type": "paper", "title": "vector search"}),
-        Vertex(7, {"type": "paper", "title": "text retrieval"}),
-        Vertex(8, {"type": "paper", "title": "knowledge graphs"}),
+        Vertex(1, "", {"type": "paper", "title": "neural network basics"}),
+        Vertex(2, "", {"type": "paper", "title": "transformer architecture"}),
+        Vertex(3, "", {"type": "paper", "title": "graph neural networks"}),
+        Vertex(4, "", {"type": "paper", "title": "bayesian optimization"}),
+        Vertex(5, "", {"type": "paper", "title": "reinforcement learning"}),
+        Vertex(6, "", {"type": "paper", "title": "vector search"}),
+        Vertex(7, "", {"type": "paper", "title": "text retrieval"}),
+        Vertex(8, "", {"type": "paper", "title": "knowledge graphs"}),
     ]
     for v in vertices:
         engine.add_graph_vertex(v, table="papers")

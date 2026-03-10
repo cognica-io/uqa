@@ -67,12 +67,14 @@ class SQLiteGraphStore(GraphStore):
         """Create per-table graph SQLite tables and indexes if needed."""
         if self._table_name is None:
             # Global tables are created by Catalog._SCHEMA_SQL.
+            self._migrate_vertex_label()
             return
         vtx = self._vtx_table
         edg = self._edge_table
         self._conn.execute(
             f'CREATE TABLE IF NOT EXISTS "{vtx}" ('
             f"vertex_id INTEGER PRIMARY KEY, "
+            f"label TEXT NOT NULL DEFAULT '', "
             f"properties_json TEXT NOT NULL)"
         )
         self._conn.execute(
@@ -82,6 +84,10 @@ class SQLiteGraphStore(GraphStore):
             f"target_id INTEGER NOT NULL, "
             f"label TEXT NOT NULL, "
             f"properties_json TEXT NOT NULL)"
+        )
+        self._conn.execute(
+            f'CREATE INDEX IF NOT EXISTS "{vtx}_label" '
+            f'ON "{vtx}" (label)'
         )
         self._conn.execute(
             f'CREATE INDEX IF NOT EXISTS "{edg}_out" '
@@ -97,6 +103,24 @@ class SQLiteGraphStore(GraphStore):
         )
         self._conn.commit()
 
+    def _migrate_vertex_label(self) -> None:
+        """Add the ``label`` column to an existing vertex table if missing."""
+        vtx = self._vtx_table
+        cols = {
+            row[1]
+            for row in self._conn.execute(
+                f'PRAGMA table_info("{vtx}")'
+            ).fetchall()
+        }
+        if "label" not in cols:
+            self._conn.execute(
+                f'ALTER TABLE "{vtx}" ADD COLUMN label TEXT NOT NULL DEFAULT \'\''
+            )
+            self._conn.execute(
+                f'CREATE INDEX IF NOT EXISTS "{vtx}_label" ON "{vtx}" (label)'
+            )
+            self._conn.commit()
+
     # -- Loading -------------------------------------------------------
 
     def _load_from_sqlite(self) -> None:
@@ -105,10 +129,12 @@ class SQLiteGraphStore(GraphStore):
         edg = self._edge_table
 
         rows = self._conn.execute(
-            f'SELECT vertex_id, properties_json FROM "{vtx}"'
+            f'SELECT vertex_id, label, properties_json FROM "{vtx}"'
         ).fetchall()
-        for vid, props_json in rows:
-            vertex = Vertex(vertex_id=vid, properties=json.loads(props_json))
+        for vid, label, props_json in rows:
+            vertex = Vertex(
+                vertex_id=vid, label=label, properties=json.loads(props_json)
+            )
             super().add_vertex(vertex)
 
         rows = self._conn.execute(
@@ -138,8 +164,21 @@ class SQLiteGraphStore(GraphStore):
         super().add_vertex(vertex)
         self._conn.execute(
             f'INSERT OR REPLACE INTO "{self._vtx_table}" '
-            f"(vertex_id, properties_json) VALUES (?, ?)",
-            (vertex.vertex_id, json.dumps(vertex.properties)),
+            f"(vertex_id, label, properties_json) VALUES (?, ?, ?)",
+            (vertex.vertex_id, vertex.label, json.dumps(vertex.properties)),
+        )
+        self._conn.commit()
+
+    def remove_vertex(self, vertex_id: int) -> None:
+        super().remove_vertex(vertex_id)
+        self._conn.execute(
+            f'DELETE FROM "{self._edge_table}" '
+            f"WHERE source_id = ? OR target_id = ?",
+            (vertex_id, vertex_id),
+        )
+        self._conn.execute(
+            f'DELETE FROM "{self._vtx_table}" WHERE vertex_id = ?',
+            (vertex_id,),
         )
         self._conn.commit()
 
@@ -156,6 +195,14 @@ class SQLiteGraphStore(GraphStore):
                 edge.label,
                 json.dumps(edge.properties),
             ),
+        )
+        self._conn.commit()
+
+    def remove_edge(self, edge_id: int) -> None:
+        super().remove_edge(edge_id)
+        self._conn.execute(
+            f'DELETE FROM "{self._edge_table}" WHERE edge_id = ?',
+            (edge_id,),
         )
         self._conn.commit()
 
@@ -196,6 +243,23 @@ class SQLiteGraphStore(GraphStore):
                     (vertex_id,),
                 ).fetchall()
         return [r[0] for r in rows]
+
+    def vertices_by_label(self, label: str) -> list[Vertex]:
+        """Return all vertices with the given label using the label index."""
+        vtx = self._vtx_table
+        rows = self._conn.execute(
+            f'SELECT vertex_id, label, properties_json FROM "{vtx}" '
+            f"WHERE label = ?",
+            (label,),
+        ).fetchall()
+        return [
+            Vertex(
+                vertex_id=vid,
+                label=lbl,
+                properties=json.loads(props_json),
+            )
+            for vid, lbl, props_json in rows
+        ]
 
     def edges_by_label(self, label: str) -> list[Edge]:
         """Return all edges with the given label using the label index."""
