@@ -12,6 +12,7 @@ dependencies = [
     "numpy>=1.26",
     "pyarrow>=20.0",
     "bayesian-bm25>=0.8.0",
+    "duckdb>=1.0",
     "hnswlib>=0.8",
     "pglast>=7.0",
     "prompt-toolkit>=3.0",

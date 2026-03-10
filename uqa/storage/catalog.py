@@ -114,6 +114,17 @@ CREATE TABLE IF NOT EXISTS _analyzers (
     name        TEXT PRIMARY KEY,
     config_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS _foreign_servers (
+    name     TEXT PRIMARY KEY,
+    fdw_type TEXT NOT NULL,
+    options  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS _foreign_tables (
+    name         TEXT PRIMARY KEY,
+    server_name  TEXT NOT NULL,
+    columns_json TEXT NOT NULL,
+    options      TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS _graph_vertices_label ON _graph_vertices (label);
 CREATE INDEX IF NOT EXISTS _graph_edges_out ON _graph_edges (source_id, label);
 CREATE INDEX IF NOT EXISTS _graph_edges_in ON _graph_edges (target_id, label);
@@ -654,6 +665,75 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
             "SELECT name, config_json FROM _analyzers"
         ).fetchall()
         return [(name, json.loads(cfg)) for name, cfg in rows]
+
+    # -- Foreign servers -----------------------------------------------
+
+    def save_foreign_server(
+        self, name: str, fdw_type: str, options: dict[str, str]
+    ) -> None:
+        """Persist a foreign server definition."""
+        self._conn.execute(
+            "INSERT INTO _foreign_servers (name, fdw_type, options) "
+            "VALUES (?, ?, ?)",
+            (name, fdw_type, json.dumps(options)),
+        )
+        self._auto_commit()
+
+    def drop_foreign_server(self, name: str) -> None:
+        """Remove a foreign server from the catalog."""
+        self._conn.execute(
+            "DELETE FROM _foreign_servers WHERE name = ?", (name,)
+        )
+        self._auto_commit()
+
+    def load_foreign_servers(
+        self,
+    ) -> list[tuple[str, str, dict[str, str]]]:
+        """Return ``[(name, fdw_type, options_dict), ...]``."""
+        rows = self._conn.execute(
+            "SELECT name, fdw_type, options FROM _foreign_servers"
+        ).fetchall()
+        return [
+            (name, fdw_type, json.loads(opts))
+            for name, fdw_type, opts in rows
+        ]
+
+    # -- Foreign tables ------------------------------------------------
+
+    def save_foreign_table(
+        self,
+        name: str,
+        server_name: str,
+        columns_json: list[dict[str, Any]],
+        options: dict[str, str],
+    ) -> None:
+        """Persist a foreign table definition."""
+        self._conn.execute(
+            "INSERT INTO _foreign_tables "
+            "(name, server_name, columns_json, options) VALUES (?, ?, ?, ?)",
+            (name, server_name, json.dumps(columns_json), json.dumps(options)),
+        )
+        self._auto_commit()
+
+    def drop_foreign_table(self, name: str) -> None:
+        """Remove a foreign table from the catalog."""
+        self._conn.execute(
+            "DELETE FROM _foreign_tables WHERE name = ?", (name,)
+        )
+        self._auto_commit()
+
+    def load_foreign_tables(
+        self,
+    ) -> list[tuple[str, str, list[dict[str, Any]], dict[str, str]]]:
+        """Return ``[(name, server_name, columns_json, options), ...]``."""
+        rows = self._conn.execute(
+            "SELECT name, server_name, columns_json, options "
+            "FROM _foreign_tables"
+        ).fetchall()
+        return [
+            (name, server_name, json.loads(cols), json.loads(opts))
+            for name, server_name, cols, opts in rows
+        ]
 
     # -- Lifecycle -----------------------------------------------------
 

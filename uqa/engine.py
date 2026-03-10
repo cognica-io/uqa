@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import Any
 
 from numpy.typing import NDArray
@@ -49,6 +50,14 @@ class Engine:
         self._sequences: dict[str, dict[str, int]] = {}
         self._temp_tables: set[str] = set()
         self._named_graphs: dict[str, GraphStore] = {}
+
+        # Foreign Data Wrapper state
+        from uqa.fdw.foreign_table import ForeignServer, ForeignTable
+        from uqa.fdw.handler import FDWHandler
+
+        self._foreign_servers: dict[str, ForeignServer] = {}
+        self._foreign_tables: dict[str, ForeignTable] = {}
+        self._fdw_handlers: dict[str, FDWHandler] = {}
 
         # Persistence and transactions
         self._catalog: Catalog | None = None
@@ -142,6 +151,38 @@ class Engine:
         for graph_name in catalog.load_named_graphs():
             self._named_graphs[graph_name] = SQLiteGraphStore(
                 catalog.conn, table_name=f"_graph_{graph_name}"
+            )
+
+        # -- Foreign servers and tables --------------------------------
+        from uqa.fdw.foreign_table import ForeignServer, ForeignTable
+
+        for name, fdw_type, options in catalog.load_foreign_servers():
+            self._foreign_servers[name] = ForeignServer(
+                name=name, fdw_type=fdw_type, options=options,
+            )
+
+        for name, server_name, col_dicts, options in (
+            catalog.load_foreign_tables()
+        ):
+            cols = OrderedDict()
+            for cd in col_dicts:
+                type_name = cd["type_name"]
+                if type_name == "vector":
+                    python_type = list
+                else:
+                    python_type = _SQL_TYPE_MAP[type_name]
+                cols[cd["name"]] = ColumnDef(
+                    name=cd["name"],
+                    type_name=type_name,
+                    python_type=python_type,
+                    primary_key=cd.get("primary_key", False),
+                    not_null=cd.get("not_null", False),
+                )
+            self._foreign_tables[name] = ForeignTable(
+                name=name,
+                server_name=server_name,
+                columns=cols,
+                options=options,
             )
 
         # -- Indexes ---------------------------------------------------
@@ -413,6 +454,13 @@ class Engine:
         if self._transaction is not None and self._transaction.active:
             self._transaction.rollback()
             self._transaction = None
+
+        # Close all FDW handlers
+        for handler in self._fdw_handlers.values():
+            handler.close()
+        self._fdw_handlers.clear()
+        self._foreign_tables.clear()
+        self._foreign_servers.clear()
 
         # Drop all temporary tables (session-scoped)
         for table_name in list(self._temp_tables):

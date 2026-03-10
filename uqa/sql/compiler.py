@@ -103,6 +103,8 @@ from pglast.ast import (
     ColumnDef as PgColumnDef,
     ColumnRef,
     Constraint as PgConstraint,
+    CreateForeignServerStmt,
+    CreateForeignTableStmt,
     CreateSeqStmt,
     CreateStmt,
     CreateTableAsStmt,
@@ -438,6 +440,10 @@ class SQLCompiler:
             return self._compile_create_sequence(stmt)
         if isinstance(stmt, AlterSeqStmt):
             return self._compile_alter_sequence(stmt)
+        if isinstance(stmt, CreateForeignServerStmt):
+            return self._compile_create_foreign_server(stmt)
+        if isinstance(stmt, CreateForeignTableStmt):
+            return self._compile_create_foreign_table(stmt)
         raise ValueError(f"Unsupported statement: {type(stmt).__name__}")
 
     def _get_table(self, table_name: str) -> Table:
@@ -961,12 +967,17 @@ class SQLCompiler:
             table._pending_parent_update_validators = remaining_upd
 
     def _compile_drop(self, stmt: DropStmt) -> SQLResult:
-        """Dispatch DROP TABLE / DROP INDEX / DROP VIEW based on removeType."""
+        """Dispatch DROP TABLE / DROP INDEX / DROP VIEW / DROP SERVER / DROP FOREIGN TABLE."""
         # removeType 41 = OBJECT_TABLE, 20 = OBJECT_INDEX, 51 = OBJECT_VIEW
+        # removeType 17 = OBJECT_FOREIGN_SERVER, 18 = OBJECT_FOREIGN_TABLE
         if stmt.removeType == 20:
             return self._compile_drop_index(stmt)
         if stmt.removeType == 51:
             return self._compile_drop_view(stmt)
+        if stmt.removeType == 17:
+            return self._compile_drop_foreign_server(stmt)
+        if stmt.removeType == 18:
+            return self._compile_drop_foreign_table(stmt)
         return self._compile_drop_table(stmt)
 
     def _compile_drop_table(self, stmt: DropStmt) -> SQLResult:
@@ -996,6 +1007,138 @@ class SQLCompiler:
                 index_manager.drop_index_if_exists(index_name)
             else:
                 index_manager.drop_index(index_name)
+        return SQLResult([], [])
+
+    # ==================================================================
+    # DDL: FOREIGN DATA WRAPPERS
+    # ==================================================================
+
+    def _compile_create_foreign_server(
+        self, stmt: CreateForeignServerStmt,
+    ) -> SQLResult:
+        from uqa.fdw.foreign_table import ForeignServer
+
+        name = stmt.servername
+        if name in self._engine._foreign_servers:
+            if stmt.if_not_exists:
+                return SQLResult([], [])
+            raise ValueError(f"Foreign server '{name}' already exists")
+
+        fdw_type = stmt.fdwname
+        if fdw_type not in ("duckdb_fdw", "arrow_fdw"):
+            raise ValueError(f"Unsupported FDW type: '{fdw_type}'")
+
+        options: dict[str, str] = {}
+        if stmt.options:
+            for opt in stmt.options:
+                options[opt.defname] = opt.arg.sval
+
+        server = ForeignServer(name=name, fdw_type=fdw_type, options=options)
+        self._engine._foreign_servers[name] = server
+
+        if self._engine._catalog is not None:
+            self._engine._catalog.save_foreign_server(
+                name, fdw_type, options,
+            )
+
+        return SQLResult([], [])
+
+    def _compile_create_foreign_table(
+        self, stmt: CreateForeignTableStmt,
+    ) -> SQLResult:
+        from uqa.fdw.foreign_table import ForeignTable
+
+        table_name = stmt.base.relation.relname
+        if table_name in self._engine._foreign_tables:
+            if stmt.base.if_not_exists:
+                return SQLResult([], [])
+            raise ValueError(
+                f"Foreign table '{table_name}' already exists"
+            )
+        if table_name in self._engine._tables:
+            raise ValueError(
+                f"Table '{table_name}' already exists"
+            )
+
+        server_name = stmt.servername
+        if server_name not in self._engine._foreign_servers:
+            raise ValueError(
+                f"Foreign server '{server_name}' does not exist"
+            )
+
+        columns = OrderedDict()
+        for elt in stmt.base.tableElts:
+            col, _check, _fk = self._parse_column_def(elt)
+            columns[col.name] = col
+
+        options: dict[str, str] = {}
+        if stmt.options:
+            for opt in stmt.options:
+                options[opt.defname] = opt.arg.sval
+
+        ft = ForeignTable(
+            name=table_name,
+            server_name=server_name,
+            columns=columns,
+            options=options,
+        )
+        self._engine._foreign_tables[table_name] = ft
+
+        if self._engine._catalog is not None:
+            self._engine._catalog.save_foreign_table(
+                table_name,
+                server_name,
+                [
+                    {
+                        "name": col.name,
+                        "type_name": col.type_name,
+                        "primary_key": col.primary_key,
+                        "not_null": col.not_null,
+                    }
+                    for col in columns.values()
+                ],
+                options,
+            )
+
+        return SQLResult([], [])
+
+    def _compile_drop_foreign_server(self, stmt: DropStmt) -> SQLResult:
+        # DROP SERVER objects is a flat tuple of PgString
+        for obj in stmt.objects:
+            name = obj.sval
+            if name in self._engine._foreign_servers:
+                # Validate no foreign tables reference this server
+                for ft in self._engine._foreign_tables.values():
+                    if ft.server_name == name:
+                        raise ValueError(
+                            f"Cannot drop server '{name}': "
+                            f"foreign table '{ft.name}' depends on it"
+                        )
+                # Close cached handler if present
+                handler = self._engine._fdw_handlers.pop(name, None)
+                if handler is not None:
+                    handler.close()
+                del self._engine._foreign_servers[name]
+                if self._engine._catalog is not None:
+                    self._engine._catalog.drop_foreign_server(name)
+            elif not stmt.missing_ok:
+                raise ValueError(
+                    f"Foreign server '{name}' does not exist"
+                )
+        return SQLResult([], [])
+
+    def _compile_drop_foreign_table(self, stmt: DropStmt) -> SQLResult:
+        # DROP FOREIGN TABLE objects is a tuple of tuples of PgString
+        for obj in stmt.objects:
+            table_name = obj[-1].sval
+            if table_name in self._engine._foreign_tables:
+                del self._engine._foreign_tables[table_name]
+                if self._engine._catalog is not None:
+                    self._engine._catalog.drop_foreign_table(table_name)
+            elif not stmt.missing_ok:
+                raise ValueError(
+                    f"Foreign table '{table_name}' does not exist"
+                )
         return SQLResult([], [])
 
     # ==================================================================
@@ -1256,6 +1399,10 @@ class SQLCompiler:
 
     def _compile_insert(self, stmt: InsertStmt) -> SQLResult:
         table_name = stmt.relation.relname
+        if table_name in self._engine._foreign_tables:
+            raise ValueError(
+                f"Cannot INSERT into foreign table '{table_name}'"
+            )
         table = self._engine._tables.get(table_name)
         if table is None:
             raise ValueError(f"Table '{table_name}' does not exist")
@@ -1451,6 +1598,10 @@ class SQLCompiler:
 
     def _compile_update(self, stmt: UpdateStmt) -> SQLResult:
         table_name = stmt.relation.relname
+        if table_name in self._engine._foreign_tables:
+            raise ValueError(
+                f"Cannot UPDATE foreign table '{table_name}'"
+            )
         table = self._engine._tables.get(table_name)
         if table is None:
             raise ValueError(f"Table '{table_name}' does not exist")
@@ -1673,6 +1824,10 @@ class SQLCompiler:
 
     def _compile_delete(self, stmt: DeleteStmt) -> SQLResult:
         table_name = stmt.relation.relname
+        if table_name in self._engine._foreign_tables:
+            raise ValueError(
+                f"Cannot DELETE from foreign table '{table_name}'"
+            )
         table = self._engine._tables.get(table_name)
         if table is None:
             raise ValueError(f"Table '{table_name}' does not exist")
@@ -2912,11 +3067,12 @@ class SQLCompiler:
         #    doc_ids from the document store.
         graph_source = self._is_graph_operator(source_op)
         join_source = self._is_join_operator(source_op)
+        foreign_source = isinstance(source_op, _ForeignTableScanOperator)
         deferred_where = None
 
         # 4. WHERE clause
         if stmt.whereClause is not None:
-            if graph_source or join_source:
+            if graph_source or join_source or foreign_source:
                 # Defer WHERE to physical ExprFilterOp layer
                 deferred_where = stmt.whereClause
             else:
@@ -2940,7 +3096,7 @@ class SQLCompiler:
         return self._execute_relational(
             stmt, pl, ctx, table,
             deferred_where=deferred_where,
-            join_source=join_source,
+            join_source=join_source or foreign_source,
         )
 
     def _compile_values(self, stmt: SelectStmt) -> SQLResult:
@@ -3368,6 +3524,13 @@ class SQLCompiler:
                 "table_name": tname,
                 "table_type": "BASE TABLE",
             })
+        for ftname in sorted(self._engine._foreign_tables):
+            rows.append({
+                "table_catalog": "",
+                "table_schema": "public",
+                "table_name": ftname,
+                "table_type": "FOREIGN TABLE",
+            })
         for vname in sorted(self._engine._views):
             rows.append({
                 "table_catalog": "",
@@ -3623,6 +3786,16 @@ class SQLCompiler:
             table_name = node.relname
             table = self._engine._tables.get(table_name)
             if table is None:
+                # Check foreign tables
+                ft = self._engine._foreign_tables.get(table_name)
+                if ft is not None:
+                    op = _ForeignTableScanOperator(
+                        ft, self._engine, alias=alias,
+                    )
+                    proxy_table = Table(
+                        table_name, list(ft.columns.values()),
+                    )
+                    return proxy_table, op, alias
                 view_query = self._engine._views.get(table_name)
                 if view_query is not None:
                     tbl, op = self._expand_view(table_name, view_query)
@@ -5509,6 +5682,73 @@ class _TableScanOperator:
 
     def cost_estimate(self, stats: Any) -> float:
         return float(len(self._table.document_store.doc_ids))
+
+
+class _ForeignTableScanOperator:
+    """Scans a foreign table by delegating to the appropriate FDW handler.
+
+    The handler returns a ``pyarrow.Table`` which is converted into a
+    :class:`PostingList` for seamless integration with UQA's query
+    pipeline (joins, WHERE, GROUP BY, ORDER BY, etc.).
+    """
+
+    def __init__(
+        self,
+        foreign_table: Any,
+        engine: Any,
+        alias: str | None = None,
+    ) -> None:
+        self._foreign_table = foreign_table
+        self._engine = engine
+        self._alias = alias
+
+    def _get_handler(self) -> Any:
+        """Lazily obtain or create the FDW handler for this table's server."""
+        from uqa.fdw.arrow_handler import ArrowFlightSQLFDWHandler
+        from uqa.fdw.duckdb_handler import DuckDBFDWHandler
+
+        server_name = self._foreign_table.server_name
+        handler = self._engine._fdw_handlers.get(server_name)
+        if handler is not None:
+            return handler
+
+        server = self._engine._foreign_servers[server_name]
+        if server.fdw_type == "duckdb_fdw":
+            handler = DuckDBFDWHandler(server)
+        elif server.fdw_type == "arrow_fdw":
+            handler = ArrowFlightSQLFDWHandler(server)
+        else:
+            raise ValueError(
+                f"Unsupported FDW type: '{server.fdw_type}'"
+            )
+        self._engine._fdw_handlers[server_name] = handler
+        return handler
+
+    def execute(self, context: Any) -> PostingList:
+        handler = self._get_handler()
+        arrow_table = handler.scan(self._foreign_table)
+
+        col_names = list(self._foreign_table.columns.keys())
+        alias = self._alias
+
+        entries: list[PostingEntry] = []
+        for i in range(arrow_table.num_rows):
+            doc_id = i + 1
+            fields: dict[str, Any] = {}
+            for col in col_names:
+                fields[col] = arrow_table.column(col)[i].as_py()
+            if alias:
+                qualified = {
+                    f"{alias}.{k}": v for k, v in fields.items()
+                }
+                fields = {**qualified, **fields}
+            entries.append(
+                PostingEntry(doc_id, Payload(score=0.0, fields=fields))
+            )
+        return PostingList(entries)
+
+    def cost_estimate(self, stats: Any) -> float:
+        return 10000.0
 
 
 def _entry_doc_id(entry: object) -> int:
