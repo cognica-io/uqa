@@ -249,6 +249,67 @@ class TestSynonymFilter:
         assert isinstance(restored, SynonymFilter)
 
 
+class TestNGramFilter:
+    def test_default(self):
+        from uqa.analysis.token_filter import NGramFilter
+        f = NGramFilter(min_gram=2, max_gram=3)
+        result = f.filter(["hello"])
+        assert "he" in result
+        assert "el" in result
+        assert "ll" in result
+        assert "lo" in result
+        assert "hel" in result
+        assert "ell" in result
+        assert "llo" in result
+
+    def test_short_token_dropped(self):
+        from uqa.analysis.token_filter import NGramFilter
+        f = NGramFilter(min_gram=2, max_gram=3)
+        assert f.filter(["a"]) == []
+
+    def test_keep_short(self):
+        from uqa.analysis.token_filter import NGramFilter
+        f = NGramFilter(min_gram=2, max_gram=3, keep_short=True)
+        result = f.filter(["a", "hello"])
+        assert result[0] == "a"
+        assert "he" in result
+
+    def test_keep_short_mixed(self):
+        from uqa.analysis.token_filter import NGramFilter
+        f = NGramFilter(min_gram=3, max_gram=4, keep_short=True)
+        result = f.filter(["ab", "cd", "hello"])
+        assert "ab" in result
+        assert "cd" in result
+        assert "hel" in result
+
+    def test_roundtrip(self):
+        from uqa.analysis.token_filter import NGramFilter
+        f = NGramFilter(min_gram=2, max_gram=4)
+        d = f.to_dict()
+        assert d == {"type": "ngram", "min_gram": 2, "max_gram": 4}
+        assert "keep_short" not in d
+        from uqa.analysis.token_filter import TokenFilter
+        restored = TokenFilter.from_dict(d)
+        assert isinstance(restored, NGramFilter)
+        assert restored.filter(["abc"]) == f.filter(["abc"])
+
+    def test_roundtrip_keep_short(self):
+        from uqa.analysis.token_filter import NGramFilter, TokenFilter
+        f = NGramFilter(min_gram=2, max_gram=3, keep_short=True)
+        d = f.to_dict()
+        assert d["keep_short"] is True
+        restored = TokenFilter.from_dict(d)
+        assert restored.filter(["a"]) == ["a"]
+
+    def test_validation(self):
+        from uqa.analysis.token_filter import NGramFilter
+        import pytest
+        with pytest.raises(ValueError):
+            NGramFilter(min_gram=0)
+        with pytest.raises(ValueError):
+            NGramFilter(min_gram=3, max_gram=2)
+
+
 class TestEdgeNGramFilter:
     def test_default(self):
         f = EdgeNGramFilter(min_gram=1, max_gram=3)
@@ -359,6 +420,48 @@ class TestAnalyzer:
         assert "the" not in result
         assert "quick" in result
 
+    def test_standard_analyzer_stemming(self):
+        a = standard_analyzer()
+        result = a.analyze("Running transformers efficiently")
+        assert "run" in result
+        assert "transform" in result
+
+    def test_standard_analyzer_ascii_folding(self):
+        a = standard_analyzer()
+        # Unicode accented characters fold to ASCII before stemming
+        result = a.analyze("caf\u00e9 r\u00e9sum\u00e9")
+        assert "cafe" in result
+        assert "resum" in result
+
+    def test_standard_cjk_analyzer(self):
+        from uqa.analysis import standard_cjk_analyzer
+        a = standard_cjk_analyzer()
+        result = a.analyze("hello world")
+        assert "he" in result
+        assert "hel" in result
+        assert "wo" in result
+        assert "wor" in result
+
+    def test_standard_cjk_analyzer_stemming(self):
+        from uqa.analysis import standard_cjk_analyzer
+        a = standard_cjk_analyzer()
+        result = a.analyze("Running")
+        assert "ru" in result
+        assert "run" in result
+
+    def test_standard_cjk_analyzer_keep_short(self):
+        """Short tokens (< min_gram) are preserved by keep_short=True."""
+        from uqa.analysis import standard_cjk_analyzer
+        a = standard_cjk_analyzer()
+        # "x marks" -> tokenize -> ["x", "marks"] -> lower -> ["x", "marks"]
+        # -> ascii_fold -> ["x", "marks"] -> stop -> ["x", "marks"]
+        # -> stem -> ["x", "mark"] -> ngram(2,3, keep_short=True)
+        # "x" (len 1 < min_gram 2) preserved by keep_short
+        result = a.analyze("x marks")
+        assert "x" in result
+        assert "ma" in result
+        assert "mar" in result
+
     def test_keyword_analyzer(self):
         a = keyword_analyzer()
         assert a.analyze("hello world") == ["hello world"]
@@ -402,6 +505,7 @@ class TestAnalyzerRegistry:
         names = list_analyzers()
         assert "whitespace" in names
         assert "standard" in names
+        assert "standard_cjk" in names
         assert "keyword" in names
 
     def test_register_and_get(self):

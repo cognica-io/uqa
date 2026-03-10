@@ -18,7 +18,10 @@ from typing import Any
 
 from uqa.analysis.char_filter import CharFilter
 from uqa.analysis.token_filter import (
+    ASCIIFoldingFilter,
     LowerCaseFilter,
+    NGramFilter,
+    PorterStemFilter,
     StopWordFilter,
     TokenFilter,
 )
@@ -108,13 +111,37 @@ def whitespace_analyzer() -> Analyzer:
 
 
 def standard_analyzer(language: str = "english") -> Analyzer:
-    """StandardTokenizer + LowerCaseFilter + StopWordFilter.
+    """StandardTokenizer + LowerCase + ASCIIFolding + StopWord + PorterStem.
 
-    Equivalent to Lucene's StandardAnalyzer.
+    Full-featured analyzer for Latin-script languages.
     """
     return Analyzer(
         tokenizer=StandardTokenizer(),
-        token_filters=[LowerCaseFilter(), StopWordFilter(language)],
+        token_filters=[
+            LowerCaseFilter(),
+            ASCIIFoldingFilter(),
+            StopWordFilter(language),
+            PorterStemFilter(),
+        ],
+    )
+
+
+def standard_cjk_analyzer(language: str = "english") -> Analyzer:
+    """Standard analyzer with NGram(2, 3) for CJK text.
+
+    Extends the standard pipeline with character-level bigram/trigram
+    generation, enabling substring matching for CJK scripts where words
+    are not delimited by whitespace.
+    """
+    return Analyzer(
+        tokenizer=StandardTokenizer(),
+        token_filters=[
+            LowerCaseFilter(),
+            ASCIIFoldingFilter(),
+            StopWordFilter(language),
+            PorterStemFilter(),
+            NGramFilter(min_gram=2, max_gram=3, keep_short=True),
+        ],
     )
 
 
@@ -135,6 +162,7 @@ DEFAULT_ANALYZER = whitespace_analyzer()
 _BUILTIN_ANALYZERS: dict[str, Analyzer] = {
     "whitespace": whitespace_analyzer(),
     "standard": standard_analyzer(),
+    "standard_cjk": standard_cjk_analyzer(),
     "keyword": keyword_analyzer(),
 }
 

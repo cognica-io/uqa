@@ -18,6 +18,7 @@ from uqa.analysis.analyzer import (
     list_analyzers,
     register_analyzer,
     standard_analyzer,
+    standard_cjk_analyzer,
     whitespace_analyzer,
 )
 from uqa.analysis.char_filter import (
@@ -31,6 +32,7 @@ from uqa.analysis.token_filter import (
     EdgeNGramFilter,
     LengthFilter,
     LowerCaseFilter,
+    NGramFilter,
     PorterStemFilter,
     StopWordFilter,
     SynonymFilter,
@@ -56,6 +58,7 @@ __all__ = [
     "list_analyzers",
     "register_analyzer",
     "standard_analyzer",
+    "standard_cjk_analyzer",
     "whitespace_analyzer",
     # CharFilter
     "CharFilter",
@@ -67,6 +70,7 @@ __all__ = [
     "EdgeNGramFilter",
     "LengthFilter",
     "LowerCaseFilter",
+    "NGramFilter",
     "PorterStemFilter",
     "StopWordFilter",
     "SynonymFilter",

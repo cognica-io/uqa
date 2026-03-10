@@ -36,6 +36,7 @@ class TokenFilter(ABC):
             "porter_stem": PorterStemFilter,
             "ascii_folding": ASCIIFoldingFilter,
             "synonym": SynonymFilter,
+            "ngram": NGramFilter,
             "edge_ngram": EdgeNGramFilter,
             "length": LengthFilter,
         }
@@ -329,6 +330,58 @@ class SynonymFilter(TokenFilter):
     @classmethod
     def _from_dict(cls, d: dict[str, Any]) -> SynonymFilter:
         return cls(d["synonyms"])
+
+
+class NGramFilter(TokenFilter):
+    """Emit all character n-grams of each token.
+
+    For each token, generates every substring of length ``min_gram``
+    to ``max_gram``.  Useful for CJK text where words are not
+    delimited by whitespace.
+
+    When ``keep_short`` is True (default False), tokens shorter than
+    ``min_gram`` are passed through unchanged instead of being dropped.
+    """
+
+    def __init__(
+        self,
+        min_gram: int = 2,
+        max_gram: int = 3,
+        keep_short: bool = False,
+    ) -> None:
+        if min_gram < 1:
+            raise ValueError("min_gram must be >= 1")
+        if max_gram < min_gram:
+            raise ValueError("max_gram must be >= min_gram")
+        self._min_gram = min_gram
+        self._max_gram = max_gram
+        self._keep_short = keep_short
+
+    def filter(self, tokens: list[str]) -> list[str]:
+        result: list[str] = []
+        for t in tokens:
+            if len(t) < self._min_gram:
+                if self._keep_short:
+                    result.append(t)
+                continue
+            for n in range(self._min_gram, self._max_gram + 1):
+                for i in range(len(t) - n + 1):
+                    result.append(t[i : i + n])
+        return result
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "type": "ngram",
+            "min_gram": self._min_gram,
+            "max_gram": self._max_gram,
+        }
+        if self._keep_short:
+            d["keep_short"] = True
+        return d
+
+    @classmethod
+    def _from_dict(cls, d: dict[str, Any]) -> NGramFilter:
+        return cls(d["min_gram"], d["max_gram"], d.get("keep_short", False))
 
 
 class EdgeNGramFilter(TokenFilter):
