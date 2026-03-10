@@ -89,6 +89,7 @@ class SQLiteDocumentStore:
         self._table = f"_data_{table_name}"
         self._columns: list[str] = [name for name, _ in columns]
         self._col_set: frozenset[str] = frozenset(self._columns)
+        self._has_atomic_fetch = hasattr(conn, "execute_fetchall")
         self._json_cols: frozenset[str] = frozenset(
             name for name, type_name in columns
             if type_name.lower() in ("json", "jsonb")
@@ -125,6 +126,18 @@ class SQLiteDocumentStore:
         self._sql_count = f"SELECT COUNT(*) FROM {self._table}"
         self._sql_max = f"SELECT MAX(_rowid) FROM {self._table}"
 
+    # -- Thread-safe query helpers -------------------------------------
+
+    def _fetchall(self, sql: str, params: tuple = ()) -> list[tuple]:
+        if self._has_atomic_fetch:
+            return self._conn.execute_fetchall(sql, params)  # type: ignore[union-attr]
+        return self._conn.execute(sql, params).fetchall()
+
+    def _fetchone(self, sql: str, params: tuple = ()) -> tuple | None:
+        if self._has_atomic_fetch:
+            return self._conn.execute_fetchone(sql, params)  # type: ignore[union-attr]
+        return self._conn.execute(sql, params).fetchone()
+
     # ------------------------------------------------------------------
     # Public API (mirrors DocumentStore)
     # ------------------------------------------------------------------
@@ -148,8 +161,7 @@ class SQLiteDocumentStore:
         """Return the document as a dict, or ``None`` if absent."""
         import json as json_mod
 
-        cursor = self._conn.execute(self._sql_get, (doc_id,))
-        row = cursor.fetchone()
+        row = self._fetchone(self._sql_get, (doc_id,))
         if row is None:
             return None
         result: dict = {}
@@ -177,8 +189,7 @@ class SQLiteDocumentStore:
         if field not in self._col_set:
             return None
         sql = f"SELECT {field} FROM {self._table} WHERE _rowid = ?"
-        cursor = self._conn.execute(sql, (doc_id,))
-        row = cursor.fetchone()
+        row = self._fetchone(sql, (doc_id,))
         if row is None:
             return None
         v = row[0]
@@ -206,15 +217,13 @@ class SQLiteDocumentStore:
     @property
     def doc_ids(self) -> set[DocId]:
         """Return the set of all stored document IDs."""
-        cursor = self._conn.execute(self._sql_ids)
-        return {row[0] for row in cursor.fetchall()}
+        return {row[0] for row in self._fetchall(self._sql_ids)}
 
     def __len__(self) -> int:
-        cursor = self._conn.execute(self._sql_count)
-        return cursor.fetchone()[0]
+        row = self._fetchone(self._sql_count)
+        return row[0] if row else 0
 
     def max_doc_id(self) -> int:
         """Return the largest ``_rowid`` currently stored, or 0."""
-        cursor = self._conn.execute(self._sql_max)
-        result = cursor.fetchone()[0]
-        return result if result is not None else 0
+        row = self._fetchone(self._sql_max)
+        return row[0] if row is not None and row[0] is not None else 0

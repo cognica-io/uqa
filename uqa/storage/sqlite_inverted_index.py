@@ -45,6 +45,7 @@ class SQLiteInvertedIndex:
         self._conn = conn
         self._table_name = table_name
         self._known_fields: set[str] = set()
+        self._has_atomic_fetch = hasattr(conn, "execute_fetchall")
 
         # Create shared stats / doc-lengths tables eagerly.
         self._conn.execute(
@@ -66,15 +67,34 @@ class SQLiteInvertedIndex:
 
         # Discover fields that already have inverted tables from a
         # previous session so we do not attempt to re-create them.
-        rows = self._conn.execute(
+        rows = self._fetchall(
             "SELECT name FROM sqlite_master WHERE type='table' "
             "AND name LIKE ?",
             (f"_inverted_{table_name}_%",),
-        ).fetchall()
+        )
         prefix = f"_inverted_{table_name}_"
         for (name,) in rows:
             field = name[len(prefix):]
             self._known_fields.add(field)
+
+    # -- Thread-safe query helpers -------------------------------------
+
+    def _fetchall(self, sql: str, params: tuple = ()) -> list[tuple]:
+        """Execute a query and return all rows.
+
+        Uses ``ManagedConnection.execute_fetchall`` when available to
+        guarantee atomicity under concurrent access.  Falls back to the
+        standard cursor pattern for plain ``sqlite3.Connection``.
+        """
+        if self._has_atomic_fetch:
+            return self._conn.execute_fetchall(sql, params)  # type: ignore[union-attr]
+        return self._conn.execute(sql, params).fetchall()
+
+    def _fetchone(self, sql: str, params: tuple = ()) -> tuple | None:
+        """Execute a query and return one row atomically."""
+        if self._has_atomic_fetch:
+            return self._conn.execute_fetchone(sql, params)  # type: ignore[union-attr]
+        return self._conn.execute(sql, params).fetchone()
 
     # -- Lazy table creation -------------------------------------------
 
@@ -249,20 +269,20 @@ class SQLiteInvertedIndex:
     def remove_document(self, doc_id: DocId) -> None:
         """Remove all entries for a document from the index."""
         # Collect per-field lengths so we can decrement field stats.
-        rows = self._conn.execute(
+        rows = self._fetchall(
             f'SELECT field, length FROM "_doc_lengths_{self._table_name}" '
             "WHERE doc_id = ?",
             (doc_id,),
-        ).fetchall()
+        )
 
         # Collect affected (field, term) pairs for skip pointer rebuild.
         affected_terms: list[tuple[str, str]] = []
         for field in self._known_fields:
             tbl = self._inverted_table_name(field)
-            term_rows = self._conn.execute(
+            term_rows = self._fetchall(
                 f'SELECT term FROM "{tbl}" WHERE doc_id = ?',
                 (doc_id,),
-            ).fetchall()
+            )
             for (term,) in term_rows:
                 affected_terms.append((field, term))
 
@@ -317,11 +337,11 @@ class SQLiteInvertedIndex:
         if field not in self._known_fields:
             return PostingList()
         tbl = self._inverted_table_name(field)
-        rows = self._conn.execute(
+        rows = self._fetchall(
             f'SELECT doc_id, tf, positions FROM "{tbl}" '
             "WHERE term = ? ORDER BY doc_id",
             (term,),
-        ).fetchall()
+        )
         entries = [
             PostingEntry(
                 doc_id=row[0],
@@ -341,11 +361,11 @@ class SQLiteInvertedIndex:
 
         for field in sorted(self._known_fields):
             tbl = self._inverted_table_name(field)
-            rows = self._conn.execute(
+            rows = self._fetchall(
                 f'SELECT doc_id, tf, positions FROM "{tbl}" '
                 "WHERE term = ? ORDER BY doc_id",
                 (term,),
-            ).fetchall()
+            )
             for row in rows:
                 doc_id = row[0]
                 if doc_id not in seen_docs:
@@ -366,27 +386,27 @@ class SQLiteInvertedIndex:
         if field not in self._known_fields:
             return 0
         tbl = self._inverted_table_name(field)
-        row = self._conn.execute(
+        row = self._fetchone(
             f'SELECT COUNT(*) FROM "{tbl}" WHERE term = ?',
             (term,),
-        ).fetchone()
+        )
         return row[0] if row else 0
 
     def get_doc_length(self, doc_id: DocId, field: FieldName) -> int:
-        row = self._conn.execute(
+        row = self._fetchone(
             f'SELECT length FROM "_doc_lengths_{self._table_name}" '
             "WHERE doc_id = ? AND field = ?",
             (doc_id, field),
-        ).fetchone()
+        )
         return row[0] if row else 0
 
     def get_total_doc_length(self, doc_id: DocId) -> int:
         """Get total document length across all fields."""
-        row = self._conn.execute(
+        row = self._fetchone(
             f'SELECT SUM(length) FROM "_doc_lengths_{self._table_name}" '
             "WHERE doc_id = ?",
             (doc_id,),
-        ).fetchone()
+        )
         return row[0] if row and row[0] is not None else 0
 
     def get_term_freq(self, doc_id: DocId, field: str, term: str) -> int:
@@ -394,10 +414,10 @@ class SQLiteInvertedIndex:
         if field not in self._known_fields:
             return 0
         tbl = self._inverted_table_name(field)
-        row = self._conn.execute(
+        row = self._fetchone(
             f'SELECT tf FROM "{tbl}" WHERE term = ? AND doc_id = ?',
             (term, doc_id),
-        ).fetchone()
+        )
         return row[0] if row else 0
 
     def get_total_term_freq(self, doc_id: DocId, term: str) -> int:
@@ -405,10 +425,10 @@ class SQLiteInvertedIndex:
         total = 0
         for field in self._known_fields:
             tbl = self._inverted_table_name(field)
-            row = self._conn.execute(
+            row = self._fetchone(
                 f'SELECT tf FROM "{tbl}" WHERE term = ? AND doc_id = ?',
                 (term, doc_id),
-            ).fetchone()
+            )
             if row:
                 total += row[0]
         return total
@@ -418,10 +438,10 @@ class SQLiteInvertedIndex:
         doc_ids: set[int] = set()
         for field in self._known_fields:
             tbl = self._inverted_table_name(field)
-            rows = self._conn.execute(
+            rows = self._fetchall(
                 f'SELECT doc_id FROM "{tbl}" WHERE term = ?',
                 (term,),
-            ).fetchall()
+            )
             for (did,) in rows:
                 doc_ids.add(did)
         return len(doc_ids)
@@ -430,10 +450,10 @@ class SQLiteInvertedIndex:
     def stats(self) -> IndexStats:
         from uqa.core.types import IndexStats
 
-        rows = self._conn.execute(
+        rows = self._fetchall(
             f'SELECT field, doc_count, total_length '
-            f'FROM "_field_stats_{self._table_name}"'
-        ).fetchall()
+            f'FROM "_field_stats_{self._table_name}"',
+        )
 
         if not rows:
             return IndexStats(total_docs=0, avg_doc_length=0.0, _doc_freqs={})
@@ -448,9 +468,9 @@ class SQLiteInvertedIndex:
         doc_freqs: dict[tuple[str, str], int] = {}
         for field in self._known_fields:
             tbl = self._inverted_table_name(field)
-            term_rows = self._conn.execute(
-                f'SELECT term, COUNT(*) FROM "{tbl}" GROUP BY term'
-            ).fetchall()
+            term_rows = self._fetchall(
+                f'SELECT term, COUNT(*) FROM "{tbl}" GROUP BY term',
+            )
             for term, cnt in term_rows:
                 doc_freqs[(field, term)] = cnt
 
@@ -477,11 +497,11 @@ class SQLiteInvertedIndex:
         )
 
         # Fetch sorted doc_ids for this term.
-        rows = self._conn.execute(
+        rows = self._fetchall(
             f'SELECT doc_id FROM "{inv_tbl}" '
             "WHERE term = ? ORDER BY doc_id",
             (term,),
-        ).fetchall()
+        )
 
         # Insert skip entries every BLOCK_SIZE docs.
         for offset, (doc_id,) in enumerate(rows):
@@ -506,12 +526,12 @@ class SQLiteInvertedIndex:
         if field not in self._known_fields:
             return (0, 0)
         skip_tbl = self._skip_table_name(field)
-        row = self._conn.execute(
+        row = self._fetchone(
             f'SELECT skip_doc_id, skip_offset FROM "{skip_tbl}" '
             "WHERE term = ? AND skip_doc_id <= ? "
             "ORDER BY skip_doc_id DESC LIMIT 1",
             (term, target_doc_id),
-        ).fetchone()
+        )
         if row is None:
             return (0, 0)
         return (row[0], row[1])
@@ -534,11 +554,11 @@ class SQLiteInvertedIndex:
         bm_tbl = self._blockmax_table_name(field)
 
         # Fetch all entries for this term, sorted by doc_id.
-        rows = self._conn.execute(
+        rows = self._fetchall(
             f'SELECT doc_id, tf FROM "{inv_tbl}" '
             "WHERE term = ? ORDER BY doc_id",
             (term,),
-        ).fetchall()
+        )
 
         doc_freq = len(rows)
 
@@ -569,9 +589,9 @@ class SQLiteInvertedIndex:
         if field not in self._known_fields:
             return
         inv_tbl = self._inverted_table_name(field)
-        terms = self._conn.execute(
-            f'SELECT DISTINCT term FROM "{inv_tbl}"'
-        ).fetchall()
+        terms = self._fetchall(
+            f'SELECT DISTINCT term FROM "{inv_tbl}"',
+        )
         for (term,) in terms:
             self.build_block_max_scores(field, term, scorer)
 
@@ -582,11 +602,11 @@ class SQLiteInvertedIndex:
         if field not in self._known_fields:
             return 0.0
         bm_tbl = self._blockmax_table_name(field)
-        row = self._conn.execute(
+        row = self._fetchone(
             f'SELECT max_score FROM "{bm_tbl}" '
             "WHERE term = ? AND block_idx = ?",
             (term, block_idx),
-        ).fetchone()
+        )
         return row[0] if row else 0.0
 
     def get_all_block_max_scores(
@@ -596,21 +616,21 @@ class SQLiteInvertedIndex:
         if field not in self._known_fields:
             return []
         bm_tbl = self._blockmax_table_name(field)
-        rows = self._conn.execute(
+        rows = self._fetchall(
             f'SELECT max_score FROM "{bm_tbl}" '
             "WHERE term = ? ORDER BY block_idx",
             (term,),
-        ).fetchall()
+        )
         return [r[0] for r in rows]
 
     def load_block_max_into(self, block_max_index: object) -> None:
         """Load all persisted block-max scores into a BlockMaxIndex."""
         for field in self._known_fields:
             bm_tbl = self._blockmax_table_name(field)
-            rows = self._conn.execute(
+            rows = self._fetchall(
                 f'SELECT term, block_idx, max_score FROM "{bm_tbl}" '
-                "ORDER BY term, block_idx"
-            ).fetchall()
+                "ORDER BY term, block_idx",
+            )
 
             # Group by term.
             current_term: str | None = None

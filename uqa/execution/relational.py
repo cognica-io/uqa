@@ -1103,6 +1103,23 @@ def _compute_window_function(
             return _compute_framed_aggregate(
                 func_name, spec.arg_col, filtered_rows, spec
             )
+        # SQL standard: when ORDER BY is present without an explicit frame,
+        # the default is RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW.
+        if spec.order_keys:
+            default_spec = WindowSpec(
+                alias=spec.alias,
+                func_name=spec.func_name,
+                partition_cols=spec.partition_cols,
+                order_keys=spec.order_keys,
+                arg_col=spec.arg_col,
+                frame_start="unbounded_preceding",
+                frame_end="current_row",
+                frame_type="rows",
+                filter_node=spec.filter_node,
+            )
+            return _compute_framed_aggregate(
+                func_name, spec.arg_col, filtered_rows, default_spec
+            )
         agg_val = _compute_aggregate(
             func_name, spec.arg_col, filtered_rows
         )

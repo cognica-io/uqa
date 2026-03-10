@@ -167,6 +167,24 @@ class TestJSONFunctions:
         )
         assert result.rows[0]["arr"] == [1, 2, 3]
 
+    def test_json_build_array_mixed_types(self, engine):
+        result = engine.sql(
+            "SELECT json_build_array(1, 2, 3, 'four') AS arr"
+        )
+        assert result.rows[0]["arr"] == ["1", "2", "3", "four"]
+
+    def test_json_build_array_mixed_int_float_str_bool(self, engine):
+        result = engine.sql(
+            "SELECT json_build_array(1, 2.5, 'hello', true) AS arr"
+        )
+        arr = result.rows[0]["arr"]
+        assert len(arr) == 4
+        assert all(isinstance(x, str) for x in arr)
+
+    def test_json_build_array_empty(self, engine):
+        result = engine.sql("SELECT json_build_array() AS arr")
+        assert result.rows[0]["arr"] == []
+
     def test_json_typeof_object(self, engine_with_json):
         result = engine_with_json.sql(
             "SELECT json_typeof(data) AS t FROM docs WHERE id = 1"

@@ -1,5 +1,52 @@
 # History
 
+## 0.7.1 (2026-03-10)
+
+PostgreSQL compatibility fixes and SQLite thread safety.
+
+### SQL Compiler
+
+- Fixed `SELECT *` failure on tables created by `CREATE TABLE AS SELECT` with explicit columns (`A_Star` attribute error in `_build_sort_keys`)
+- Fixed `SELECT *` failure after `DELETE ... USING` (same root cause as above)
+- Fixed aggregate functions not recognized inside `IN` subquery `HAVING` clauses (added `_ensure_having_aggs` recursive AST walk)
+- Fixed aggregates nested inside scalar functions (e.g., `ROUND(STDDEV(salary), 2)`) treated as unknown scalar functions (recursive `_collect_agg_funcs`, `ExprProjectOp` for wrapper expressions)
+- Fixed JSON containment/existence operators (`@>`, `?`, `?&`, `?|`) not working in `WHERE` clauses (non-basic operators now route through `ExprFilterOperator`)
+
+### Execution Engine
+
+- Fixed window functions ignoring default frame when `ORDER BY` is present -- now applies SQL-standard `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`
+
+### Scalar Functions
+
+- Fixed `LTRIM`/`RTRIM`/`BTRIM` ignoring the character-set argument
+- Added `CONCAT_WS(separator, str1, str2, ...)` -- concatenate with separator, skipping NULLs
+- Added `TO_CHAR`, `TO_DATE`, `TO_TIMESTAMP` -- date/time formatting and parsing with PostgreSQL format strings
+- Added `MAKE_DATE(year, month, day)` -- construct a date from components
+- Added `AGE(timestamp, timestamp)` -- compute interval between two timestamps
+
+### Type System
+
+- Added `INTERVAL` as a recognized CAST target type
+- Added `NamedArgExpr` handling for `MAKE_INTERVAL(days => 5, hours => 3)` syntax
+- Added PostgreSQL array literal parsing (`'{name,age}'`) for `?&` and `?|` JSON operators
+
+### Storage Layer
+
+- Fixed SQLite thread safety: `ManagedConnection` now serializes all operations with a threading lock and provides atomic `execute_fetchall`/`execute_fetchone` methods
+- `SQLiteInvertedIndex` and `SQLiteDocumentStore` use atomic fetch methods to prevent cursor interleaving under concurrent access from the parallel executor
+- Fixed `test_text_search_works_after_restart` -- the last remaining test failure
+
+### Batch Processing
+
+- Fixed `Batch.from_rows` failure on mixed-type lists (e.g., `json_build_array(1, 2, 'three')`) by normalizing to uniform string arrays
+
+### Tests
+
+- 1474 tests across 41 test files (up from 1423 in v0.7.0)
+- Added `test_pg_compat_bugs.py` with 48 regression tests covering all 10 PostgreSQL compatibility fixes
+- Added 3 mixed-type JSON array tests in `test_json.py`
+
+
 ## 0.7.0 (2026-03-09)
 
 Statistical aggregates, regression functions, and extended scalar/DDL support.

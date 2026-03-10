@@ -115,6 +115,10 @@ class ExprEvaluator:
         if isinstance(node, SQLValueFunction):
             return self._eval_sql_value_function(node)
 
+        # NamedArgExpr: func(name => value) -- evaluate the inner arg
+        if type(node).__name__ == "NamedArgExpr":
+            return self.evaluate(node.arg, row)
+
         raise ValueError(f"Unsupported expression node: {type(node).__name__}")
 
     # -- Leaf nodes ----------------------------------------------------
@@ -482,6 +486,10 @@ class ExprEvaluator:
         "variance", "var_pop", "var_samp",
         "percentile_cont", "percentile_disc", "mode",
         "json_object_agg", "jsonb_object_agg",
+        "corr", "covar_pop", "covar_samp",
+        "regr_count", "regr_avgx", "regr_avgy",
+        "regr_sxx", "regr_syy", "regr_sxy",
+        "regr_slope", "regr_intercept", "regr_r2",
     })
 
     def _eval_func_call(self, node: FuncCall, row: dict[str, Any]) -> Any:
@@ -726,6 +734,19 @@ def _json_has_key(obj: Any, key: Any) -> bool:
     return False
 
 
+def _parse_pg_array_literal(value: Any) -> list[str]:
+    """Parse a PostgreSQL array literal like '{a,b,c}' into a list."""
+    if isinstance(value, list):
+        return [str(k) for k in value]
+    s = str(value).strip()
+    if s.startswith("{") and s.endswith("}"):
+        inner = s[1:-1]
+        if not inner:
+            return []
+        return [part.strip() for part in inner.split(",")]
+    return [s]
+
+
 def _json_has_any_key(obj: Any, keys: Any) -> bool:
     """JSONB ?| operator: does the object contain any of the keys?"""
     if obj is None or keys is None:
@@ -733,10 +754,9 @@ def _json_has_any_key(obj: Any, keys: Any) -> bool:
     if isinstance(obj, str):
         import json as json_mod
         obj = json_mod.loads(obj)
-    if not isinstance(keys, list):
-        keys = [keys]
+    keys = _parse_pg_array_literal(keys)
     if isinstance(obj, dict):
-        return any(str(k) in obj for k in keys)
+        return any(k in obj for k in keys)
     return False
 
 
@@ -747,10 +767,9 @@ def _json_has_all_keys(obj: Any, keys: Any) -> bool:
     if isinstance(obj, str):
         import json as json_mod
         obj = json_mod.loads(obj)
-    if not isinstance(keys, list):
-        keys = [keys]
+    keys = _parse_pg_array_literal(keys)
     if isinstance(obj, dict):
-        return all(str(k) in obj for k in keys)
+        return all(k in obj for k in keys)
     return False
 
 
@@ -852,6 +871,8 @@ def _cast_value(value: Any, type_name: str) -> Any:
         if isinstance(value, bytes):
             return value
         return str(value).encode("utf-8")
+    if type_name == "interval":
+        return str(value)
     cast_type = _CAST_MAP.get(type_name)
     if cast_type is None:
         raise ValueError(f"Unsupported CAST target type: {type_name}")
@@ -874,11 +895,20 @@ def _call_scalar_function(name: str, args: list[Any]) -> Any:
     if name == "length":
         return len(str(args[0])) if args[0] is not None else None
     if name in ("trim", "btrim"):
-        return str(args[0]).strip() if args[0] is not None else None
+        if args[0] is None:
+            return None
+        chars = str(args[1]) if len(args) > 1 else None
+        return str(args[0]).strip(chars)
     if name == "ltrim":
-        return str(args[0]).lstrip() if args[0] is not None else None
+        if args[0] is None:
+            return None
+        chars = str(args[1]) if len(args) > 1 else None
+        return str(args[0]).lstrip(chars)
     if name == "rtrim":
-        return str(args[0]).rstrip() if args[0] is not None else None
+        if args[0] is None:
+            return None
+        chars = str(args[1]) if len(args) > 1 else None
+        return str(args[0]).rstrip(chars)
     if name == "replace":
         if any(a is None for a in args[:3]):
             return None
@@ -892,6 +922,11 @@ def _call_scalar_function(name: str, args: list[Any]) -> Any:
         return s[start : start + length]
     if name == "concat":
         return "".join(str(a) if a is not None else "" for a in args)
+    if name == "concat_ws":
+        if not args or args[0] is None:
+            return None
+        sep = str(args[0])
+        return sep.join(str(a) for a in args[1:] if a is not None)
     if name == "left":
         if args[0] is None:
             return None
@@ -1304,6 +1339,34 @@ def _call_scalar_function(name: str, args: list[Any]) -> Any:
         s_part = total_seconds % 60
         return f"{h_part:02d}:{m_part:02d}:{s_part:02d}"
 
+    if name == "make_date":
+        if any(a is None for a in args[:3]):
+            return None
+        from datetime import date
+        return date(int(args[0]), int(args[1]), int(args[2])).isoformat()
+
+    if name == "to_char":
+        if args[0] is None:
+            return None
+        return _to_char(str(args[0]), str(args[1]) if len(args) > 1 else "")
+
+    if name == "to_date":
+        if args[0] is None:
+            return None
+        return _to_date(str(args[0]), str(args[1]) if len(args) > 1 else "")
+
+    if name == "to_timestamp":
+        if args[0] is None:
+            return None
+        return _to_timestamp(
+            str(args[0]), str(args[1]) if len(args) > 1 else ""
+        )
+
+    if name == "age":
+        if not args or args[0] is None:
+            return None
+        return _age(args)
+
     if name == "to_number":
         if args[0] is None:
             return None
@@ -1712,3 +1775,86 @@ def _json_array_elements(args: list[Any], *, as_text: bool) -> list[Any]:
                 result_list.append(str(v) if v is not None else None)
         return result_list
     return arr
+
+
+# -- Date/time formatting helpers ----------------------------------------
+
+_PG_TO_STRFTIME: list[tuple[str, str]] = [
+    ("YYYY", "%Y"), ("YY", "%y"),
+    ("MM", "%m"), ("DD", "%d"),
+    ("HH24", "%H"), ("HH12", "%I"), ("HH", "%H"),
+    ("MI", "%M"), ("SS", "%S"),
+    ("US", "%f"),
+    ("AM", "%p"), ("PM", "%p"),
+    ("Month", "%B"), ("Mon", "%b"),
+    ("Day", "%A"), ("Dy", "%a"),
+    ("TZ", "%Z"),
+]
+
+
+def _pg_format_to_strftime(fmt: str) -> str:
+    """Convert a PostgreSQL date format string to Python strftime format."""
+    result = fmt
+    for pg, py in _PG_TO_STRFTIME:
+        result = result.replace(pg, py)
+    return result
+
+
+def _to_char(value: str, fmt: str) -> str:
+    """TO_CHAR(timestamp, format)"""
+    from datetime import datetime
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except (ValueError, TypeError):
+        return str(value)
+    py_fmt = _pg_format_to_strftime(fmt)
+    return dt.strftime(py_fmt)
+
+
+def _to_date(text: str, fmt: str) -> str:
+    """TO_DATE(text, format) -- returns ISO date string."""
+    from datetime import datetime
+    py_fmt = _pg_format_to_strftime(fmt)
+    try:
+        dt = datetime.strptime(text, py_fmt)
+    except (ValueError, TypeError):
+        return text
+    return dt.date().isoformat()
+
+
+def _to_timestamp(text: str, fmt: str) -> str:
+    """TO_TIMESTAMP(text, format) -- returns ISO timestamp string."""
+    from datetime import datetime
+    py_fmt = _pg_format_to_strftime(fmt)
+    try:
+        dt = datetime.strptime(text, py_fmt)
+    except (ValueError, TypeError):
+        return text
+    return dt.isoformat()
+
+
+def _age(args: list[Any]) -> str:
+    """AGE(timestamp1 [, timestamp2]) -- returns interval-like string."""
+    from datetime import datetime
+    try:
+        dt1 = datetime.fromisoformat(str(args[0]))
+        dt2 = (
+            datetime.fromisoformat(str(args[1]))
+            if len(args) > 1 and args[1] is not None
+            else datetime.now()
+        )
+    except (ValueError, TypeError):
+        return ""
+    delta = dt1 - dt2
+    total_days = abs(delta.days)
+    years = total_days // 365
+    months = (total_days % 365) // 30
+    days = (total_days % 365) % 30
+    parts: list[str] = []
+    if years:
+        parts.append(f"{years} year{'s' if years != 1 else ''}")
+    if months:
+        parts.append(f"{months} mon{'s' if months != 1 else ''}")
+    if days or not parts:
+        parts.append(f"{days} day{'s' if days != 1 else ''}")
+    return " ".join(parts)

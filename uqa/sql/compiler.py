@@ -2023,6 +2023,11 @@ class SQLCompiler:
             )
             agg_specs = self._extract_agg_specs(stmt.targetList)
 
+            # Ensure aggregates referenced in HAVING are also computed
+            # (e.g., HAVING COUNT(*) > 1 when COUNT is not in SELECT).
+            if stmt.havingClause is not None:
+                self._ensure_having_aggs(stmt.havingClause, agg_specs)
+
             # When GROUP BY has computed expressions or aggregates
             # have expression args, pre-compute them via ExprProjectOp
             # so HashAggOp can group/aggregate by named columns.
@@ -2076,7 +2081,25 @@ class SQLCompiler:
                 physical, [], agg_specs,
                 spill_threshold=self._engine.spill_threshold,
             )
-            expected_cols = [a for a, *_ in agg_specs]
+            # Check if SELECT list has wrapper expressions around aggregates
+            # (e.g., ROUND(STDDEV(salary), 2)). If so, add ExprProjectOp.
+            has_wrappers = any(
+                not (
+                    isinstance(t.val, FuncCall)
+                    and t.val.funcname[-1].sval.lower() in _AGG_FUNC_NAMES
+                    and t.val.over is None
+                )
+                for t in stmt.targetList
+            )
+            if has_wrappers:
+                targets = self._build_expr_targets(stmt.targetList)
+                physical = ExprProjectOp(
+                    physical, targets,
+                    subquery_executor=self._compile_select,
+                )
+                expected_cols = [name for name, _ in targets]
+            else:
+                expected_cols = [a for a, *_ in agg_specs]
 
         else:
             is_star = self._is_select_star(stmt.targetList)
@@ -2316,6 +2339,15 @@ class SQLCompiler:
         ordinal_map: dict[int, str] = {}
         if target_list:
             for idx, target in enumerate(target_list):
+                # Skip SELECT * -- it expands to all columns and
+                # does not contribute to ordinal/alias mappings.
+                if isinstance(target.val, A_Star):
+                    continue
+                if (
+                    isinstance(target.val, ColumnRef)
+                    and isinstance(target.val.fields[-1], A_Star)
+                ):
+                    continue
                 col_name = self._infer_target_name(target)
                 ordinal_map[idx + 1] = col_name
                 if target.name:
@@ -4089,17 +4121,20 @@ class SQLCompiler:
         kind = A_Expr_Kind(node.kind)
 
         if kind == A_Expr_Kind.AEXPR_OP:
-            # Simple case: column op constant
-            if isinstance(node.lexpr, ColumnRef) and isinstance(
-                node.rexpr, A_Const
+            op_name = node.name[0].sval
+            # Simple case: column op constant (basic comparison only)
+            if (
+                isinstance(node.lexpr, ColumnRef)
+                and isinstance(node.rexpr, A_Const)
+                and op_name in ("=", "!=", "<>", ">", ">=", "<", "<=")
             ):
                 field_name = self._extract_column_name(node.lexpr)
                 value = self._extract_const_value(node.rexpr)
                 return FilterOperator(
                     field_name,
-                    _op_to_predicate(node.name[0].sval, value),
+                    _op_to_predicate(op_name, value),
                 )
-            # Expression-based comparison (e.g., price * 2 > 100)
+            # Expression-based comparison (JSON ops, complex expressions, etc.)
             return _ExprFilterOperator(
                 node, subquery_executor=self._compile_select
             )
@@ -4487,33 +4522,69 @@ class SQLCompiler:
     def _has_aggregates(self, target_list: tuple | None) -> bool:
         if target_list is None:
             return False
-        return any(
-            isinstance(t.val, FuncCall)
-            and t.val.funcname[-1].sval.lower() in _AGG_FUNC_NAMES
-            and (t.val.over is None)
-            for t in target_list
-        )
+        for t in target_list:
+            for func in self._collect_agg_funcs(t.val):
+                fn = func.funcname[-1].sval.lower()
+                if fn in _AGG_FUNC_NAMES and func.over is None:
+                    return True
+        return False
 
     def _extract_agg_specs(
         self, target_list: tuple
     ) -> list[tuple]:
-        """Extract aggregate specifications as 7-tuples.
+        """Extract aggregate specifications as 8-tuples.
 
         Returns (alias, func_name, arg_col, distinct, extra, filter_node,
-        order_keys).  filter_node is the AST node for FILTER (WHERE ...),
-        order_keys is a list of (col_name, descending) for ORDER BY
-        within aggregate.
+        order_keys, agg_expr_node).  filter_node is the AST node for
+        FILTER (WHERE ...), order_keys is a list of (col_name, descending)
+        for ORDER BY within aggregate.
+
+        Also discovers aggregates nested inside scalar functions
+        (e.g., ROUND(STDDEV(salary), 2)) and adds them with their
+        natural column names so HashAggOp computes them.
         """
         from pglast.enums.parsenodes import SortByDir
 
         specs: list[tuple] = []
         for target in target_list:
-            if not isinstance(target.val, FuncCall):
+            # Find the top-level aggregate (if any)
+            func: FuncCall | None = None
+            if isinstance(target.val, FuncCall):
+                fn = target.val.funcname[-1].sval.lower()
+                if fn in _AGG_FUNC_NAMES and target.val.over is None:
+                    func = target.val
+
+            if func is None:
+                # Not a top-level aggregate -- check for nested aggregates
+                # (e.g., ROUND(STDDEV(salary), 2))
+                nested = self._collect_agg_funcs(target.val)
+                nested = [
+                    f for f in nested
+                    if f.funcname[-1].sval.lower() in _AGG_FUNC_NAMES
+                    and f.over is None
+                ]
+                existing = {(s[1], s[2]) for s in specs}
+                for nf in nested:
+                    nfn = nf.funcname[-1].sval.lower()
+                    if nf.agg_star or not nf.args:
+                        ac = None
+                    elif isinstance(nf.args[0], ColumnRef):
+                        ac = self._extract_column_name(nf.args[0])
+                    else:
+                        ac = None
+                    extra = None
+                    if nfn in _TWO_ARG_STAT_AGGS and len(nf.args or ()) >= 2:
+                        if isinstance(nf.args[1], ColumnRef):
+                            extra = self._extract_column_name(nf.args[1])
+                    if (nfn, ac) not in existing:
+                        alias = nfn if ac is None else f"{nfn}_{ac}"
+                        specs.append((
+                            alias, nfn, ac, False, extra,
+                            None, None, None,
+                        ))
+                        existing.add((nfn, ac))
                 continue
-            func = target.val
             func_name = func.funcname[-1].sval.lower()
-            if func_name not in _AGG_FUNC_NAMES or func.over is not None:
-                continue
             distinct = bool(func.agg_distinct)
             extra: Any = None
             agg_expr_node: Any = None
@@ -4565,6 +4636,50 @@ class SQLCompiler:
                 filter_node, order_keys, agg_expr_node,
             ))
         return specs
+
+    def _ensure_having_aggs(
+        self, having_node: Any, agg_specs: list[tuple]
+    ) -> None:
+        """Walk the HAVING AST and add any aggregate calls missing from *agg_specs*.
+
+        This ensures that aggregates referenced only in HAVING (not in SELECT)
+        are still computed by HashAggOp.
+        """
+        existing = {(s[1], s[2]) for s in agg_specs}  # (func_name, arg_col)
+        for func in self._collect_agg_funcs(having_node):
+            func_name = func.funcname[-1].sval.lower()
+            if func_name not in _AGG_FUNC_NAMES:
+                continue
+            if func.agg_star or not func.args:
+                arg_col = None
+            elif isinstance(func.args[0], ColumnRef):
+                arg_col = self._extract_column_name(func.args[0])
+            else:
+                arg_col = None
+            if (func_name, arg_col) in existing:
+                continue
+            alias = func_name if arg_col is None else f"{func_name}_{arg_col}"
+            agg_specs.append((
+                alias, func_name, arg_col, False, None, None, None, None,
+            ))
+            existing.add((func_name, arg_col))
+
+    @staticmethod
+    def _collect_agg_funcs(node: Any) -> list[FuncCall]:
+        """Recursively collect all FuncCall nodes from an AST subtree."""
+        result: list[FuncCall] = []
+        if isinstance(node, FuncCall):
+            result.append(node)
+        for attr in ("lexpr", "rexpr", "args", "arg"):
+            child = getattr(node, attr, None)
+            if child is None:
+                continue
+            if isinstance(child, (list, tuple)):
+                for item in child:
+                    result.extend(SQLCompiler._collect_agg_funcs(item))
+            else:
+                result.extend(SQLCompiler._collect_agg_funcs(child))
+        return result
 
     # -- Window functions -----------------------------------------------
 

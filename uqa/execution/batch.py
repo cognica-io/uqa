@@ -292,6 +292,9 @@ class Batch:
             values = [row.get(name) for row in rows]
             dtype = schema.get(name, DataType.TEXT)
             if _has_complex_values(values):
+                # Normalize mixed-type lists to homogeneous strings
+                # (matches PostgreSQL's type promotion to text).
+                values = _normalize_complex_values(values)
                 # Let Arrow infer nested types (list, struct) natively
                 arr = pa.array(values, from_pandas=True)
                 arrays.append(arr)
@@ -312,6 +315,32 @@ def _has_complex_values(values: list[Any]) -> bool:
         if isinstance(v, (list, dict)):
             return True
     return False
+
+
+def _normalize_complex_values(values: list[Any]) -> list[Any]:
+    """Normalize mixed-type lists for Arrow compatibility.
+
+    When a list contains elements of different types (e.g. ``[1, 2, 'four']``),
+    all elements are converted to strings.  This matches PostgreSQL's behavior
+    of promoting mixed-type arrays to ``text[]``.
+    """
+    result: list[Any] = []
+    for v in values:
+        if isinstance(v, list):
+            result.append(_normalize_list(v))
+        else:
+            result.append(v)
+    return result
+
+
+def _normalize_list(lst: list[Any]) -> list[Any]:
+    """Convert a mixed-type list to all-strings."""
+    if not lst:
+        return lst
+    types = {type(x) for x in lst if x is not None}
+    if len(types) <= 1:
+        return lst
+    return [str(x) if x is not None else None for x in lst]
 
 
 def _infer_dtype(value: Any) -> DataType:
