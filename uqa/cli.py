@@ -391,7 +391,8 @@ class UQAShell:
 
     def _print_banner(self) -> None:
         db = self._db_path or ":memory:"
-        print("usql -- UQA interactive SQL shell")
+        from uqa import __version__
+        print(f"usql {__version__} -- UQA interactive SQL shell")
         print(f"Database: {db}")
         print("Type SQL statements terminated by ';'")
         print("Use \\dt, \\d <table>, \\ds <table>, \\timing, \\reset, \\q")

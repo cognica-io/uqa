@@ -1,0 +1,60 @@
+name: Version consistency check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version consistency
+        run: |
+          set -euo pipefail
+
+          PYPROJECT_VERSION=$(python3 -c "
+          import re
+          text = open('pyproject.toml').read()
+          m = re.search(r'^version\s*=\s*\"([^\"]+)\"', text, re.MULTILINE)
+          print(m.group(1))
+          ")
+
+          INIT_VERSION=$(python3 -c "
+          import re
+          text = open('uqa/__init__.py').read()
+          m = re.search(r'__version__\s*=\s*\"([^\"]+)\"', text)
+          print(m.group(1))
+          ")
+
+          CITATION_VERSION=$(python3 -c "
+          import re
+          text = open('CITATION.cff').read()
+          m = re.search(r'^version:\s*(.+)$', text, re.MULTILINE)
+          print(m.group(1).strip())
+          ")
+
+          echo "pyproject.toml: $PYPROJECT_VERSION"
+          echo "__init__.py:    $INIT_VERSION"
+          echo "CITATION.cff:   $CITATION_VERSION"
+
+          FAILED=0
+
+          if [ "$PYPROJECT_VERSION" != "$INIT_VERSION" ]; then
+            echo "::error::Version mismatch: pyproject.toml ($PYPROJECT_VERSION) != __init__.py ($INIT_VERSION)"
+            FAILED=1
+          fi
+
+          if [ "$PYPROJECT_VERSION" != "$CITATION_VERSION" ]; then
+            echo "::error::Version mismatch: pyproject.toml ($PYPROJECT_VERSION) != CITATION.cff ($CITATION_VERSION)"
+            FAILED=1
+          fi
+
+          if [ "$FAILED" -eq 1 ]; then
+            exit 1
+          fi
+
+          echo "All versions match: $PYPROJECT_VERSION"
