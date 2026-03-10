@@ -24,8 +24,10 @@ Special commands (backslash):
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
+from pathlib import Path
 from typing import Iterable
 
 from prompt_toolkit import PromptSession
@@ -167,11 +169,18 @@ class UQAShell:
             text = f.read()
         self._execute_text(text)
 
+    @staticmethod
+    def _history_path() -> str:
+        """Return the path to the usql history file, creating the directory if needed."""
+        history_dir = Path(os.path.expanduser("~/.cognica/uqa"))
+        history_dir.mkdir(parents=True, exist_ok=True)
+        return str(history_dir / ".usql_history")
+
     def _ensure_session(self) -> PromptSession:
         """Lazily create the PromptSession on first REPL use."""
         if self._session is None:
             self._session = PromptSession(
-                history=FileHistory(".usql_history"),
+                history=FileHistory(self._history_path()),
                 auto_suggest=AutoSuggestFromHistory(),
                 lexer=PygmentsLexer(SqlLexer),
                 completer=self._completer,
