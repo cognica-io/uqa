@@ -996,6 +996,18 @@ class TestCypherSQLIntegration:
         names = {r["name"] for r in result.rows}
         assert names == {"B", "C"}
 
+    def test_cypher_explain(self):
+        """EXPLAIN shows CypherOp in the operator tree."""
+        e = Engine()
+        e.sql("SELECT * FROM create_graph('g')")
+        result = e.sql("""
+            EXPLAIN SELECT * FROM cypher('g', $$
+                MATCH (n:Person) RETURN n.name
+            $$) AS (name agtype)
+        """)
+        plan = result.rows[0]["plan"]
+        assert "CypherOp" in plan
+
 
 # =====================================================================
 # Named Graph + Vertex Label Tests

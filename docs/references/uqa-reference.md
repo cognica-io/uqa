@@ -1,5 +1,7 @@
 # UQA Reference Guide
 
+[TOC]
+
 ## 1. Introduction
 
 ### 1.1 What is UQA?
@@ -532,6 +534,74 @@ SELECT value FROM json_array_elements('[1, 2, 3]');
 SELECT value FROM json_array_elements_text('["a", "b", "c"]');
 ```
 
+#### `create_graph(name)` / `drop_graph(name)`
+
+Named graph management functions. `create_graph` creates an isolated graph namespace with dedicated SQLite-backed storage. `drop_graph` removes a named graph and its storage.
+
+```sql
+-- Create a named graph
+SELECT * FROM create_graph('social');
+
+-- Drop a named graph (cascades all vertices and edges)
+SELECT * FROM drop_graph('social');
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | string | Graph namespace name |
+
+#### `cypher(graph_name, query) AS (columns)`
+
+Apache AGE compatible openCypher query execution. Embeds a Cypher query in the SQL FROM clause, executing it against a named graph and returning results as a virtual table. Column names and types are specified in the `AS` clause.
+
+The Cypher compiler uses `GraphPostingList` as the core abstraction -- every clause transforms a posting list where each entry represents a binding row, consistent with UQA's posting-list-based architecture.
+
+```sql
+-- Create vertices and relationships
+SELECT * FROM cypher('social', $$
+    CREATE (a:Person {name: 'Alice', age: 30})-[:KNOWS]->(b:Person {name: 'Bob', age: 25})
+    RETURN a.name, b.name
+$$) AS (a_name agtype, b_name agtype);
+
+-- Pattern matching with filtering
+SELECT * FROM cypher('social', $$
+    MATCH (p:Person)-[:KNOWS]->(friend:Person)
+    WHERE p.age > 25
+    RETURN p.name AS person, friend.name AS friend, p.age AS age
+    ORDER BY p.name
+$$) AS (person agtype, friend agtype, age agtype);
+
+-- MERGE with ON CREATE SET
+SELECT * FROM cypher('social', $$
+    MERGE (p:Person {name: 'Carol'})
+    ON CREATE SET p.age = 28
+    RETURN p.name, p.age
+$$) AS (name agtype, age agtype);
+
+-- Variable-length paths
+SELECT * FROM cypher('social', $$
+    MATCH (a:Person)-[:KNOWS*1..3]->(b:Person)
+    RETURN DISTINCT a.name, b.name
+$$) AS (from_name agtype, to_name agtype);
+
+-- SQL WHERE on Cypher results
+SELECT person, age FROM cypher('social', $$
+    MATCH (p:Person) RETURN p.name AS person, p.age AS age
+$$) AS (person agtype, age agtype)
+WHERE age > 25;
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `graph_name` | string | Named graph to query (must be created with `create_graph`) |
+| `query` | string | openCypher query (typically wrapped in `$$...$$` dollar-quoting) |
+
+**Supported Cypher clauses**: `MATCH`, `OPTIONAL MATCH`, `CREATE`, `MERGE` (with `ON CREATE SET` / `ON MATCH SET`), `SET`, `DELETE` / `DETACH DELETE`, `RETURN` (with `ORDER BY`, `LIMIT`, `SKIP`, `DISTINCT`, `AS`), `WITH`, `UNWIND`
+
+**Supported expressions**: property access (`n.prop`), function calls (`id(n)`, `labels(n)`, `type(r)`, etc.), arithmetic, comparison, `AND`/`OR`/`NOT`/`XOR`, `IN`, `IS NULL`/`IS NOT NULL`, `CASE`/`WHEN`, list/map literals, list indexing, parameters (`$param`)
+
+**Built-in Cypher functions**: `id`, `labels`, `type`, `properties`, `keys`, `size`, `length`, `coalesce`, `toInteger`, `toFloat`, `toString`, `toBoolean`, `toLower`, `toUpper`, `trim`, `left`, `right`, `substring`, `replace`, `split`, `reverse`, `startsWith`, `endsWith`, `contains`, `head`, `tail`, `last`, `range`, `abs`, `ceil`, `floor`, `round`, `sign`, `rand`
+
 
 ## 5. Architecture
 
@@ -546,6 +616,7 @@ graph TD
     Optimizer --> Operators[Operator Tree]
     Operators --> Executor[Plan Executor]
     Executor --> PAR[Parallel Executor<br/>ThreadPool]
+    Operators --> Cypher[Cypher Compiler<br/>openCypher]
 
     PAR --> DS[Document Store<br/>SQLite]
     PAR --> II[Inverted Index<br/>SQLite]
@@ -577,9 +648,9 @@ All storage backends have two implementations: an in-memory variant for ephemera
 
 **HNSWIndex / SQLiteVectorIndex**: Hierarchical Navigable Small World graph for approximate nearest neighbor search. Cosine distance metric. Configuration: ef_construction=200, M=16. Vectors stored as float32 blobs in the `_vectors` table.
 
-**GraphStore / SQLiteGraphStore**: Adjacency-list graph storage with indexes on (source_id, label), (target_id, label), and (label). Vertex and edge properties stored as JSON.
+**GraphStore / SQLiteGraphStore**: Adjacency-list graph storage with indexes on (source_id, label), (target_id, label), and (label). Vertex labels stored in a dedicated indexed column for efficient label-based filtering. Vertex and edge properties stored as JSON. Named graphs use isolated `_graph_{name}_*` SQLite tables.
 
-**Catalog**: SQLite-based system catalog managing metadata, table schemas, documents, graph data, vectors, postings, statistics, and scoring parameters. Write-through semantics: every mutation writes to both in-memory structures and SQLite immediately. WAL mode for concurrent reads.
+**Catalog**: SQLite-based system catalog managing metadata, table schemas, documents, graph data, vectors, postings, statistics, scoring parameters, and named graphs. Write-through semantics: every mutation writes to both in-memory structures and SQLite immediately. WAL mode for concurrent reads.
 
 ### 5.3 SQL Compiler
 
@@ -598,6 +669,7 @@ The SQL compiler uses pglast (PostgreSQL parser) to parse SQL into an AST, then 
 - **JSON**: ->, ->>, #>, #>> operators, @>/<@ containment, ?/?|/?& key existence, JSONB_SET, JSONB_STRIP_NULLS, JSON_BUILD_OBJECT/ARRAY, JSON_OBJECT_KEYS, JSON_EXTRACT_PATH, JSON_TYPEOF, JSON_AGG, JSON_EACH, JSON_ARRAY_ELEMENTS
 - **Date/Time**: EXTRACT, DATE_TRUNC, DATE_PART, NOW, CURRENT_DATE/TIME/TIMESTAMP, CLOCK_TIMESTAMP, TIMEOFDAY, AGE, TO_CHAR/TO_DATE/TO_TIMESTAMP, MAKE_DATE/MAKE_TIMESTAMP/MAKE_INTERVAL, TO_NUMBER, OVERLAPS, ISFINITE
 - **Table functions**: GENERATE_SERIES, UNNEST, REGEXP_SPLIT_TO_TABLE, JSON_EACH/JSON_EACH_TEXT, JSON_ARRAY_ELEMENTS/JSON_ARRAY_ELEMENTS_TEXT
+- **Graph functions**: cypher() (Apache AGE compatible openCypher), create_graph(), drop_graph()
 - **System catalogs**: information_schema.columns, pg_catalog.pg_tables, pg_catalog.pg_views, pg_catalog.pg_indexes, pg_catalog.pg_type
 - **Transactions**: BEGIN, COMMIT, ROLLBACK, SAVEPOINT
 - **Utility**: EXPLAIN, ANALYZE
@@ -821,6 +893,78 @@ SELECT _doc_id, title FROM rpq('cited_by/cited_by', 1);
 -- Graph traversal as a scored signal in WHERE
 SELECT title, _score FROM papers
 WHERE traverse_match(1, 'cited_by', 2) ORDER BY _score DESC;
+```
+
+#### Graph Query Language (openCypher)
+
+Apache AGE compatible graph query using the `cypher()` SQL function. Named graphs provide isolated graph namespaces.
+
+```sql
+-- Create a named graph
+SELECT * FROM create_graph('social');
+
+-- Create vertices with labels and relationships
+SELECT * FROM cypher('social', $$
+    CREATE (a:Person {name: 'Alice', age: 30})
+    CREATE (b:Person {name: 'Bob', age: 25})
+    CREATE (c:Person {name: 'Carol', age: 28})
+    CREATE (a)-[:KNOWS]->(b)
+    CREATE (a)-[:KNOWS]->(c)
+    CREATE (b)-[:WORKS_WITH]->(c)
+    RETURN a.name
+$$) AS (name agtype);
+
+-- Pattern matching with WHERE filtering
+SELECT * FROM cypher('social', $$
+    MATCH (p:Person)-[:KNOWS]->(friend:Person)
+    WHERE p.age >= 28
+    RETURN p.name AS person, friend.name AS friend
+    ORDER BY person
+$$) AS (person agtype, friend agtype);
+
+-- MERGE: create if not exists, update if exists
+SELECT * FROM cypher('social', $$
+    MERGE (p:Person {name: 'Dave'})
+    ON CREATE SET p.age = 35
+    ON MATCH SET p.age = p.age + 1
+    RETURN p.name, p.age
+$$) AS (name agtype, age agtype);
+
+-- Aggregation with WITH pipeline
+SELECT * FROM cypher('social', $$
+    MATCH (p:Person)-[:KNOWS]->(friend:Person)
+    WITH p, count(friend) AS num_friends
+    WHERE num_friends > 1
+    RETURN p.name, num_friends
+$$) AS (name agtype, num_friends agtype);
+
+-- Variable-length path traversal
+SELECT * FROM cypher('social', $$
+    MATCH (a:Person {name: 'Alice'})-[:KNOWS*1..2]->(b:Person)
+    RETURN DISTINCT b.name
+$$) AS (reachable agtype);
+
+-- OPTIONAL MATCH (left outer join semantics)
+SELECT * FROM cypher('social', $$
+    MATCH (p:Person)
+    OPTIONAL MATCH (p)-[:MANAGES]->(e:Person)
+    RETURN p.name, e.name AS manages
+$$) AS (person agtype, manages agtype);
+
+-- UNWIND lists
+SELECT * FROM cypher('social', $$
+    UNWIND [1, 2, 3] AS x
+    RETURN x, x * x AS squared
+$$) AS (x agtype, squared agtype);
+
+-- SQL operations on Cypher results
+SELECT person, age FROM cypher('social', $$
+    MATCH (p:Person) RETURN p.name AS person, p.age AS age
+$$) AS (person agtype, age agtype)
+WHERE age > 25 ORDER BY age DESC;
+
+-- Clean up
+SELECT * FROM drop_graph('social');
 ```
 
 #### Multi-Signal Fusion
@@ -1123,7 +1267,7 @@ python -m pytest uqa/tests/ -v
 python -m pytest uqa/tests/test_sql.py -v
 ```
 
-1423 tests across 40 test files covering core algebra, operators, scoring, fusion, SQL compilation, physical execution, joins, graph operations, SQLite persistence, transactions, cost optimization, parallel execution, PostgreSQL 17 compatibility, and end-to-end integration.
+1576 tests across 42 test files covering core algebra, operators, scoring, fusion, SQL compilation, physical execution, joins, graph operations, openCypher graph queries, SQLite persistence, transactions, cost optimization, parallel execution, PostgreSQL 17 compatibility, and end-to-end integration.
 
 
 ## 10. References

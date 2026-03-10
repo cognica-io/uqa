@@ -107,6 +107,21 @@ FROM sales GROUP BY DATE_TRUNC('month', sale_date);
 -- Graph traversal and regular path queries
 SELECT _doc_id, title FROM traverse(1, 'cited_by', 2);
 SELECT _doc_id, title FROM rpq('cited_by/cited_by', 1);
+
+-- Apache AGE compatible graph query (openCypher)
+SELECT * FROM create_graph('social');
+
+SELECT * FROM cypher('social', $$
+    CREATE (a:Person {name: 'Alice', age: 30})-[:KNOWS]->(b:Person {name: 'Bob', age: 25})
+    RETURN a.name, b.name
+$$) AS (a_name agtype, b_name agtype);
+
+SELECT * FROM cypher('social', $$
+    MATCH (p:Person)-[:KNOWS]->(friend:Person)
+    WHERE p.age > 25
+    RETURN p.name, friend.name, p.age
+    ORDER BY p.name
+$$) AS (name agtype, friend agtype, age agtype);
 ```
 
 ## Architecture
@@ -120,6 +135,7 @@ graph TD
     Optimizer --> Operators[Operator Tree]
     Operators --> Executor[Plan Executor]
     Executor --> PAR[Parallel Executor<br/>ThreadPool]
+    Operators --> Cypher[Cypher Compiler<br/>openCypher]
 
     PAR --> DS[Document Store<br/>SQLite]
     PAR --> II[Inverted Index<br/>SQLite]
@@ -151,12 +167,13 @@ uqa/
   scoring/        BM25, Bayesian BM25, VectorScorer, WAND/BlockMaxWAND (via bayesian-bm25)
   fusion/         Log-odds conjunction, probabilistic boolean (via bayesian-bm25)
   graph/          GraphStore, traversal, pattern matching, RPQ, cross-paradigm, indexes
+    cypher/       openCypher lexer, parser, AST, posting-list-based compiler
   joins/          Hash, sort-merge, index, graph, cross-paradigm, similarity joins
   execution/      Volcano iterator engine: Apache Arrow columnar batches, physical operators, disk spilling
   planner/        Cost model, cardinality estimator, optimizer, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          1474 tests across 41 test files
+  tests/          1576 tests across 42 test files
 ```
 
 ## Key Features
@@ -225,6 +242,9 @@ uqa/
 | `regexp_split_to_table(str, pattern)` | Split string by regex into rows |
 | `json_each(json)` / `json_each_text(json)` | Expand JSON object to key/value rows |
 | `json_array_elements(json)` | Expand JSON array to a set of rows |
+| `create_graph('name')` | Create a named graph namespace |
+| `drop_graph('name')` | Drop a named graph |
+| `cypher('graph', $$ query $$) AS (cols)` | Execute openCypher query on a named graph |
 
 ### Persistence
 
@@ -237,7 +257,8 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 | Field Stats | `_field_stats_{table}` | Per-table field-level statistics (BM25) |
 | Doc Lengths | `_doc_lengths_{table}` | Per-table per-document token lengths (BM25) |
 | Vectors | In-memory HNSW per VECTOR column | Per-field `HNSWIndex` within each table |
-| Graph | `_graph_vertices_{table}`, `_graph_edges_{table}` | Per-table adjacency-indexed graph |
+| Graph | `_graph_vertices_{table}`, `_graph_edges_{table}` | Per-table adjacency-indexed graph with vertex labels |
+| Named Graphs | `_named_graphs`, `_graph_{name}_*` | Isolated graph namespaces for Cypher queries |
 | B-tree Indexes | SQLite indexes on `_data_{table}` | `CREATE INDEX` support |
 | Statistics | `_column_stats` | Per-table histograms and MCVs for optimizer |
 

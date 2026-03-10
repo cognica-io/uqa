@@ -112,6 +112,7 @@ class PlanExecutor:
             SemanticFilterOperator,
         )
         from uqa.graph.operators import (
+            CypherQueryOperator,
             TraverseOperator,
             PatternMatchOperator,
             RegularPathQueryOperator,
@@ -174,6 +175,11 @@ class PlanExecutor:
             case RegularPathQueryOperator():
                 lines.append(
                     f"{prefix}RPQOp(start={op.start_vertex})"
+                )
+            case CypherQueryOperator():
+                n_clauses = len(op.query.clauses)
+                lines.append(
+                    f"{prefix}CypherOp(clauses={n_clauses})"
                 )
             case IntersectOperator(operands=ops):
                 lines.append(f"{prefix}Intersect")

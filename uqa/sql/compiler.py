@@ -1891,6 +1891,8 @@ class SQLCompiler:
         """Run the operator tree through the QueryOptimizer."""
         from uqa.planner.optimizer import QueryOptimizer
 
+        if ctx.inverted_index is None:
+            return op
         stats = ctx.inverted_index.stats
         column_stats = table._stats if table is not None else None
         table_name = table.name if table is not None else None
@@ -1917,13 +1919,14 @@ class SQLCompiler:
         executor = PlanExecutor(ctx)
         plan_text = executor.explain(op)
 
-        stats = ctx.inverted_index.stats
-        cost_model = CostModel()
-        estimated_cost = cost_model.estimate(op, stats)
-
         lines = plan_text.split("\n")
         rows = [{"plan": line} for line in lines]
-        rows.append({"plan": f"  (estimated cost: {estimated_cost:.1f})"})
+
+        if ctx.inverted_index is not None:
+            stats = ctx.inverted_index.stats
+            cost_model = CostModel()
+            estimated_cost = cost_model.estimate(op, stats)
+            rows.append({"plan": f"  (estimated cost: {estimated_cost:.1f})"})
         return SQLResult(["plan"], rows)
 
     # ==================================================================
@@ -3587,11 +3590,17 @@ class SQLCompiler:
 
     @staticmethod
     def _is_graph_operator(op: Any) -> bool:
-        """Return True if op is a graph traversal or RPQ operator."""
+        """Return True if op is a graph traversal, RPQ, or Cypher operator."""
         if op is None:
             return False
-        from uqa.graph.operators import TraverseOperator, RegularPathQueryOperator
-        return isinstance(op, (TraverseOperator, RegularPathQueryOperator))
+        from uqa.graph.operators import (
+            CypherQueryOperator,
+            TraverseOperator,
+            RegularPathQueryOperator,
+        )
+        return isinstance(
+            op, (TraverseOperator, RegularPathQueryOperator, CypherQueryOperator)
+        )
 
     @staticmethod
     def _is_join_operator(op: Any) -> bool:
@@ -3710,13 +3719,12 @@ class SQLCompiler:
                 MATCH (n:Person) RETURN n.name, n.age
             $$) AS (name agtype, age agtype)
 
-        The Cypher query is parsed and executed against the named graph.
-        Results are materialized into a temporary Table so they enter the
-        standard posting-list SQL pipeline.
+        Returns a CypherQueryOperator that integrates into the operator
+        tree.  The operator produces a GraphPostingList with projected
+        fields, which PostingListScanOp reads via payload.fields.
         """
         from uqa.graph.cypher.parser import parse_cypher
-        from uqa.graph.cypher.compiler import CypherCompiler
-        from uqa.sql.table import ColumnDef as SQLColumnDef
+        from uqa.graph.operators import CypherQueryOperator
 
         if len(args) < 2:
             raise ValueError(
@@ -3728,73 +3736,22 @@ class SQLCompiler:
 
         graph = self._engine.get_graph(graph_name)
         ast = parse_cypher(cypher_source)
-        compiler = CypherCompiler(graph, params=self._cypher_params())
-        rows = compiler.execute(ast)
 
-        # Determine column names from AS clause or from result keys.
+        # Determine column names from AS clause.
         # pglast puts ``AS t(name agtype, age agtype)`` column defs in
         # ``node.coldeflist`` (ColumnDef.colname), not alias.colnames.
-        col_names: list[str] = []
+        col_names: list[str] | None = None
         if node.coldeflist:
             col_names = [cd.colname for cd in node.coldeflist]
         elif node.alias is not None and node.alias.colnames:
             col_names = [c.sval for c in node.alias.colnames]
-        elif rows:
-            col_names = list(rows[0].keys())
 
-        alias_name = (
-            node.alias.aliasname if node.alias is not None else "_cypher"
+        op = CypherQueryOperator(
+            graph, ast,
+            params=self._cypher_params(),
+            col_names=col_names,
         )
-
-        # Build positional mapping: AS column names may differ from
-        # Cypher result keys (e.g. AS (name agtype) vs n.name).
-        cypher_keys = list(rows[0].keys()) if rows else []
-
-        # Infer column types from the first result row.
-        def _infer_sql_type(
-            value: Any,
-        ) -> tuple[str, type]:
-            if isinstance(value, bool):
-                return "boolean", bool
-            if isinstance(value, int):
-                return "integer", int
-            if isinstance(value, float):
-                return "real", float
-            return "text", str
-
-        if rows:
-            sample = rows[0]
-            sample_values = [
-                sample.get(cn) if cn in sample
-                else (sample.get(cypher_keys[i]) if i < len(cypher_keys) else None)
-                for i, cn in enumerate(col_names)
-            ]
-            columns = [
-                SQLColumnDef(
-                    name=cn,
-                    type_name=_infer_sql_type(sv)[0],
-                    python_type=_infer_sql_type(sv)[1],
-                )
-                for cn, sv in zip(col_names, sample_values)
-            ]
-        else:
-            columns = [
-                SQLColumnDef(name=cn, type_name="text", python_type=str)
-                for cn in col_names
-            ]
-        table = Table(alias_name, columns)
-        for row in rows:
-            insert_data: dict[str, Any] = {}
-            for i, cn in enumerate(col_names):
-                if cn in row:
-                    insert_data[cn] = row[cn]
-                elif i < len(cypher_keys):
-                    insert_data[cn] = row.get(cypher_keys[i])
-            table.insert(insert_data)
-
-        self._engine._tables[alias_name] = table
-        self._expanded_views.append(alias_name)
-        return table, None
+        return None, op
 
     def _cypher_params(self) -> dict[str, Any]:
         """Convert SQL positional params ($1, $2) to Cypher named params."""

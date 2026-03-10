@@ -96,6 +96,25 @@ class CypherCompiler:
         Internally everything flows through GraphPostingList.
         The final RETURN projects posting list entries into result dicts.
         """
+        gpl = self.execute_posting_list(query)
+
+        # Convert the final GraphPostingList to result dicts.
+        rows: list[dict[str, Any]] = []
+        for entry in gpl:
+            row: dict[str, Any] = {}
+            for k, v in entry.payload.fields.items():
+                row[k] = v
+            rows.append(row)
+        return rows
+
+    def execute_posting_list(self, query: CypherQuery) -> GraphPostingList:
+        """Execute a Cypher query and return the result GraphPostingList.
+
+        This is the operator-tree-compatible entry point: every Cypher
+        clause transforms a GraphPostingList, and the final result
+        (after RETURN projection) is itself a GraphPostingList with
+        projected fields in each entry's payload.
+        """
         # Start with a single empty binding (one entry, no fields)
         gpl = self._empty_binding()
 
@@ -111,13 +130,13 @@ class CypherCompiler:
             elif isinstance(clause, DeleteClause):
                 gpl = self._exec_delete(clause, gpl)
             elif isinstance(clause, ReturnClause):
-                return self._exec_return(clause, gpl)
+                gpl = self._exec_return_posting_list(clause, gpl)
             elif isinstance(clause, WithClause):
                 gpl = self._exec_with(clause, gpl)
             elif isinstance(clause, UnwindClause):
                 gpl = self._exec_unwind(clause, gpl)
 
-        return []
+        return gpl
 
     # -- Binding posting list construction -----------------------------
 
@@ -768,6 +787,70 @@ class CypherCompiler:
             rows = rows[:limit_n]
 
         return rows
+
+    def _exec_return_posting_list(
+        self, clause: ReturnClause, bindings: GraphPostingList
+    ) -> GraphPostingList:
+        """Project the binding posting list into a result GraphPostingList.
+
+        Same logic as _exec_return but produces a GraphPostingList
+        with projected fields instead of plain dicts, keeping results
+        within the posting list abstraction.
+
+        ORDER BY expressions are evaluated against the original binding
+        fields (before projection), since they may reference variables
+        not present in the projected output.
+        """
+        binding_list = list(bindings)
+
+        # Sort using original binding fields before projection.
+        if clause.order_by:
+            for item in reversed(clause.order_by):
+                binding_list.sort(
+                    key=lambda e: _sort_key(
+                        self._eval(item.expr, e.payload.fields)
+                    ),
+                    reverse=not item.ascending,
+                )
+
+        # Project after sorting.
+        entries: list[PostingEntry] = []
+        payloads: dict[int, GraphPayload] = {}
+
+        for binding_entry in binding_list:
+            fields = binding_entry.payload.fields
+            projected: BindingFields = {}
+            for item in clause.items:
+                if isinstance(item.expr, Variable) and item.expr.name == "*":
+                    for k, v in fields.items():
+                        projected[k] = self._to_agtype(v)
+                    continue
+                val = self._eval(item.expr, fields)
+                key = item.alias or _expr_name(item.expr)
+                if isinstance(item.expr, Variable):
+                    val = self._to_agtype(val)
+                projected[key] = val
+
+            entry, doc_id = self._make_binding_entry(
+                projected, frozenset(), frozenset()
+            )
+            entries.append(entry)
+            payloads[doc_id] = GraphPayload()
+
+        gpl = GraphPostingList(entries, payloads)
+
+        if clause.distinct:
+            gpl = self._distinct_gpl(gpl)
+
+        if clause.skip:
+            skip_n = self._eval(clause.skip, {})
+            gpl = self._slice_gpl(gpl, skip_n, None)
+
+        if clause.limit:
+            limit_n = self._eval(clause.limit, {})
+            gpl = self._slice_gpl(gpl, 0, limit_n)
+
+        return gpl
 
     # -- WITH ----------------------------------------------------------
 

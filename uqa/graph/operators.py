@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from typing import Any
 
 from uqa.core.types import Payload, PostingEntry
+from uqa.graph.cypher.ast import CypherQuery
 from uqa.graph.pattern import (
     Alternation,
     Concat,
@@ -470,3 +471,63 @@ class VertexAggregationOperator:
         if self.agg_fn == "count":
             return len(values)
         return sum(numeric)
+
+
+class CypherQueryOperator:
+    """Execute an openCypher query against a named graph.
+
+    Integrates into the operator tree alongside TraverseOperator and
+    RegularPathQueryOperator.  The execute() method runs the Cypher
+    compiler and returns a GraphPostingList with projected fields.
+
+    When *col_names* is provided (from the SQL ``AS`` clause), the
+    Cypher result keys are remapped positionally to the SQL column
+    names so downstream physical operators see the expected names.
+    """
+
+    def __init__(
+        self,
+        graph: GraphStore,
+        query: CypherQuery,
+        params: dict[str, Any] | None = None,
+        col_names: list[str] | None = None,
+    ) -> None:
+        self.graph = graph
+        self.query = query
+        self.params = params or {}
+        self.col_names = col_names
+
+    def execute(self, ctx: object) -> GraphPostingList:
+        from uqa.graph.cypher.compiler import CypherCompiler
+
+        compiler = CypherCompiler(self.graph, params=self.params)
+        gpl = compiler.execute_posting_list(self.query)
+
+        if self.col_names is None:
+            return gpl
+
+        # Remap Cypher result keys to AS clause column names.
+        cypher_keys: list[str] | None = None
+        remapped_entries: list[PostingEntry] = []
+        remapped_payloads: dict[int, GraphPayload] = {}
+
+        for entry in gpl:
+            old_fields = entry.payload.fields
+            if cypher_keys is None:
+                cypher_keys = list(old_fields.keys())
+            new_fields: dict[str, Any] = {}
+            for i, col in enumerate(self.col_names):
+                if col in old_fields:
+                    new_fields[col] = old_fields[col]
+                elif i < len(cypher_keys):
+                    new_fields[col] = old_fields.get(cypher_keys[i])
+            new_entry = PostingEntry(
+                entry.doc_id,
+                Payload(score=entry.payload.score, fields=new_fields),
+            )
+            remapped_entries.append(new_entry)
+            gp = gpl.get_graph_payload(entry.doc_id)
+            if gp is not None:
+                remapped_payloads[entry.doc_id] = gp
+
+        return GraphPostingList(remapped_entries, remapped_payloads)

@@ -1,5 +1,48 @@
 # History
 
+## 0.8.0 (2026-03-10)
+
+Apache AGE compatible graph query with openCypher and named graphs.
+
+### Graph Query Language (openCypher)
+
+- Cypher lexer, recursive-descent parser, and AST for the openCypher subset
+- `CypherCompiler` executes through `GraphPostingList` (binding table pattern) -- every clause transforms a posting list, consistent with UQA's core thesis
+- Clauses: `MATCH`, `OPTIONAL MATCH`, `CREATE`, `MERGE` (with `ON CREATE SET` / `ON MATCH SET`), `SET`, `DELETE` / `DETACH DELETE`, `RETURN`, `WITH`, `UNWIND`
+- `RETURN` modifiers: `ORDER BY`, `DESC`, `LIMIT`, `SKIP`, `DISTINCT`, aliases (`AS`), expressions
+- Pattern matching: node patterns `(n:Label {props})`, relationship patterns `-[r:TYPE*min..max]->`, variable-length paths, cross-label matching, anonymous nodes
+- Expression evaluation: property access, function calls, arithmetic, comparison, `AND`/`OR`/`NOT`/`XOR`, `IN`, `IS NULL`/`IS NOT NULL`, `CASE`/`WHEN`/`THEN`/`ELSE`/`END`, list/map literals, list indexing, parameters (`$param`)
+- Built-in functions: `id`, `labels`, `type`, `properties`, `keys`, `size`, `length`, `coalesce`, `toInteger`, `toFloat`, `toString`, `toBoolean`, `toLower`, `toUpper`, `trim`, `left`, `right`, `substring`, `replace`, `split`, `reverse`, `startsWith`, `endsWith`, `contains`, `head`, `tail`, `last`, `range`, `abs`, `ceil`, `floor`, `round`, `sign`, `rand`
+
+### Named Graphs
+
+- `create_graph('name')` SQL function -- creates an isolated graph namespace with dedicated SQLite-backed storage
+- `drop_graph('name')` SQL function -- removes a named graph and its storage
+- Named graph persistence via `_named_graphs` catalog table
+- Named graphs restore automatically on engine restart
+
+### SQL Integration (Apache AGE compatible)
+
+- `cypher('graph_name', $$ MATCH ... RETURN ... $$) AS (col1 agtype, col2 agtype)` -- embed Cypher queries in SQL FROM clause
+- Column type inference from Cypher result values (integer, real, boolean, text) instead of hardcoding text
+- Positional column mapping between Cypher result keys and AS clause column names
+- SQL WHERE, ORDER BY, GROUP BY, JOIN work on cypher() results like any other table
+
+### Vertex Labels
+
+- Added required `label` field to `Vertex` datatype (between `vertex_id` and `properties`)
+- `vertices_by_label(label)` for efficient label-based vertex retrieval
+- SQLite label index on `_graph_vertices` tables
+- `remove_vertex(vertex_id)` -- removes vertex and all incident edges (both in-memory and SQLite)
+- `remove_edge(edge_id)` -- removes single edge (both in-memory and SQLite)
+- Auto-incrementing vertex/edge ID generators (`next_vertex_id()`, `next_edge_id()`)
+
+### Tests
+
+- 1576 tests across 42 test files (up from 1474 in v0.7.1)
+- `test_cypher.py` with 102 tests: lexer (14), parser (19), match (12), create (4), set (2), delete (3), merge (3), return (8), with (2), unwind (2), functions (7), posting list (4), SQL integration (7), named graphs (3), vertex labels (6), additional coverage (6)
+
+
 ## 0.7.1 (2026-03-10)
 
 PostgreSQL compatibility fixes and SQLite thread safety.
