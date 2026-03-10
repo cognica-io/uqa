@@ -86,7 +86,6 @@ FROM-clause table functions:
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
 from pglast import parse_sql
@@ -179,30 +178,64 @@ if TYPE_CHECKING:
 # Result type
 # ======================================================================
 
-@dataclass
 class SQLResult:
-    """Result of a SQL query: columns + rows."""
+    """Result of a SQL query: columns + rows.
 
-    columns: list[str]
-    rows: list[dict[str, Any]]
+    When constructed from the physical execution engine, the original
+    Arrow RecordBatches are preserved so that ``to_arrow()`` returns a
+    zero-copy ``pyarrow.Table`` without an intermediate dict round-trip.
+    """
+
+    __slots__ = ("columns", "_rows", "_batches")
+
+    def __init__(
+        self,
+        columns: list[str],
+        rows: list[dict[str, Any]],
+        *,
+        batches: list[Any] | None = None,
+    ) -> None:
+        self.columns = columns
+        self._rows = rows
+        self._batches = batches
+
+    @property
+    def rows(self) -> list[dict[str, Any]]:
+        if self._rows is None:
+            self._rows = _batches_to_rows(self._batches, self.columns)
+        return self._rows
 
     def __len__(self) -> int:
-        return len(self.rows)
+        if self._rows is not None:
+            return len(self._rows)
+        if self._batches:
+            return sum(b.num_rows for b in self._batches)
+        return 0
 
     def __iter__(self):
-        return iter(self.rows)
+        if self._rows is not None:
+            return iter(self._rows)
+        if self._batches:
+            return _iter_batches(self._batches)
+        return iter([])
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, SQLResult):
+            return NotImplemented
+        return self.columns == other.columns and self.rows == other.rows
 
     def __repr__(self) -> str:
-        return f"SQLResult(columns={self.columns}, {len(self.rows)} rows)"
+        return f"SQLResult(columns={self.columns}, {len(self)} rows)"
 
     def __str__(self) -> str:
-        if not self.rows:
+        rows = self.rows
+        if not rows:
             return "(0 rows)"
         col_widths: dict[str, int] = {}
         for col in self.columns:
             col_widths[col] = len(col)
         str_rows: list[dict[str, str]] = []
-        for row in self.rows:
+        for row in rows:
             sr = {}
             for col in self.columns:
                 s = _format_value(row.get(col, ""))
@@ -217,8 +250,66 @@ class SQLResult:
             parts.append(
                 " | ".join(sr[col].ljust(col_widths[col]) for col in self.columns)
             )
-        parts.append(f"({len(self.rows)} rows)")
+        parts.append(f"({len(rows)} rows)")
         return "\n".join(parts)
+
+    def to_arrow(self) -> "pa.Table":
+        """Convert this result to a ``pyarrow.Table``.
+
+        When the result was produced by the physical execution engine,
+        the original Arrow RecordBatches are concatenated directly
+        without an intermediate Python-dict conversion.
+        """
+        import pyarrow as pa
+
+        if self._batches:
+            table = pa.Table.from_batches(self._batches)
+            if list(table.column_names) != self.columns:
+                table = table.select(self.columns)
+            return table
+
+        rows = self.rows
+        if not rows:
+            arrays = [pa.array([], type=pa.string()) for _ in self.columns]
+            return pa.table(
+                {col: arr for col, arr in zip(self.columns, arrays)}
+            )
+
+        col_values: dict[str, list[Any]] = {col: [] for col in self.columns}
+        for row in rows:
+            for col in self.columns:
+                col_values[col].append(row.get(col))
+
+        arrays: dict[str, pa.Array] = {}
+        for col in self.columns:
+            values = col_values[col]
+            arrays[col] = pa.array(values, type=_infer_arrow_type(values))
+
+        return pa.table(arrays)
+
+    def to_parquet(self, path: str) -> None:
+        """Write this result to a Parquet file at *path*."""
+        import pyarrow.parquet as pq
+
+        pq.write_table(self.to_arrow(), path)
+
+
+def _iter_batches(batches: list[Any]):
+    """Yield row dicts from Arrow RecordBatches without materializing all at once."""
+    for rb in batches:
+        pydict = rb.to_pydict()
+        names = rb.schema.names
+        for i in range(rb.num_rows):
+            yield {name: pydict[name][i] for name in names}
+
+
+def _batches_to_rows(
+    batches: list[Any] | None, columns: list[str]
+) -> list[dict[str, Any]]:
+    """Convert Arrow RecordBatches to row dicts."""
+    if not batches:
+        return []
+    return list(_iter_batches(batches))
 
 
 def _format_value(val: Any) -> str:
@@ -227,6 +318,37 @@ def _format_value(val: Any) -> str:
     if isinstance(val, float):
         return f"{val:.4f}"
     return str(val)
+
+
+def _infer_arrow_type(values: list[Any]) -> "pa.DataType":
+    """Infer a pyarrow type from a list of Python values."""
+    import datetime
+
+    import pyarrow as pa
+
+    for v in values:
+        if v is None:
+            continue
+        if isinstance(v, bool):
+            return pa.bool_()
+        if isinstance(v, int):
+            return pa.int64()
+        if isinstance(v, float):
+            return pa.float64()
+        if isinstance(v, datetime.datetime):
+            return pa.timestamp("us")
+        if isinstance(v, datetime.date):
+            return pa.date32()
+        if isinstance(v, datetime.time):
+            return pa.time64("us")
+        if isinstance(v, datetime.timedelta):
+            return pa.duration("us")
+        if isinstance(v, bytes):
+            return pa.binary()
+        if isinstance(v, list):
+            return pa.list_(_infer_arrow_type(v))
+        return pa.string()
+    return pa.string()
 
 
 # ======================================================================
@@ -2165,25 +2287,26 @@ class SQLCompiler:
 
         # Execute physical plan
         physical.open()
-        rows: list[dict[str, Any]] = []
+        batches: list[Any] = []
         while True:
             batch = physical.next()
             if batch is None:
                 break
-            rows.extend(batch.to_rows())
+            rb = batch.compact().record_batch if batch.selection is not None else batch.record_batch
+            batches.append(rb)
         physical.close()
 
         # Determine column names
         if expected_cols is not None:
             columns = expected_cols
-        elif rows:
-            columns = list(rows[0].keys())
+        elif batches:
+            columns = list(batches[0].schema.names)
         elif table is not None:
             columns = list(table.columns.keys())
         else:
             columns = []
 
-        return SQLResult(columns, rows)
+        return SQLResult(columns, None, batches=batches)
 
     @staticmethod
     def _is_select_star(target_list: tuple | None) -> bool:

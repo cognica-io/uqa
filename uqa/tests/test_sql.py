@@ -401,6 +401,76 @@ class TestSQLResult:
         result = engine.sql("SELECT * FROM papers")
         assert "5 rows" in repr(result)
 
+    def test_to_arrow(self, engine: Engine) -> None:
+        import pyarrow as pa
+
+        result = engine.sql("SELECT title, year, citations FROM papers ORDER BY year")
+        table = result.to_arrow()
+        assert isinstance(table, pa.Table)
+        assert table.num_rows == 5
+        assert table.column_names == ["title", "year", "citations"]
+        assert table.column("year").type == pa.int64()
+        assert table.column("title").type == pa.string()
+        assert table.column("year").to_pylist() == [2017, 2018, 2019, 2020, 2021]
+
+    def test_to_arrow_empty(self, engine: Engine) -> None:
+        import pyarrow as pa
+
+        result = engine.sql("SELECT title, year FROM papers WHERE year > 9999")
+        table = result.to_arrow()
+        assert isinstance(table, pa.Table)
+        assert table.num_rows == 0
+        assert table.column_names == ["title", "year"]
+
+    def test_to_arrow_mixed_types(self, engine: Engine) -> None:
+        import pyarrow as pa
+
+        result = engine.sql(
+            "SELECT 1 AS i, 3.14 AS f, 'hello' AS s, TRUE AS b"
+        )
+        table = result.to_arrow()
+        assert table.column("i").type == pa.int64()
+        assert table.column("f").type == pa.float64()
+        assert table.column("s").type == pa.string()
+        assert table.column("b").type == pa.bool_()
+
+    def test_to_arrow_with_nulls(self, engine: Engine) -> None:
+        import pyarrow as pa
+
+        result = engine.sql(
+            "SELECT 1 AS v UNION ALL SELECT NULL"
+        )
+        table = result.to_arrow()
+        assert table.num_rows == 2
+        assert table.column("v").null_count == 1
+
+    def test_to_parquet(self, engine: Engine, tmp_path) -> None:
+        import pyarrow.parquet as pq
+
+        path = str(tmp_path / "test.parquet")
+        result = engine.sql("SELECT title, year, citations FROM papers ORDER BY year")
+        result.to_parquet(path)
+
+        table = pq.read_table(path)
+        assert table.num_rows == 5
+        assert table.column_names == ["title", "year", "citations"]
+        assert table.column("year").to_pylist() == [2017, 2018, 2019, 2020, 2021]
+
+    def test_to_parquet_roundtrip(self, engine: Engine, tmp_path) -> None:
+        import pyarrow.parquet as pq
+
+        path = str(tmp_path / "roundtrip.parquet")
+        result = engine.sql(
+            "SELECT title, year FROM papers WHERE year >= 2020 ORDER BY year"
+        )
+        result.to_parquet(path)
+
+        table = pq.read_table(path)
+        assert table.num_rows == 2
+        titles = table.column("title").to_pylist()
+        assert "scaling language models methods and insights" in titles
+        assert "vision transformer for image recognition" in titles
+
 
 # ==================================================================
 # EXPLAIN / ANALYZE
