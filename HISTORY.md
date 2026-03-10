@@ -1,5 +1,30 @@
 # History
 
+## 0.9.2 (2026-03-10)
+
+Enhanced text analysis pipeline with NGramFilter, analyzer presets, and CI.
+
+### Text Analysis
+
+- `NGramFilter(min_gram, max_gram, keep_short)`: character-level n-gram token filter for CJK and substring matching
+  - `keep_short` option preserves tokens shorter than `min_gram` instead of dropping them
+- Updated `standard` analyzer preset: StandardTokenizer + LowerCase + ASCIIFolding + StopWord + PorterStem
+- New `standard_cjk` analyzer preset: standard + NGramFilter(2, 3, keep_short=True) for CJK text
+- `DEFAULT_ANALYZER` changed from `whitespace` to `standard`
+
+### CI
+
+- Added GitHub Actions workflow for running unit tests on Python 3.12 and 3.13
+- Version consistency check workflow validates pyproject.toml, `__init__.py`, and CITATION.cff
+
+### Tests
+
+- 1671 tests across 44 test files (up from 1659 in v0.9.1)
+- NGramFilter tests: default, short_token_dropped, keep_short, keep_short_mixed, roundtrip, roundtrip_keep_short, validation
+- Analyzer preset tests: standard stemming/ASCII folding, standard_cjk, standard_cjk keep_short
+- Index tests use explicit `whitespace_analyzer()` for isolation from DEFAULT_ANALYZER changes
+
+
 ## 0.9.1 (2026-03-10)
 
 Arrow and Parquet export with zero-copy optimization.
@@ -68,7 +93,7 @@ Lucene-style text analysis pipeline with configurable analyzers.
 
 ### Named Analyzer Registry
 
-- Built-in presets: `whitespace`, `standard` (StandardTokenizer + LowerCase + StopWord), `keyword`
+- Built-in presets: `whitespace`, `standard`, `standard_cjk`, `keyword`
 - `register_analyzer(name, analyzer)` / `get_analyzer(name)` / `drop_analyzer(name)` / `list_analyzers()`
 - Cannot overwrite or drop built-in analyzers
 

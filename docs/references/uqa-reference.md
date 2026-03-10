@@ -632,7 +632,9 @@ SELECT * FROM drop_analyzer('english_stem');
 
 **Available tokenizers**: `whitespace`, `standard` (Unicode-aware), `keyword` (no splitting), `letter`, `pattern` (regex-based), `ngram` (n-gram generation)
 
-**Available token filters**: `lowercase`, `uppercase`, `stop` (stop word removal), `porter_stem` (Porter stemmer), `length` (min/max filtering), `edge_ngram` (prefix n-grams), `ascii_folding` (Unicode-to-ASCII normalization), `synonym` (synonym expansion)
+**Available token filters**: `lowercase`, `uppercase`, `stop` (stop word removal), `porter_stem` (Porter stemmer), `length` (min/max filtering), `ngram` (character n-grams with `keep_short` option), `edge_ngram` (prefix n-grams), `ascii_folding` (Unicode-to-ASCII normalization), `synonym` (synonym expansion)
+
+**Built-in analyzer presets**: `whitespace` (WhitespaceTokenizer + LowerCase), `standard` (StandardTokenizer + LowerCase + ASCIIFolding + StopWord + PorterStem), `standard_cjk` (standard + NGram(2, 3, keep_short=True)), `keyword` (no splitting, no filters). `DEFAULT_ANALYZER` uses the `standard` preset.
 
 **Available character filters**: `html_strip` (HTML tag removal), `mapping` (character mapping), `pattern_replace` (regex replacement)
 
@@ -1351,7 +1353,7 @@ python -m pytest uqa/tests/ -v
 python -m pytest uqa/tests/test_sql.py -v
 ```
 
-1659 tests across 44 test files covering core algebra, operators, scoring, fusion, SQL compilation, physical execution, joins, graph operations, openCypher graph queries, SQLite persistence, transactions, cost optimization, parallel execution, PostgreSQL 17 compatibility, text analysis pipeline, Arrow/Parquet export, and end-to-end integration.
+1671 tests across 44 test files covering core algebra, operators, scoring, fusion, SQL compilation, physical execution, joins, graph operations, openCypher graph queries, SQLite persistence, transactions, cost optimization, parallel execution, PostgreSQL 17 compatibility, text analysis pipeline, Arrow/Parquet export, and end-to-end integration.
 
 
 ## 10. References

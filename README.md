@@ -185,7 +185,7 @@ uqa/
   planner/        Cost model, cardinality estimator, optimizer, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          1659 tests across 44 test files
+  tests/          1671 tests across 44 test files
 ```
 
 ## Key Features
