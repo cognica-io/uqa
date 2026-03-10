@@ -122,6 +122,15 @@ SELECT * FROM cypher('social', $$
     RETURN p.name, friend.name, p.age
     ORDER BY p.name
 $$) AS (name agtype, friend agtype, age agtype);
+
+-- Text analysis: custom analyzer with stemming
+SELECT * FROM create_analyzer('english_stem', '{
+    "tokenizer": {"type": "standard"},
+    "token_filters": [{"type": "lowercase"}, {"type": "stop", "language": "english"},
+                      {"type": "porter_stem"}],
+    "char_filters": []}');
+
+SELECT * FROM list_analyzers();
 ```
 
 ## Architecture
@@ -138,7 +147,7 @@ graph TD
     Operators --> Cypher[Cypher Compiler<br/>openCypher]
 
     PAR --> DS[Document Store<br/>SQLite]
-    PAR --> II[Inverted Index<br/>SQLite]
+    PAR --> II[Inverted Index<br/>SQLite + Analyzer]
     PAR --> VI[Vector Index<br/>HNSW + SQLite]
     PAR --> GS[Graph Store<br/>SQLite]
 
@@ -162,6 +171,7 @@ graph TD
 ```
 uqa/
   core/           PostingList, types, hierarchical documents
+  analysis/       Text analysis pipeline: CharFilter, Tokenizer, TokenFilter, Analyzer
   storage/        SQLite-backed stores: documents, inverted index, vectors, graph
   operators/      Operator algebra (boolean, primitive, hybrid, aggregation, hierarchical)
   scoring/        BM25, Bayesian BM25, VectorScorer, WAND/BlockMaxWAND (via bayesian-bm25)
@@ -173,7 +183,7 @@ uqa/
   planner/        Cost model, cardinality estimator, optimizer, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          1576 tests across 42 test files
+  tests/          1646 tests across 43 test files
 ```
 
 ## Key Features
@@ -245,6 +255,9 @@ uqa/
 | `create_graph('name')` | Create a named graph namespace |
 | `drop_graph('name')` | Drop a named graph |
 | `cypher('graph', $$ query $$) AS (cols)` | Execute openCypher query on a named graph |
+| `create_analyzer('name', 'config')` | Create a custom text analyzer (JSON config) |
+| `drop_analyzer('name')` | Drop a custom text analyzer |
+| `list_analyzers()` | List all registered analyzers |
 
 ### Persistence
 
@@ -260,6 +273,7 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 | Graph | `_graph_vertices_{table}`, `_graph_edges_{table}` | Per-table adjacency-indexed graph with vertex labels |
 | Named Graphs | `_named_graphs`, `_graph_{name}_*` | Isolated graph namespaces for Cypher queries |
 | B-tree Indexes | SQLite indexes on `_data_{table}` | `CREATE INDEX` support |
+| Analyzers | `_analyzers` | Custom text analyzer configurations |
 | Statistics | `_column_stats` | Per-table histograms and MCVs for optimizer |
 
 ### Query Optimizer
@@ -415,6 +429,7 @@ python examples/fluent/vector_and_hybrid.py   # KNN, hybrid, vector exclusion, f
 python examples/fluent/graph.py               # Traversal, RPQ, pattern matching, indexes
 python examples/fluent/hierarchical.py        # Nested data, path filters, aggregation
 python examples/fluent/multi_paradigm.py      # Multi-signal fusion, graph analytics, query plans
+python examples/fluent/analysis.py            # Text analysis pipeline, tokenizers, filters, stemming
 ```
 
 ### SQL (`examples/sql/`)
@@ -426,6 +441,7 @@ python examples/sql/graph.py                  # FROM traverse/rpq, aggregates, G
 python examples/sql/fusion.py                 # fuse_log_odds, fuse_prob_and/or/not, EXPLAIN
 python examples/sql/joins_and_subqueries.py   # JOINs, derived tables, set operations, recursive CTE
 python examples/sql/analytics.py              # Aggregates, window functions, JSON, date/time, UPSERT
+python examples/sql/analysis.py               # Text analyzers via SQL: create, list, drop, persistence
 ```
 
 ### Interactive Shell

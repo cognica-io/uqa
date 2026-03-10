@@ -1,5 +1,87 @@
 # History
 
+## 0.9.0 (2026-03-10)
+
+Lucene-style text analysis pipeline with configurable analyzers.
+
+### Text Analysis Pipeline
+
+- Composable `CharFilter -> Tokenizer -> TokenFilter` pipeline (Lucene architecture)
+- `Analyzer` class with `analyze(text) -> list[str]`, JSON serialization roundtrip (`to_dict`/`from_dict`/`to_json`/`from_json`)
+- Backward compatible: `DEFAULT_ANALYZER` (WhitespaceTokenizer + LowerCaseFilter) produces identical output to `text.lower().split()`
+
+### Tokenizers
+
+- `WhitespaceTokenizer`: split on whitespace (`str.split()`)
+- `StandardTokenizer`: Unicode word-boundary tokenizer (`\w+`)
+- `LetterTokenizer`: ASCII letters only (`[a-zA-Z]+`)
+- `NGramTokenizer(min_gram, max_gram)`: character-level n-grams for fuzzy matching
+- `PatternTokenizer(pattern)`: split by regex delimiter
+- `KeywordTokenizer`: entire input as a single token
+
+### Token Filters
+
+- `LowerCaseFilter`: case normalization
+- `StopWordFilter(language, custom_words)`: stop word removal with English built-in list
+- `PorterStemFilter`: Porter stemming algorithm (M. F. Porter, 1980) -- morphological normalization
+- `ASCIIFoldingFilter`: fold Unicode to ASCII equivalents (NFKD normalization)
+- `SynonymFilter(synonyms)`: expand tokens with synonym alternatives
+- `EdgeNGramFilter(min_gram, max_gram)`: prefix n-grams for autocomplete/typeahead
+- `LengthFilter(min_length, max_length)`: filter tokens by length
+
+### Char Filters
+
+- `HTMLStripCharFilter`: strip HTML tags, decode common entities (`&amp;`, `&lt;`, etc.)
+- `MappingCharFilter(mapping)`: string-level character replacements (longest-match-first)
+- `PatternReplaceCharFilter(pattern, replacement)`: regex-based text replacement
+
+### Named Analyzer Registry
+
+- Built-in presets: `whitespace`, `standard` (StandardTokenizer + LowerCase + StopWord), `keyword`
+- `register_analyzer(name, analyzer)` / `get_analyzer(name)` / `drop_analyzer(name)` / `list_analyzers()`
+- Cannot overwrite or drop built-in analyzers
+
+### Inverted Index Integration
+
+- `InvertedIndex` and `SQLiteInvertedIndex` accept `analyzer` and `field_analyzers` parameters
+- `set_field_analyzer(field, analyzer)` / `get_field_analyzer(field)` for per-field overrides
+- All tokenization uses the analyzer pipeline instead of hardcoded `text.lower().split()`
+- Analyzer symmetry: same analyzer used at index time and query time
+
+### SQL Table Functions
+
+- `create_analyzer('name', 'config_json')` -- create a named analyzer from JSON configuration
+- `drop_analyzer('name')` -- remove a custom analyzer
+- `list_analyzers()` -- enumerate all registered analyzers (built-in + custom)
+
+### Engine API
+
+- `engine.create_analyzer(name, config)` -- create and persist a named analyzer
+- `engine.drop_analyzer(name)` -- drop a named analyzer
+- `engine.set_table_analyzer(table, field, analyzer_name)` -- assign analyzer to a table field
+
+### Catalog Persistence
+
+- New `_analyzers` table in SQLite catalog for named analyzer configurations
+- Analyzers restore automatically on engine restart via `_load_from_catalog()`
+
+### Query-Time Integration
+
+- `_make_text_search_op` and `_build_text_search_from` in SQL compiler use field analyzer
+- `score_bm25()` and `score_bayesian_bm25()` in QueryBuilder use field analyzer (added optional `field` parameter)
+- Cross-paradigm operators (`TextToGraphOperator`, `TextSimilarityJoinOperator`) use `DEFAULT_ANALYZER`
+
+### Tests
+
+- 1646 tests across 43 test files (up from 1576 in v0.8.0)
+- `test_analysis.py` with 70 tests: tokenizers (14), token filters (17), char filters (8), analyzer composition (7), named registry (5), inverted index integration (8), SQL table functions (3), catalog persistence (1), SQLite inverted index (4), query builder (1), cross-paradigm (2)
+
+### Examples
+
+- `examples/fluent/analysis.py` -- 14 examples: built-in analyzers, custom pipelines, stemming, autocomplete, synonyms, ASCII folding, per-field analyzers, BM25 scoring, serialization
+- `examples/sql/analysis.py` -- 11 examples: SQL table functions, analyzer assignment, persistence across sessions
+
+
 ## 0.8.0 (2026-03-10)
 
 Apache AGE compatible graph query with openCypher and named graphs.

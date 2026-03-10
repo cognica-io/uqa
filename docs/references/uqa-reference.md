@@ -602,6 +602,42 @@ WHERE age > 25;
 
 **Built-in Cypher functions**: `id`, `labels`, `type`, `properties`, `keys`, `size`, `length`, `coalesce`, `toInteger`, `toFloat`, `toString`, `toBoolean`, `toLower`, `toUpper`, `trim`, `left`, `right`, `substring`, `replace`, `split`, `reverse`, `startsWith`, `endsWith`, `contains`, `head`, `tail`, `last`, `range`, `abs`, `ceil`, `floor`, `round`, `sign`, `rand`
 
+#### `create_analyzer(name, config)` / `drop_analyzer(name)` / `list_analyzers()`
+
+Text analysis management functions. `create_analyzer` registers a custom analyzer from a JSON configuration specifying tokenizer, token filters, and character filters. `drop_analyzer` removes a custom analyzer. `list_analyzers` returns all registered analyzers (both built-in and custom).
+
+```sql
+-- Create a custom analyzer with stemming
+SELECT * FROM create_analyzer('english_stem', '{
+    "tokenizer": {"type": "standard"},
+    "token_filters": [
+        {"type": "lowercase"},
+        {"type": "stop", "language": "english"},
+        {"type": "porter_stem"}
+    ],
+    "char_filters": []
+}');
+
+-- List all registered analyzers
+SELECT * FROM list_analyzers();
+
+-- Drop a custom analyzer
+SELECT * FROM drop_analyzer('english_stem');
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | string | Analyzer name |
+| `config` | string | JSON configuration with `tokenizer`, `token_filters`, and `char_filters` arrays |
+
+**Available tokenizers**: `whitespace`, `standard` (Unicode-aware), `keyword` (no splitting), `letter`, `pattern` (regex-based), `ngram` (n-gram generation)
+
+**Available token filters**: `lowercase`, `uppercase`, `stop` (stop word removal), `porter_stem` (Porter stemmer), `length` (min/max filtering), `edge_ngram` (prefix n-grams), `ascii_folding` (Unicode-to-ASCII normalization), `synonym` (synonym expansion)
+
+**Available character filters**: `html_strip` (HTML tag removal), `mapping` (character mapping), `pattern_replace` (regex replacement)
+
+Custom analyzers are persisted to the SQLite catalog (`_analyzers` table) and automatically restored when the engine is reopened.
+
 
 ## 5. Architecture
 
@@ -619,7 +655,7 @@ graph TD
     Operators --> Cypher[Cypher Compiler<br/>openCypher]
 
     PAR --> DS[Document Store<br/>SQLite]
-    PAR --> II[Inverted Index<br/>SQLite]
+    PAR --> II[Inverted Index<br/>SQLite + Analyzer]
     PAR --> VI[Vector Index<br/>HNSW + SQLite]
     PAR --> GS[Graph Store<br/>SQLite]
 
@@ -644,13 +680,13 @@ All storage backends have two implementations: an in-memory variant for ephemera
 
 **DocumentStore / SQLiteDocumentStore**: Stores full documents. Per-table isolation: each SQL table gets its own `_data_{table_name}` SQLite table with typed columns.
 
-**InvertedIndex / SQLiteInvertedIndex**: Maps (field, term) pairs to posting lists. Includes skip pointers for fast forward-seeking during intersection and block-max indexes for WAND pruning. Per-table, per-field SQLite tables: `_inverted_{table}_{field}`.
+**InvertedIndex / SQLiteInvertedIndex**: Maps (field, term) pairs to posting lists. Includes skip pointers for fast forward-seeking during intersection and block-max indexes for WAND pruning. Per-table, per-field SQLite tables: `_inverted_{table}_{field}`. Text analysis is handled by pluggable Analyzers (Lucene-style pipeline: CharFilter -> Tokenizer -> TokenFilter) with per-field analyzer assignment.
 
 **HNSWIndex / SQLiteVectorIndex**: Hierarchical Navigable Small World graph for approximate nearest neighbor search. Cosine distance metric. Configuration: ef_construction=200, M=16. Vectors stored as float32 blobs in the `_vectors` table.
 
 **GraphStore / SQLiteGraphStore**: Adjacency-list graph storage with indexes on (source_id, label), (target_id, label), and (label). Vertex labels stored in a dedicated indexed column for efficient label-based filtering. Vertex and edge properties stored as JSON. Named graphs use isolated `_graph_{name}_*` SQLite tables.
 
-**Catalog**: SQLite-based system catalog managing metadata, table schemas, documents, graph data, vectors, postings, statistics, scoring parameters, and named graphs. Write-through semantics: every mutation writes to both in-memory structures and SQLite immediately. WAL mode for concurrent reads.
+**Catalog**: SQLite-based system catalog managing metadata, table schemas, documents, graph data, vectors, postings, statistics, scoring parameters, named graphs, and custom analyzers. Write-through semantics: every mutation writes to both in-memory structures and SQLite immediately. WAL mode for concurrent reads.
 
 ### 5.3 SQL Compiler
 
@@ -670,6 +706,7 @@ The SQL compiler uses pglast (PostgreSQL parser) to parse SQL into an AST, then 
 - **Date/Time**: EXTRACT, DATE_TRUNC, DATE_PART, NOW, CURRENT_DATE/TIME/TIMESTAMP, CLOCK_TIMESTAMP, TIMEOFDAY, AGE, TO_CHAR/TO_DATE/TO_TIMESTAMP, MAKE_DATE/MAKE_TIMESTAMP/MAKE_INTERVAL, TO_NUMBER, OVERLAPS, ISFINITE
 - **Table functions**: GENERATE_SERIES, UNNEST, REGEXP_SPLIT_TO_TABLE, JSON_EACH/JSON_EACH_TEXT, JSON_ARRAY_ELEMENTS/JSON_ARRAY_ELEMENTS_TEXT
 - **Graph functions**: cypher() (Apache AGE compatible openCypher), create_graph(), drop_graph()
+- **Analysis functions**: create_analyzer(), drop_analyzer(), list_analyzers()
 - **System catalogs**: information_schema.columns, pg_catalog.pg_tables, pg_catalog.pg_views, pg_catalog.pg_indexes, pg_catalog.pg_type
 - **Transactions**: BEGIN, COMMIT, ROLLBACK, SAVEPOINT
 - **Utility**: EXPLAIN, ANALYZE
@@ -1244,6 +1281,7 @@ Example scripts are provided in the `examples/` directory:
 | `vector_and_hybrid.py` | KNN, hybrid search, vector exclusion, log-odds fusion |
 | `graph.py` | Traversal, RPQ, pattern matching, graph indexes |
 | `hierarchical.py` | Nested data, path filters, path aggregation |
+| `analysis.py` | Text analysis pipeline, tokenizers, filters, stemming, per-field analyzers |
 
 ### SQL (`examples/sql/`)
 
@@ -1253,6 +1291,7 @@ Example scripts are provided in the `examples/` directory:
 | `functions.py` | text_match, knn_match, path_agg, path_value, path_filter |
 | `graph.py` | FROM traverse/rpq, aggregates, GROUP BY, WHERE |
 | `fusion.py` | fuse_log_odds, fuse_prob_and/or/not, EXPLAIN |
+| `analysis.py` | Text analyzers via SQL: create, list, drop, persistence |
 
 
 ## 9. Testing
@@ -1267,7 +1306,7 @@ python -m pytest uqa/tests/ -v
 python -m pytest uqa/tests/test_sql.py -v
 ```
 
-1576 tests across 42 test files covering core algebra, operators, scoring, fusion, SQL compilation, physical execution, joins, graph operations, openCypher graph queries, SQLite persistence, transactions, cost optimization, parallel execution, PostgreSQL 17 compatibility, and end-to-end integration.
+1646 tests across 43 test files covering core algebra, operators, scoring, fusion, SQL compilation, physical execution, joins, graph operations, openCypher graph queries, SQLite persistence, transactions, cost optimization, parallel execution, PostgreSQL 17 compatibility, text analysis pipeline, and end-to-end integration.
 
 
 ## 10. References
