@@ -72,13 +72,15 @@ print(f"  keyword    : {kw.analyze(text)}")
 
 
 # ==================================================================
-# 2. DEFAULT_ANALYZER backward compatibility
+# 2. DEFAULT_ANALYZER is standard
 # ==================================================================
-print("\n--- 2. DEFAULT_ANALYZER backward compatibility ---")
-text2 = "Hello World Example"
-assert DEFAULT_ANALYZER.analyze(text2) == text2.lower().split()
-print(f"  DEFAULT_ANALYZER.analyze('{text2}') == text.lower().split()")
-print(f"  Result: {DEFAULT_ANALYZER.analyze(text2)}")
+print("\n--- 2. DEFAULT_ANALYZER (standard) ---")
+text2 = "The Quick BROWN Fox"
+result2 = DEFAULT_ANALYZER.analyze(text2)
+assert "the" not in result2  # stop word removed
+assert "quick" in result2
+print(f"  DEFAULT_ANALYZER.analyze('{text2}')")
+print(f"  Result: {result2}")
 
 
 # ==================================================================

@@ -15,6 +15,7 @@ import pytest
 
 from uqa.core.posting_list import PostingList
 from uqa.core.types import IndexStats, Payload, PostingEntry
+from uqa.analysis.analyzer import whitespace_analyzer
 from uqa.storage.inverted_index import IndexedTerms
 from uqa.storage.sqlite_inverted_index import SQLiteInvertedIndex
 
@@ -28,7 +29,7 @@ def _make_index(tmp_path, table_name: str = "docs") -> SQLiteInvertedIndex:
     """Create a SQLiteInvertedIndex backed by a temp database."""
     db = str(tmp_path / "test.db")
     conn = sqlite3.connect(db)
-    return SQLiteInvertedIndex(conn, table_name)
+    return SQLiteInvertedIndex(conn, table_name, analyzer=whitespace_analyzer())
 
 
 # ======================================================================
@@ -413,8 +414,9 @@ class TestTableIsolation:
         db = str(tmp_path / "shared.db")
         conn = sqlite3.connect(db)
 
-        idx_a = SQLiteInvertedIndex(conn, "table_a")
-        idx_b = SQLiteInvertedIndex(conn, "table_b")
+        ws = whitespace_analyzer()
+        idx_a = SQLiteInvertedIndex(conn, "table_a", analyzer=ws)
+        idx_b = SQLiteInvertedIndex(conn, "table_b", analyzer=ws)
 
         idx_a.add_document(1, {"body": "hello world"})
         idx_b.add_document(1, {"body": "goodbye moon"})
@@ -434,8 +436,9 @@ class TestTableIsolation:
         db = str(tmp_path / "shared.db")
         conn = sqlite3.connect(db)
 
-        idx_a = SQLiteInvertedIndex(conn, "table_a")
-        idx_b = SQLiteInvertedIndex(conn, "table_b")
+        ws = whitespace_analyzer()
+        idx_a = SQLiteInvertedIndex(conn, "table_a", analyzer=ws)
+        idx_b = SQLiteInvertedIndex(conn, "table_b", analyzer=ws)
 
         idx_a.add_document(1, {"body": "hello"})
         idx_b.add_document(1, {"body": "hello"})

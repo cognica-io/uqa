@@ -783,15 +783,15 @@ class TestEnginePersistencePostings:
                 )
             """)
             engine.add_document(
-                1, {"body": "the cat sat on the mat"}, table="docs"
+                1, {"body": "cat sat near cat mat"}, table="docs"
             )
             idx = engine._tables["docs"].inverted_index
-            pl_before = idx.get_posting_list("body", "the")
+            pl_before = idx.get_posting_list("body", "cat")
             positions_before = pl_before.entries[0].payload.positions
 
         with Engine(db_path=db) as engine:
             idx = engine._tables["docs"].inverted_index
-            pl_after = idx.get_posting_list("body", "the")
+            pl_after = idx.get_posting_list("body", "cat")
             positions_after = pl_after.entries[0].payload.positions
             assert positions_after == positions_before
 

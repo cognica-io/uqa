@@ -57,6 +57,7 @@ from uqa.operators.primitive import (
     TermOperator,
     VectorSimilarityOperator,
 )
+from uqa.analysis.analyzer import whitespace_analyzer
 from uqa.storage.document_store import DocumentStore
 from uqa.storage.inverted_index import InvertedIndex
 from uqa.storage.vector_index import HNSWIndex
@@ -72,7 +73,7 @@ def doc_store(sample_documents: list[dict]) -> DocumentStore:
 
 @pytest.fixture
 def inv_index(sample_documents: list[dict]) -> InvertedIndex:
-    idx = InvertedIndex()
+    idx = InvertedIndex(analyzer=whitespace_analyzer())
     for doc in sample_documents:
         fields = {}
         if "title" in doc:
@@ -475,7 +476,7 @@ class TestInvertedIndex:
         assert idx.doc_freq("title", "world") == 1
 
     def test_positions(self) -> None:
-        idx = InvertedIndex()
+        idx = InvertedIndex(analyzer=whitespace_analyzer())
         idx.add_document(1, {"title": "the quick brown fox the"})
         pl = idx.get_posting_list("title", "the")
         entry = pl.get_entry(1)

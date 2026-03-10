@@ -508,12 +508,12 @@ class TestTextToGraphOperator:
         graph = op.execute(None)
 
         tokens = {v.properties["token"] for v in graph._vertices.values()}
-        assert "the" in tokens
         assert "quick" in tokens
         assert "fox" in tokens
         assert "brown" in tokens
         assert "red" in tokens
-        # "the" and "quick" co-occur in both documents
+        assert "the" not in tokens  # stop word removed by standard analyzer
+        # "quick" and "fox" co-occur in both documents
         assert len(graph._edges) > 0
 
     def test_window_size(self) -> None:

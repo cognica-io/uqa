@@ -39,7 +39,7 @@ Lucene-style text analysis pipeline with configurable analyzers.
 
 - Composable `CharFilter -> Tokenizer -> TokenFilter` pipeline (Lucene architecture)
 - `Analyzer` class with `analyze(text) -> list[str]`, JSON serialization roundtrip (`to_dict`/`from_dict`/`to_json`/`from_json`)
-- Backward compatible: `DEFAULT_ANALYZER` (WhitespaceTokenizer + LowerCaseFilter) produces identical output to `text.lower().split()`
+- `DEFAULT_ANALYZER` uses the `standard` preset (StandardTokenizer + LowerCase + ASCIIFolding + StopWord + PorterStem)
 
 ### Tokenizers
 

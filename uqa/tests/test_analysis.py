@@ -405,10 +405,15 @@ class TestPatternReplaceCharFilter:
 
 
 class TestAnalyzer:
-    def test_default_analyzer_backward_compat(self):
-        """DEFAULT_ANALYZER produces same output as text.lower().split()."""
-        text = "The Quick BROWN Fox"
-        assert DEFAULT_ANALYZER.analyze(text) == text.lower().split()
+    def test_default_analyzer_is_standard(self):
+        """DEFAULT_ANALYZER uses the standard pipeline."""
+        a = standard_analyzer()
+        result = DEFAULT_ANALYZER.analyze("The Quick BROWN Fox")
+        assert result == a.analyze("The Quick BROWN Fox")
+        assert "the" not in result  # stop word removed
+        assert "quick" in result
+        assert "brown" in result
+        assert "fox" in result
 
     def test_whitespace_analyzer(self):
         a = whitespace_analyzer()
@@ -546,8 +551,9 @@ class TestInvertedIndexAnalyzer:
     def test_default_analyzer(self):
         idx = InvertedIndex()
         idx.add_document(1, {"title": "The Quick Brown Fox"})
+        # Default is standard: stop words removed
         pl = idx.get_posting_list("title", "the")
-        assert len(pl) == 1
+        assert len(pl) == 0
         pl = idx.get_posting_list("title", "quick")
         assert len(pl) == 1
 
@@ -564,8 +570,9 @@ class TestInvertedIndexAnalyzer:
     def test_per_field_analyzer(self):
         idx = InvertedIndex()
         idx.set_field_analyzer("title", standard_analyzer())
+        idx.set_field_analyzer("body", whitespace_analyzer())
         idx.add_document(1, {"title": "The Quick Fox", "body": "The body"})
-        # "the" removed from title (standard) but kept in body (default whitespace)
+        # "the" removed from title (standard) but kept in body (whitespace)
         assert len(idx.get_posting_list("title", "the")) == 0
         assert len(idx.get_posting_list("body", "the")) == 1
 
@@ -601,13 +608,14 @@ class TestSQLiteInvertedIndexAnalyzer:
     def test_per_field_analyzer(self, tmp_path):
         idx = self._make_index(tmp_path)
         idx.set_field_analyzer("title", standard_analyzer())
+        idx.set_field_analyzer("body", whitespace_analyzer())
         idx.add_document(1, {"title": "The Quick Fox", "body": "The body text"})
         assert len(idx.get_posting_list("title", "the")) == 0
         assert len(idx.get_posting_list("body", "the")) == 1
 
     def test_tokenize_uses_analyzer(self, tmp_path):
         idx = self._make_index(tmp_path)
-        # Default analyzer: whitespace + lowercase
+        # Default analyzer: standard (lowercase + stop words + stem)
         tokens = idx._tokenize("Hello World", "title")
         assert tokens == ["hello", "world"]
 

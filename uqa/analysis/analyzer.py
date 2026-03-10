@@ -155,7 +155,7 @@ def keyword_analyzer() -> Analyzer:
 
 # -- Global default ---------------------------------------------------------
 
-DEFAULT_ANALYZER = whitespace_analyzer()
+DEFAULT_ANALYZER = standard_analyzer()
 
 # -- Named analyzer registry ------------------------------------------------
 

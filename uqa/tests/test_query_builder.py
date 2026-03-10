@@ -42,7 +42,7 @@ class TestExecuteArrow:
 
         table = (
             engine.query(table="docs")
-            .term("attention", field="title")
+            .term("graph", field="title")
             .execute_arrow()
         )
         assert isinstance(table, pa.Table)
@@ -66,8 +66,8 @@ class TestExecuteArrow:
     def test_with_scoring(self, engine: Engine) -> None:
         table = (
             engine.query(table="docs")
-            .term("attention", field="title")
-            .score_bm25("attention")
+            .term("graph", field="title")
+            .score_bm25("graph")
             .execute_arrow()
         )
         scores = table.column("_score").to_pylist()
@@ -78,7 +78,7 @@ class TestExecuteArrow:
 
         table = (
             engine.query(table="docs")
-            .term("attention", field="title")
+            .term("graph", field="title")
             .execute_arrow()
         )
         assert table.column("_doc_id").type == pa.int64()
@@ -92,7 +92,7 @@ class TestExecuteParquet:
         path = str(tmp_path / "fluent.parquet")
         (
             engine.query(table="docs")
-            .term("attention", field="title")
+            .term("graph", field="title")
             .execute_parquet(path)
         )
         table = pq.read_table(path)
@@ -104,7 +104,7 @@ class TestExecuteParquet:
         import pyarrow.parquet as pq
 
         path = str(tmp_path / "roundtrip.parquet")
-        qb = engine.query(table="docs").term("attention", field="title")
+        qb = engine.query(table="docs").term("graph", field="title")
         qb.execute_parquet(path)
 
         arrow_table = qb.execute_arrow()
