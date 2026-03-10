@@ -303,8 +303,8 @@ pip install -e ".[dev]"
 ### Interactive SQL Shell
 
 ```bash
-python usql.py                 # In-memory
-python usql.py --db mydata.db  # Persistent database
+usql                 # In-memory
+usql --db mydata.db  # Persistent database
 ```
 
 Shell commands:
@@ -410,8 +410,8 @@ python examples/sql/analytics.py              # Aggregates, window functions, JS
 ### Interactive Shell
 
 ```bash
-python usql.py                 # In-memory
-python usql.py --db mydata.db  # Persistent
+usql                 # In-memory
+usql --db mydata.db  # Persistent
 ```
 
 ## Tests

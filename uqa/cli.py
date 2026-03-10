@@ -7,10 +7,10 @@
 """usql -- interactive SQL shell for the UQA engine.
 
 Usage:
-    python usql.py                        Start with an in-memory database
-    python usql.py --db mydata.db         Start with persistent SQLite storage
-    python usql.py script.sql             Execute a SQL script then enter REPL
-    python usql.py --db mydata.db s.sql   Persistent + script
+    usql                        Start with an in-memory database
+    usql --db mydata.db         Start with persistent SQLite storage
+    usql script.sql             Execute a SQL script then enter REPL
+    usql --db mydata.db s.sql   Persistent + script
 
 Special commands (backslash):
     \\dt             List tables

@@ -1028,8 +1028,8 @@ params = engine.load_scoring_params("text_signal")
 UQA includes an interactive SQL shell with syntax highlighting and autocompletion.
 
 ```bash
-python usql.py                 # In-memory
-python usql.py --db mydata.db  # Persistent database
+usql                 # In-memory
+usql --db mydata.db  # Persistent database
 ```
 
 Shell commands:
