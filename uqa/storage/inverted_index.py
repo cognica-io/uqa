@@ -28,11 +28,35 @@ class IndexedTerms:
 class InvertedIndex:
     """Term-to-posting-list mapping with per-term statistics."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        analyzer: Any | None = None,
+        field_analyzers: dict[str, Any] | None = None,
+    ) -> None:
+        from uqa.analysis.analyzer import DEFAULT_ANALYZER
+
+        self._analyzer = analyzer or DEFAULT_ANALYZER
+        self._field_analyzers: dict[str, Any] = dict(field_analyzers) if field_analyzers else {}
         self._index: dict[tuple[str, str], list[PostingEntry]] = {}
         self._doc_lengths: dict[DocId, dict[FieldName, int]] = {}
         self._doc_count: int = 0
         self._total_length: dict[FieldName, int] = defaultdict(int)
+
+    @property
+    def analyzer(self) -> Any:
+        return self._analyzer
+
+    @property
+    def field_analyzers(self) -> dict[str, Any]:
+        return self._field_analyzers
+
+    def set_field_analyzer(self, field: str, analyzer: Any) -> None:
+        """Set a per-field analyzer override."""
+        self._field_analyzers[field] = analyzer
+
+    def get_field_analyzer(self, field: str) -> Any:
+        """Get the analyzer for a specific field."""
+        return self._field_analyzers.get(field, self._analyzer)
 
     def add_document(
         self, doc_id: DocId, fields: dict[FieldName, str]
@@ -49,7 +73,8 @@ class InvertedIndex:
         result_postings: dict[tuple[str, str], tuple[int, ...]] = {}
 
         for field_name, text in fields.items():
-            tokens = text.lower().split()
+            field_analyzer = self._field_analyzers.get(field_name, self._analyzer)
+            tokens = field_analyzer.analyze(text)
             length = len(tokens)
             self._doc_lengths[doc_id][field_name] = length
             self._total_length[field_name] += length

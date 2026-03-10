@@ -348,8 +348,9 @@ class TestTokenization:
         pl2 = idx.get_posting_list("title", "world")
         assert len(pl2) == 1
 
-    def test_tokenize_static_method(self, tmp_path):
-        tokens = SQLiteInvertedIndex._tokenize("Hello World FOO")
+    def test_tokenize_method(self, tmp_path):
+        idx = _make_index(tmp_path)
+        tokens = idx._tokenize("Hello World FOO")
         assert tokens == ["hello", "world", "foo"]
 
 

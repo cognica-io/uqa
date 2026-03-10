@@ -47,13 +47,14 @@ class TextSimilarityJoinOperator:
         result: list[GeneralizedPostingEntry] = []
         for left_entry in left_entries:
             left_text = left_entry.payload.fields.get(self.left_field, "")
-            left_tokens = set(str(left_text).lower().split())
+            from uqa.analysis.analyzer import DEFAULT_ANALYZER
+            left_tokens = set(DEFAULT_ANALYZER.analyze(str(left_text)))
             if not left_tokens:
                 continue
 
             for right_entry in right_entries:
                 right_text = right_entry.payload.fields.get(self.right_field, "")
-                right_tokens = set(str(right_text).lower().split())
+                right_tokens = set(DEFAULT_ANALYZER.analyze(str(right_text)))
                 if not right_tokens:
                     continue
 

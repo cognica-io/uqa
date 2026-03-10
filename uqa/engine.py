@@ -128,6 +128,16 @@ class Engine:
 
             self._tables[name] = table
 
+        # -- Analyzers -------------------------------------------------
+        from uqa.analysis.analyzer import Analyzer, register_analyzer
+
+        for name, config in catalog.load_analyzers():
+            analyzer = Analyzer.from_dict(config)
+            try:
+                register_analyzer(name, analyzer)
+            except ValueError:
+                pass  # already registered (built-in or duplicate)
+
         # -- Named graphs ----------------------------------------------
         for graph_name in catalog.load_named_graphs():
             self._named_graphs[graph_name] = SQLiteGraphStore(
@@ -294,6 +304,43 @@ class Engine:
     def has_graph(self, name: str) -> bool:
         """Return True if a named graph with *name* exists."""
         return name in self._named_graphs
+
+    # -- Analyzer management -------------------------------------------
+
+    def create_analyzer(
+        self, name: str, config: dict[str, Any]
+    ) -> None:
+        """Create a named analyzer and persist it to the catalog.
+
+        ``config`` is the Analyzer serialization dict with keys:
+        ``tokenizer``, ``token_filters``, ``char_filters``.
+        """
+        from uqa.analysis.analyzer import Analyzer, register_analyzer
+
+        analyzer = Analyzer.from_dict(config)
+        register_analyzer(name, analyzer)
+        if self._catalog is not None:
+            self._catalog.save_analyzer(name, config)
+
+    def drop_analyzer(self, name: str) -> None:
+        """Drop a named analyzer."""
+        from uqa.analysis.analyzer import drop_analyzer
+
+        drop_analyzer(name)
+        if self._catalog is not None:
+            self._catalog.drop_analyzer(name)
+
+    def set_table_analyzer(
+        self, table_name: str, field: str, analyzer_name: str
+    ) -> None:
+        """Assign a named analyzer to a table field for indexing and search."""
+        from uqa.analysis.analyzer import get_analyzer
+
+        tbl = self._tables.get(table_name)
+        if tbl is None:
+            raise ValueError(f"Table '{table_name}' does not exist")
+        analyzer = get_analyzer(analyzer_name)
+        tbl.inverted_index.set_field_analyzer(field, analyzer)
 
     # -- Scoring parameters (Papers 3-4) -------------------------------
 

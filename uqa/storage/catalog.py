@@ -110,6 +110,10 @@ CREATE TABLE IF NOT EXISTS _catalog_indexes (
 CREATE TABLE IF NOT EXISTS _named_graphs (
     name TEXT PRIMARY KEY
 );
+CREATE TABLE IF NOT EXISTS _analyzers (
+    name        TEXT PRIMARY KEY,
+    config_json TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS _graph_vertices_label ON _graph_vertices (label);
 CREATE INDEX IF NOT EXISTS _graph_edges_out ON _graph_edges (source_id, label);
 CREATE INDEX IF NOT EXISTS _graph_edges_in ON _graph_edges (target_id, label);
@@ -626,6 +630,30 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
             "SELECT name FROM _named_graphs"
         ).fetchall()
         return [r[0] for r in rows]
+
+    # -- Analyzers -----------------------------------------------------
+
+    def save_analyzer(self, name: str, config: dict[str, Any]) -> None:
+        """Persist a named analyzer configuration."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO _analyzers (name, config_json) VALUES (?, ?)",
+            (name, json.dumps(config)),
+        )
+        self._auto_commit()
+
+    def drop_analyzer(self, name: str) -> None:
+        """Remove a named analyzer from the catalog."""
+        self._conn.execute(
+            "DELETE FROM _analyzers WHERE name = ?", (name,)
+        )
+        self._auto_commit()
+
+    def load_analyzers(self) -> list[tuple[str, dict[str, Any]]]:
+        """Return ``[(name, config_dict), ...]`` for all persisted analyzers."""
+        rows = self._conn.execute(
+            "SELECT name, config_json FROM _analyzers"
+        ).fetchall()
+        return [(name, json.loads(cfg)) for name, cfg in rows]
 
     # -- Lifecycle -----------------------------------------------------
 

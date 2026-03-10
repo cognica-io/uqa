@@ -290,7 +290,8 @@ class TextToGraphOperator:
 
         for doc in documents:
             text = doc.get(self.text_field, "")
-            tokens = str(text).lower().split()
+            from uqa.analysis.analyzer import DEFAULT_ANALYZER
+            tokens = DEFAULT_ANALYZER.analyze(str(text))
             token_set.update(tokens)
 
             if self.window_size <= 0:

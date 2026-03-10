@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import defaultdict
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from uqa.core.posting_list import PostingList
 from uqa.core.types import Payload, PostingEntry
@@ -41,9 +41,19 @@ class SQLiteInvertedIndex:
 
     BLOCK_SIZE = 128
 
-    def __init__(self, conn: sqlite3.Connection, table_name: str) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        table_name: str,
+        analyzer: Any | None = None,
+        field_analyzers: dict[str, Any] | None = None,
+    ) -> None:
+        from uqa.analysis.analyzer import DEFAULT_ANALYZER
+
         self._conn = conn
         self._table_name = table_name
+        self._analyzer = analyzer or DEFAULT_ANALYZER
+        self._field_analyzers: dict[str, Any] = dict(field_analyzers) if field_analyzers else {}
         self._known_fields: set[str] = set()
         self._has_atomic_fetch = hasattr(conn, "execute_fetchall")
 
@@ -142,12 +152,30 @@ class SQLiteInvertedIndex:
     def _blockmax_table_name(self, field: str) -> str:
         return f"_blockmax_{self._table_name}_{field}"
 
+    # -- Analyzer accessors --------------------------------------------
+
+    @property
+    def analyzer(self) -> Any:
+        return self._analyzer
+
+    @property
+    def field_analyzers(self) -> dict[str, Any]:
+        return self._field_analyzers
+
+    def set_field_analyzer(self, field: str, analyzer: Any) -> None:
+        """Set a per-field analyzer override."""
+        self._field_analyzers[field] = analyzer
+
+    def get_field_analyzer(self, field: str) -> Any:
+        """Get the analyzer for a specific field."""
+        return self._field_analyzers.get(field, self._analyzer)
+
     # -- Tokenization --------------------------------------------------
 
-    @staticmethod
-    def _tokenize(text: str) -> list[str]:
-        """Lowercase and split on whitespace (matches InvertedIndex)."""
-        return text.lower().split()
+    def _tokenize(self, text: str, field: str | None = None) -> list[str]:
+        """Tokenize text using the appropriate field analyzer."""
+        analyzer = self._field_analyzers.get(field, self._analyzer) if field else self._analyzer
+        return analyzer.analyze(text)
 
     # -- Indexing -------------------------------------------------------
 
@@ -166,7 +194,7 @@ class SQLiteInvertedIndex:
             self._ensure_field_table(field_name)
             tbl = self._inverted_table_name(field_name)
 
-            tokens = self._tokenize(text)
+            tokens = self._tokenize(text, field_name)
             length = len(tokens)
             result_field_lengths[field_name] = length
 

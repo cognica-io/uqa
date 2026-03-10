@@ -3586,6 +3586,12 @@ class SQLCompiler:
             return self._build_json_array_elements(node, args, as_text=name.endswith("_text"))
         if name == "regexp_split_to_table":
             return self._build_regexp_split_to_table(node, args)
+        if name == "create_analyzer":
+            return self._build_create_analyzer(args)
+        if name == "drop_analyzer":
+            return self._build_drop_analyzer(args)
+        if name == "list_analyzers":
+            return self._build_list_analyzers()
         raise ValueError(f"Unknown table function: {name}")
 
     @staticmethod
@@ -3708,6 +3714,66 @@ class SQLCompiler:
         self._expanded_views.append("_drop_graph")
         return table, None
 
+    def _build_create_analyzer(
+        self, args: tuple
+    ) -> tuple[Table | None, Any]:
+        """Handle ``SELECT * FROM create_analyzer('name', 'config_json')``.
+
+        ``config_json`` is a JSON string with keys: tokenizer,
+        token_filters, char_filters -- matching ``Analyzer.to_dict()``.
+        """
+        import json as json_mod
+        from uqa.sql.table import ColumnDef as SQLColumnDef
+
+        if len(args) < 2:
+            raise ValueError(
+                "create_analyzer() requires (name, config_json)"
+            )
+        name = self._extract_string_value(args[0])
+        config_str = self._extract_string_value(args[1])
+        config = json_mod.loads(config_str)
+        self._engine.create_analyzer(name, config)
+        table = Table("_create_analyzer", [
+            SQLColumnDef(name="create_analyzer", type_name="text", python_type=str),
+        ])
+        table.insert({"create_analyzer": f"analyzer '{name}' created"})
+        self._engine._tables["_create_analyzer"] = table
+        self._expanded_views.append("_create_analyzer")
+        return table, None
+
+    def _build_drop_analyzer(
+        self, args: tuple
+    ) -> tuple[Table | None, Any]:
+        """Handle ``SELECT * FROM drop_analyzer('name')``."""
+        from uqa.sql.table import ColumnDef as SQLColumnDef
+
+        if not args:
+            raise ValueError("drop_analyzer() requires a name argument")
+        name = self._extract_string_value(args[0])
+        self._engine.drop_analyzer(name)
+        table = Table("_drop_analyzer", [
+            SQLColumnDef(name="drop_analyzer", type_name="text", python_type=str),
+        ])
+        table.insert({"drop_analyzer": f"analyzer '{name}' dropped"})
+        self._engine._tables["_drop_analyzer"] = table
+        self._expanded_views.append("_drop_analyzer")
+        return table, None
+
+    def _build_list_analyzers(self) -> tuple[Table | None, Any]:
+        """Handle ``SELECT * FROM list_analyzers()``."""
+        from uqa.analysis.analyzer import list_analyzers
+        from uqa.sql.table import ColumnDef as SQLColumnDef
+
+        names = list_analyzers()
+        table = Table("_list_analyzers", [
+            SQLColumnDef(name="analyzer_name", type_name="text", python_type=str),
+        ])
+        for n in names:
+            table.insert({"analyzer_name": n})
+        self._engine._tables["_list_analyzers"] = table
+        self._expanded_views.append("_list_analyzers")
+        return table, None
+
     def _build_cypher_from(
         self, node: RangeFunction, args: tuple
     ) -> tuple[Table | None, Any]:
@@ -3777,7 +3843,8 @@ class SQLCompiler:
             if table is None:
                 raise ValueError(f"Table '{table_name}' does not exist")
         ctx = self._context_for_table(table)
-        terms = query.lower().split()
+        analyzer = ctx.inverted_index.get_field_analyzer(field_name) if field_name else ctx.inverted_index.analyzer
+        terms = analyzer.analyze(query)
         term_ops = [TermOperator(t, field_name) for t in terms]
         retrieval = term_ops[0] if len(term_ops) == 1 else UnionOperator(term_ops)
         scorer = BM25Scorer(BM25Params(), ctx.inverted_index.stats)
@@ -4416,7 +4483,8 @@ class SQLCompiler:
         from uqa.operators.primitive import ScoreOperator, TermOperator
         from uqa.operators.boolean import UnionOperator
 
-        terms = query.lower().split()
+        analyzer = ctx.inverted_index.get_field_analyzer(field_name)
+        terms = analyzer.analyze(query)
         term_ops = [TermOperator(t, field_name) for t in terms]
         retrieval = term_ops[0] if len(term_ops) == 1 else UnionOperator(term_ops)
 

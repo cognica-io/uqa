@@ -368,24 +368,26 @@ class QueryBuilder:
 
     # -- Scoring --
 
-    def score_bm25(self, query: str) -> QueryBuilder:
+    def score_bm25(self, query: str, field: str | None = None) -> QueryBuilder:
         from uqa.operators.primitive import ScoreOperator
         from uqa.scoring.bm25 import BM25Params, BM25Scorer
 
-        terms = query.lower().split()
         ctx = self._engine._context_for_table(self._table)
+        analyzer = ctx.inverted_index.get_field_analyzer(field) if field else ctx.inverted_index.analyzer
+        terms = analyzer.analyze(query)
         scorer = BM25Scorer(BM25Params(), ctx.inverted_index.stats)
         op = ScoreOperator(scorer, self._root, terms)
         qb = QueryBuilder(self._engine, self._table)
         qb._root = op
         return qb
 
-    def score_bayesian_bm25(self, query: str) -> QueryBuilder:
+    def score_bayesian_bm25(self, query: str, field: str | None = None) -> QueryBuilder:
         from uqa.operators.primitive import ScoreOperator
         from uqa.scoring.bayesian_bm25 import BayesianBM25Params, BayesianBM25Scorer
 
-        terms = query.lower().split()
         ctx = self._engine._context_for_table(self._table)
+        analyzer = ctx.inverted_index.get_field_analyzer(field) if field else ctx.inverted_index.analyzer
+        terms = analyzer.analyze(query)
         scorer = BayesianBM25Scorer(BayesianBM25Params(), ctx.inverted_index.stats)
         op = ScoreOperator(scorer, self._root, terms)
         qb = QueryBuilder(self._engine, self._table)
