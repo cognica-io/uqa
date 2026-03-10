@@ -1,6 +1,8 @@
 # UQA — Unified Query Algebra
 
-A database prototype that unifies **relational**, **text retrieval**, **vector search**, and **graph query** paradigms under a single algebraic structure, using posting lists as the universal abstraction.
+A database prototype that unifies **relational**, **text retrieval**, **vector search**, and **graph query** paradigms under a single algebraic structure, using posting lists as the universal abstraction. SQL interface targets **PostgreSQL 17** compatibility.
+
+> **Status:** UQA is currently a research prototype under active development. The long-term goal is to evolve it into a production-grade unified query engine. APIs and internals may change as the project matures.
 
 ## Background
 
