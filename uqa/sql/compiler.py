@@ -4237,6 +4237,17 @@ class SQLCompiler:
     def _resolve_join(
         self, node: JoinExpr
     ) -> tuple[Table | None, Any]:
+        # Try DPccp optimization for chains of 3+ INNER JOINs
+        result = self._try_dpccp_optimize(node)
+        if result is not None:
+            return result
+
+        return self._resolve_join_pair(node)
+
+    def _resolve_join_pair(
+        self, node: JoinExpr
+    ) -> tuple[Table | None, Any]:
+        """Resolve a single two-way JOIN expression."""
         from uqa.joins.base import JoinCondition
         from uqa.joins.cross import CrossJoinOperator
         from uqa.joins.inner import InnerJoinOperator
@@ -4319,6 +4330,183 @@ class SQLCompiler:
         if quals is None:
             raise ValueError("Non-CROSS JOIN requires ON clause")
         return table, _ExprJoinOperator(left_op, right_op, quals, jt)
+
+    # -- DPccp join order optimization ------------------------------------
+
+    def _try_dpccp_optimize(
+        self, node: JoinExpr
+    ) -> tuple[Table | None, Any] | None:
+        """Attempt DPccp optimization on a chain of INNER JOINs.
+
+        Returns None if the join tree is not eligible for DPccp
+        (e.g. contains outer joins, LATERAL, non-equality predicates,
+        or fewer than 3 relations).
+        """
+        relations: list[dict[str, Any]] = []
+        predicates: list[dict[str, Any]] = []
+
+        if not self._flatten_inner_joins(node, relations, predicates):
+            return None
+
+        # DPccp is worthwhile only for 3+ relations
+        if len(relations) < 3:
+            return None
+
+        from uqa.planner.join_order import JoinOrderOptimizer
+
+        optimizer = JoinOrderOptimizer()
+        operator, table = optimizer.optimize(relations, predicates)
+        return table, operator
+
+    def _flatten_inner_joins(
+        self,
+        node: Any,
+        relations: list[dict[str, Any]],
+        predicates: list[dict[str, Any]],
+    ) -> bool:
+        """Recursively flatten a tree of INNER JOINs.
+
+        Collects base relations and equijoin predicates.  Returns
+        False if any node is not eligible for reordering (outer join,
+        LATERAL, non-equality predicate, subquery).
+        """
+        if not isinstance(node, JoinExpr):
+            # Base relation
+            table, op, alias = self._resolve_from_single(node)
+            if op is None and table is not None:
+                op = _TableScanOperator(table, alias=alias)
+            elif op is None:
+                op = _ScanOperator()
+
+            cardinality = 1000.0  # default
+            column_stats: dict[str, Any] = {}
+            if table is not None:
+                cardinality = float(
+                    len(table.document_store.doc_ids)
+                ) or 1.0
+                column_stats = dict(table._stats)
+
+            relations.append({
+                "alias": alias,
+                "operator": op,
+                "table": table,
+                "cardinality": cardinality,
+                "column_stats": column_stats,
+            })
+            return True
+
+        # Only INNER JOINs can be freely reordered
+        if node.jointype != JoinType.JOIN_INNER:
+            return False
+
+        # LATERAL subqueries cannot be reordered
+        if isinstance(node.rarg, RangeSubselect) and node.rarg.lateral:
+            return False
+
+        # CROSS JOIN (no quals) is OK but has no predicate
+        quals = node.quals
+
+        # Recursively flatten left and right subtrees
+        left_start = len(relations)
+        if not self._flatten_inner_joins(
+            node.larg, relations, predicates
+        ):
+            return False
+
+        right_start = len(relations)
+        if not self._flatten_inner_joins(
+            node.rarg, relations, predicates
+        ):
+            return False
+
+        # Extract equijoin predicate if present
+        if quals is not None:
+            pred = self._extract_equijoin_predicate(
+                quals,
+                relations, left_start, right_start,
+            )
+            if pred is None:
+                # Non-equality or compound predicate; bail out
+                return False
+            predicates.append(pred)
+
+        return True
+
+    def _extract_equijoin_predicate(
+        self,
+        quals: Any,
+        relations: list[dict[str, Any]],
+        left_start: int,
+        right_start: int,
+    ) -> dict[str, Any] | None:
+        """Extract a simple equijoin predicate from an ON clause.
+
+        Returns a predicate dict or None if the quals are not a simple
+        equality comparison on column references.
+        """
+        if not isinstance(quals, A_Expr):
+            return None
+        op_name = quals.name[-1].sval if quals.name else None
+        if op_name != "=":
+            return None
+        if not isinstance(quals.lexpr, ColumnRef):
+            return None
+        if not isinstance(quals.rexpr, ColumnRef):
+            return None
+
+        l_fields = quals.lexpr.fields
+        r_fields = quals.rexpr.fields
+
+        l_col = l_fields[-1].sval
+        r_col = r_fields[-1].sval
+        l_qual = l_fields[0].sval if len(l_fields) >= 2 else None
+        r_qual = r_fields[0].sval if len(r_fields) >= 2 else None
+
+        # Match qualifiers to relation aliases to determine which
+        # relation each side belongs to
+        left_alias = self._find_relation_alias(
+            l_qual, relations, left_start, right_start
+        )
+        right_alias = self._find_relation_alias(
+            r_qual, relations, left_start, right_start
+        )
+
+        if left_alias is None or right_alias is None:
+            return None
+        if left_alias == right_alias:
+            return None
+
+        return {
+            "left_alias": left_alias,
+            "right_alias": right_alias,
+            "left_field": l_col,
+            "right_field": r_col,
+        }
+
+    @staticmethod
+    def _find_relation_alias(
+        qualifier: str | None,
+        relations: list[dict[str, Any]],
+        range_start: int,
+        range_end: int,
+    ) -> str | None:
+        """Find the alias of a relation matching a column qualifier.
+
+        Searches all relations (not just the given range) since a
+        predicate like ``ON a.id = c.id`` may reference relations
+        from any position in the flattened tree.
+        """
+        if qualifier is None:
+            # Unqualified column; if there is exactly one relation
+            # in the right range, assume it belongs there
+            if range_end < len(relations) and range_end - range_start == 0:
+                return relations[range_end]["alias"]
+            return None
+
+        for rel in relations:
+            if rel["alias"] == qualifier:
+                return qualifier
+        return None
 
     @staticmethod
     def _resolve_join_on_fields(

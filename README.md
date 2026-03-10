@@ -182,10 +182,10 @@ uqa/
     cypher/       openCypher lexer, parser, AST, posting-list-based compiler
   joins/          Hash, sort-merge, index, graph, cross-paradigm, similarity joins
   execution/      Volcano iterator engine: Apache Arrow columnar batches, physical operators, disk spilling
-  planner/        Cost model, cardinality estimator, optimizer, parallel executor
+  planner/        Cost model, cardinality estimator, optimizer, DPccp join enumerator, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          1671 tests across 44 test files
+  tests/          1691 tests across 45 test files
 ```
 
 ## Key Features
@@ -281,6 +281,7 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 ### Query Optimizer
 
 - Cost-based optimization with equi-depth histograms and Most Common Values (MCV)
+- **DPccp join order optimization** (Moerkotte & Neumann, 2006) — O(3^n) dynamic programming over connected subgraph complement pairs; produces optimal bushy join trees for INNER JOIN chains with 3+ relations; greedy fallback for 16+ relations
 - Filter pushdown into intersections
 - Vector threshold merge (same query vector)
 - Intersect operand reordering by cardinality (cheapest first)
