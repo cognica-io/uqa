@@ -299,7 +299,47 @@ $$
 | $RPQ_R$ | Regular path query via NFA simulation | $O(\|V_G\|^2 \cdot \|R\|)$ | `RegularPathQueryOperator` |
 | $VertexAgg_{p,f}$ | Aggregate property $p$ with function $f$ | $O(\|L_G\|)$ | `VertexAggregationOperator` |
 
-### 5.3 Regular Path Expressions
+### 5.3 Subgraph Isomorphism: Complexity and Mitigations
+
+Pattern matching via subgraph isomorphism ($GMatch_P$) has worst-case complexity $O(\|V_G\|^{\|V_P\|})$ and is NP-complete. This is an inherent property of the problem itself — any system supporting general subgraph pattern matching faces the same theoretical bound. The key question is how to keep the **effective** search space tractable.
+
+**Naive backtracking** iterates all $\|V_G\|$ vertices for each of the $\|V_P\|$ pattern variables in a fixed order, checking edge constraints only after all variables are assigned. For a pattern with $k$ variables on a graph with $n$ vertices, this explores up to $n^k$ complete assignments before discovering that most are invalid.
+
+UQA applies three CSP (Constraint Satisfaction Problem) techniques that reduce the effective search space by orders of magnitude:
+
+**1. Candidate Pre-computation with Arc Consistency.**
+Before backtracking begins, each pattern variable's candidate set is computed by evaluating vertex constraints once against all graph vertices. Then an arc consistency fixpoint loop propagates edge constraints: if variable $A$ must connect to variable $B$ via a labeled edge, any candidate for $A$ that has no such outgoing edge to any candidate of $B$ is eliminated, and vice versa. This propagation repeats until no further reduction occurs.
+
+$$
+C_v^{(0)} = \{u \in V_G \mid u \text{ satisfies vertex constraints of } v\}
+$$
+
+$$
+C_v^{(i+1)} = \{u \in C_v^{(i)} \mid \forall (v, w, l) \in E_P,\; \exists u' \in C_w^{(i)},\; (u, u', l) \in E_G\}
+$$
+
+This is computed to fixpoint ($C^{(i+1)} = C^{(i)}$), typically converging in 1-2 iterations. The reduction can be dramatic: on a graph with 1M vertices where only 1K have label `Person`, the candidate set shrinks by 1000x before any backtracking occurs.
+
+**2. MRV (Minimum Remaining Values) Variable Ordering.**
+At each recursion step, the algorithm selects the unassigned variable with the fewest remaining candidates — the "fail-first" heuristic. If one variable has 3 candidates and another has 10,000, trying the 3-candidate variable first means at most 3 branches explored before pruning occurs, rather than 10,000.
+
+**3. Incremental Edge Validation.**
+Instead of deferring all edge checks to the end (after all $k$ variables are assigned), each variable binding immediately validates all edge constraints connecting the newly bound variable to previously bound variables. Invalid partial assignments are pruned at depth 2 rather than depth $k$.
+
+The combined effect:
+
+| Optimization | Reduction Factor | Mechanism |
+|---|---|---|
+| Candidate pre-computation | $\|V_G\| \to \|C_v\|$ per variable | Domain initialization |
+| Arc consistency | $\|C_v\| \to \|C_v'\| \leq \|C_v\|$ | Edge-based propagation |
+| MRV ordering | Exponential pruning | Fail-first branching |
+| Incremental edge validation | Early cutoff at depth $d \ll k$ | Forward checking |
+
+In practice, Cypher patterns typically contain 3-7 nodes with label constraints, reducing the search to a small fraction of the graph. The theoretical $O(n^k)$ worst case manifests only for unlabeled patterns on dense graphs with no distinguishing constraints — a scenario rarely encountered in real workloads.
+
+**Implementation.** `PatternMatchOperator` in `uqa/graph/operators.py` implements all three techniques. `CypherCompiler` in `uqa/graph/cypher/compiler.py` applies label-based candidate filtering via `vertices_by_label()` and incremental vertex/edge validation during path expansion. Variable-length relationship expansion uses BFS with `deque` for O(1) frontier access.
+
+### 5.4 Regular Path Expressions
 
 Regular path queries use an algebraic expression language over edge labels:
 
@@ -309,7 +349,7 @@ $$
 
 The `RegularPathExpr` hierarchy (`Label`, `Concat`, `Alternation`, `KleeneStar`) in `uqa/graph/pattern.py` represents these expressions. The `RegularPathQueryOperator` uses Thompson's construction to build an NFA from the expression, then simulates it on the graph.
 
-### 5.4 openCypher Integration
+### 5.5 openCypher Integration
 
 The `CypherCompiler` in `uqa/graph/cypher/` compiles openCypher queries into graph posting list operations:
 

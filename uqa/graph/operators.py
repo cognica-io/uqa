@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from collections import deque
+from collections import defaultdict, deque
 from typing import TYPE_CHECKING
 
 from typing import Any
@@ -16,6 +16,7 @@ from uqa.graph.cypher.ast import CypherQuery
 from uqa.graph.pattern import (
     Alternation,
     Concat,
+    EdgePattern,
     GraphPattern,
     KleeneStar,
     Label,
@@ -93,7 +94,10 @@ class TraverseOperator:
 class PatternMatchOperator:
     """Definition 2.2.2 / 5.2.2: GMatch_P
 
-    Subgraph isomorphism pattern matching via backtracking.
+    Subgraph isomorphism pattern matching via backtracking with:
+    - Candidate pre-computation with arc consistency pruning
+    - MRV (Minimum Remaining Values) variable ordering
+    - Incremental edge validation during search
     """
 
     def __init__(self, pattern: GraphPattern) -> None:
@@ -101,11 +105,22 @@ class PatternMatchOperator:
 
     def execute(self, ctx: object) -> GraphPostingList:
         graph: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
-        variables = [vp.variable for vp in self.pattern.vertex_patterns]
-        all_vertex_ids = list(graph._vertices.keys())
 
+        # Pre-compute candidate sets with arc consistency filtering
+        var_candidates = self._compute_candidates(graph)
+
+        # Build edge lookup for incremental validation
+        var_edges: dict[str, list[EdgePattern]] = defaultdict(list)
+        for ep in self.pattern.edge_patterns:
+            var_edges[ep.source_var].append(ep)
+            var_edges[ep.target_var].append(ep)
+
+        variables = [vp.variable for vp in self.pattern.vertex_patterns]
+        unassigned = set(variables)
         matches: list[dict[str, int]] = []
-        self._backtrack(graph, variables, 0, {}, all_vertex_ids, matches)
+        self._backtrack(
+            graph, var_candidates, var_edges, unassigned, {}, set(), matches
+        )
 
         entries: list[PostingEntry] = []
         graph_payloads: dict[int, GraphPayload] = {}
@@ -125,46 +140,140 @@ class PatternMatchOperator:
 
         return GraphPostingList(entries, graph_payloads)
 
+    def _compute_candidates(
+        self, graph: GraphStore
+    ) -> dict[str, list[int]]:
+        """Pre-compute candidate vertex IDs per variable with arc consistency.
+
+        Step 1: Evaluate vertex constraints once for all vertices.
+        Step 2: Propagate edge constraints until no further reduction
+                (arc consistency fixpoint).
+        """
+        vp_map = {vp.variable: vp for vp in self.pattern.vertex_patterns}
+        candidates: dict[str, list[int]] = {}
+        for var, vp in vp_map.items():
+            candidates[var] = [
+                vid
+                for vid, vertex in graph._vertices.items()
+                if all(c(vertex) for c in vp.constraints)
+            ]
+
+        # Arc consistency: narrow candidates via edge constraints
+        changed = True
+        while changed:
+            changed = False
+            for ep in self.pattern.edge_patterns:
+                src_var, tgt_var = ep.source_var, ep.target_var
+                if src_var not in candidates or tgt_var not in candidates:
+                    continue
+
+                tgt_set = set(candidates[tgt_var])
+                new_src = [
+                    vid for vid in candidates[src_var]
+                    if self._has_matching_edge_out(
+                        graph, vid, tgt_set, ep
+                    )
+                ]
+                if len(new_src) < len(candidates[src_var]):
+                    candidates[src_var] = new_src
+                    changed = True
+
+                src_set = set(candidates[src_var])
+                new_tgt = [
+                    vid for vid in candidates[tgt_var]
+                    if self._has_matching_edge_in(
+                        graph, vid, src_set, ep
+                    )
+                ]
+                if len(new_tgt) < len(candidates[tgt_var]):
+                    candidates[tgt_var] = new_tgt
+                    changed = True
+
+        return candidates
+
+    @staticmethod
+    def _has_matching_edge_out(
+        graph: GraphStore,
+        src_vid: int,
+        tgt_set: set[int],
+        ep: EdgePattern,
+    ) -> bool:
+        for eid in graph._adj_out.get(src_vid, []):
+            edge = graph._edges[eid]
+            if edge.target_id not in tgt_set:
+                continue
+            if ep.label is not None and edge.label != ep.label:
+                continue
+            if all(c(edge) for c in ep.constraints):
+                return True
+        return False
+
+    @staticmethod
+    def _has_matching_edge_in(
+        graph: GraphStore,
+        tgt_vid: int,
+        src_set: set[int],
+        ep: EdgePattern,
+    ) -> bool:
+        for eid in graph._adj_in.get(tgt_vid, []):
+            edge = graph._edges[eid]
+            if edge.source_id not in src_set:
+                continue
+            if ep.label is not None and edge.label != ep.label:
+                continue
+            if all(c(edge) for c in ep.constraints):
+                return True
+        return False
+
     def _backtrack(
         self,
         graph: GraphStore,
-        variables: list[str],
-        idx: int,
+        var_candidates: dict[str, list[int]],
+        var_edges: dict[str, list[EdgePattern]],
+        unassigned: set[str],
         assignment: dict[str, int],
-        all_vertex_ids: list[int],
+        assigned_values: set[int],
         matches: list[dict[str, int]],
     ) -> None:
-        if idx == len(variables):
-            # Check all edge constraints
-            if self._check_edges(graph, assignment):
-                matches.append(dict(assignment))
+        if not unassigned:
+            matches.append(dict(assignment))
             return
 
-        var = variables[idx]
-        vp = self.pattern.vertex_patterns[idx]
+        # MRV: pick the unassigned variable with fewest candidates
+        var = min(unassigned, key=lambda v: len(var_candidates[v]))
 
-        for vid in all_vertex_ids:
-            # Ensure injective mapping (no two variables map to same vertex)
-            if vid in assignment.values():
+        for vid in var_candidates[var]:
+            if vid in assigned_values:
                 continue
-            vertex = graph.get_vertex(vid)
-            if vertex is None:
-                continue
-            # Check vertex constraints
-            if all(c(vertex) for c in vp.constraints):
-                assignment[var] = vid
+
+            assignment[var] = vid
+            assigned_values.add(vid)
+            unassigned.discard(var)
+
+            # Incremental edge validation
+            if self._validate_edges_for(graph, var, var_edges, assignment):
                 self._backtrack(
-                    graph, variables, idx + 1, assignment, all_vertex_ids, matches
+                    graph, var_candidates, var_edges,
+                    unassigned, assignment, assigned_values, matches,
                 )
-                del assignment[var]
 
-    def _check_edges(self, graph: GraphStore, assignment: dict[str, int]) -> bool:
-        for ep in self.pattern.edge_patterns:
+            del assignment[var]
+            assigned_values.discard(vid)
+            unassigned.add(var)
+
+    @staticmethod
+    def _validate_edges_for(
+        graph: GraphStore,
+        var: str,
+        var_edges: dict[str, list[EdgePattern]],
+        assignment: dict[str, int],
+    ) -> bool:
+        """Check edge constraints involving *var* and already-bound variables."""
+        for ep in var_edges.get(var, []):
             src_id = assignment.get(ep.source_var)
             tgt_id = assignment.get(ep.target_var)
             if src_id is None or tgt_id is None:
-                return False
-            # Check if there's an edge from src to tgt with matching label
+                continue
             found = False
             for eid in graph._adj_out.get(src_id, []):
                 edge = graph._edges[eid]

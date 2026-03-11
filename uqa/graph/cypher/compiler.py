@@ -29,6 +29,7 @@ Execution model:
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Any
 
 from uqa.core.types import Edge, Payload, PostingEntry, Vertex
@@ -418,11 +419,13 @@ class CypherCompiler:
         max_hops = rel_pat.max_hops
 
         results: list[BindingFields] = []
-        # BFS: (vertex_id, depth, path_edge_ids)
-        frontier: list[tuple[int, int, list[int]]] = [(src_vid, 0, [])]
+        # BFS with deque for O(1) popleft; tuple for immutable path
+        frontier: deque[tuple[int, int, tuple[int, ...]]] = deque(
+            [(src_vid, 0, ())]
+        )
 
         while frontier:
-            vid, depth, path_eids = frontier.pop(0)
+            vid, depth, path_eids = frontier.popleft()
 
             if depth >= min_hops:
                 vtx = self._graph.get_vertex(vid)
@@ -446,7 +449,7 @@ class CypherCompiler:
                 if not self._edge_matches(edge, rel_pat, fields):
                     continue
                 frontier.append(
-                    (neighbor_id, depth + 1, path_eids + [edge.edge_id])
+                    (neighbor_id, depth + 1, path_eids + (edge.edge_id,))
                 )
 
         return results
