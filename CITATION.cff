@@ -9,8 +9,8 @@ authors:
     affiliation: "Cognica, Inc."
 repository-code: "https://github.com/cognica-io/uqa"
 license: AGPL-3.0-only
-version: 0.9.2
-date-released: "2026-03-10"
+version: 0.9.3
+date-released: "2026-03-11"
 abstract: >-
   A database prototype that unifies relational, text retrieval,
   vector search, and graph query paradigms under a single algebraic
@@ -32,3 +32,6 @@ keywords:
   - lucene-pipeline
   - apache-arrow
   - parquet
+  - foreign-data-wrapper
+  - hive-partitioning
+  - predicate-pushdown

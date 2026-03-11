@@ -15,8 +15,13 @@ Server options:
     s3_region, s3_access_key_id, s3_secret_access_key -- S3 credentials.
 
 Foreign table options:
-    source -- A DuckDB expression such as ``read_parquet('...')``,
-              ``read_csv('...')``, or an attached table name.
+    source             -- A DuckDB expression such as
+                          ``read_parquet('...')``, ``read_csv('...')``,
+                          or an attached table name.
+    hive_partitioning  -- ``"true"`` to enable Hive-style partition
+                          discovery (``key=value`` directory layout).
+                          Only applied when *source* is a bare file path
+                          that gets auto-wrapped in a ``read_*()`` call.
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ from uqa.fdw.handler import FDWHandler
 if TYPE_CHECKING:
     import pyarrow as pa
 
-    from uqa.fdw.foreign_table import ForeignServer, ForeignTable
+    from uqa.fdw.foreign_table import FDWPredicate, ForeignServer, ForeignTable
 
 
 class DuckDBFDWHandler(FDWHandler):
@@ -63,27 +68,73 @@ class DuckDBFDWHandler(FDWHandler):
     }
 
     @classmethod
-    def _normalize_source(cls, source: str) -> str:
+    def _normalize_source(
+        cls, source: str, *, hive_partitioning: bool = False,
+    ) -> str:
         """Wrap bare file paths in the appropriate DuckDB reader function.
 
         If *source* already contains a function call (detected by ``(``)
         or is a plain identifier (table name), it is returned as-is.
         Otherwise, if it ends with a known file extension, it is wrapped
         in the corresponding ``read_*()`` call.
+
+        When *hive_partitioning* is True and the source is auto-wrapped,
+        ``hive_partitioning = true`` is appended to the reader arguments
+        so DuckDB discovers partition columns from the directory layout.
         """
         if "(" in source:
             return source
         lower = source.lower()
         for ext, reader in cls._FILE_READERS.items():
             if lower.endswith(ext):
+                if hive_partitioning:
+                    return (
+                        f"{reader}('{source}', "
+                        f"hive_partitioning = true)"
+                    )
                 return f"{reader}('{source}')"
         return source
+
+    @staticmethod
+    def _build_where_clause(
+        predicates: list[FDWPredicate],
+    ) -> tuple[str, list]:
+        """Convert :class:`FDWPredicate` list to a SQL WHERE fragment.
+
+        Returns ``(where_sql, params)`` where *where_sql* is a string
+        like ``"year = ? AND month > ?"`` and *params* is the list of
+        bind values.  Uses DuckDB parameterized queries to avoid SQL
+        injection.
+
+        Supported operators: ``=``, ``!=``, ``<>``, ``<``, ``<=``,
+        ``>``, ``>=``, ``IN``, ``LIKE``, ``NOT LIKE``, ``ILIKE``,
+        ``NOT ILIKE``.
+        """
+        clauses: list[str] = []
+        params: list = []
+        for p in predicates:
+            if p.value is None:
+                if p.operator in ("=",):
+                    clauses.append(f"{p.column} IS NULL")
+                else:
+                    clauses.append(f"{p.column} IS NOT NULL")
+            elif p.operator == "IN":
+                placeholders = ", ".join("?" for _ in p.value)
+                clauses.append(f"{p.column} IN ({placeholders})")
+                params.extend(p.value)
+            elif p.operator in ("LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE"):
+                clauses.append(f"{p.column} {p.operator} ?")
+                params.append(p.value)
+            else:
+                clauses.append(f"{p.column} {p.operator} ?")
+                params.append(p.value)
+        return " AND ".join(clauses), params
 
     def scan(
         self,
         foreign_table: ForeignTable,
         columns: list[str] | None = None,
-        predicates: list | None = None,
+        predicates: list[FDWPredicate] | None = None,
     ) -> pa.Table:
         source = foreign_table.options.get("source")
         if source is None:
@@ -92,7 +143,11 @@ class DuckDBFDWHandler(FDWHandler):
                 f"missing required option 'source'"
             )
 
-        source = self._normalize_source(source)
+        hive = (
+            foreign_table.options.get("hive_partitioning", "").lower()
+            == "true"
+        )
+        source = self._normalize_source(source, hive_partitioning=hive)
 
         if columns:
             cols = ", ".join(columns)
@@ -100,7 +155,13 @@ class DuckDBFDWHandler(FDWHandler):
             cols = ", ".join(foreign_table.columns.keys())
 
         sql = f"SELECT {cols} FROM {source}"
-        return self._conn.execute(sql).fetch_arrow_table()
+        params: list = []
+
+        if predicates:
+            where_sql, params = self._build_where_clause(predicates)
+            sql = f"{sql} WHERE {where_sql}"
+
+        return self._conn.execute(sql, params).to_arrow_table()
 
     def close(self) -> None:
         if self._conn is not None:

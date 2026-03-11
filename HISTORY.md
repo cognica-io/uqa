@@ -1,5 +1,60 @@
 # History
 
+## 0.9.3 (2026-03-11)
+
+Foreign Data Wrapper support with Hive partitioning and predicate pushdown.
+
+### Foreign Data Wrappers
+
+- `CREATE SERVER ... FOREIGN DATA WRAPPER` DDL for registering external data sources
+- `CREATE FOREIGN TABLE ... SERVER ... OPTIONS (source '...')` for mapping external files to SQL tables
+- `DROP SERVER [IF EXISTS]` / `DROP FOREIGN TABLE [IF EXISTS]` with dependency validation
+- DuckDB FDW handler (`duckdb_fdw`): in-process access to Parquet, CSV, JSON, and ndjson files
+  - Auto-detection of file type from extension (`.parquet`, `.csv`, `.json`, `.ndjson`)
+  - S3 credentials support (`s3_region`, `s3_access_key_id`, `s3_secret_access_key`)
+- Arrow Flight SQL FDW handler (`arrow_fdw`): remote access via gRPC with TLS and authentication
+- Foreign tables are read-only (INSERT/UPDATE/DELETE rejected with clear error messages)
+- Handler caching per server with lazy initialization
+- Full SQL support on foreign tables: WHERE, ORDER BY, LIMIT, DISTINCT, GROUP BY, HAVING, JOINs, subqueries, CTEs, window functions
+- `information_schema.tables` shows foreign tables with `FOREIGN TABLE` type
+- Catalog persistence: servers and foreign tables survive engine restart
+
+### FDW: Hive Partitioning
+
+- `hive_partitioning` option on `CREATE FOREIGN TABLE` for Hive-style directory layout (`key=value/`) discovery
+  - Supported for Parquet and CSV via DuckDB FDW
+  - Partition columns (extracted from directory names) appear as regular queryable columns
+  - Auto-injected into `read_parquet()` / `read_csv()` when source is a bare file path
+
+### FDW: Predicate Pushdown
+
+- WHERE clause predicates are now pushed down to FDW handlers for server-side filtering
+  - Comparison operators: `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`
+  - Set membership: `IN (v1, v2, ...)`
+  - Pattern matching: `LIKE`, `NOT LIKE`, `ILIKE`, `NOT ILIKE`
+  - `BETWEEN` (split into `>=` and `<=`)
+- `_extract_pushdown_predicates` in SQL compiler recursively splits AND-connected WHERE clauses into pushable and deferred parts
+  - Pushable predicates forwarded to DuckDB/Arrow Flight SQL as native WHERE clauses
+  - Non-pushable predicates (OR, subqueries, complex expressions) remain as post-scan `ExprFilterOp`
+- DuckDB handler uses parameterized queries (`?` placeholders) for safe predicate injection
+- Arrow Flight SQL handler inlines literals with proper quoting
+
+### FDW: Data Model
+
+- `FDWPredicate` dataclass for handler-agnostic predicate representation (column, operator, value)
+- `FDWHandler.scan()` interface updated with typed `predicates: list[FDWPredicate]` parameter
+- `_ForeignTableScanOperator` carries `pushdown_predicates` to handler's `scan()` method
+
+### Dependencies
+
+- Added `duckdb >= 1.0` to README requirements (was already in pyproject.toml)
+
+### Tests
+
+- 1824 tests across 46 test files (up from 1671 in v0.9.2)
+- `test_fdw.py` with 133 tests: DDL (16), DML guards (3), queries (16), aggregation (6), joins (6), subqueries/CTEs (4), window functions (2), EXPLAIN (1), file sources (5), handler lifecycle (4), information_schema (3), catalog persistence (4), Hive partition discovery (5), predicate pushdown (11), Hive aggregation (3), Hive joins (1), Hive order/limit (2), source normalization (10), WHERE clause building (10), predicate extraction (8), CSV partitioning (1), Hive catalog persistence (1), ORDER BY fix (1)
+
+
 ## 0.9.2 (2026-03-10)
 
 Enhanced text analysis pipeline with NGramFilter, analyzer presets, and CI.

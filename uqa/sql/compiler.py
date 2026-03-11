@@ -3038,6 +3038,140 @@ class SQLCompiler:
                     self._engine._tables.pop(name, None)
             self._expanded_views.clear()
 
+    def _extract_pushdown_predicates(
+        self, where_node: Any,
+    ) -> tuple[list, Any | None]:
+        """Split a WHERE clause into pushable and non-pushable parts.
+
+        Walks the AST and extracts simple ``column op constant``
+        comparisons that can be forwarded to the FDW handler for
+        server-side evaluation (e.g. Hive partition pruning).
+
+        Returns ``(pushable, remaining)`` where *pushable* is a list
+        of :class:`FDWPredicate` instances and *remaining* is the AST
+        subtree that must still be evaluated post-scan (or ``None`` if
+        the entire WHERE was pushed down).
+        """
+        from uqa.fdw.foreign_table import FDWPredicate
+
+        if isinstance(where_node, BoolExpr):
+            if where_node.boolop == BoolExprType.AND_EXPR:
+                pushable: list[FDWPredicate] = []
+                remaining: list = []
+                for arg in where_node.args:
+                    sub_push, sub_remain = (
+                        self._extract_pushdown_predicates(arg)
+                    )
+                    pushable.extend(sub_push)
+                    if sub_remain is not None:
+                        remaining.append(sub_remain)
+                if not remaining:
+                    return pushable, None
+                if len(remaining) == 1:
+                    return pushable, remaining[0]
+                return pushable, BoolExpr(
+                    boolop=BoolExprType.AND_EXPR,
+                    args=tuple(remaining),
+                )
+            # OR / NOT -- not pushable
+            return [], where_node
+
+        if isinstance(where_node, A_Expr):
+            kind = where_node.kind
+            rhs_is_const = isinstance(
+                where_node.rexpr, (A_Const, PgInteger, PgFloat, PgString)
+            )
+            if rhs_is_const and kind == A_Expr_Kind.AEXPR_OP:
+                op_name = where_node.name[-1].sval
+                if op_name in ("=", "!=", "<>", "<", "<=", ">", ">="):
+                    try:
+                        col_name = self._extract_column_name(
+                            where_node.lexpr
+                        )
+                    except ValueError:
+                        return [], where_node
+                    value = self._extract_const_value(where_node.rexpr)
+                    return [FDWPredicate(col_name, op_name, value)], None
+
+            # BETWEEN: split into >= and <= predicates
+            if kind == A_Expr_Kind.AEXPR_BETWEEN:
+                try:
+                    col_name = self._extract_column_name(
+                        where_node.lexpr
+                    )
+                except ValueError:
+                    return [], where_node
+                bounds = where_node.rexpr
+                if (
+                    len(bounds) == 2
+                    and isinstance(bounds[0], A_Const)
+                    and isinstance(bounds[1], A_Const)
+                ):
+                    lo = self._extract_const_value(bounds[0])
+                    hi = self._extract_const_value(bounds[1])
+                    return [
+                        FDWPredicate(col_name, ">=", lo),
+                        FDWPredicate(col_name, "<=", hi),
+                    ], None
+
+            # IN: pushable when all RHS elements are constants
+            if kind == A_Expr_Kind.AEXPR_IN:
+                try:
+                    col_name = self._extract_column_name(
+                        where_node.lexpr
+                    )
+                except ValueError:
+                    return [], where_node
+                elements = where_node.rexpr
+                if isinstance(elements, (list, tuple)) and all(
+                    isinstance(e, A_Const) for e in elements
+                ):
+                    values = tuple(
+                        self._extract_const_value(e) for e in elements
+                    )
+                    return [FDWPredicate(col_name, "IN", values)], None
+
+            # LIKE / NOT LIKE
+            if kind == A_Expr_Kind.AEXPR_LIKE:
+                try:
+                    col_name = self._extract_column_name(
+                        where_node.lexpr
+                    )
+                except ValueError:
+                    return [], where_node
+                if isinstance(where_node.rexpr, A_Const):
+                    pattern = self._extract_const_value(where_node.rexpr)
+                    op_name = where_node.name[0].sval
+                    if op_name == "!~~":
+                        return [
+                            FDWPredicate(col_name, "NOT LIKE", pattern),
+                        ], None
+                    return [
+                        FDWPredicate(col_name, "LIKE", pattern),
+                    ], None
+
+            # ILIKE / NOT ILIKE
+            if kind == A_Expr_Kind.AEXPR_ILIKE:
+                try:
+                    col_name = self._extract_column_name(
+                        where_node.lexpr
+                    )
+                except ValueError:
+                    return [], where_node
+                if isinstance(where_node.rexpr, A_Const):
+                    pattern = self._extract_const_value(where_node.rexpr)
+                    op_name = where_node.name[0].sval
+                    if op_name == "!~~*":
+                        return [
+                            FDWPredicate(col_name, "NOT ILIKE", pattern),
+                        ], None
+                    return [
+                        FDWPredicate(col_name, "ILIKE", pattern),
+                    ], None
+
+        # Everything else: not pushable
+        return [], where_node
+
     def _apply_deferred_where(self, physical: Any, where_node: Any) -> Any:
         """Apply WHERE predicates as physical filter on joined/graph rows.
 
@@ -3135,7 +3269,16 @@ class SQLCompiler:
 
         # 4. WHERE clause
         if stmt.whereClause is not None:
-            if graph_source or join_source or foreign_source:
+            if foreign_source:
+                # Extract pushable predicates for the FDW handler and
+                # keep the rest as deferred WHERE for post-scan filtering.
+                pushable, remaining = self._extract_pushdown_predicates(
+                    stmt.whereClause,
+                )
+                if pushable:
+                    source_op.pushdown_predicates = pushable
+                deferred_where = remaining
+            elif graph_source or join_source:
                 # Defer WHERE to physical ExprFilterOp layer
                 deferred_where = stmt.whereClause
             else:
@@ -5753,6 +5896,10 @@ class _ForeignTableScanOperator:
     The handler returns a ``pyarrow.Table`` which is converted into a
     :class:`PostingList` for seamless integration with UQA's query
     pipeline (joins, WHERE, GROUP BY, ORDER BY, etc.).
+
+    When :attr:`pushdown_predicates` is set, the predicates are forwarded
+    to the handler's ``scan()`` so the data source can filter rows
+    server-side (e.g. Hive partition pruning).
     """
 
     def __init__(
@@ -5764,6 +5911,7 @@ class _ForeignTableScanOperator:
         self._foreign_table = foreign_table
         self._engine = engine
         self._alias = alias
+        self.pushdown_predicates: list | None = None
 
     def _get_handler(self) -> Any:
         """Lazily obtain or create the FDW handler for this table's server."""
@@ -5789,7 +5937,10 @@ class _ForeignTableScanOperator:
 
     def execute(self, context: Any) -> PostingList:
         handler = self._get_handler()
-        arrow_table = handler.scan(self._foreign_table)
+        arrow_table = handler.scan(
+            self._foreign_table,
+            predicates=self.pushdown_predicates,
+        )
 
         col_names = list(self._foreign_table.columns.keys())
         alias = self._alias

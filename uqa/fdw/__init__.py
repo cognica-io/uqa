@@ -6,7 +6,7 @@
 
 """Foreign Data Wrapper (FDW) support for querying external data sources."""
 
-from uqa.fdw.foreign_table import ForeignServer, ForeignTable
+from uqa.fdw.foreign_table import FDWPredicate, ForeignServer, ForeignTable
 from uqa.fdw.handler import FDWHandler
 
-__all__ = ["FDWHandler", "ForeignServer", "ForeignTable"]
+__all__ = ["FDWHandler", "FDWPredicate", "ForeignServer", "ForeignTable"]

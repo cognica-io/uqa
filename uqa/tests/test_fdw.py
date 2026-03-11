@@ -20,6 +20,7 @@ Covers:
   - Handler lifecycle: caching, close, drop server cleans handler
   - information_schema visibility (FOREIGN TABLE type)
   - Catalog persistence: servers + foreign tables survive engine restart
+  - Hive partitioning: partition discovery, predicate pushdown, pruning
 """
 
 from __future__ import annotations
@@ -1031,4 +1032,573 @@ class TestCatalogPersistence:
         assert "s2" in engine2._foreign_servers
         assert engine2._foreign_servers["s2"].fdw_type == "arrow_fdw"
         assert engine2._foreign_servers["s2"].options["host"] == "example.com"
+        engine2.close()
+
+
+# ======================================================================
+# Hive partitioning
+# ======================================================================
+
+
+@pytest.fixture
+def hive_parquet_path(tmp_path):
+    """Create a Hive-partitioned Parquet dataset.
+
+    Directory layout::
+
+        data/
+          year=2023/
+            month=6/  -> rows (1, 'alpha', 100)
+            month=12/ -> rows (2, 'beta',  200)
+          year=2024/
+            month=3/  -> rows (3, 'gamma', 300)
+            month=9/  -> rows (4, 'delta', 400), (5, 'epsilon', 500)
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    partitions = [
+        ("2023", "6", [{"id": 1, "name": "alpha", "amount": 100}]),
+        ("2023", "12", [{"id": 2, "name": "beta", "amount": 200}]),
+        ("2024", "3", [{"id": 3, "name": "gamma", "amount": 300}]),
+        ("2024", "9", [
+            {"id": 4, "name": "delta", "amount": 400},
+            {"id": 5, "name": "epsilon", "amount": 500},
+        ]),
+    ]
+
+    base = tmp_path / "data"
+    for year, month, rows in partitions:
+        part_dir = base / f"year={year}" / f"month={month}"
+        part_dir.mkdir(parents=True)
+        table = pa.table({
+            "id": [r["id"] for r in rows],
+            "name": [r["name"] for r in rows],
+            "amount": [r["amount"] for r in rows],
+        })
+        pq.write_table(table, str(part_dir / "data.parquet"))
+
+    return str(base / "**/*.parquet")
+
+
+@pytest.fixture
+def hive_engine(engine, hive_parquet_path):
+    """Engine with a Hive-partitioned foreign table registered."""
+    engine.sql("CREATE SERVER local FOREIGN DATA WRAPPER duckdb_fdw")
+    engine.sql(
+        f"CREATE FOREIGN TABLE sales "
+        f"(id INTEGER, name TEXT, amount INTEGER, "
+        f"year INTEGER, month INTEGER) "
+        f"SERVER local OPTIONS ("
+        f"source '{hive_parquet_path}', "
+        f"hive_partitioning 'true')"
+    )
+    return engine
+
+
+class TestHivePartitionDiscovery:
+    """Verify that Hive partition columns are discovered and queryable."""
+
+    def test_select_all_rows(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT * FROM sales ORDER BY id"
+        )
+        assert len(result.rows) == 5
+        assert result.rows[0]["name"] == "alpha"
+        assert result.rows[4]["name"] == "epsilon"
+
+    def test_partition_columns_populated(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT id, year, month FROM sales ORDER BY id"
+        )
+        assert result.rows[0] == {"id": 1, "year": 2023, "month": 6}
+        assert result.rows[2] == {"id": 3, "year": 2024, "month": 3}
+        assert result.rows[4] == {"id": 5, "year": 2024, "month": 9}
+
+    def test_data_and_partition_columns_together(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT name, amount, year FROM sales WHERE id = 3"
+        )
+        assert len(result.rows) == 1
+        assert result.rows[0] == {
+            "name": "gamma", "amount": 300, "year": 2024,
+        }
+
+    def test_distinct_partition_values(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT DISTINCT year FROM sales ORDER BY year"
+        )
+        assert [r["year"] for r in result.rows] == [2023, 2024]
+
+    def test_count_per_partition(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT year, COUNT(*) AS cnt FROM sales "
+            "GROUP BY year ORDER BY year"
+        )
+        assert result.rows[0]["year"] == 2023
+        assert result.rows[0]["cnt"] == 2
+        assert result.rows[1]["year"] == 2024
+        assert result.rows[1]["cnt"] == 3
+
+
+class TestHivePredicatePushdown:
+    """Verify predicate pushdown filters at the DuckDB level."""
+
+    def test_equality_on_partition_column(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT id, name FROM sales WHERE year = 2024 ORDER BY id"
+        )
+        assert len(result.rows) == 3
+        assert [r["name"] for r in result.rows] == [
+            "gamma", "delta", "epsilon",
+        ]
+
+    def test_comparison_on_partition_column(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT id FROM sales WHERE month > 6 ORDER BY id"
+        )
+        assert [r["id"] for r in result.rows] == [2, 4, 5]
+
+    def test_multiple_partition_predicates(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT name FROM sales "
+            "WHERE year = 2024 AND month = 9 ORDER BY id"
+        )
+        assert [r["name"] for r in result.rows] == ["delta", "epsilon"]
+
+    def test_partition_and_data_predicates(self, hive_engine):
+        """Partition predicate pushed down, data predicate applied post-scan."""
+        result = hive_engine.sql(
+            "SELECT name FROM sales "
+            "WHERE year = 2024 AND amount >= 400 ORDER BY name"
+        )
+        assert [r["name"] for r in result.rows] == ["delta", "epsilon"]
+
+    def test_between_on_partition_column(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT id FROM sales "
+            "WHERE month BETWEEN 3 AND 9 ORDER BY id"
+        )
+        assert [r["id"] for r in result.rows] == [1, 3, 4, 5]
+
+    def test_or_not_pushed_down(self, hive_engine):
+        """OR predicates are not pushable -- deferred to post-scan filter."""
+        result = hive_engine.sql(
+            "SELECT id FROM sales "
+            "WHERE year = 2023 OR month = 9 ORDER BY id"
+        )
+        assert [r["id"] for r in result.rows] == [1, 2, 4, 5]
+
+    def test_mixed_and_or(self, hive_engine):
+        """AND of (pushable, non-pushable): pushable part pushed down."""
+        result = hive_engine.sql(
+            "SELECT id FROM sales "
+            "WHERE year = 2024 AND (month = 3 OR month = 9) "
+            "ORDER BY id"
+        )
+        assert [r["id"] for r in result.rows] == [3, 4, 5]
+
+    def test_not_equal_on_partition(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT id FROM sales WHERE year != 2023 ORDER BY id"
+        )
+        assert [r["id"] for r in result.rows] == [3, 4, 5]
+
+    def test_less_than_on_partition(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT name FROM sales WHERE month < 6 ORDER BY id"
+        )
+        assert [r["name"] for r in result.rows] == ["gamma"]
+
+    def test_greater_equal_on_partition(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT id FROM sales WHERE year >= 2024 ORDER BY id"
+        )
+        assert [r["id"] for r in result.rows] == [3, 4, 5]
+
+    def test_string_predicate_on_data_column(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT year, name FROM sales "
+            "WHERE name = 'gamma'"
+        )
+        assert len(result.rows) == 1
+        assert result.rows[0] == {"year": 2024, "name": "gamma"}
+
+
+class TestHivePartitionAggregation:
+    """Aggregation queries over Hive-partitioned data."""
+
+    def test_sum_per_year(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT year, SUM(amount) AS total FROM sales "
+            "GROUP BY year ORDER BY year"
+        )
+        assert result.rows[0]["year"] == 2023
+        assert result.rows[0]["total"] == 300
+        assert result.rows[1]["year"] == 2024
+        assert result.rows[1]["total"] == 1200
+
+    def test_avg_with_partition_filter(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT AVG(amount) AS avg_amt FROM sales WHERE year = 2024"
+        )
+        assert result.rows[0]["avg_amt"] == pytest.approx(400.0)
+
+    def test_group_by_two_partition_columns(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT year, month, COUNT(*) AS cnt FROM sales "
+            "GROUP BY year, month "
+            "HAVING COUNT(*) > 1"
+        )
+        assert len(result.rows) == 1
+        assert result.rows[0]["year"] == 2024
+        assert result.rows[0]["month"] == 9
+        assert result.rows[0]["cnt"] == 2
+
+
+class TestHivePartitionJoins:
+    """Joins between Hive-partitioned foreign tables and local tables."""
+
+    def test_join_hive_with_local_table(self, hive_engine):
+        hive_engine.sql(
+            "CREATE TABLE regions "
+            "(year INTEGER, region TEXT)"
+        )
+        hive_engine.sql(
+            "INSERT INTO regions (year, region) VALUES (2023, 'APAC')"
+        )
+        hive_engine.sql(
+            "INSERT INTO regions (year, region) VALUES (2024, 'EMEA')"
+        )
+        result = hive_engine.sql(
+            "SELECT s.name, r.region FROM sales s "
+            "INNER JOIN regions r ON s.year = r.year "
+            "ORDER BY s.id"
+        )
+        assert len(result.rows) == 5
+        assert result.rows[0] == {"name": "alpha", "region": "APAC"}
+        assert result.rows[2] == {"name": "gamma", "region": "EMEA"}
+
+
+class TestHivePartitionOrderLimit:
+    """ORDER BY and LIMIT on Hive-partitioned data."""
+
+    def test_order_by_partition_column(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT name FROM sales ORDER BY year DESC, month DESC"
+        )
+        names = [r["name"] for r in result.rows]
+        assert names[0] in ("delta", "epsilon")  # year=2024, month=9
+        assert names[-1] == "alpha"  # year=2023, month=6
+
+    def test_limit_with_partition_filter(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT name FROM sales WHERE year = 2024 "
+            "ORDER BY amount LIMIT 2"
+        )
+        assert len(result.rows) == 2
+        assert result.rows[0]["name"] == "gamma"
+        assert result.rows[1]["name"] == "delta"
+
+
+class TestHiveNormalizeSource:
+    """Unit tests for _normalize_source with hive_partitioning flag."""
+
+    def test_bare_parquet_with_hive(self):
+        result = DuckDBFDWHandler._normalize_source(
+            "/data/**/*.parquet", hive_partitioning=True,
+        )
+        assert result == (
+            "read_parquet('/data/**/*.parquet', "
+            "hive_partitioning = true)"
+        )
+
+    def test_bare_parquet_without_hive(self):
+        result = DuckDBFDWHandler._normalize_source(
+            "/data/**/*.parquet", hive_partitioning=False,
+        )
+        assert result == "read_parquet('/data/**/*.parquet')"
+
+    def test_bare_csv_with_hive(self):
+        result = DuckDBFDWHandler._normalize_source(
+            "/logs/**/*.csv", hive_partitioning=True,
+        )
+        assert result == (
+            "read_csv('/logs/**/*.csv', "
+            "hive_partitioning = true)"
+        )
+
+    def test_explicit_expression_ignores_hive_flag(self):
+        expr = "read_parquet('/data/*.parquet', filename=true)"
+        result = DuckDBFDWHandler._normalize_source(
+            expr, hive_partitioning=True,
+        )
+        assert result == expr
+
+    def test_table_name_ignores_hive_flag(self):
+        result = DuckDBFDWHandler._normalize_source(
+            "my_table", hive_partitioning=True,
+        )
+        assert result == "my_table"
+
+
+class TestHiveBuildWhereClause:
+    """Unit tests for DuckDBFDWHandler._build_where_clause."""
+
+    def test_single_equality(self):
+        from uqa.fdw.foreign_table import FDWPredicate
+
+        where, params = DuckDBFDWHandler._build_where_clause([
+            FDWPredicate("year", "=", 2024),
+        ])
+        assert where == "year = ?"
+        assert params == [2024]
+
+    def test_multiple_predicates(self):
+        from uqa.fdw.foreign_table import FDWPredicate
+
+        where, params = DuckDBFDWHandler._build_where_clause([
+            FDWPredicate("year", "=", 2024),
+            FDWPredicate("month", ">", 6),
+        ])
+        assert where == "year = ? AND month > ?"
+        assert params == [2024, 6]
+
+    def test_string_value(self):
+        from uqa.fdw.foreign_table import FDWPredicate
+
+        where, params = DuckDBFDWHandler._build_where_clause([
+            FDWPredicate("name", "=", "alice"),
+        ])
+        assert where == "name = ?"
+        assert params == ["alice"]
+
+    def test_null_equality(self):
+        from uqa.fdw.foreign_table import FDWPredicate
+
+        where, params = DuckDBFDWHandler._build_where_clause([
+            FDWPredicate("col", "=", None),
+        ])
+        assert where == "col IS NULL"
+        assert params == []
+
+    def test_null_not_equal(self):
+        from uqa.fdw.foreign_table import FDWPredicate
+
+        where, params = DuckDBFDWHandler._build_where_clause([
+            FDWPredicate("col", "!=", None),
+        ])
+        assert where == "col IS NOT NULL"
+        assert params == []
+
+    def test_in_operator(self):
+        from uqa.fdw.foreign_table import FDWPredicate
+
+        where, params = DuckDBFDWHandler._build_where_clause([
+            FDWPredicate("year", "IN", (2023, 2024)),
+        ])
+        assert where == "year IN (?, ?)"
+        assert params == [2023, 2024]
+
+    def test_in_with_strings(self):
+        from uqa.fdw.foreign_table import FDWPredicate
+
+        where, params = DuckDBFDWHandler._build_where_clause([
+            FDWPredicate("name", "IN", ("alice", "bob")),
+        ])
+        assert where == "name IN (?, ?)"
+        assert params == ["alice", "bob"]
+
+    def test_like_operator(self):
+        from uqa.fdw.foreign_table import FDWPredicate
+
+        where, params = DuckDBFDWHandler._build_where_clause([
+            FDWPredicate("name", "LIKE", "%foo%"),
+        ])
+        assert where == "name LIKE ?"
+        assert params == ["%foo%"]
+
+    def test_not_like_operator(self):
+        from uqa.fdw.foreign_table import FDWPredicate
+
+        where, params = DuckDBFDWHandler._build_where_clause([
+            FDWPredicate("name", "NOT LIKE", "%bar%"),
+        ])
+        assert where == "name NOT LIKE ?"
+        assert params == ["%bar%"]
+
+    def test_ilike_operator(self):
+        from uqa.fdw.foreign_table import FDWPredicate
+
+        where, params = DuckDBFDWHandler._build_where_clause([
+            FDWPredicate("name", "ILIKE", "%FOO%"),
+        ])
+        assert where == "name ILIKE ?"
+        assert params == ["%FOO%"]
+
+    def test_mixed_operators(self):
+        from uqa.fdw.foreign_table import FDWPredicate
+
+        where, params = DuckDBFDWHandler._build_where_clause([
+            FDWPredicate("year", "IN", (2023, 2024)),
+            FDWPredicate("name", "LIKE", "a%"),
+            FDWPredicate("amount", ">", 100),
+        ])
+        assert where == "year IN (?, ?) AND name LIKE ? AND amount > ?"
+        assert params == [2023, 2024, "a%", 100]
+
+
+class TestPredicateExtraction:
+    """Test _extract_pushdown_predicates via end-to-end queries."""
+
+    def test_all_predicates_pushed_no_deferred_where(self, hive_engine):
+        """When all predicates are pushable, no post-scan filter needed."""
+        result = hive_engine.sql(
+            "SELECT name FROM sales "
+            "WHERE year = 2023 AND month = 6"
+        )
+        assert len(result.rows) == 1
+        assert result.rows[0]["name"] == "alpha"
+
+    def test_like_pushed_down(self, hive_engine):
+        """LIKE is pushable -- DuckDB evaluates the pattern."""
+        result = hive_engine.sql(
+            "SELECT name FROM sales WHERE name LIKE '%lp%' ORDER BY id"
+        )
+        assert [r["name"] for r in result.rows] == ["alpha"]
+
+    def test_not_like_pushed_down(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT name FROM sales "
+            "WHERE name NOT LIKE '%a%' ORDER BY id"
+        )
+        assert [r["name"] for r in result.rows] == ["epsilon"]
+
+    def test_ilike_pushed_down(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT name FROM sales WHERE name ILIKE 'ALPHA'"
+        )
+        assert len(result.rows) == 1
+        assert result.rows[0]["name"] == "alpha"
+
+    def test_in_pushed_down(self, hive_engine):
+        """IN is pushable -- DuckDB filters at source."""
+        result = hive_engine.sql(
+            "SELECT id FROM sales WHERE year IN (2023, 2024) ORDER BY id"
+        )
+        assert [r["id"] for r in result.rows] == [1, 2, 3, 4, 5]
+
+    def test_in_subset(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT id FROM sales WHERE id IN (1, 3, 5) ORDER BY id"
+        )
+        assert [r["id"] for r in result.rows] == [1, 3, 5]
+
+    def test_in_with_strings(self, hive_engine):
+        result = hive_engine.sql(
+            "SELECT id FROM sales "
+            "WHERE name IN ('alpha', 'gamma') ORDER BY id"
+        )
+        assert [r["id"] for r in result.rows] == [1, 3]
+
+    def test_in_and_comparison_together(self, hive_engine):
+        """Both IN and comparison pushed down."""
+        result = hive_engine.sql(
+            "SELECT name FROM sales "
+            "WHERE year IN (2024) AND amount > 300 ORDER BY id"
+        )
+        assert [r["name"] for r in result.rows] == ["delta", "epsilon"]
+
+    def test_like_and_comparison_together(self, hive_engine):
+        """Both LIKE and comparison pushed down."""
+        result = hive_engine.sql(
+            "SELECT id FROM sales "
+            "WHERE year = 2024 AND name LIKE '%a%' ORDER BY id"
+        )
+        assert [r["id"] for r in result.rows] == [3, 4]
+
+    def test_no_where_clause(self, hive_engine):
+        """No WHERE -- all rows returned, no pushdown."""
+        result = hive_engine.sql(
+            "SELECT COUNT(*) AS cnt FROM sales"
+        )
+        assert result.rows[0]["cnt"] == 5
+
+    def test_or_remains_deferred(self, hive_engine):
+        """OR predicates cannot be pushed down."""
+        result = hive_engine.sql(
+            "SELECT id FROM sales "
+            "WHERE name = 'alpha' OR name = 'gamma' ORDER BY id"
+        )
+        assert [r["id"] for r in result.rows] == [1, 3]
+
+
+class TestHivePartitionWithCSV:
+    """Hive partitioning with CSV files."""
+
+    def test_csv_hive_partition(self, engine, tmp_path):
+        base = tmp_path / "csv_data"
+        for region, rows in [
+            ("us", "id,score\n1,95.5\n2,87.0\n"),
+            ("eu", "id,score\n3,92.0\n"),
+        ]:
+            part_dir = base / f"region={region}"
+            part_dir.mkdir(parents=True)
+            (part_dir / "data.csv").write_text(rows)
+
+        glob_path = str(base / "**/*.csv")
+        engine.sql("CREATE SERVER local FOREIGN DATA WRAPPER duckdb_fdw")
+        engine.sql(
+            f"CREATE FOREIGN TABLE scores "
+            f"(id INTEGER, score REAL, region TEXT) "
+            f"SERVER local OPTIONS ("
+            f"source '{glob_path}', "
+            f"hive_partitioning 'true')"
+        )
+        result = engine.sql(
+            "SELECT id, region FROM scores WHERE region = 'us' ORDER BY id"
+        )
+        assert len(result.rows) == 2
+        assert result.rows[0] == {"id": 1, "region": "us"}
+        assert result.rows[1] == {"id": 2, "region": "us"}
+
+
+class TestHivePartitionCatalogPersistence:
+    """Hive partitioning options survive engine restart."""
+
+    def test_hive_option_persists(self, tmp_path):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        # Create a minimal Hive-partitioned dataset
+        part_dir = tmp_path / "data" / "year=2024"
+        part_dir.mkdir(parents=True)
+        pq.write_table(
+            pa.table({"id": [1], "val": [42]}),
+            str(part_dir / "data.parquet"),
+        )
+
+        glob_path = str(tmp_path / "data" / "**/*.parquet")
+        db_path = str(tmp_path / "test.db")
+
+        engine1 = Engine(db_path=db_path)
+        engine1.sql("CREATE SERVER local FOREIGN DATA WRAPPER duckdb_fdw")
+        engine1.sql(
+            f"CREATE FOREIGN TABLE hdata "
+            f"(id INTEGER, val INTEGER, year INTEGER) "
+            f"SERVER local OPTIONS ("
+            f"source '{glob_path}', "
+            f"hive_partitioning 'true')"
+        )
+        result1 = engine1.sql("SELECT * FROM hdata")
+        assert result1.rows[0]["year"] == 2024
+        engine1.close()
+
+        engine2 = Engine(db_path=db_path)
+        ft = engine2._foreign_tables["hdata"]
+        assert ft.options["hive_partitioning"] == "true"
+
+        result2 = engine2.sql("SELECT year, val FROM hdata WHERE year = 2024")
+        assert len(result2.rows) == 1
+        assert result2.rows[0] == {"year": 2024, "val": 42}
         engine2.close()

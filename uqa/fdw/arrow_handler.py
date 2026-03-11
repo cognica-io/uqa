@@ -31,7 +31,7 @@ from uqa.fdw.handler import FDWHandler
 if TYPE_CHECKING:
     import pyarrow as pa
 
-    from uqa.fdw.foreign_table import ForeignServer, ForeignTable
+    from uqa.fdw.foreign_table import FDWPredicate, ForeignServer, ForeignTable
 
 
 class ArrowFlightSQLFDWHandler(FDWHandler):
@@ -54,11 +54,55 @@ class ArrowFlightSQLFDWHandler(FDWHandler):
         if username and password:
             self._client.authenticate_basic_token(username, password)
 
+    @staticmethod
+    def _quote_literal(value: object) -> str:
+        """Format a Python value as a SQL literal with proper quoting."""
+        if isinstance(value, str):
+            escaped = value.replace("'", "''")
+            return f"'{escaped}'"
+        return str(value)
+
+    @classmethod
+    def _build_where_clause(
+        cls,
+        predicates: list[FDWPredicate],
+    ) -> str:
+        """Convert :class:`FDWPredicate` list to a SQL WHERE fragment.
+
+        Arrow Flight SQL uses plain SQL strings (no parameterized
+        binding), so literal values are inlined with proper quoting.
+
+        Supported operators: ``=``, ``!=``, ``<>``, ``<``, ``<=``,
+        ``>``, ``>=``, ``IN``, ``LIKE``, ``NOT LIKE``, ``ILIKE``,
+        ``NOT ILIKE``.
+        """
+        clauses: list[str] = []
+        for p in predicates:
+            if p.value is None:
+                if p.operator in ("=",):
+                    clauses.append(f"{p.column} IS NULL")
+                else:
+                    clauses.append(f"{p.column} IS NOT NULL")
+            elif p.operator == "IN":
+                literals = ", ".join(
+                    cls._quote_literal(v) for v in p.value
+                )
+                clauses.append(f"{p.column} IN ({literals})")
+            elif p.operator in ("LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE"):
+                clauses.append(
+                    f"{p.column} {p.operator} {cls._quote_literal(p.value)}"
+                )
+            else:
+                clauses.append(
+                    f"{p.column} {p.operator} {cls._quote_literal(p.value)}"
+                )
+        return " AND ".join(clauses)
+
     def scan(
         self,
         foreign_table: ForeignTable,
         columns: list[str] | None = None,
-        predicates: list | None = None,
+        predicates: list[FDWPredicate] | None = None,
     ) -> pa.Table:
         import pyarrow.flight as flight
 
@@ -76,6 +120,10 @@ class ArrowFlightSQLFDWHandler(FDWHandler):
             else:
                 cols = ", ".join(foreign_table.columns.keys())
             query = f"SELECT {cols} FROM {source}"
+
+        if predicates and " WHERE " not in query.upper():
+            where_sql = self._build_where_clause(predicates)
+            query = f"{query} WHERE {where_sql}"
 
         descriptor = flight.FlightDescriptor.for_command(query.encode("utf-8"))
         info = self._client.get_flight_info(descriptor)

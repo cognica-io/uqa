@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import pyarrow as pa
 
-    from uqa.fdw.foreign_table import ForeignTable
+    from uqa.fdw.foreign_table import FDWPredicate, ForeignTable
 
 
 class FDWHandler(ABC):
@@ -33,14 +33,20 @@ class FDWHandler(ABC):
         self,
         foreign_table: ForeignTable,
         columns: list[str] | None = None,
-        predicates: list | None = None,
+        predicates: list[FDWPredicate] | None = None,
     ) -> pa.Table:
         """Scan the foreign table and return an Arrow table.
 
         Parameters:
             foreign_table: The foreign table metadata.
             columns: Optional column projection (all columns if None).
-            predicates: Reserved for future predicate pushdown.
+            predicates: Pushdown predicates for server-side filtering.
+                Each :class:`FDWPredicate` carries a column name, a
+                comparison operator, and a literal value.  Handlers
+                translate these into native filter expressions (e.g.
+                SQL WHERE clauses) so the data source can prune data
+                before transmission -- critical for Hive partition
+                pruning and remote query efficiency.
 
         Returns:
             A ``pyarrow.Table`` containing the requested data.

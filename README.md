@@ -133,6 +133,22 @@ SELECT * FROM create_analyzer('english_stem', '{
     "char_filters": []}');
 
 SELECT * FROM list_analyzers();
+
+-- Foreign Data Wrapper with Hive partitioning
+CREATE SERVER warehouse FOREIGN DATA WRAPPER duckdb_fdw;
+
+CREATE FOREIGN TABLE sales (
+    id INTEGER, name TEXT, amount INTEGER,
+    year INTEGER, month INTEGER
+) SERVER warehouse OPTIONS (
+    source '/data/sales/**/*.parquet',
+    hive_partitioning 'true'
+);
+
+-- Predicate pushdown: DuckDB prunes partitions at source
+SELECT name, SUM(amount) FROM sales
+WHERE year IN (2024, 2025) AND month > 6
+GROUP BY name ORDER BY SUM(amount) DESC;
 ```
 
 ## Architecture
@@ -180,12 +196,13 @@ uqa/
   fusion/         Log-odds conjunction, probabilistic boolean (via bayesian-bm25)
   graph/          GraphStore, traversal, pattern matching, RPQ, cross-paradigm, indexes
     cypher/       openCypher lexer, parser, AST, posting-list-based compiler
+  fdw/            Foreign Data Wrappers: DuckDB (Parquet/CSV/JSON), Arrow Flight SQL, Hive partitioning
   joins/          Hash, sort-merge, index, graph, cross-paradigm, similarity joins
   execution/      Volcano iterator engine: Apache Arrow columnar batches, physical operators, disk spilling
   planner/        Cost model, cardinality estimator, optimizer, DPccp join enumerator, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          1691 tests across 45 test files
+  tests/          1824 tests across 46 test files
 ```
 
 ## Key Features
@@ -195,6 +212,7 @@ uqa/
 | Category | Syntax |
 |----------|--------|
 | DDL | `CREATE TABLE [IF NOT EXISTS]`, `CREATE TEMPORARY TABLE`, `DROP TABLE [IF EXISTS]`, `CREATE TABLE AS SELECT`, `ALTER TABLE` (ADD/DROP/RENAME COLUMN, SET/DROP DEFAULT, SET/DROP NOT NULL, ALTER TYPE USING), `TRUNCATE TABLE`, `CREATE INDEX`, `DROP INDEX`, `CREATE SEQUENCE`/`NEXTVAL`/`CURRVAL`/`SETVAL`, `ALTER SEQUENCE`, `TABLE name` |
+| FDW | `CREATE SERVER ... FOREIGN DATA WRAPPER`, `CREATE FOREIGN TABLE ... SERVER ... OPTIONS (...)`, `DROP SERVER`, `DROP FOREIGN TABLE`, Hive partitioning (`hive_partitioning` option), predicate pushdown (`=`, `!=`, `<`, `>`, `IN`, `LIKE`, `ILIKE`, `BETWEEN`), DuckDB FDW (Parquet/CSV/JSON), Arrow Flight SQL FDW |
 | Constraints | `PRIMARY KEY`, `NOT NULL`, `DEFAULT`, `UNIQUE`, `CHECK`, `FOREIGN KEY` (with insert/update/delete validation) |
 | DML | `INSERT INTO ... VALUES`, `INSERT INTO ... SELECT`, `INSERT ... ON CONFLICT DO NOTHING/UPDATE`, `INSERT ... RETURNING`, `UPDATE ... SET ... WHERE [RETURNING]`, `UPDATE ... FROM` (join), `DELETE FROM ... WHERE [RETURNING]`, `DELETE ... USING` (join) |
 | DQL | `SELECT [DISTINCT] ... FROM ... WHERE ... GROUP BY ... HAVING ... ORDER BY [NULLS FIRST/LAST] ... LIMIT ... OFFSET`, `FETCH FIRST n ROWS ONLY`, standalone `VALUES` |
@@ -276,6 +294,8 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 | Named Graphs | `_named_graphs`, `_graph_{name}_*` | Isolated graph namespaces for Cypher queries |
 | B-tree Indexes | SQLite indexes on `_data_{table}` | `CREATE INDEX` support |
 | Analyzers | `_analyzers` | Custom text analyzer configurations |
+| Foreign Servers | `_foreign_servers` | FDW server definitions (type, connection options) |
+| Foreign Tables | `_foreign_tables` | FDW table definitions (columns, source, options) |
 | Statistics | `_column_stats` | Per-table histograms and MCVs for optimizer |
 
 ### Query Optimizer
@@ -287,6 +307,7 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 - Intersect operand reordering by cardinality (cheapest first)
 - Fusion signal reordering by cost (cheapest first)
 - B-tree index scan substitution (replace full scans when profitable)
+- FDW predicate pushdown (comparison, IN, LIKE, ILIKE, BETWEEN pushed to DuckDB/Arrow Flight SQL for Hive partition pruning)
 - Cross-paradigm cardinality estimation for text, vector, graph, and fusion operators
 
 ### Disk Spilling
@@ -319,6 +340,7 @@ engine = Engine(parallel_workers=0)                   # disable parallelism
 - numpy >= 1.26
 - pyarrow >= 20.0
 - bayesian-bm25 >= 0.8.0
+- duckdb >= 1.0
 - hnswlib >= 0.8
 - pglast >= 7.0
 - prompt-toolkit >= 3.0
@@ -469,6 +491,7 @@ python examples/sql/joins_and_subqueries.py   # JOINs, derived tables, set opera
 python examples/sql/analytics.py              # Aggregates, window functions, JSON, date/time, UPSERT
 python examples/sql/analysis.py               # Text analyzers via SQL: create, list, drop, persistence
 python examples/sql/export.py                 # Arrow/Parquet export from SQL queries
+python examples/sql/fdw.py                    # Foreign Data Wrappers, Hive partitioning, predicate pushdown
 ```
 
 ### Interactive Shell
