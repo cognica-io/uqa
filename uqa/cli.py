@@ -11,6 +11,7 @@ Usage:
     usql --db mydata.db         Start with persistent SQLite storage
     usql script.sql             Execute a SQL script then enter REPL
     usql --db mydata.db s.sql   Persistent + script
+    usql -c "SELECT 1"          Execute a command string and exit
 
 Special commands (backslash):
     \\dt             List tables
@@ -645,6 +646,12 @@ def main() -> None:
         help="SQLite database file for persistent storage",
     )
     parser.add_argument(
+        "-c",
+        metavar="COMMAND",
+        default=None,
+        help="Execute a single SQL command string and exit",
+    )
+    parser.add_argument(
         "scripts",
         nargs="*",
         metavar="script.sql",
@@ -653,6 +660,14 @@ def main() -> None:
     args = parser.parse_args()
 
     shell = UQAShell(db_path=args.db)
+
+    # -c: execute command string and exit (no REPL)
+    if args.c is not None:
+        try:
+            shell._execute_text(args.c)
+        finally:
+            shell._engine.close()
+        return
 
     for path in args.scripts:
         try:

@@ -203,6 +203,8 @@ uqa/
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
   tests/          1879 tests across 47 test files
+benchmarks/       185 pytest-benchmark tests across 8 files (posting list, storage, compiler, execution,
+                  planner, scoring, graph, end-to-end SQL)
 ```
 
 ## Key Features
@@ -301,7 +303,7 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 ### Query Optimizer
 
 - Cost-based optimization with equi-depth histograms and Most Common Values (MCV)
-- **DPccp join order optimization** (Moerkotte & Neumann, 2006) — O(3^n) dynamic programming over connected subgraph complement pairs; produces optimal bushy join trees for INNER JOIN chains with 3+ relations; greedy fallback for 16+ relations
+- **DPccp join order optimization** (Moerkotte & Neumann, 2006) — O(3^n) dynamic programming over connected subgraph complement pairs; produces optimal bushy join trees for INNER JOIN chains with 3+ relations; greedy fallback for 16+ relations; bitmask DP table with bytearray connectivity lookup and incremental connected subgraph enumeration
 - Filter pushdown into intersections
 - Vector threshold merge (same query vector)
 - Intersect operand reordering by cardinality (cheapest first)
@@ -515,6 +517,10 @@ python -m pytest uqa/tests/ -v
 
 # Run a specific test file
 python -m pytest uqa/tests/test_sql.py -v
+
+# Run benchmarks (requires pytest-benchmark)
+pip install -e ".[benchmark]"
+python -m pytest benchmarks/ --benchmark-sort=name
 ```
 
 ## License

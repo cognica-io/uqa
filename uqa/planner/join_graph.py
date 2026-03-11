@@ -127,15 +127,24 @@ class JoinGraph:
     def edges_between(
         self, set_a: frozenset[int], set_b: frozenset[int]
     ) -> list[JoinEdge]:
-        """Return all edges connecting a node in *set_a* to a node in *set_b*."""
+        """Return all edges connecting a node in *set_a* to a node in *set_b*.
+
+        Iterates the adjacency lists of the smaller set for O(|smaller| * degree)
+        instead of scanning all edges O(E).
+        """
         result: list[JoinEdge] = []
-        for edge in self.edges:
-            if (
-                edge.left_node in set_a and edge.right_node in set_b
-            ) or (
-                edge.left_node in set_b and edge.right_node in set_a
-            ):
-                result.append(edge)
+        smaller, larger = (
+            (set_a, set_b) if len(set_a) <= len(set_b) else (set_b, set_a)
+        )
+        for node in smaller:
+            for edge in self._adjacency.get(node, []):
+                other = (
+                    edge.right_node
+                    if edge.left_node == node
+                    else edge.left_node
+                )
+                if other in larger:
+                    result.append(edge)
         return result
 
     def __len__(self) -> int:

@@ -1363,6 +1363,8 @@ python -m pytest uqa/tests/test_sql.py -v
 
 1879 tests across 47 test files covering core algebra, operators, scoring, fusion, SQL compilation, physical execution, joins, graph operations, openCypher graph queries, SQLite persistence, transactions, cost optimization, parallel execution, PostgreSQL 17 compatibility, text analysis pipeline, Arrow/Parquet export, Foreign Data Wrappers (Hive partitioning, predicate pushdown), interactive SQL shell, and end-to-end integration.
 
+Additionally, 185 benchmarks across 8 files (in the `benchmarks/` directory) measure performance of posting list operations, storage backends, SQL compilation, physical execution, DPccp join enumeration, BM25/vector/fusion scoring, graph traversal and pattern matching, and end-to-end SQL queries. Install with `pip install -e ".[benchmark]"` and run with `python -m pytest benchmarks/ --benchmark-sort=name`.
+
 
 ## 10. References
 

@@ -161,7 +161,7 @@ class DuckDBFDWHandler(FDWHandler):
             where_sql, params = self._build_where_clause(predicates)
             sql = f"{sql} WHERE {where_sql}"
 
-        return self._conn.execute(sql, params).to_arrow_table()
+        return self._conn.execute(sql, params).fetch_arrow_table()
 
     def close(self) -> None:
         if self._conn is not None:

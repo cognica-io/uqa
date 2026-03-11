@@ -1,5 +1,47 @@
 # History
 
+## 0.10.1 (2026-03-11)
+
+DPccp join enumerator optimization, benchmark infrastructure, and DuckDB compatibility fix.
+
+### DPccp Join Enumerator Optimization
+
+- **Integer bitmask DP table**: replaced `frozenset[int]` keys with `int` bitmask keys throughout the DP table, reducing per-lookup cost from O(k) frozenset hashing to O(1) integer hashing
+- **Bytearray connectivity lookup**: replaced `set[frozenset[int]]` with a `bytearray(2^n)` lookup table indexed by bitmask, giving O(1) array-indexed connectivity checks instead of O(k) hash-based set lookups
+- **Incremental connected subgraph enumeration**: builds connected subgraphs bottom-up via BFS extension with the `neighbor > min(S)` invariant, avoiding generation of disconnected subsets entirely; replaces the brute-force C(n,k) subset enumeration with per-subset BFS connectivity check
+- **Canonical submask enumeration**: enumerates only the half of submasks that contain the lowest set bit (`sub_rest | lowest_bit`), skipping the non-canonical half without branch checks; replaces the `if mask & 1` filter on all 2^k masks
+- **`edges_between` adjacency list traversal**: iterates adjacency lists of the smaller set for O(|smaller| * degree) instead of scanning all edges O(E)
+- Star-16 topology: **51x speedup** (92s to 1.8s); star-8: 4.3x speedup; star-10: 5.6x speedup
+
+### Benchmark Infrastructure
+
+- Added pytest-benchmark integration with 185 benchmarks across 8 files covering all subsystems
+- `benchmarks/data/generators.py` — `BenchmarkDataGenerator` with configurable scale factor and deterministic seeding; Zipf distribution for terms, power-law for graph degree, log-normal for document lengths
+- `benchmarks/data/schemas.py` — DDL and column definitions for benchmark tables
+- `benchmarks/conftest.py` — shared fixtures for engine setup and data population
+- `benchmarks/bench_posting_list.py` — 34 benchmarks: union, intersect, difference by size and overlap ratio, top-k, N-way merge, payload merge
+- `benchmarks/bench_storage.py` — 14 benchmarks: document store (put/get/scan), inverted index (add/lookup/doc_freq), vector index (build/knn), graph store (vertices/edges/neighbors)
+- `benchmarks/bench_compiler.py` — 21 benchmarks: pglast parsing, SELECT/JOIN/aggregate/subquery/CTE/window/DML compilation
+- `benchmarks/bench_execution.py` — 22 benchmarks: sequential scan, filter, project, sort, hash aggregate, distinct, window, limit, pipeline
+- `benchmarks/bench_planner.py` — 28 benchmarks: DPccp (chain/star/clique/cycle at varying sizes), topology comparison, greedy fallback (chain/star at 20-30 relations), histogram construction, selectivity estimation
+- `benchmarks/bench_scoring.py` — 25 benchmarks: BM25 (single/batch/IDF/combine), Bayesian BM25, vector cosine similarity, log-odds fusion (single/batch/weighted)
+- `benchmarks/bench_graph.py` — 16 benchmarks: BFS traversal, neighbors lookup, vertex label lookup, pattern matching, RPQ compilation, Cypher compilation
+- `benchmarks/bench_e2e.py` — 25 benchmarks: OLTP (point lookup/range scan/insert/update/delete), OLAP (aggregate/having/order/distinct), JOIN (2-way/3-way/filtered/aggregate), subquery, CTE, window functions, ANALYZE
+- `pytest-benchmark >= 5.0` added to `[project.optional-dependencies]` in pyproject.toml
+
+### CI
+
+- GitHub Actions benchmark workflow (`.github/workflows/benchmarks.yml`): runs 185 benchmarks on every push and PR, stores baseline in `gh-pages` branch, compares against baseline with 150% alert threshold, comments on and blocks PRs with significant regressions
+
+### Bug Fixes
+
+- Fixed DuckDB FDW compatibility with DuckDB 1.4.3: `to_arrow_table()` renamed to `fetch_arrow_table()`
+
+### Tests
+
+- 1879 tests across 47 test files + 185 benchmarks across 8 benchmark files
+
+
 ## 0.10.0 (2026-03-11)
 
 Interactive SQL shell enhancements, graph pattern matching optimization, and technical documentation.

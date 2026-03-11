@@ -9,7 +9,7 @@ authors:
     affiliation: "Cognica, Inc."
 repository-code: "https://github.com/cognica-io/uqa"
 license: AGPL-3.0-only
-version: 0.10.0
+version: 0.10.1
 date-released: "2026-03-11"
 abstract: >-
   A database prototype that unifies relational, text retrieval,
@@ -35,3 +35,6 @@ keywords:
   - foreign-data-wrapper
   - hive-partitioning
   - predicate-pushdown
+  - benchmark
+  - query-optimization
+  - join-ordering

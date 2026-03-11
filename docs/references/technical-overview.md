@@ -462,7 +462,7 @@ When `db_path` is provided, all mutations are write-through to SQLite. On startu
 
 The cost-based optimizer in `uqa/planner/` applies:
 
-- **DPccp join order optimization** (Moerkotte & Neumann, 2006) — $O(3^n)$ dynamic programming over connected subgraph complement pairs for optimal bushy join trees
+- **DPccp join order optimization** (Moerkotte & Neumann, 2006) — $O(3^n)$ dynamic programming over connected subgraph complement pairs for optimal bushy join trees; uses integer bitmask DP table, bytearray connectivity lookup, incremental connected subgraph enumeration, and canonical submask enumeration for efficient inner-loop execution
 - Filter pushdown into intersections
 - Vector threshold merge (same query vector)
 - Intersect operand reordering by cardinality (cheapest first)

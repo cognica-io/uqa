@@ -14,6 +14,10 @@ exhaustive enumeration.
 The algorithm produces bushy join trees when they are cheaper than
 left-deep trees, and falls back to a greedy heuristic for queries
 with more than MAX_DP_RELATIONS relations.
+
+Internally, relation subsets are represented as integer bitmasks for
+O(1) hash lookup and set operations, avoiding the O(k) overhead of
+frozenset construction and hashing in the inner enumeration loops.
 """
 
 from __future__ import annotations
@@ -52,17 +56,41 @@ class JoinPlan:
     join_edge: JoinEdge | None = None
 
 
+def _mask_to_frozenset(mask: int) -> frozenset[int]:
+    """Convert a bitmask to a frozenset of set bit positions."""
+    result: list[int] = []
+    i = 0
+    while mask:
+        if mask & 1:
+            result.append(i)
+        mask >>= 1
+        i += 1
+    return frozenset(result)
+
+
+def _frozenset_to_mask(fs: frozenset[int]) -> int:
+    """Convert a frozenset of integers to a bitmask."""
+    mask = 0
+    for i in fs:
+        mask |= 1 << i
+    return mask
+
+
 class DPccp:
     """DPccp join order optimizer.
 
     Given a JoinGraph, finds the minimum-cost join order using dynamic
     programming over connected subgraph complement pairs.
+
+    The DP table uses integer bitmask keys for O(1) operations in the
+    inner enumeration loop.  JoinPlan.relations remains a frozenset
+    for API compatibility.
     """
 
     def __init__(self, graph: JoinGraph) -> None:
         self._graph = graph
-        self._dp: dict[frozenset[int], JoinPlan] = {}
-        self._all_nodes = frozenset(range(len(graph)))
+        self._dp: dict[int, JoinPlan] = {}
+        self._all_mask = (1 << len(graph)) - 1
 
     def optimize(self) -> JoinPlan:
         """Find the optimal join plan for all relations in the graph.
@@ -85,7 +113,7 @@ class DPccp:
         # Initialize base relations
         for i in range(n):
             node = self._graph.nodes[i]
-            self._dp[frozenset({i})] = JoinPlan(
+            self._dp[1 << i] = JoinPlan(
                 relations=frozenset({i}),
                 operator=node.operator,
                 cardinality=node.cardinality,
@@ -98,7 +126,7 @@ class DPccp:
         # Enumerate connected subgraph complement pairs
         self._enumerate_csg_cmp_pairs()
 
-        result = self._dp.get(self._all_nodes)
+        result = self._dp.get(self._all_mask)
         if result is None:
             # Graph is disconnected; join connected components
             return self._join_disconnected_components()
@@ -108,75 +136,121 @@ class DPccp:
     def _enumerate_csg_cmp_pairs(self) -> None:
         """Core DPccp: enumerate all connected subgraph complement pairs.
 
-        For each connected subgraph S1, find connected subgraphs S2 in
-        the complement (V - S1) that are adjacent to S1.  For each
-        (S1, S2) pair with an edge between them, consider joining them.
+        Builds connected subgraphs incrementally via BFS extension
+        instead of generating all C(n,k) subsets and filtering.
+        Each connected subgraph S is formed by extending a smaller
+        connected subgraph with an adjacent vertex whose index exceeds
+        min(S), ensuring each subgraph is generated exactly once.
+
+        Uses a bytearray lookup table (indexed by bitmask) for O(1)
+        connectivity checks instead of hash-based set lookups.
         """
         n = len(self._graph)
-        nodes = list(range(n))
 
-        # Process subsets in increasing size order
+        # Pre-compute neighbor lists as Python lists for faster iteration.
+        neighbors: list[list[int]] = [
+            self._graph.neighbors(i) for i in range(n)
+        ]
+
+        # Bytearray lookup table: connected[mask] == 1 iff the subgraph
+        # represented by mask is connected.  At most 2^16 = 64 KB for
+        # MAX_DP_RELATIONS = 16.
+        connected = bytearray(1 << n)
+        prev_layer: list[int] = []
+        for i in range(n):
+            mask = 1 << i
+            connected[mask] = 1
+            prev_layer.append(mask)
+
         for size in range(2, n + 1):
-            for subset in self._subsets_of_size(nodes, size):
-                subset_fs = frozenset(subset)
-                if not self._is_connected(subset_fs):
-                    continue
-                # Try all ways to split this connected subset into two
-                # connected parts (S1, S2) where S1 and S2 are both
-                # connected and have a join edge between them.
-                self._enumerate_splits(subset_fs)
+            cur_layer: list[int] = []
+            for s_mask in prev_layer:
+                # Find lowest set bit position (= min node in subset).
+                min_node = (s_mask & -s_mask).bit_length() - 1
+                # Try extending with each neighbor of each node in s.
+                node = 0
+                tmp = s_mask
+                while tmp:
+                    if tmp & 1:
+                        for nb in neighbors[node]:
+                            if nb > min_node and not (s_mask & (1 << nb)):
+                                new_mask = s_mask | (1 << nb)
+                                if not connected[new_mask]:
+                                    connected[new_mask] = 1
+                                    cur_layer.append(new_mask)
+                    tmp >>= 1
+                    node += 1
 
-    def _enumerate_splits(self, subset: frozenset[int]) -> None:
-        """Try all valid splits of *subset* into (S1, S2).
+            # Phase 2: Enumerate valid splits for each new subgraph.
+            for subset_mask in cur_layer:
+                self._enumerate_splits(subset_mask, connected)
 
-        A valid split requires:
-        1. S1 and S2 are both non-empty and partition subset
-        2. S1 and S2 are both connected subgraphs
-        3. There is at least one join edge between S1 and S2
+            prev_layer = cur_layer
+
+    def _enumerate_splits(
+        self,
+        subset_mask: int,
+        connected: bytearray,
+    ) -> None:
+        """Try all valid splits of *subset_mask* into (s1, s2).
+
+        Enumerates only submasks that contain the lowest set bit
+        (canonical half) using the identity:
+        ``rest = subset_mask ^ lowest_bit``; iterate submasks of
+        ``rest`` and OR in ``lowest_bit``.  This skips the entire
+        non-canonical half without branch checks.
+
+        Connectivity is checked via O(1) bytearray indexing.
         """
-        elements = sorted(subset)
-        # Enumerate all non-empty proper subsets of *subset*
-        # Use bitmask enumeration over the elements
-        n = len(elements)
-        # Only iterate half the splits (S1 < S2 by canonical order)
-        # to avoid evaluating (S1, S2) and (S2, S1) twice
-        for mask in range(1, (1 << n) - 1):
-            s1_list = [elements[i] for i in range(n) if mask & (1 << i)]
-            s2_list = [elements[i] for i in range(n) if not (mask & (1 << i))]
+        dp = self._dp
+        graph = self._graph
+        lowest_bit = subset_mask & -subset_mask
+        rest = subset_mask ^ lowest_bit
 
-            # Canonical ordering: smallest element of S1 < smallest of S2
-            if s1_list[0] > s2_list[0]:
-                continue
+        # Enumerate submasks of rest; each | lowest_bit gives a
+        # canonical submask of subset_mask (containing the min element).
+        # Start from (rest - 1) & rest to skip the full set.
+        # The loop body is split: the while handles sub_rest > 0,
+        # and the trailing block handles sub_rest == 0 (singleton s1).
+        sub_rest = (rest - 1) & rest
+        while sub_rest:
+            sub = sub_rest | lowest_bit
+            comp = subset_mask ^ sub
+            if connected[sub] and connected[comp]:
+                plan1 = dp.get(sub)
+                plan2 = dp.get(comp)
+                if plan1 is not None and plan2 is not None:
+                    edges = graph.edges_between(
+                        plan1.relations, plan2.relations
+                    )
+                    if edges:
+                        self._emit_csg_cmp_pair(
+                            plan1, plan2, edges, subset_mask
+                        )
+            sub_rest = (sub_rest - 1) & rest
 
-            s1 = frozenset(s1_list)
-            s2 = frozenset(s2_list)
-
-            # Both must be connected
-            if not self._is_connected(s1) or not self._is_connected(s2):
-                continue
-
-            # Must have a join edge between them
-            edges = self._graph.edges_between(s1, s2)
-            if not edges:
-                continue
-
-            # Both subplans must already exist in DP table
-            plan1 = self._dp.get(s1)
-            plan2 = self._dp.get(s2)
-            if plan1 is None or plan2 is None:
-                continue
-
-            self._emit_csg_cmp_pair(plan1, plan2, edges)
+        # sub_rest == 0: s1 = {min element}, s2 = rest of subset.
+        # Singletons are always connected, so only check s2.
+        if connected[rest]:
+            plan1 = dp.get(lowest_bit)
+            plan2 = dp.get(rest)
+            if plan1 is not None and plan2 is not None:
+                edges = graph.edges_between(
+                    plan1.relations, plan2.relations
+                )
+                if edges:
+                    self._emit_csg_cmp_pair(
+                        plan1, plan2, edges, subset_mask
+                    )
 
     def _emit_csg_cmp_pair(
         self,
         plan1: JoinPlan,
         plan2: JoinPlan,
         edges: list[JoinEdge],
+        combined_mask: int,
     ) -> None:
         """Consider joining plan1 and plan2 via the given edges."""
-        combined = plan1.relations | plan2.relations
-
         # Compute join cardinality: product * selectivity for each edge
         cardinality = plan1.cardinality * plan2.cardinality
         for edge in edges:
@@ -187,10 +261,10 @@ class DPccp:
         join_cost = plan1.cardinality + plan2.cardinality
         total_cost = join_cost + plan1.cost + plan2.cost
 
-        existing = self._dp.get(combined)
+        existing = self._dp.get(combined_mask)
         if existing is None or total_cost < existing.cost:
-            self._dp[combined] = JoinPlan(
-                relations=combined,
+            self._dp[combined_mask] = JoinPlan(
+                relations=plan1.relations | plan2.relations,
                 operator=None,  # Built later during plan materialization
                 cardinality=cardinality,
                 cost=total_cost,
@@ -231,9 +305,10 @@ class DPccp:
         for component in components:
             if len(component) == 1:
                 node_idx = next(iter(component))
-                plan = self._dp[frozenset({node_idx})]
+                plan = self._dp[1 << node_idx]
             else:
-                plan = self._dp.get(component)
+                comp_mask = _frozenset_to_mask(component)
+                plan = self._dp.get(comp_mask)
                 if plan is None:
                     # Component was not solved; should not happen for
                     # connected components but handle gracefully
@@ -263,7 +338,8 @@ class DPccp:
 
     def _find_connected_components(self) -> list[frozenset[int]]:
         """Find all connected components of the join graph."""
-        remaining = set(self._all_nodes)
+        all_nodes = set(range(len(self._graph)))
+        remaining = set(all_nodes)
         components: list[frozenset[int]] = []
 
         while remaining:
@@ -339,16 +415,16 @@ class DPccp:
         join cost and merge them.  This is O(n^3) in the number of
         relations.
         """
-        active: dict[frozenset[int], JoinPlan] = dict(self._dp)
+        active: dict[int, JoinPlan] = dict(self._dp)
 
         while len(active) > 1:
             best_cost = float("inf")
-            best_combined: frozenset[int] | None = None
+            best_combined_mask: int = 0
             best_plan: JoinPlan | None = None
 
-            plans = list(active.values())
-            for i, p1 in enumerate(plans):
-                for p2 in plans[i + 1:]:
+            items = list(active.items())
+            for i, (m1, p1) in enumerate(items):
+                for m2, p2 in items[i + 1:]:
                     edges = self._graph.edges_between(
                         p1.relations, p2.relations
                     )
@@ -365,9 +441,9 @@ class DPccp:
 
                     if cost < best_cost:
                         best_cost = cost
-                        best_combined = p1.relations | p2.relations
+                        best_combined_mask = m1 | m2
                         best_plan = JoinPlan(
-                            relations=best_combined,
+                            relations=p1.relations | p2.relations,
                             operator=None,
                             cardinality=cardinality,
                             cost=cost,
@@ -397,35 +473,9 @@ class DPccp:
                 return result
 
             # Merge the best pair
-            assert best_combined is not None
-            for rel_set in list(active.keys()):
-                if rel_set.issubset(best_combined):
-                    del active[rel_set]
-            active[best_combined] = best_plan
+            for rel_mask in list(active.keys()):
+                if rel_mask & best_combined_mask == rel_mask:
+                    del active[rel_mask]
+            active[best_combined_mask] = best_plan
 
         return next(iter(active.values()))
-
-    @staticmethod
-    def _subsets_of_size(
-        elements: list[int], size: int
-    ) -> list[list[int]]:
-        """Generate all subsets of *elements* with exactly *size* elements."""
-        if size == 0:
-            return [[]]
-        if size > len(elements):
-            return []
-
-        result: list[list[int]] = []
-
-        def backtrack(start: int, current: list[int]) -> None:
-            if len(current) == size:
-                result.append(list(current))
-                return
-            remaining = size - len(current)
-            for i in range(start, len(elements) - remaining + 1):
-                current.append(elements[i])
-                backtrack(i + 1, current)
-                current.pop()
-
-        backtrack(0, [])
-        return result
