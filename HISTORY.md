@@ -1,5 +1,43 @@
 # History
 
+## 0.10.0 (2026-03-11)
+
+Interactive SQL shell enhancements, graph pattern matching optimization, and technical documentation.
+
+### Interactive SQL Shell
+
+- `\di` — list inverted-index fields per table
+- `\dF` — list foreign tables (server, source, options)
+- `\dS` — list foreign servers (type, connection options)
+- `\dg` — list named graphs (vertex/edge counts)
+- `\x` — toggle expanded (vertical) display (`-[ RECORD N ]---` format)
+- `\o [file]` — redirect output to file (no argument restores stdout)
+- `\?` — show help with all backslash commands
+- Backslash auto-completion: typing `\` triggers completion of all backslash commands with descriptions
+- `\dt` updated to show foreign tables alongside regular tables with type column
+- `\d <table>` updated to resolve and describe foreign tables
+- Toolbar displays foreign table count, expanded display state, and output file path
+- SQL keyword auto-completion expanded from ~30 to ~100 keywords (DDL, DML, joins, window functions, FDW, CTE, aggregates, Cypher integration, JSON types)
+- Foreign table names included in auto-completion with "foreign table" metadata
+
+### Graph Pattern Matching Optimization
+
+- **Candidate pre-computation with arc consistency**: before backtracking begins, each pattern variable's candidate set is computed by evaluating vertex constraints once; edge constraints are then propagated in a fixpoint loop to eliminate candidates that cannot participate in any valid match
+- **MRV (Minimum Remaining Values) variable ordering**: at each recursion step, the algorithm selects the unassigned variable with the fewest remaining candidates ("fail-first" heuristic), dramatically reducing the effective branching factor
+- **Incremental edge validation**: each variable binding immediately validates all edge constraints connecting to previously bound variables, pruning invalid partial assignments at depth $d$ instead of deferring all edge checks to depth $k$
+- These three techniques reduce the effective search space by orders of magnitude compared to the naive $O(\|V\|^k)$ backtracking, while the theoretical worst-case bound remains unchanged (NP-complete)
+- `CypherCompiler._expand_var_length()`: BFS frontier changed from `list.pop(0)` (O(n)) to `deque.popleft()` (O(1)); path tracking changed from mutable list copy to immutable tuple concatenation
+
+### Documentation
+
+- `docs/references/technical-overview.md` — comprehensive technical document mapping all three research papers to the implementation codebase, with LaTeX formulas and Mermaid diagrams covering: posting list algebra, cross-paradigm operators, BM25/Bayesian BM25 scoring, log-odds fusion, graph-posting list isomorphism, subgraph isomorphism mitigations, system architecture, and theory-to-code mapping tables
+
+### Tests
+
+- 1879 tests across 47 test files (up from 1824 in v0.9.3)
+- `test_cli.py` with 55 tests: keywords (10), completer (7), list tables (3), describe table (4), list indexes (3), list foreign tables (2), list foreign servers (2), list graphs (2), expanded display (4), output redirection (4), backslash dispatch (8), toolbar (5), banner (1)
+
+
 ## 0.9.3 (2026-03-11)
 
 Foreign Data Wrapper support with Hive partitioning and predicate pushdown.

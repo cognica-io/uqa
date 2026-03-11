@@ -67,7 +67,7 @@ This paper extends the framework to incorporate graph data — vertices, edges, 
 
 - **Graph posting lists.** A graph posting list carries (id, subgraph) pairs. A bijective mapping between graph posting lists and standard posting lists establishes an isomorphism that preserves all Boolean algebra operations (Theorem 1.1.6).
 
-- **Graph operators.** Three fundamental graph operators are defined: **Traverse** (BFS from a starting vertex with label filtering and hop limit), **PatternMatch** (subgraph isomorphism with vertex/edge constraints), and **Regular Path Query** (NFA-based evaluation of path expressions like `cited_by/cited_by`).
+- **Graph operators.** Three fundamental graph operators are defined: **Traverse** (BFS from a starting vertex with label filtering and hop limit), **PatternMatch** (subgraph isomorphism with vertex/edge constraints, optimized with candidate pre-computation, arc consistency pruning, MRV variable ordering, and incremental edge validation), and **Regular Path Query** (NFA-based evaluation of path expressions like `cited_by/cited_by`).
 
 - **Cross-paradigm integration.** Operators for converting between graphs and relational data (ToGraph, FromGraph), graph-vector integration (vertex embeddings, vector-enhanced pattern matching), and graph-text integration (semantic graph search) are formally defined.
 
@@ -176,7 +176,7 @@ Operators are functions that produce posting lists. They are the building blocks
 | Operator | Semantics |
 |----------|-----------|
 | TraverseOperator | BFS traversal from a vertex |
-| PatternMatchOperator | Subgraph isomorphism matching |
+| PatternMatchOperator | Subgraph isomorphism matching (MRV + arc consistency + incremental edge validation) |
 | RegularPathQueryOperator | NFA-based regular path evaluation |
 
 All operators implement an `execute(context)` method that returns a PostingList, and a `cost_estimate(stats)` method used by the query optimizer.
