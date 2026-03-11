@@ -1263,12 +1263,18 @@ Shell commands:
 
 | Command | Description |
 |---------|-------------|
-| `\dt` | List tables |
-| `\d <table>` | Describe table schema |
+| `\dt` | List tables (regular and foreign) |
+| `\d <table>` | Describe table schema (regular or foreign) |
+| `\di` | List inverted-index fields per table |
+| `\dF` | List foreign tables (server, source, options) |
+| `\dS` | List foreign servers (type, connection options) |
+| `\dg` | List named graphs (vertex/edge counts) |
 | `\ds <table>` | Show column statistics (requires ANALYZE first) |
-| `\di` | List indexes |
+| `\x` | Toggle expanded (vertical) display |
+| `\o [file]` | Redirect output to file (no arg restores stdout) |
 | `\timing` | Toggle query timing display |
 | `\reset` | Reset the engine |
+| `\?` | Show help |
 | `\q` | Quit |
 
 ### 6.8 Transactions
@@ -1355,7 +1361,7 @@ python -m pytest uqa/tests/ -v
 python -m pytest uqa/tests/test_sql.py -v
 ```
 
-1824 tests across 46 test files covering core algebra, operators, scoring, fusion, SQL compilation, physical execution, joins, graph operations, openCypher graph queries, SQLite persistence, transactions, cost optimization, parallel execution, PostgreSQL 17 compatibility, text analysis pipeline, Arrow/Parquet export, Foreign Data Wrappers (Hive partitioning, predicate pushdown), and end-to-end integration.
+1879 tests across 47 test files covering core algebra, operators, scoring, fusion, SQL compilation, physical execution, joins, graph operations, openCypher graph queries, SQLite persistence, transactions, cost optimization, parallel execution, PostgreSQL 17 compatibility, text analysis pipeline, Arrow/Parquet export, Foreign Data Wrappers (Hive partitioning, predicate pushdown), interactive SQL shell, and end-to-end integration.
 
 
 ## 10. References

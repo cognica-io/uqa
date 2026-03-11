@@ -202,7 +202,7 @@ uqa/
   planner/        Cost model, cardinality estimator, optimizer, DPccp join enumerator, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          1824 tests across 46 test files
+  tests/          1879 tests across 47 test files
 ```
 
 ## Key Features
@@ -371,12 +371,18 @@ Shell commands:
 
 | Command | Description |
 |---------|-------------|
-| `\dt` | List tables |
-| `\d <table>` | Describe table schema |
+| `\dt` | List tables (regular and foreign) |
+| `\d <table>` | Describe table schema (regular or foreign) |
+| `\di` | List inverted-index fields per table |
+| `\dF` | List foreign tables (server, source, options) |
+| `\dS` | List foreign servers (type, connection options) |
+| `\dg` | List named graphs (vertex/edge counts) |
 | `\ds <table>` | Show column statistics (requires `ANALYZE` first) |
-| `\di` | List indexes |
+| `\x` | Toggle expanded (vertical) display |
+| `\o [file]` | Redirect output to file (no arg restores stdout) |
 | `\timing` | Toggle query timing display |
 | `\reset` | Reset the engine |
+| `\?` | Show help |
 | `\q` | Quit |
 
 ### Python API
