@@ -111,7 +111,7 @@ All operators form a monoid under composition. The abstract base class `Operator
 - `compose(other) -> ComposedOperator` — sequential composition (monoid product)
 - `cost_estimate(stats) -> float` — for optimizer decisions
 
-The `ExecutionContext` bundles all storage backends: `DocumentStore`, `InvertedIndex`, `HNSWIndex`, `GraphStore`, `BlockMaxIndex`, `IndexManager`, and `ParallelExecutor`.
+The `ExecutionContext` bundles all storage backends: `DocumentStore`, `InvertedIndex`, `GraphStore`, `BlockMaxIndex`, `IndexManager`, `ParallelExecutor`, and optional `vector_indexes` (HNSW, created explicitly via `CREATE INDEX ... USING hnsw`).
 
 ### 2.3 Boolean Operators
 
@@ -445,7 +445,7 @@ Engine
 |   +-- Table
 |       +-- DocumentStore         (typed columnar storage)
 |       +-- InvertedIndex         (term -> posting list per field)
-|       +-- HNSWIndex             (optional, per VECTOR column)
+|       +-- vector_indexes         (HNSW, created via CREATE INDEX ... USING hnsw)
 |       +-- ColumnStats           (per-column statistics for optimizer)
 +-- _named_graphs: dict[str, GraphStore]
 |   +-- GraphStore                (adjacency list + property maps)

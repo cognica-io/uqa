@@ -291,7 +291,7 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 | Inverted Index | `_inverted_{table}_{field}` | Per-table per-field posting lists |
 | Field Stats | `_field_stats_{table}` | Per-table field-level statistics (BM25) |
 | Doc Lengths | `_doc_lengths_{table}` | Per-table per-document token lengths (BM25) |
-| Vectors | In-memory HNSW per VECTOR column | Per-field `HNSWIndex` within each table |
+| Vectors | `_data_{table}` (document store) | Stored as JSON arrays; HNSW index via `CREATE INDEX ... USING hnsw` |
 | Graph | `_graph_vertices_{table}`, `_graph_edges_{table}` | Per-table adjacency-indexed graph with vertex labels |
 | Named Graphs | `_named_graphs`, `_graph_{name}_*` | Isolated graph namespaces for Cypher queries |
 | B-tree Indexes | SQLite indexes on `_data_{table}` | `CREATE INDEX` support |
@@ -393,10 +393,10 @@ Shell commands:
 from uqa.engine import Engine
 
 # In-memory engine
-engine = Engine(vector_dimensions=64, max_elements=10000)
+engine = Engine()
 
 # Persistent engine (SQLite-backed)
-engine = Engine(db_path="research.db", vector_dimensions=64)
+engine = Engine(db_path="research.db")
 
 engine.sql("""
     CREATE TABLE papers (

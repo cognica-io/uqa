@@ -259,7 +259,7 @@ Returns: PostingList with `_score` as a calibrated probability in $[0, 1]$.
 
 #### `knn_match(field, vector, k)`
 
-K-nearest neighbor vector search using the per-field HNSW index. The vector argument accepts either an `ARRAY[...]` literal or a `$N` parameter reference.
+K-nearest neighbor vector search. Uses the HNSW index if one exists on the column (created via `CREATE INDEX ... USING hnsw`), otherwise falls back to brute-force exact cosine similarity scan. The vector argument accepts either an `ARRAY[...]` literal or a `$N` parameter reference.
 
 ```python
 # Option A: parameter binding
@@ -658,7 +658,7 @@ graph TD
 
     PAR --> DS[Document Store<br/>SQLite]
     PAR --> II[Inverted Index<br/>SQLite + Analyzer]
-    PAR --> VI[Vector Index<br/>HNSW + SQLite]
+    PAR --> VI[Vector Index<br/>HNSW (optional)]
     PAR --> GS[Graph Store<br/>SQLite]
 
     subgraph Scoring ["Scoring (bayesian-bm25)"]
@@ -684,7 +684,7 @@ All storage backends have two implementations: an in-memory variant for ephemera
 
 **InvertedIndex / SQLiteInvertedIndex**: Maps (field, term) pairs to posting lists. Includes skip pointers for fast forward-seeking during intersection and block-max indexes for WAND pruning. Per-table, per-field SQLite tables: `_inverted_{table}_{field}`. Text analysis is handled by pluggable Analyzers (Lucene-style pipeline: CharFilter -> Tokenizer -> TokenFilter) with per-field analyzer assignment.
 
-**HNSWIndex / SQLiteVectorIndex**: Hierarchical Navigable Small World graph for approximate nearest neighbor search. Cosine distance metric. Configuration: ef_construction=200, M=16. Vectors stored as float32 blobs in the `_vectors` table.
+**HNSWIndex / SQLiteVectorIndex**: Hierarchical Navigable Small World graph for approximate nearest neighbor search. Created explicitly via `CREATE INDEX ... USING hnsw (column)`. Cosine distance metric. Default configuration: ef_construction=200, M=16 (customizable via `WITH` clause). Auto-resizing capacity (no `max_elements` parameter). Vectors are stored in the document store as JSON arrays; the HNSW index is a secondary structure that can be dropped and recreated.
 
 **GraphStore / SQLiteGraphStore**: Adjacency-list graph storage with indexes on (source_id, label), (target_id, label), and (label). Vertex labels stored in a dedicated indexed column for efficient label-based filtering. Vertex and edge properties stored as JSON. Named graphs use isolated `_graph_{name}_*` SQLite tables.
 
@@ -722,7 +722,7 @@ The optimizer applies equivalence-preserving rewrite rules:
 
 1. **Filter pushdown**: Pushes FilterOperator through IntersectOperator to reduce intermediate result sizes early.
 2. **Graph pattern filter pushdown**: Incorporates filter predicates into vertex pattern constraints, pruning during matching rather than post-filtering.
-3. **Vector threshold merge**: Combines multiple vector similarity operators with the same query vector into a single HNSW search.
+3. **Vector threshold merge**: Combines multiple vector similarity operators with the same query vector into a single search (HNSW if indexed, brute-force otherwise).
 4. **Intersect operand reordering**: Sorts operands by estimated cardinality (cheapest first) for optimal two-pointer intersection.
 5. **Fusion signal reordering**: Sorts signals by cost estimate for early termination.
 6. **Index scan substitution**: Replaces full-table FilterOperator scans with B-tree index scans when the estimated cost is lower.
@@ -768,16 +768,14 @@ Requirements: Python 3.12+, numpy >= 1.26, pyarrow >= 20.0, bayesian-bm25 >= 0.8
 from uqa.engine import Engine
 
 # In-memory (ephemeral)
-engine = Engine(vector_dimensions=64, max_elements=10000)
+engine = Engine()
 
 # Persistent (SQLite-backed)
-engine = Engine(db_path="research.db", vector_dimensions=64)
+engine = Engine(db_path="research.db")
 
 # With tuning
 engine = Engine(
     db_path="research.db",
-    vector_dimensions=64,
-    max_elements=100000,
     parallel_workers=4,     # concurrent operator execution
     spill_threshold=100000  # spill to disk after 100K rows
 )
@@ -804,7 +802,7 @@ CREATE TABLE papers (
 );
 ```
 
-Supported column types: `INTEGER`, `BIGINT`, `SERIAL`, `BIGSERIAL`, `TEXT`, `VARCHAR`, `REAL`, `FLOAT`, `DOUBLE PRECISION`, `NUMERIC(p,s)`, `BOOLEAN`, `DATE`, `TIME`, `TIMESTAMP`, `TIMESTAMPTZ`, `INTERVAL`, `JSON`, `JSONB`, `UUID`, `BYTEA`, `INTEGER[]` (arrays), `VECTOR(N)`. The `VECTOR(N)` type creates a per-field HNSW index with N dimensions for use with `knn_match()`.
+Supported column types: `INTEGER`, `BIGINT`, `SERIAL`, `BIGSERIAL`, `TEXT`, `VARCHAR`, `REAL`, `FLOAT`, `DOUBLE PRECISION`, `NUMERIC(p,s)`, `BOOLEAN`, `DATE`, `TIME`, `TIMESTAMP`, `TIMESTAMPTZ`, `INTERVAL`, `JSON`, `JSONB`, `UUID`, `BYTEA`, `INTEGER[]` (arrays), `VECTOR(N)`. The `VECTOR(N)` type defines an N-dimensional vector column. Vectors are stored in the document store. For fast approximate search, create an HNSW index with `CREATE INDEX ... USING hnsw (column)`. Without an index, `knn_match()` uses brute-force exact cosine similarity.
 
 #### Data Manipulation
 
