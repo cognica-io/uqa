@@ -1689,6 +1689,61 @@ def _sf_cardinality(args: list[Any]) -> Any:
     return len(arr)
 
 
+# -- Spatial functions -----------------------------------------------------
+
+def _sf_point(args: list[Any]) -> list[float]:
+    """POINT(x, y) -> [x, y]."""
+    if len(args) != 2:
+        raise ValueError("POINT() requires exactly 2 arguments")
+    return [float(args[0]), float(args[1])]
+
+
+def _sf_st_distance(args: list[Any]) -> float | None:
+    """ST_Distance(point1, point2) -> distance in meters (Haversine)."""
+    from uqa.storage.spatial_index import haversine_distance
+
+    if len(args) != 2:
+        raise ValueError("ST_Distance() requires 2 arguments")
+    p1, p2 = args[0], args[1]
+    if p1 is None or p2 is None:
+        return None
+    if isinstance(p1, (list, tuple)) and isinstance(p2, (list, tuple)):
+        return haversine_distance(
+            float(p1[1]), float(p1[0]), float(p2[1]), float(p2[0])
+        )
+    raise ValueError(
+        "ST_Distance() arguments must be POINT values ([x, y])"
+    )
+
+
+def _sf_st_within(args: list[Any]) -> bool | None:
+    """ST_Within(point1, point2, distance_meters) -> boolean."""
+    from uqa.storage.spatial_index import haversine_distance
+
+    if len(args) != 3:
+        raise ValueError("ST_Within() requires 3 arguments")
+    p1, p2 = args[0], args[1]
+    if p1 is None or p2 is None:
+        return None
+    dist_limit = float(args[2])
+    if isinstance(p1, (list, tuple)) and isinstance(p2, (list, tuple)):
+        dist = haversine_distance(
+            float(p1[1]), float(p1[0]), float(p2[1]), float(p2[0])
+        )
+        return dist <= dist_limit
+    raise ValueError(
+        "ST_Within() first two arguments must be POINT values ([x, y])"
+    )
+
+
+def _sf_st_dwithin(args: list[Any]) -> bool | None:
+    """ST_DWithin(point1, point2, distance_meters) -> boolean.
+
+    Alias for ST_Within.
+    """
+    return _sf_st_within(args)
+
+
 # -- Dispatch table --------------------------------------------------------
 
 _SCALAR_FUNCTIONS: dict[str, Any] = {
@@ -1759,6 +1814,10 @@ _SCALAR_FUNCTIONS: dict[str, Any] = {
     "array_lower": _sf_array_lower, "array_cat": _sf_array_cat,
     "array_append": _sf_array_append, "array_remove": _sf_array_remove,
     "cardinality": _sf_cardinality,
+    "point": _sf_point,
+    "st_distance": _sf_st_distance,
+    "st_within": _sf_st_within,
+    "st_dwithin": _sf_st_dwithin,
 }
 
 

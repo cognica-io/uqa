@@ -97,8 +97,13 @@ class IndexManager:
 
         The physical SQLite indexes already exist in the database file,
         so we only reconstruct the in-memory Index objects.
+        HNSW and RTREE indexes are skipped here -- they are restored
+        by the engine which has access to the Table objects.
         """
         for name, idx_type, tbl, cols, params in self._catalog.load_indexes():
+            # HNSW and RTREE are managed by Engine/Table, not IndexManager.
+            if idx_type in ("hnsw", "rtree"):
+                continue
             index_def = IndexDef(
                 name=name,
                 index_type=IndexType(idx_type),

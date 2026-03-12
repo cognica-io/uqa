@@ -183,6 +183,60 @@ class KNNOperator(Operator):
         return float(stats.dimensions) * math.log2(stats.total_docs + 1)
 
 
+class SpatialWithinOperator(Operator):
+    """Spatial range query: return all points within a distance.
+
+    Uses R*Tree index if available, otherwise brute-force Haversine scan.
+    Scores are proportional to proximity: 1.0 - (dist / distance).
+    """
+
+    def __init__(
+        self,
+        field: str,
+        center_x: float,
+        center_y: float,
+        distance: float,
+    ) -> None:
+        self.field = field
+        self.center_x = center_x
+        self.center_y = center_y
+        self.distance = distance
+
+    def execute(self, context: ExecutionContext) -> PostingList:
+        sp_idx = context.spatial_indexes.get(self.field)
+        if sp_idx is not None:
+            return sp_idx.search_within(
+                self.center_x, self.center_y, self.distance
+            )
+        return self._brute_force_scan(context)
+
+    def _brute_force_scan(self, context: ExecutionContext) -> PostingList:
+        from uqa.storage.spatial_index import haversine_distance
+
+        doc_store = context.document_store
+        if doc_store is None:
+            return PostingList()
+
+        entries: list[PostingEntry] = []
+        for doc_id in sorted(doc_store.doc_ids):
+            pt = doc_store.get_field(doc_id, self.field)
+            if pt is None or not isinstance(pt, (list, tuple)):
+                continue
+            dist = haversine_distance(
+                self.center_y, self.center_x, float(pt[1]), float(pt[0])
+            )
+            if dist <= self.distance:
+                score = 1.0 - (dist / self.distance) if self.distance > 0 else 1.0
+                entries.append(
+                    PostingEntry(doc_id, Payload(score=score))
+                )
+        return PostingList.from_sorted(entries)
+
+    def cost_estimate(self, stats: IndexStats) -> float:
+        import math
+        return math.log2(stats.total_docs + 1)
+
+
 class FilterOperator(Operator):
     """Definition 3.1.4: Filter_{f,predicate} -> PostingList.
 

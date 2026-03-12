@@ -93,7 +93,7 @@ class SQLiteDocumentStore:
         self._has_atomic_fetch = hasattr(conn, "execute_fetchall")
         self._json_cols: frozenset[str] = frozenset(
             name for name, type_name in columns
-            if type_name.lower() in ("json", "jsonb", "vector")
+            if type_name.lower() in ("json", "jsonb", "vector", "point")
             or type_name.lower().endswith("[]")
         )
 

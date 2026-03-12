@@ -44,6 +44,7 @@ _SQL_TYPE_MAP: dict[str, type] = {
     "json": object, "jsonb": object,
     "uuid": str,
     "bytea": bytes,
+    "point": list,
 }
 
 _AUTO_INCREMENT_TYPES = frozenset({"serial", "bigserial"})
@@ -181,6 +182,8 @@ class Table:
 
         # Per-field HNSW vector indexes, created via CREATE INDEX ... USING hnsw.
         self.vector_indexes: dict[str, HNSWIndex] = {}
+        # Per-field R*Tree spatial indexes, created via CREATE INDEX ... USING rtree.
+        self.spatial_indexes: dict[str, Any] = {}
 
         self._next_id = 1
         self._stats: dict[str, ColumnStats] = {}
@@ -275,12 +278,23 @@ class Table:
         # -- type coercion + defaults ---------------------------------
         coerced: dict[str, Any] = {}
         vectors: dict[str, Any] = {}
+        points: dict[str, tuple[float, float]] = {}
         for col_name, col_def in self.columns.items():
             if col_name in row and row[col_name] is not None:
                 if col_def.vector_dimensions is not None:
                     vec = np.asarray(row[col_name], dtype=np.float32)
                     coerced[col_name] = vec.tolist()
                     vectors[col_name] = vec
+                elif col_def.type_name == "point":
+                    pt = row[col_name]
+                    if isinstance(pt, (list, tuple)) and len(pt) == 2:
+                        coerced[col_name] = [float(pt[0]), float(pt[1])]
+                        points[col_name] = (float(pt[0]), float(pt[1]))
+                    else:
+                        raise ValueError(
+                            f"POINT column '{col_name}' requires "
+                            f"[x, y] (2 elements), got {pt!r}"
+                        )
                 elif col_def.type_name in ("json", "jsonb"):
                     coerced[col_name] = _coerce_json(row[col_name])
                 elif col_def.type_name.endswith("[]"):
@@ -309,6 +323,11 @@ class Table:
             vec_idx = self.vector_indexes.get(field_name)
             if vec_idx is not None:
                 vec_idx.add(doc_id, vec)
+
+        for field_name, (px, py) in points.items():
+            sp_idx = self.spatial_indexes.get(field_name)
+            if sp_idx is not None:
+                sp_idx.add(doc_id, px, py)
 
         return doc_id, indexed
 
@@ -484,6 +503,8 @@ def resolve_type(
     """
     raw = type_names[-1].sval.lower()
     if raw == "vector":
+        return raw, list
+    if raw == "point":
         return raw, list
     if array_bounds is not None:
         # Array column: e.g. TEXT[] -> element type is "text"

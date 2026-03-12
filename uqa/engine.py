@@ -82,7 +82,7 @@ class Engine:
             columns = []
             for cd in col_dicts:
                 type_name = cd["type_name"]
-                if type_name == "vector":
+                if type_name in ("vector", "point"):
                     python_type: type = list
                 else:
                     python_type = _SQL_TYPE_MAP[type_name]
@@ -159,7 +159,7 @@ class Engine:
             cols = OrderedDict()
             for cd in col_dicts:
                 type_name = cd["type_name"]
-                if type_name == "vector":
+                if type_name in ("vector", "point"):
                     python_type = list
                 else:
                     python_type = _SQL_TYPE_MAP[type_name]
@@ -180,6 +180,28 @@ class Engine:
         # -- Indexes ---------------------------------------------------
         if self._index_manager is not None:
             self._index_manager.load_from_catalog()
+
+        # -- R*Tree spatial indexes ------------------------------------
+        # R*Tree virtual table data persists in SQLite, so we only need
+        # to reconstruct the SpatialIndex wrapper and attach it to the
+        # table.  The R*Tree data is already populated.
+        from uqa.storage.spatial_index import SpatialIndex
+
+        for name, idx_type, tbl_name, cols, _params in (
+            catalog.load_indexes()
+        ):
+            if idx_type != "rtree":
+                continue
+            tbl = self._tables.get(tbl_name)
+            if tbl is None:
+                continue
+            col_name = cols[0] if cols else None
+            if col_name is None:
+                continue
+            sp_idx = SpatialIndex(
+                tbl_name, col_name, conn=catalog.conn
+            )
+            tbl.spatial_indexes[col_name] = sp_idx
 
     @staticmethod
     def _migrate_old_format_table(
@@ -528,6 +550,7 @@ class Engine:
             document_store=tbl.document_store,
             inverted_index=tbl.inverted_index,
             vector_indexes=tbl.vector_indexes,
+            spatial_indexes=tbl.spatial_indexes,
             graph_store=tbl.graph_store,
             block_max_index=tbl.block_max_index,
             index_manager=self._index_manager,

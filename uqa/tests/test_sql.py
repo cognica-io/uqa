@@ -622,7 +622,7 @@ class TestEdgeCases:
             engine.sql("LISTEN channel")
 
     def test_unknown_function(self, engine: Engine) -> None:
-        with pytest.raises(ValueError, match="Unknown function"):
+        with pytest.raises(ValueError, match="Unknown scalar function"):
             engine.sql(
                 "SELECT * FROM papers WHERE unknown_func(title, 'test')"
             )

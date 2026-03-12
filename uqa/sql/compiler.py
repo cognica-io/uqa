@@ -1330,6 +1330,8 @@ class SQLCompiler:
             table.inverted_index.clear()
             for vi in table.vector_indexes.values():
                 vi.clear()
+            for si in table.spatial_indexes.values():
+                si.clear()
             table.graph_store.clear()
             table._next_id = 1
         return SQLResult([], [])
@@ -1443,6 +1445,51 @@ class SQLCompiler:
                     table_name=table_name,
                     columns=tuple(columns),
                     parameters=params,
+                )
+                self._engine._catalog.save_index(index_def)
+
+            return SQLResult([], [])
+
+        if access_method == "rtree":
+            # R*Tree spatial index: CREATE INDEX ... USING rtree
+            if len(columns) != 1:
+                raise ValueError(
+                    "R*Tree index must be created on exactly one column"
+                )
+            col_name = columns[0]
+            col_def = table.columns[col_name]
+            if col_def.type_name != "point":
+                raise ValueError(
+                    f"Column '{col_name}' is not a POINT column"
+                )
+
+            from uqa.storage.spatial_index import SpatialIndex
+
+            catalog_conn = getattr(
+                getattr(self._engine, "_catalog", None), "conn", None
+            )
+            sp_idx = SpatialIndex(
+                table_name, col_name, conn=catalog_conn
+            )
+
+            # Re-index existing points from the document store
+            for doc_id in table.document_store.doc_ids:
+                doc = table.document_store.get(doc_id)
+                if doc is not None and col_name in doc:
+                    pt = doc[col_name]
+                    if isinstance(pt, (list, tuple)) and len(pt) == 2:
+                        sp_idx.add(doc_id, float(pt[0]), float(pt[1]))
+
+            table.spatial_indexes[col_name] = sp_idx
+
+            # Persist index definition if catalog is available
+            index_manager = getattr(self._engine, "_index_manager", None)
+            if index_manager is not None:
+                index_def = IndexDef(
+                    name=index_name,
+                    index_type=IndexType.RTREE,
+                    table_name=table_name,
+                    columns=tuple(columns),
                 )
                 self._engine._catalog.save_index(index_def)
 
@@ -1770,6 +1817,14 @@ class SQLCompiler:
             if text_fields:
                 table.inverted_index.add_document(doc_id, text_fields)
 
+            # Update spatial indexes for changed POINT columns
+            for col_name, sp_idx in table.spatial_indexes.items():
+                pt = new_doc.get(col_name)
+                if pt is not None and isinstance(pt, (list, tuple)) and len(pt) == 2:
+                    sp_idx.add(doc_id, float(pt[0]), float(pt[1]))
+                else:
+                    sp_idx.delete(doc_id)
+
             if stmt.returningList:
                 returning_rows.append(
                     self._project_returning(
@@ -1960,6 +2015,8 @@ class SQLCompiler:
                         )
                     )
             table.inverted_index.remove_document(doc_id)
+            for si in table.spatial_indexes.values():
+                si.delete(doc_id)
             table.document_store.delete(doc_id)
             deleted += 1
 
@@ -2043,6 +2100,8 @@ class SQLCompiler:
         deleted = 0
         for doc_id in to_delete:
             table.inverted_index.remove_document(doc_id)
+            for si in table.spatial_indexes.values():
+                si.delete(doc_id)
             table.document_store.delete(doc_id)
             deleted += 1
 
@@ -2666,7 +2725,7 @@ class SQLCompiler:
                     continue
                 # Non-aggregate functions like UPPER(), LOWER() are computed
                 if fn in ("text_match", "bayesian_match", "knn_match",
-                          "traverse_match"):
+                          "traverse_match", "spatial_within"):
                     continue
                 return True
             if isinstance(val, (A_Const, A_ArrayExpr, A_Expr, CaseExpr,
@@ -4302,6 +4361,7 @@ class SQLCompiler:
             document_store=table.document_store,
             inverted_index=table.inverted_index,
             vector_indexes=table.vector_indexes,
+            spatial_indexes=table.spatial_indexes,
             graph_store=table.graph_store,
             block_max_index=table.block_max_index,
             index_manager=index_manager,
@@ -5450,6 +5510,8 @@ class SQLCompiler:
             return self._make_path_filter_op(args)
         if name == "vector_exclude":
             return self._make_vector_exclude_op(args)
+        if name == "spatial_within":
+            return self._make_spatial_within_op(args)
         if name == "fuse_log_odds":
             return self._make_fusion_op(args, ctx, mode="log_odds")
         if name == "fuse_prob_and":
@@ -5458,7 +5520,11 @@ class SQLCompiler:
             return self._make_fusion_op(args, ctx, mode="prob_or")
         if name == "fuse_prob_not":
             return self._make_prob_not_op(args, ctx)
-        raise ValueError(f"Unknown function: {name}")
+        # Fall back to expression-based filter for scalar functions
+        # used in WHERE (e.g., ST_DWithin, ST_Within).
+        return _ExprFilterOperator(
+            node, subquery_executor=self._compile_select
+        )
 
     def _make_text_search_op(
         self, field_name: str, query: str, ctx: ExecutionContext, *, bayesian: bool
@@ -5497,6 +5563,76 @@ class SQLCompiler:
         query_vector = self._extract_vector_arg(args[1])
         k = self._extract_int_value(args[2])
         return KNNOperator(query_vector, k, field=field_name)
+
+    def _make_spatial_within_op(self, args: tuple) -> Any:
+        """spatial_within(field, POINT(x, y), distance_meters)
+
+        *field* is a column name (ColumnRef).
+        *POINT(x, y)* is a POINT constructor (FuncCall) or $N parameter.
+        *distance_meters* is a numeric constant or $N parameter.
+        """
+        from uqa.operators.primitive import SpatialWithinOperator
+
+        if len(args) != 3:
+            raise ValueError(
+                "spatial_within() requires 3 arguments: "
+                "spatial_within(field, POINT(x, y), distance)"
+            )
+        field_name = self._extract_column_name(args[0])
+        cx, cy = self._extract_point_arg(args[1])
+        distance = self._extract_numeric_value(args[2])
+        return SpatialWithinOperator(field_name, cx, cy, distance)
+
+    def _extract_point_arg(self, node: Any) -> tuple[float, float]:
+        """Extract (x, y) from POINT(x, y) FuncCall or $N parameter."""
+        if isinstance(node, FuncCall):
+            name = node.funcname[-1].sval.lower()
+            if name != "point":
+                raise ValueError(
+                    f"Expected POINT(x, y), got {name}()"
+                )
+            pt_args = node.args or ()
+            if len(pt_args) != 2:
+                raise ValueError("POINT() requires exactly 2 arguments")
+            x = self._extract_numeric_value(pt_args[0])
+            y = self._extract_numeric_value(pt_args[1])
+            return (x, y)
+        if isinstance(node, ParamRef):
+            idx = node.number - 1
+            if idx < 0 or idx >= len(self._params):
+                raise ValueError(
+                    f"No value supplied for parameter ${node.number}"
+                )
+            val = self._params[idx]
+            if isinstance(val, (list, tuple)) and len(val) == 2:
+                return (float(val[0]), float(val[1]))
+            raise ValueError(
+                f"Parameter ${node.number} must be a [x, y] list for POINT"
+            )
+        raise ValueError(
+            f"Expected POINT(x, y) or $N parameter, "
+            f"got {type(node).__name__}"
+        )
+
+    def _extract_numeric_value(self, node: Any) -> float:
+        """Extract a numeric value from A_Const or $N parameter."""
+        if isinstance(node, A_Const):
+            val = node.val
+            if isinstance(val, PgInteger):
+                return float(val.ival)
+            if isinstance(val, PgFloat):
+                return float(val.fval)
+        if isinstance(node, ParamRef):
+            idx = node.number - 1
+            if idx < 0 or idx >= len(self._params):
+                raise ValueError(
+                    f"No value supplied for parameter ${node.number}"
+                )
+            return float(self._params[idx])
+        raise ValueError(
+            f"Expected numeric constant or $N parameter, "
+            f"got {type(node).__name__}"
+        )
 
     def _make_traverse_match_op(self, args: tuple) -> Any:
         """traverse_match(start_id, 'label', max_hops) as a WHERE signal.
@@ -5596,9 +5732,12 @@ class SQLCompiler:
             return self._make_calibrated_knn_op(args)
         if name == "traverse_match":
             return self._make_traverse_match_op(args)
+        if name == "spatial_within":
+            return self._make_spatial_within_op(args)
         raise ValueError(
             f"Unknown signal function for fusion: {name}. "
-            f"Use text_match, bayesian_match, knn_match, or traverse_match."
+            f"Use text_match, bayesian_match, knn_match, traverse_match, "
+            f"or spatial_within."
         )
 
     def _make_calibrated_knn_op(self, args: tuple) -> Any:
@@ -6292,8 +6431,19 @@ class SQLCompiler:
         """Extract a value from an INSERT VALUES clause.
 
         Handles A_Const (scalars), A_ArrayExpr (vector/array literals),
-        and TypeCast (e.g. '...'::jsonb).
+        FuncCall for POINT(x, y), and TypeCast (e.g. '...'::jsonb).
         """
+        if isinstance(node, FuncCall):
+            name = node.funcname[-1].sval.lower()
+            if name == "point":
+                pt_args = node.args or ()
+                if len(pt_args) != 2:
+                    raise ValueError("POINT() requires exactly 2 arguments")
+                x = float(self._extract_const_value(pt_args[0]))
+                y = float(self._extract_const_value(pt_args[1]))
+                return [x, y]
+            # Other function calls in INSERT VALUES: evaluate as scalar.
+            return self._extract_const_value(node)
         if isinstance(node, A_ArrayExpr):
             if node.elements is None:
                 return []

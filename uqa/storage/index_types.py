@@ -18,6 +18,7 @@ class IndexType(enum.Enum):
     INVERTED = "inverted"
     HNSW = "hnsw"
     GRAPH = "graph"
+    RTREE = "rtree"
 
 
 @dataclass(frozen=True, slots=True)
