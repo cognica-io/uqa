@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import functools
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
@@ -207,10 +209,9 @@ class NotILike(Predicate):
         return not _like_match(str(value), self.pattern, case_sensitive=False)
 
 
-def _like_match(value: str, pattern: str, *, case_sensitive: bool) -> bool:
-    """Match a SQL LIKE pattern against a string value."""
-    import re
-    # Escape regex special chars, then convert SQL wildcards
+@functools.lru_cache(maxsize=256)
+def _compile_like_regex(pattern: str, case_sensitive: bool) -> re.Pattern[str]:
+    """Compile a SQL LIKE pattern into a cached regex."""
     regex = ""
     i = 0
     while i < len(pattern):
@@ -227,7 +228,13 @@ def _like_match(value: str, pattern: str, *, case_sensitive: bool) -> bool:
             regex += re.escape(ch)
         i += 1
     flags = 0 if case_sensitive else re.IGNORECASE
-    return re.fullmatch(regex, value, flags) is not None
+    return re.compile(regex, flags)
+
+
+def _like_match(value: str, pattern: str, *, case_sensitive: bool) -> bool:
+    """Match a SQL LIKE pattern against a string value."""
+    compiled = _compile_like_regex(pattern, case_sensitive)
+    return compiled.fullmatch(value) is not None
 
 
 def is_null_predicate(pred: Predicate) -> bool:

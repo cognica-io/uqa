@@ -181,7 +181,7 @@ class VertexEmbeddingOperator:
             if sim >= self.threshold:
                 entries.append(PostingEntry(vid, Payload(score=float(sim))))
         entries.sort(key=lambda e: e.doc_id)
-        return PostingList(entries)
+        return PostingList.from_sorted(entries)
 
     @staticmethod
     def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:

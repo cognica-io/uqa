@@ -66,6 +66,7 @@ class TestSkipPointerConstruction:
         idx.add_document(1, {"body": "hello"})
         idx.add_document(2, {"body": "hello"})
         idx.add_document(3, {"body": "hello"})
+        idx.flush_skip_pointers()
 
         skip_tbl = idx._skip_table_name("body")
         rows = idx._conn.execute(
@@ -83,6 +84,7 @@ class TestSkipPointerConstruction:
         idx = _make_index(tmp_path)
         for i in range(1, 301):
             idx.add_document(i, {"body": "alpha"})
+        idx.flush_skip_pointers()
 
         skip_tbl = idx._skip_table_name("body")
         rows = idx._conn.execute(
@@ -107,6 +109,7 @@ class TestSkipPointerConstruction:
         idx = _make_index(tmp_path)
         for i in range(1, 200):
             idx.add_document(i, {"body": "alpha"})
+        idx.flush_skip_pointers()
 
         skip_tbl = idx._skip_table_name("body")
 
@@ -280,6 +283,7 @@ class TestSkipBlockMaxPersistence:
         idx1 = SQLiteInvertedIndex(conn1, "docs")
         for i in range(1, 200):
             idx1.add_document(i, {"body": "alpha"})
+        idx1.flush_skip_pointers()
         conn1.close()
 
         conn2 = sqlite3.connect(db)

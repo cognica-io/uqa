@@ -16,6 +16,20 @@ if TYPE_CHECKING:
     from uqa.storage.block_max_index import BlockMaxIndex
 
 
+def _advance_cursor(
+    entries: list[PostingEntry], pos: int, target: int
+) -> int:
+    """Advance to first position with doc_id >= target using binary search."""
+    lo, hi = pos, len(entries)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if entries[mid].doc_id < target:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
 class WANDScorer:
     """WAND top-k scorer with safe pruning (Section 6.1, Paper 3).
 
@@ -55,63 +69,98 @@ class WANDScorer:
         if num_terms == 0:
             return PostingList()
 
-        # Initialize iterators: list of (entries, current_position) per term
+        # Initialize cursors: entries list and current position per term
         iterators: list[list[PostingEntry]] = [
             pl.entries for pl in self.posting_lists
         ]
         positions: list[int] = [0] * num_terms
 
-        # Min-heap of (-score, doc_id) for top-k tracking
+        # Min-heap of (score, doc_id) for top-k tracking
         top_k_heap: list[tuple[float, int]] = []
         threshold = 0.0
 
-        # Collect all unique doc_ids across all posting lists
-        all_doc_ids: set[int] = set()
-        for pl in self.posting_lists:
-            all_doc_ids.update(e.doc_id for e in pl)
+        _INF = float("inf")
 
-        for doc_id in sorted(all_doc_ids):
-            # Compute the sum of upper bounds for terms that contain this doc_id
-            potential_score = 0.0
-            for i in range(num_terms):
-                # Advance iterator to doc_id or past it
-                while (
-                    positions[i] < len(iterators[i])
-                    and iterators[i][positions[i]].doc_id < doc_id
-                ):
-                    positions[i] += 1
+        while True:
+            # Build sorted order of term indices by current doc_id
+            def _cur_doc(i: int) -> float:
+                if positions[i] < len(iterators[i]):
+                    return iterators[i][positions[i]].doc_id
+                return _INF
 
-                if (
-                    positions[i] < len(iterators[i])
-                    and iterators[i][positions[i]].doc_id == doc_id
-                ):
-                    potential_score += upper_bounds[i]
+            sorted_terms = sorted(range(num_terms), key=_cur_doc)
 
-            # WAND pruning: skip if potential score is below threshold
-            if potential_score < threshold:
-                continue
+            # If the smallest current doc_id is infinity, all exhausted
+            if _cur_doc(sorted_terms[0]) == _INF:
+                break
 
-            # Full scoring for this document
-            actual_score = 0.0
-            for i in range(num_terms):
-                entry_pos = positions[i]
-                if (
-                    entry_pos < len(iterators[i])
-                    and iterators[i][entry_pos].doc_id == doc_id
-                ):
-                    entry = iterators[i][entry_pos]
-                    tf = len(entry.payload.positions) if entry.payload.positions else 1
-                    df = len(self.posting_lists[i])
-                    # Use doc_length = tf as approximation when not available
-                    actual_score += self.scorers[i].score(tf, tf, df)  # type: ignore[union-attr]
+            # Find pivot: smallest index p where cumulative upper bounds
+            # of sorted_terms[0..p] >= threshold
+            cumulative = 0.0
+            pivot = -1
+            for idx in range(len(sorted_terms)):
+                ti = sorted_terms[idx]
+                # Skip exhausted terms
+                if _cur_doc(ti) == _INF:
+                    break
+                cumulative += upper_bounds[ti]
+                if cumulative >= threshold:
+                    pivot = idx
+                    break
 
-            if len(top_k_heap) < self.k:
-                heapq.heappush(top_k_heap, (actual_score, doc_id))
-                if len(top_k_heap) == self.k:
+            if pivot == -1:
+                # Cannot reach threshold with any remaining terms
+                break
+
+            pivot_term = sorted_terms[pivot]
+            pivot_doc = int(_cur_doc(pivot_term))
+
+            # Check if all terms 0..pivot point to the same doc_id
+            first_doc = int(_cur_doc(sorted_terms[0]))
+
+            if first_doc == pivot_doc:
+                # All terms up to pivot converge on pivot_doc -- score it
+                actual_score = 0.0
+                for i in range(num_terms):
+                    entry_pos = positions[i]
+                    if (
+                        entry_pos < len(iterators[i])
+                        and iterators[i][entry_pos].doc_id == pivot_doc
+                    ):
+                        entry = iterators[i][entry_pos]
+                        tf = (
+                            len(entry.payload.positions)
+                            if entry.payload.positions
+                            else 1
+                        )
+                        df = len(self.posting_lists[i])
+                        actual_score += self.scorers[i].score(tf, tf, df)  # type: ignore[union-attr]
+
+                if len(top_k_heap) < self.k:
+                    heapq.heappush(top_k_heap, (actual_score, pivot_doc))
+                    if len(top_k_heap) == self.k:
+                        threshold = top_k_heap[0][0]
+                elif actual_score > threshold:
+                    heapq.heapreplace(
+                        top_k_heap, (actual_score, pivot_doc)
+                    )
                     threshold = top_k_heap[0][0]
-            elif actual_score > threshold:
-                heapq.heapreplace(top_k_heap, (actual_score, doc_id))
-                threshold = top_k_heap[0][0]
+
+                # Advance all cursors pointing at pivot_doc
+                for i in range(num_terms):
+                    if (
+                        positions[i] < len(iterators[i])
+                        and iterators[i][positions[i]].doc_id == pivot_doc
+                    ):
+                        positions[i] += 1
+            else:
+                # Advance the first cursor to pivot_doc via binary search
+                first_term = sorted_terms[0]
+                positions[first_term] = _advance_cursor(
+                    iterators[first_term],
+                    positions[first_term],
+                    pivot_doc,
+                )
 
         # Build result posting list
         entries: list[PostingEntry] = []
@@ -164,55 +213,91 @@ class BlockMaxWANDScorer:
         top_k_heap: list[tuple[float, int]] = []
         threshold = 0.0
 
-        all_doc_ids: set[int] = set()
-        for pl in self.posting_lists:
-            all_doc_ids.update(e.doc_id for e in pl)
+        _INF = float("inf")
 
-        for doc_id in sorted(all_doc_ids):
-            # Compute block-max upper bound for this document
-            potential_score = 0.0
-            for i in range(num_terms):
-                while (
-                    positions[i] < len(iterators[i])
-                    and iterators[i][positions[i]].doc_id < doc_id
-                ):
-                    positions[i] += 1
+        while True:
+            # Build sorted order of term indices by current doc_id
+            def _cur_doc(i: int) -> float:
+                if positions[i] < len(iterators[i]):
+                    return iterators[i][positions[i]].doc_id
+                return _INF
 
-                if (
-                    positions[i] < len(iterators[i])
-                    and iterators[i][positions[i]].doc_id == doc_id
-                ):
-                    block_idx = self._get_block_idx(positions[i])
-                    block_max = self.block_max_index.get_block_max(
-                        self.fields[i], self.terms[i], block_idx,
-                        table_name=self.table_name,
+            sorted_terms = sorted(range(num_terms), key=_cur_doc)
+
+            # If the smallest current doc_id is infinity, all exhausted
+            if _cur_doc(sorted_terms[0]) == _INF:
+                break
+
+            # Find pivot using block-max scores
+            cumulative = 0.0
+            pivot = -1
+            for idx in range(len(sorted_terms)):
+                ti = sorted_terms[idx]
+                if _cur_doc(ti) == _INF:
+                    break
+                block_idx = self._get_block_idx(positions[ti])
+                block_max = self.block_max_index.get_block_max(
+                    self.fields[ti],
+                    self.terms[ti],
+                    block_idx,
+                    table_name=self.table_name,
+                )
+                cumulative += block_max
+                if cumulative >= threshold:
+                    pivot = idx
+                    break
+
+            if pivot == -1:
+                break
+
+            pivot_term = sorted_terms[pivot]
+            pivot_doc = int(_cur_doc(pivot_term))
+
+            first_doc = int(_cur_doc(sorted_terms[0]))
+
+            if first_doc == pivot_doc:
+                # Score the document fully
+                actual_score = 0.0
+                for i in range(num_terms):
+                    entry_pos = positions[i]
+                    if (
+                        entry_pos < len(iterators[i])
+                        and iterators[i][entry_pos].doc_id == pivot_doc
+                    ):
+                        entry = iterators[i][entry_pos]
+                        tf = (
+                            len(entry.payload.positions)
+                            if entry.payload.positions
+                            else 1
+                        )
+                        df = len(self.posting_lists[i])
+                        actual_score += self.scorers[i].score(tf, tf, df)  # type: ignore[union-attr]
+
+                if len(top_k_heap) < self.k:
+                    heapq.heappush(top_k_heap, (actual_score, pivot_doc))
+                    if len(top_k_heap) == self.k:
+                        threshold = top_k_heap[0][0]
+                elif actual_score > threshold:
+                    heapq.heapreplace(
+                        top_k_heap, (actual_score, pivot_doc)
                     )
-                    potential_score += block_max
-
-            # Block-Max WAND pruning: tighter bounds than standard WAND
-            if potential_score < threshold:
-                continue
-
-            # Full scoring
-            actual_score = 0.0
-            for i in range(num_terms):
-                entry_pos = positions[i]
-                if (
-                    entry_pos < len(iterators[i])
-                    and iterators[i][entry_pos].doc_id == doc_id
-                ):
-                    entry = iterators[i][entry_pos]
-                    tf = len(entry.payload.positions) if entry.payload.positions else 1
-                    df = len(self.posting_lists[i])
-                    actual_score += self.scorers[i].score(tf, tf, df)  # type: ignore[union-attr]
-
-            if len(top_k_heap) < self.k:
-                heapq.heappush(top_k_heap, (actual_score, doc_id))
-                if len(top_k_heap) == self.k:
                     threshold = top_k_heap[0][0]
-            elif actual_score > threshold:
-                heapq.heapreplace(top_k_heap, (actual_score, doc_id))
-                threshold = top_k_heap[0][0]
+
+                # Advance all cursors pointing at pivot_doc
+                for i in range(num_terms):
+                    if (
+                        positions[i] < len(iterators[i])
+                        and iterators[i][positions[i]].doc_id == pivot_doc
+                    ):
+                        positions[i] += 1
+            else:
+                # Advance the first cursor to pivot_doc via binary search
+                first_term = sorted_terms[0]
+                positions[first_term] = _advance_cursor(
+                    iterators[first_term],
+                    positions[first_term],
+                    pivot_doc,
+                )
 
         entries: list[PostingEntry] = []
         for score, doc_id in top_k_heap:

@@ -3921,7 +3921,12 @@ class SQLCompiler:
         return table, None
 
     def _result_to_table(self, name: str, result: SQLResult) -> Table:
-        """Convert a SQLResult into a temporary in-memory Table."""
+        """Convert a SQLResult into a temporary in-memory Table.
+
+        Transient tables (CTEs, views, derived tables, catalog views)
+        are never text-searched, so inverted index building is skipped
+        to avoid unnecessary overhead during query execution.
+        """
         _type_map = {int: "integer", float: "real", str: "text"}
         col_defs: list[ColumnDef] = []
         for col_name in result.columns:
@@ -3948,14 +3953,6 @@ class SQLCompiler:
             doc = {"_id": doc_id}
             doc.update(row)
             table.document_store.put(doc_id, doc)
-            text_fields = {
-                cd.name: str(row[cd.name])
-                for cd in col_defs
-                if row.get(cd.name) is not None
-                and isinstance(row[cd.name], str)
-            }
-            if text_fields:
-                table.inverted_index.add_document(doc_id, text_fields)
 
         return table
 
@@ -6316,7 +6313,7 @@ class _ScanOperator:
 
     def execute(self, context: Any) -> PostingList:
         all_ids = sorted(context.document_store.doc_ids)
-        return PostingList([PostingEntry(d, Payload(score=0.0)) for d in all_ids])
+        return PostingList.from_sorted([PostingEntry(d, Payload(score=0.0)) for d in all_ids])
 
     def cost_estimate(self, stats: Any) -> float:
         return float(stats.total_docs)
@@ -6367,7 +6364,7 @@ class _TableScanOperator:
             entries.append(
                 PostingEntry(doc_id, Payload(score=0.0, fields=fields))
             )
-        return PostingList(entries)
+        return PostingList.from_sorted(entries)
 
     def cost_estimate(self, stats: Any) -> float:
         return float(len(self._table.document_store.doc_ids))
@@ -6402,7 +6399,7 @@ class _FilteredScanOperator:
         for entry in pl:
             if evaluator.evaluate(self._where_node, entry.payload.fields):
                 filtered.append(entry)
-        return PostingList(filtered)
+        return PostingList.from_sorted(filtered)
 
     def cost_estimate(self, stats: Any) -> float:
         base = self._scan.cost_estimate(stats)
@@ -6478,7 +6475,7 @@ class _ForeignTableScanOperator:
             entries.append(
                 PostingEntry(doc_id, Payload(score=0.0, fields=fields))
             )
-        return PostingList(entries)
+        return PostingList.from_sorted(entries)
 
     def cost_estimate(self, stats: Any) -> float:
         return 10000.0
@@ -6904,7 +6901,7 @@ class _ExprFilterOperator:
             result = evaluator.evaluate(self.expr_node, doc)
             if result:
                 entries.append(PostingEntry(doc_id, Payload(score=0.0)))
-        return PostingList(entries)
+        return PostingList.from_sorted(entries)
 
     def cost_estimate(self, stats: Any) -> float:
         return float(stats.total_docs)

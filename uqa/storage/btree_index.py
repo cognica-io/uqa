@@ -67,7 +67,7 @@ class BTreeIndex(Index):
             PostingEntry(row[0], Payload(score=0.0))
             for row in rows
         ]
-        return PostingList(entries)
+        return PostingList.from_sorted(entries)
 
     def estimate_cardinality(self, predicate: Predicate) -> int:
         where_clause, params = self._predicate_to_sql(predicate)

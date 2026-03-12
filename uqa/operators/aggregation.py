@@ -144,7 +144,7 @@ class AggregateOperator(Operator):
                 fields={"_aggregate_field": self.field, "_aggregate": result_value},
             ),
         )
-        return PostingList([result_entry])
+        return PostingList.from_sorted([result_entry])
 
 
 class GroupByOperator(Operator):
@@ -194,4 +194,4 @@ class GroupByOperator(Operator):
                     },
                 ),
             ))
-        return PostingList(entries)
+        return PostingList.from_sorted(entries)

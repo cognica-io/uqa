@@ -13,8 +13,9 @@ SQLite affinity so that type round-tripping is preserved.
 
 from __future__ import annotations
 
+import json
 import sqlite3
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Iterator
 
 from uqa.core.hierarchical import HierarchicalDocument
 
@@ -125,6 +126,10 @@ class SQLiteDocumentStore:
         self._sql_ids = f"SELECT _rowid FROM {self._table}"
         self._sql_count = f"SELECT COUNT(*) FROM {self._table}"
         self._sql_max = f"SELECT MAX(_rowid) FROM {self._table}"
+        self._field_sql_cache: dict[str, str] = {}
+        self._sql_iter_all = (
+            f"SELECT _rowid, {all_cols} FROM {self._table} ORDER BY _rowid"
+        )
 
     # -- Thread-safe query helpers -------------------------------------
 
@@ -144,23 +149,19 @@ class SQLiteDocumentStore:
 
     def put(self, doc_id: DocId, document: dict) -> None:
         """Insert or replace a document (row) keyed by *doc_id*."""
-        import json as json_mod
-
         values = [doc_id]
         for c in self._columns:
             v = document.get(c)
             if v is not None and c in self._json_cols and isinstance(
                 v, (dict, list)
             ):
-                v = json_mod.dumps(v, ensure_ascii=False)
+                v = json.dumps(v, ensure_ascii=False)
             values.append(v)
         self._conn.execute(self._sql_put, values)
         self._conn.commit()
 
     def get(self, doc_id: DocId) -> dict | None:
         """Return the document as a dict, or ``None`` if absent."""
-        import json as json_mod
-
         row = self._fetchone(self._sql_get, (doc_id,))
         if row is None:
             return None
@@ -170,7 +171,7 @@ class SQLiteDocumentStore:
             if v is None:
                 continue
             if col in self._json_cols and isinstance(v, str):
-                v = json_mod.loads(v)
+                v = json.loads(v)
             result[col] = v
         return result
 
@@ -188,14 +189,16 @@ class SQLiteDocumentStore:
         """Return a single field value, or ``None`` if absent."""
         if field not in self._col_set:
             return None
-        sql = f"SELECT {field} FROM {self._table} WHERE _rowid = ?"
+        sql = self._field_sql_cache.get(field)
+        if sql is None:
+            sql = f"SELECT {field} FROM {self._table} WHERE _rowid = ?"
+            self._field_sql_cache[field] = sql
         row = self._fetchone(sql, (doc_id,))
         if row is None:
             return None
         v = row[0]
         if v is not None and field in self._json_cols and isinstance(v, str):
-            import json as json_mod
-            v = json_mod.loads(v)
+            v = json.loads(v)
         return v
 
     def eval_path(self, doc_id: DocId, path: PathExpr) -> Any:
@@ -227,3 +230,20 @@ class SQLiteDocumentStore:
         """Return the largest ``_rowid`` currently stored, or 0."""
         row = self._fetchone(self._sql_max)
         return row[0] if row is not None and row[0] is not None else 0
+
+    def iter_all(self) -> Iterator[tuple[int, dict]]:
+        """Yield all (doc_id, document) pairs in rowid order."""
+        rows = self._fetchall(self._sql_iter_all)
+        columns = self._columns
+        json_cols = self._json_cols
+        for row in rows:
+            doc_id = row[0]
+            result: dict = {}
+            for i, col in enumerate(columns):
+                v = row[i + 1]
+                if v is None:
+                    continue
+                if col in json_cols and isinstance(v, str):
+                    v = json.loads(v)
+                result[col] = v
+            yield doc_id, result

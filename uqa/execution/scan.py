@@ -51,8 +51,11 @@ class SeqScanOp(PhysicalOperator):
                 col.type_name, DataType.TEXT
             )
         store = self._table.document_store
-        doc_ids = sorted(store.doc_ids)
-        self._iterator = self._yield_rows(store, doc_ids)
+        if hasattr(store, "iter_all"):
+            self._iterator = store.iter_all()
+        else:
+            doc_ids = sorted(store.doc_ids)
+            self._iterator = self._yield_rows(store, doc_ids)
 
     @staticmethod
     def _yield_rows(
@@ -107,9 +110,10 @@ class PostingListScanOp(PhysicalOperator):
 
     def open(self) -> None:
         self._offset = 0
+        self._cached_entries = self._pl.entries
 
     def next(self) -> Batch | None:
-        entries = self._pl.entries
+        entries = self._cached_entries
         if self._offset >= len(entries):
             return None
 
@@ -157,3 +161,4 @@ class PostingListScanOp(PhysicalOperator):
 
     def close(self) -> None:
         self._offset = 0
+        self._cached_entries = []

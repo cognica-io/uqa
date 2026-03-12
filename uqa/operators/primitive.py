@@ -204,30 +204,35 @@ class FilterOperator(Operator):
         if doc_store is None:
             return PostingList()
 
-        if self.source is not None:
-            source_pl = self.source.execute(context)
-            source_entries = {entry.doc_id: entry for entry in source_pl}
-            candidate_ids = list(source_entries.keys())
-        else:
-            source_entries = None
-            candidate_ids = sorted(doc_store.doc_ids)
-
         from uqa.core.types import is_null_predicate
         null_aware = is_null_predicate(self.predicate)
 
-        entries: list[PostingEntry] = []
-        for doc_id in candidate_ids:
-            value = doc_store.get_field(doc_id, self.field)
-            if null_aware:
-                matched = self.predicate.evaluate(value)
-            else:
-                matched = value is not None and self.predicate.evaluate(value)
-            if matched:
-                if source_entries is not None:
-                    entries.append(source_entries[doc_id])
+        if self.source is not None:
+            source_pl = self.source.execute(context)
+            # Iterate source entries directly (already sorted by doc_id).
+            # This avoids O(n) dict construction and preserves the
+            # entry's original payload (including scores).
+            entries: list[PostingEntry] = []
+            for entry in source_pl:
+                value = doc_store.get_field(entry.doc_id, self.field)
+                if null_aware:
+                    matched = self.predicate.evaluate(value)
                 else:
+                    matched = value is not None and self.predicate.evaluate(value)
+                if matched:
+                    entries.append(entry)
+        else:
+            candidate_ids = sorted(doc_store.doc_ids)
+            entries = []
+            for doc_id in candidate_ids:
+                value = doc_store.get_field(doc_id, self.field)
+                if null_aware:
+                    matched = self.predicate.evaluate(value)
+                else:
+                    matched = value is not None and self.predicate.evaluate(value)
+                if matched:
                     entries.append(PostingEntry(doc_id, Payload(score=0.0)))
-        return PostingList(entries)
+        return PostingList.from_sorted(entries)
 
     def cost_estimate(self, stats: IndexStats) -> float:
         return float(stats.total_docs)
@@ -274,7 +279,7 @@ class FacetOperator(Operator):
                     },
                 ),
             ))
-        return PostingList(entries)
+        return PostingList.from_sorted(entries)
 
 
 class ScoreOperator(Operator):
@@ -301,22 +306,47 @@ class ScoreOperator(Operator):
         if idx is None:
             return source_pl
 
-        entries: list[PostingEntry] = []
-        for entry in source_pl:
-            per_term_scores: list[float] = []
+        # Pre-compute per-term IDF values (hoisted out of per-doc loop).
+        has_idf = hasattr(self.scorer, "score_with_idf")
+        has_combine = hasattr(self.scorer, "combine_scores")
+        term_idfs: list[float] = []
+        if has_idf:
             for term in self.query_terms:
                 if self.field is not None:
-                    tf = idx.get_term_freq(entry.doc_id, self.field, term)
-                    dl = idx.get_doc_length(entry.doc_id, self.field)
                     df = idx.doc_freq(self.field, term)
                 else:
-                    tf = idx.get_total_term_freq(entry.doc_id, term)
-                    dl = idx.get_total_doc_length(entry.doc_id)
                     df = idx.doc_freq_any_field(term)
-                per_term_scores.append(
-                    self.scorer.score(tf, dl, df)  # type: ignore[union-attr]
-                )
-            if hasattr(self.scorer, "combine_scores"):
+                term_idfs.append(self.scorer.idf(df))  # type: ignore[union-attr]
+
+        entries: list[PostingEntry] = []
+        for entry in source_pl:
+            # Per-doc constants: doc length (hoisted out of per-term loop).
+            if self.field is not None:
+                dl = idx.get_doc_length(entry.doc_id, self.field)
+            else:
+                dl = idx.get_total_doc_length(entry.doc_id)
+
+            per_term_scores: list[float] = []
+            for i, term in enumerate(self.query_terms):
+                if self.field is not None:
+                    tf = idx.get_term_freq(entry.doc_id, self.field, term)
+                else:
+                    tf = idx.get_total_term_freq(entry.doc_id, term)
+
+                if has_idf:
+                    per_term_scores.append(
+                        self.scorer.score_with_idf(tf, dl, term_idfs[i])  # type: ignore[union-attr]
+                    )
+                else:
+                    if self.field is not None:
+                        df = idx.doc_freq(self.field, term)
+                    else:
+                        df = idx.doc_freq_any_field(term)
+                    per_term_scores.append(
+                        self.scorer.score(tf, dl, df)  # type: ignore[union-attr]
+                    )
+
+            if has_combine:
                 total_score = self.scorer.combine_scores(per_term_scores)  # type: ignore[union-attr]
             else:
                 total_score = sum(per_term_scores)
@@ -328,7 +358,7 @@ class ScoreOperator(Operator):
                     fields=entry.payload.fields,
                 ),
             ))
-        return PostingList(entries)
+        return PostingList.from_sorted(entries)
 
 
 class IndexScanOperator(Operator):

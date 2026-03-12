@@ -60,11 +60,67 @@ class WindowSpec:
     filter_node: Any = None
 
 
+def _try_arrow_filter(
+    col: Any, predicate: Any, selection: Any
+) -> list[int] | None:
+    """Attempt vectorized Arrow filter for simple predicates.
+
+    Returns a list of active indices, or None if the predicate cannot
+    be vectorized (caller should fall back to per-row evaluation).
+    """
+    import pyarrow.compute as pc
+    from uqa.core.types import (
+        Equals,
+        NotEquals,
+        GreaterThan,
+        GreaterThanOrEqual,
+        IsNotNull,
+        IsNull,
+        LessThan,
+        LessThanOrEqual,
+    )
+
+    arrow_arr = col.array
+    mask = None
+
+    if isinstance(predicate, Equals):
+        mask = pc.equal(arrow_arr, predicate.target)
+    elif isinstance(predicate, NotEquals):
+        mask = pc.not_equal(arrow_arr, predicate.target)
+    elif isinstance(predicate, GreaterThan):
+        mask = pc.greater(arrow_arr, predicate.target)
+    elif isinstance(predicate, GreaterThanOrEqual):
+        mask = pc.greater_equal(arrow_arr, predicate.target)
+    elif isinstance(predicate, LessThan):
+        mask = pc.less(arrow_arr, predicate.target)
+    elif isinstance(predicate, LessThanOrEqual):
+        mask = pc.less_equal(arrow_arr, predicate.target)
+    elif isinstance(predicate, IsNull):
+        mask = pc.is_null(arrow_arr)
+    elif isinstance(predicate, IsNotNull):
+        mask = pc.is_valid(arrow_arr)
+    else:
+        return None
+
+    try:
+        bool_arr = mask.to_pylist()
+    except Exception:
+        return None
+
+    if selection is not None:
+        return [i for i in selection if bool_arr[i]]
+    return [i for i in range(len(bool_arr)) if bool_arr[i]]
+
+
 class FilterOp(PhysicalOperator):
     """Evaluate a predicate on a column, setting the selection vector.
 
     Streaming operator: processes one batch at a time.  Batches with
     no matching rows are skipped (pulls the next batch from the child).
+
+    For simple scalar predicates (=, !=, <, >, <=, >=, IS NULL, IS NOT NULL),
+    uses vectorized Arrow compute for faster evaluation.  Falls back to
+    per-row Python evaluation for LIKE, BETWEEN, and custom predicates.
     """
 
     def __init__(
@@ -92,21 +148,25 @@ class FilterOp(PhysicalOperator):
             if col is None:
                 continue
 
-            if batch.selection is not None:
-                indices = batch.selection
-            else:
-                indices = range(batch.size)
-
-            active: list[int] = []
-            null_aware = self._null_aware
-            for i in indices:
-                val = col[i]
-                if null_aware:
-                    matched = self._predicate.evaluate(val)
+            # Try vectorized Arrow compute for simple predicates.
+            active = _try_arrow_filter(col, self._predicate, batch.selection)
+            if active is None:
+                # Fall back to per-row evaluation.
+                if batch.selection is not None:
+                    indices = batch.selection
                 else:
-                    matched = val is not None and self._predicate.evaluate(val)
-                if matched:
-                    active.append(i)
+                    indices = range(batch.size)
+
+                active = []
+                null_aware = self._null_aware
+                for i in indices:
+                    val = col[i]
+                    if null_aware:
+                        matched = self._predicate.evaluate(val)
+                    else:
+                        matched = val is not None and self._predicate.evaluate(val)
+                    if matched:
+                        active.append(i)
 
             if not active:
                 continue
@@ -236,8 +296,14 @@ class ExprProjectOp(PhysicalOperator):
             return None
 
         batch = batch.compact()
-        input_rows = batch.to_rows()
 
+        # Try vectorized Arrow evaluation for simple expressions.
+        result = self._try_vectorized(batch)
+        if result is not None:
+            return result
+
+        # Fall back to row-by-row evaluation.
+        input_rows = batch.to_rows()
         output_rows: list[dict[str, Any]] = []
         for row in input_rows:
             out: dict[str, Any] = {}
@@ -248,6 +314,96 @@ class ExprProjectOp(PhysicalOperator):
         if not output_rows:
             return None
         return Batch.from_rows(output_rows)
+
+    def _try_vectorized(self, batch: Batch) -> Batch | None:
+        """Evaluate all targets using Arrow compute. Returns None if any
+        target expression cannot be vectorized, causing the caller to
+        fall back to row-by-row evaluation."""
+        import pyarrow as pa
+
+        rb = batch.record_batch
+        n = rb.num_rows
+        if n == 0:
+            return None
+
+        arrays = []
+        names = []
+        for col_name, node in self._targets:
+            arr = self._vectorize_node(node, rb, n)
+            if arr is None:
+                return None
+            arrays.append(arr)
+            names.append(col_name)
+
+        return Batch(pa.RecordBatch.from_arrays(arrays, names=names))
+
+    def _vectorize_node(self, node: Any, rb: Any, n: int) -> Any:
+        """Convert a single AST node to an Arrow array, or None if the
+        node type is not supported for vectorized evaluation."""
+        import pyarrow as pa
+        import pyarrow.compute as pc
+        from pglast.ast import A_Const, A_Expr, ColumnRef
+        from pglast.ast import Integer as PgInteger, Float as PgFloat
+        from pglast.ast import String as PgString, Boolean as PgBoolean
+        from pglast.enums.parsenodes import A_Expr_Kind
+
+        if isinstance(node, ColumnRef):
+            fields = node.fields
+            if len(fields) >= 2 and hasattr(fields[0], "sval"):
+                qualified = f"{fields[0].sval}.{fields[-1].sval}"
+                if qualified in rb.schema.names:
+                    return rb.column(qualified)
+            col = fields[-1].sval
+            if col in rb.schema.names:
+                return rb.column(col)
+            return None
+
+        if isinstance(node, A_Const):
+            if node.isnull:
+                return pa.nulls(n)
+            val = node.val
+            if isinstance(val, PgInteger):
+                return pa.array([val.ival] * n, type=pa.int64())
+            if isinstance(val, PgFloat):
+                return pa.array([float(val.fval)] * n, type=pa.float64())
+            if isinstance(val, PgString):
+                return pa.array([val.sval] * n, type=pa.utf8())
+            if isinstance(val, PgBoolean):
+                return pa.array([val.boolval] * n, type=pa.bool_())
+            return None
+
+        if (
+            isinstance(node, A_Expr)
+            and A_Expr_Kind(node.kind) == A_Expr_Kind.AEXPR_OP
+        ):
+            op = node.name[0].sval if node.name else None
+            if op not in ("+", "-", "*", "/"):
+                return None
+            left = self._vectorize_node(node.lexpr, rb, n)
+            right = self._vectorize_node(node.rexpr, rb, n)
+            if left is None or right is None:
+                return None
+            try:
+                if op == "+":
+                    return pc.add(left, right)
+                if op == "-":
+                    return pc.subtract(left, right)
+                if op == "*":
+                    return pc.multiply(left, right)
+                if op == "/":
+                    # SQL semantics: division by zero yields NULL.
+                    zero_mask = pc.equal(right, 0)
+                    safe_right = pc.if_else(zero_mask, 1, right)
+                    result = pc.divide(left, safe_right)
+                    return pc.if_else(zero_mask, None, result)
+            except (
+                pa.ArrowInvalid,
+                pa.ArrowTypeError,
+                pa.ArrowNotImplementedError,
+            ):
+                return None
+
+        return None
 
     def close(self) -> None:
         self._child.close()
@@ -287,10 +443,70 @@ class SortOp(PhysicalOperator):
         self._offset = 0
 
     @staticmethod
+    def _try_arrow_sort(
+        rows: list[dict[str, Any]],
+        sort_keys: list[tuple[str, bool, bool]],
+    ) -> bool:
+        """Attempt in-place Arrow-native sort.  Returns True on success."""
+        if len(rows) < 2:
+            return True
+
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        # Arrow sort_indices uses a single global null_placement.
+        # If different keys need different null placements, fall back.
+        placements = {nf for _, _, nf in sort_keys}
+        if len(placements) > 1:
+            return False
+
+        null_placement = "at_start" if placements.pop() else "at_end"
+
+        try:
+            table = pa.Table.from_pylist(rows)
+        except (
+            pa.ArrowInvalid,
+            pa.ArrowTypeError,
+            pa.ArrowNotImplementedError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+            return False
+
+        arrow_keys = []
+        for col_name, desc, _ in sort_keys:
+            if col_name not in table.column_names:
+                return False
+            arrow_keys.append(
+                (col_name, "descending" if desc else "ascending")
+            )
+
+        try:
+            indices = pc.sort_indices(
+                table, sort_keys=arrow_keys, null_placement=null_placement
+            )
+            sorted_table = table.take(indices)
+            rows[:] = sorted_table.to_pylist()
+        except (
+            pa.ArrowInvalid,
+            pa.ArrowTypeError,
+            pa.ArrowNotImplementedError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+            return False
+
+        return True
+
+    @staticmethod
     def _sort_rows(
         rows: list[dict[str, Any]],
         sort_keys: list[tuple[str, bool, bool]],
     ) -> None:
+        if SortOp._try_arrow_sort(rows, sort_keys):
+            return
         for col_name, desc, nulls_first in reversed(sort_keys):
             # XOR nulls_first with desc: reverse flips the null-position
             # bit too, so we pre-flip it to compensate.
@@ -490,6 +706,7 @@ class HashAggOp(PhysicalOperator):
         self._result_iter: Any = None
         self._spill_mgr: Any = None
         self._offset = 0
+        self._filter_evaluator: Any = None
 
     def _aggregate_rows(
         self, rows_iter: Any
@@ -521,8 +738,7 @@ class HashAggOp(PhysicalOperator):
                 agg_rows = rows
                 # Apply FILTER (WHERE ...) pre-filter
                 if filter_node is not None:
-                    from uqa.sql.expr_evaluator import ExprEvaluator
-                    evaluator = ExprEvaluator()
+                    evaluator = self._filter_evaluator
                     agg_rows = [
                         r for r in agg_rows
                         if evaluator.evaluate(filter_node, r)
@@ -556,6 +772,15 @@ class HashAggOp(PhysicalOperator):
 
     def open(self) -> None:
         self._child.open()
+
+        # Create a shared ExprEvaluator for FILTER clauses (reused across groups).
+        has_filter = any(
+            len(spec) > 5 and spec[5] is not None for spec in self._agg_specs
+        )
+        if has_filter:
+            from uqa.sql.expr_evaluator import ExprEvaluator
+
+            self._filter_evaluator = ExprEvaluator()
 
         if self._spill_threshold <= 0:
             self._result_rows = self._aggregate_rows(
@@ -678,6 +903,7 @@ class HashAggOp(PhysicalOperator):
     def close(self) -> None:
         self._result_rows = None
         self._result_iter = None
+        self._filter_evaluator = None
         self._offset = 0
         if self._spill_mgr is not None:
             self._spill_mgr.cleanup()
@@ -1198,7 +1424,12 @@ def _resolve_range_frame_index(
 
     In RANGE mode, "current_row" means the first/last peer (rows with
     the same ORDER BY value), not the physical current row.
+
+    For offset bounds (PRECEDING/FOLLOWING), uses bisect for O(log n)
+    lookup instead of linear scan.
     """
+    from bisect import bisect_left, bisect_right
+
     if bound is None or bound == "unbounded_preceding":
         return 0
     if bound == "unbounded_following":
@@ -1206,13 +1437,11 @@ def _resolve_range_frame_index(
     if bound == "current_row":
         cur_val = rows[current].get(order_col)
         if is_start:
-            # Find first row with same value
             idx = current
             while idx > 0 and rows[idx - 1].get(order_col) == cur_val:
                 idx -= 1
             return idx
         else:
-            # Find last row with same value
             idx = current
             while idx < n - 1 and rows[idx + 1].get(order_col) == cur_val:
                 idx += 1
@@ -1222,31 +1451,34 @@ def _resolve_range_frame_index(
         if cur_val is None:
             return 0 if is_start else current
         target = cur_val - offset
+        # Extract order values for bisect (NULLs sort last in ASC order)
+        order_vals = [rows[i].get(order_col) for i in range(n)]
+        non_null_vals = [v for v in order_vals if v is not None]
+        non_null_indices = [i for i, v in enumerate(order_vals) if v is not None]
+        if not non_null_vals:
+            return 0 if is_start else -1
         if is_start:
-            for idx in range(n):
-                if rows[idx].get(order_col) is not None and rows[idx].get(order_col) >= target:
-                    return idx
-            return n
+            pos = bisect_left(non_null_vals, target)
+            return non_null_indices[pos] if pos < len(non_null_indices) else n
         else:
-            for idx in range(n - 1, -1, -1):
-                if rows[idx].get(order_col) is not None and rows[idx].get(order_col) <= target:
-                    return idx
-            return -1
+            pos = bisect_right(non_null_vals, target)
+            return non_null_indices[pos - 1] if pos > 0 else -1
     if bound == "offset_following":
         cur_val = rows[current].get(order_col)
         if cur_val is None:
             return current if is_start else n - 1
         target = cur_val + offset
+        order_vals = [rows[i].get(order_col) for i in range(n)]
+        non_null_vals = [v for v in order_vals if v is not None]
+        non_null_indices = [i for i, v in enumerate(order_vals) if v is not None]
+        if not non_null_vals:
+            return n if is_start else -1
         if is_start:
-            for idx in range(n):
-                if rows[idx].get(order_col) is not None and rows[idx].get(order_col) >= target:
-                    return idx
-            return n
+            pos = bisect_left(non_null_vals, target)
+            return non_null_indices[pos] if pos < len(non_null_indices) else n
         else:
-            for idx in range(n - 1, -1, -1):
-                if rows[idx].get(order_col) is not None and rows[idx].get(order_col) <= target:
-                    return idx
-            return -1
+            pos = bisect_right(non_null_vals, target)
+            return non_null_indices[pos - 1] if pos > 0 else -1
     return current
 
 

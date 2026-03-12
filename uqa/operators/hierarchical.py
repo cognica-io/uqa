@@ -49,7 +49,7 @@ class PathFilterOperator(Operator):
                     entries.append(PostingEntry(doc_id, Payload(score=0.0)))
             elif self.predicate.evaluate(value):
                 entries.append(PostingEntry(doc_id, Payload(score=0.0)))
-        return PostingList(entries)
+        return PostingList.from_sorted(entries)
 
 
 class PathProjectOperator(Operator):
@@ -80,7 +80,7 @@ class PathProjectOperator(Operator):
                     fields=projected,
                 ),
             ))
-        return PostingList(entries)
+        return PostingList.from_sorted(entries)
 
 
 class PathUnnestOperator(Operator):
@@ -180,7 +180,7 @@ class PathAggregateOperator(Operator):
                     ),
                 )
             )
-        return PostingList(entries)
+        return PostingList.from_sorted(entries)
 
 
 class UnifiedFilterOperator(Operator):

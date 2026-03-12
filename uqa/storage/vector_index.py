@@ -87,18 +87,37 @@ class HNSWIndex:
         return PostingList(entries)
 
     def search_threshold(self, query: NDArray, threshold: float) -> PostingList:
-        """V_theta operator (Definition 3.1.2)."""
-        if self._next_internal == 0:
+        """V_theta operator (Definition 3.1.2).
+
+        Uses progressive k-expansion: starts with a small k and doubles
+        until the last result is below threshold or the index is exhausted.
+        This preserves HNSW's O(d log N) advantage instead of always
+        scanning the entire index.
+        """
+        total = self._next_internal
+        if total == 0:
             return PostingList()
-        # Search with a large k, then filter by threshold
-        k = self._next_internal
-        labels, distances = self._index.knn_query(
-            np.array([query], dtype=np.float32), k=k
-        )
+
+        query_arr = np.array([query], dtype=np.float32)
+        k = min(100, total)
         entries: list[PostingEntry] = []
-        for label, dist in zip(labels[0], distances[0]):
-            similarity = 1.0 - float(dist)
-            if similarity >= threshold:
-                doc_id = self._internal_to_doc_id[int(label)]
-                entries.append(PostingEntry(doc_id, Payload(score=similarity)))
+
+        while k <= total:
+            labels, distances = self._index.knn_query(query_arr, k=k)
+            entries.clear()
+            all_above = True
+            for label, dist in zip(labels[0], distances[0]):
+                similarity = 1.0 - float(dist)
+                if similarity >= threshold:
+                    doc_id = self._internal_to_doc_id[int(label)]
+                    entries.append(PostingEntry(doc_id, Payload(score=similarity)))
+                else:
+                    all_above = False
+                    break
+
+            if not all_above or k >= total:
+                break
+            # All results satisfied threshold -- expand k
+            k = min(k * 2, total)
+
         return PostingList(entries)

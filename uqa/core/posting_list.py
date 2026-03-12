@@ -31,6 +31,18 @@ class PostingList:
         else:
             self._entries = []
 
+    @classmethod
+    def from_sorted(cls, entries: list[PostingEntry]) -> PostingList:
+        """Create a PostingList from entries that are already sorted by doc_id.
+
+        Bypasses the O(n log n) sort and O(n) dedup in ``__init__``.
+        The caller MUST guarantee that *entries* are sorted by doc_id
+        in ascending order and contain no duplicate doc_ids.
+        """
+        pl = cls.__new__(cls)
+        pl._entries = entries
+        return pl
+
     # -- Boolean Algebra Operations (Theorem 2.1.2, Paper 1) --
 
     def union(self, other: PostingList) -> PostingList:
@@ -121,7 +133,7 @@ class PostingList:
     def top_k(self, k: int) -> PostingList:
         """Return top-k entries by score (descending)."""
         if k >= len(self._entries):
-            return PostingList(list(self._entries))
+            return PostingList.from_sorted(list(self._entries))
         top = heapq.nlargest(k, self._entries, key=lambda e: e.payload.score)
         return PostingList(top)
 

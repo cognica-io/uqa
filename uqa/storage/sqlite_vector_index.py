@@ -57,9 +57,32 @@ class SQLiteVectorIndex(HNSWIndex):
         rows = self._conn.execute(
             "SELECT doc_id, dimensions, embedding FROM _vectors"
         ).fetchall()
-        for doc_id, dims, blob in rows:
-            vec = np.frombuffer(blob, dtype=np.float32).copy()
-            super().add(doc_id, vec)
+        if not rows:
+            return
+
+        # Batch load: collect all vectors and doc_ids, then insert at once.
+        n = len(rows)
+        dims = self.dimensions
+        doc_ids_list: list[int] = []
+        data = np.empty((n, dims), dtype=np.float32)
+        for i, (doc_id, _dims, blob) in enumerate(rows):
+            data[i] = np.frombuffer(blob, dtype=np.float32)
+            doc_ids_list.append(doc_id)
+
+        # Ensure the hnswlib index has enough capacity.
+        while self._capacity < n:
+            self._capacity *= 2
+        self._index.resize_index(self._capacity)
+
+        # Assign internal IDs and build mappings.
+        internal_ids = np.arange(n, dtype=np.int64)
+        for internal_id, doc_id in enumerate(doc_ids_list):
+            self._doc_id_to_internal[doc_id] = internal_id
+            self._internal_to_doc_id[internal_id] = doc_id
+        self._next_internal = n
+
+        # Batch insert into hnswlib.
+        self._index.add_items(data, internal_ids)
 
     # -- Mutations (write-through) -------------------------------------
 

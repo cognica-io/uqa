@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import struct
 from collections import defaultdict
 from typing import Any, TYPE_CHECKING
 
@@ -56,6 +57,8 @@ class SQLiteInvertedIndex:
         self._field_analyzers: dict[str, Any] = dict(field_analyzers) if field_analyzers else {}
         self._known_fields: set[str] = set()
         self._has_atomic_fetch = hasattr(conn, "execute_fetchall")
+        self._cached_stats: IndexStats | None = None
+        self._dirty_terms: set[tuple[str, str]] = set()
 
         # Create shared stats / doc-lengths tables eagerly.
         self._conn.execute(
@@ -177,6 +180,32 @@ class SQLiteInvertedIndex:
         analyzer = self._field_analyzers.get(field, self._analyzer) if field else self._analyzer
         return analyzer.analyze(text)
 
+    # -- Positions encoding helpers ------------------------------------
+
+    @staticmethod
+    def _encode_positions(positions: tuple[int, ...] | list[int]) -> bytes:
+        """Encode positions as a compact binary blob (big-endian uint32)."""
+        return struct.pack(f">{len(positions)}I", *positions)
+
+    @staticmethod
+    def _decode_positions(data: str | bytes) -> tuple[int, ...]:
+        """Decode positions from binary blob or legacy JSON text."""
+        if isinstance(data, bytes):
+            return struct.unpack(f">{len(data) // 4}I", data)
+        # Legacy JSON-encoded positions (TEXT).
+        return tuple(json.loads(data))
+
+    # -- Deferred skip pointer rebuild ---------------------------------
+
+    def flush_skip_pointers(self) -> None:
+        """Rebuild skip pointers for all dirty (field, term) pairs."""
+        if not self._dirty_terms:
+            return
+        dirty = self._dirty_terms
+        self._dirty_terms = set()
+        for field, term in dirty:
+            self._rebuild_skip_pointers(field, term)
+
     # -- Indexing -------------------------------------------------------
 
     def add_document(
@@ -203,15 +232,21 @@ class SQLiteInvertedIndex:
             for pos, token in enumerate(tokens):
                 term_positions[token].append(pos)
 
+            # Batch insert all term postings for this field at once.
+            batch_rows: list[tuple[str, int, int, bytes]] = []
             for term, positions in term_positions.items():
                 pos_tuple = tuple(positions)
                 tf = len(positions)
-                self._conn.execute(
-                    f'INSERT OR REPLACE INTO "{tbl}" '
-                    "(term, doc_id, tf, positions) VALUES (?, ?, ?, ?)",
-                    (term, doc_id, tf, json.dumps(list(pos_tuple))),
+                batch_rows.append(
+                    (term, doc_id, tf, self._encode_positions(pos_tuple))
                 )
                 result_postings[(field_name, term)] = pos_tuple
+
+            self._conn.executemany(
+                f'INSERT OR REPLACE INTO "{tbl}" '
+                "(term, doc_id, tf, positions) VALUES (?, ?, ?, ?)",
+                batch_rows,
+            )
 
             # Doc length
             self._conn.execute(
@@ -231,10 +266,11 @@ class SQLiteInvertedIndex:
             )
 
         self._conn.commit()
+        self._cached_stats = None
 
-        # Rebuild skip pointers for all affected (field, term) pairs.
-        for (field_name, term) in result_postings:
-            self._rebuild_skip_pointers(field_name, term)
+        # Defer skip pointer rebuilds until the next query.
+        for field_name, term in result_postings:
+            self._dirty_terms.add((field_name, term))
 
         return IndexedTerms(result_field_lengths, result_postings)
 
@@ -246,12 +282,12 @@ class SQLiteInvertedIndex:
         """Add a single posting entry directly (for catalog restore)."""
         self._ensure_field_table(field)
         tbl = self._inverted_table_name(field)
-        positions = list(entry.payload.positions) if entry.payload.positions else []
+        positions = tuple(entry.payload.positions) if entry.payload.positions else ()
         tf = len(positions)
         self._conn.execute(
             f'INSERT OR REPLACE INTO "{tbl}" '
             "(term, doc_id, tf, positions) VALUES (?, ?, ?, ?)",
-            (term, entry.doc_id, tf, json.dumps(positions)),
+            (term, entry.doc_id, tf, self._encode_positions(positions)),
         )
         self._conn.commit()
 
@@ -335,6 +371,7 @@ class SQLiteInvertedIndex:
             )
 
         self._conn.commit()
+        self._cached_stats = None
 
         # Rebuild skip pointers for affected terms.
         for field, term in affected_terms:
@@ -358,10 +395,13 @@ class SQLiteInvertedIndex:
             f'DELETE FROM "_doc_lengths_{self._table_name}"'
         )
         self._conn.commit()
+        self._cached_stats = None
+        self._dirty_terms.clear()
 
     # -- Query methods -------------------------------------------------
 
     def get_posting_list(self, field: str, term: str) -> PostingList:
+        self.flush_skip_pointers()
         if field not in self._known_fields:
             return PostingList()
         tbl = self._inverted_table_name(field)
@@ -374,16 +414,17 @@ class SQLiteInvertedIndex:
             PostingEntry(
                 doc_id=row[0],
                 payload=Payload(
-                    positions=tuple(json.loads(row[2])),
+                    positions=self._decode_positions(row[2]),
                     score=0.0,
                 ),
             )
             for row in rows
         ]
-        return PostingList(entries)
+        return PostingList.from_sorted(entries)
 
     def get_posting_list_any_field(self, term: str) -> PostingList:
         """Get posting list matching *term* across any field."""
+        self.flush_skip_pointers()
         seen_docs: set[int] = set()
         all_entries: list[PostingEntry] = []
 
@@ -402,7 +443,7 @@ class SQLiteInvertedIndex:
                         PostingEntry(
                             doc_id=doc_id,
                             payload=Payload(
-                                positions=tuple(json.loads(row[2])),
+                                positions=self._decode_positions(row[2]),
                                 score=0.0,
                             ),
                         )
@@ -476,6 +517,11 @@ class SQLiteInvertedIndex:
 
     @property
     def stats(self) -> IndexStats:
+        self.flush_skip_pointers()
+
+        if self._cached_stats is not None:
+            return self._cached_stats
+
         from uqa.core.types import IndexStats
 
         rows = self._fetchall(
@@ -502,11 +548,13 @@ class SQLiteInvertedIndex:
             for term, cnt in term_rows:
                 doc_freqs[(field, term)] = cnt
 
-        return IndexStats(
+        result = IndexStats(
             total_docs=total_docs,
             avg_doc_length=avg_doc_length,
             _doc_freqs=doc_freqs,
         )
+        self._cached_stats = result
+        return result
 
     # -- Skip pointers -------------------------------------------------
 
@@ -551,6 +599,7 @@ class SQLiteInvertedIndex:
         0-based offset in the posting list.  If no skip entry exists,
         returns ``(0, 0)`` (start from the beginning).
         """
+        self.flush_skip_pointers()
         if field not in self._known_fields:
             return (0, 0)
         skip_tbl = self._skip_table_name(field)

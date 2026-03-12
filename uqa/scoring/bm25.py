@@ -51,6 +51,16 @@ class BM25Scorer:
         where w = boost * IDF and inv_norm = 1 / (k1 * ((1-b) + b * dl/avgdl))
         """
         idf_val = self.idf(doc_freq)
+        return self.score_with_idf(term_freq, doc_length, idf_val)
+
+    def score_with_idf(
+        self, term_freq: int, doc_length: int, idf_val: float
+    ) -> float:
+        """Compute BM25 score with a pre-computed IDF value.
+
+        Avoids redundant IDF computation when scoring many documents
+        for the same term.
+        """
         w = self.params.boost * idf_val
         b_factor = (1.0 - self.params.b) + self.params.b * (
             doc_length / self.stats.avg_doc_length

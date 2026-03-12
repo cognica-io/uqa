@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from uqa.core.posting_list import PostingList
 from uqa.core.types import IndexStats, Payload, PostingEntry
 from uqa.operators.base import ExecutionContext, Operator
@@ -90,7 +92,7 @@ class LogOddsFusionOperator(Operator):
         self.default_prob = default_prob
 
     def execute(self, context: ExecutionContext) -> PostingList:
-        from uqa.fusion.log_odds import LogOddsFusion
+        from bayesian_bm25 import log_odds_conjunction
 
         par = context.parallel_executor
         if par is not None and par.enabled:
@@ -107,16 +109,35 @@ class LogOddsFusionOperator(Operator):
                 all_doc_ids.add(entry.doc_id)
             score_maps.append(smap)
 
-        fusion = LogOddsFusion(confidence_alpha=self.alpha)
+        sorted_ids = sorted(all_doc_ids)
+        num_docs = len(sorted_ids)
+        num_signals = len(score_maps)
+
+        if num_docs == 0:
+            return PostingList()
+
+        # Build (num_docs, num_signals) probability matrix in one allocation.
+        prob_matrix = np.full(
+            (num_docs, num_signals), self.default_prob, dtype=np.float64
+        )
+        for j, smap in enumerate(score_maps):
+            for i, doc_id in enumerate(sorted_ids):
+                score = smap.get(doc_id)
+                if score is not None:
+                    prob_matrix[i, j] = score
+
+        # Fuse each row using log_odds_conjunction.
         entries: list[PostingEntry] = []
-        for doc_id in sorted(all_doc_ids):
-            probs = [
-                smap.get(doc_id, self.default_prob) for smap in score_maps
-            ]
-            fused = fusion.fuse(probs)
+        alpha = self.alpha
+        for i, doc_id in enumerate(sorted_ids):
+            row = prob_matrix[i]
+            if num_signals == 1:
+                fused = float(row[0])
+            else:
+                fused = float(log_odds_conjunction(row, alpha=alpha))
             entries.append(PostingEntry(doc_id, Payload(score=fused)))
 
-        return PostingList(entries)
+        return PostingList.from_sorted(entries)
 
     def cost_estimate(self, stats: IndexStats) -> float:
         return sum(sig.cost_estimate(stats) for sig in self.signals)
@@ -170,7 +191,7 @@ class ProbBoolFusionOperator(Operator):
             fused = fuse_fn(probs)
             entries.append(PostingEntry(doc_id, Payload(score=fused)))
 
-        return PostingList(entries)
+        return PostingList.from_sorted(entries)
 
     def cost_estimate(self, stats: IndexStats) -> float:
         return sum(sig.cost_estimate(stats) for sig in self.signals)
@@ -201,7 +222,7 @@ class VectorExclusionOperator(Operator):
         negative_pl = self.negative_op.execute(context)
         negative_ids = {entry.doc_id for entry in negative_pl}
         entries = [e for e in positive_pl if e.doc_id not in negative_ids]
-        return PostingList(entries)
+        return PostingList.from_sorted(entries)
 
     def cost_estimate(self, stats: IndexStats) -> float:
         return (
@@ -268,7 +289,7 @@ class FacetVectorOperator(Operator):
                     ),
                 )
             )
-        return PostingList(entries)
+        return PostingList.from_sorted(entries)
 
     def cost_estimate(self, stats: IndexStats) -> float:
         base = self.vector_op.cost_estimate(stats)
@@ -309,7 +330,7 @@ class ProbNotOperator(Operator):
             p = score_map.get(doc_id, self.default_prob)
             entries.append(PostingEntry(doc_id, Payload(score=1.0 - p)))
 
-        return PostingList(entries)
+        return PostingList.from_sorted(entries)
 
     def cost_estimate(self, stats: IndexStats) -> float:
         return self.signal.cost_estimate(stats)

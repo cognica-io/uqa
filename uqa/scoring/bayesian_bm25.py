@@ -51,9 +51,20 @@ class BayesianBM25Scorer:
             base_rate=base_rate,
         )
 
+    def idf(self, doc_freq: int) -> float:
+        """Delegate IDF computation to the inner BM25 scorer."""
+        return self.bm25.idf(doc_freq)
+
     def score(self, term_freq: int, doc_length: int, doc_freq: int) -> float:
         """Full Bayesian BM25 posterior with three-term decomposition."""
-        raw = self.bm25.score(term_freq, doc_length, doc_freq)
+        idf_val = self.bm25.idf(doc_freq)
+        return self.score_with_idf(term_freq, doc_length, idf_val)
+
+    def score_with_idf(
+        self, term_freq: int, doc_length: int, idf_val: float
+    ) -> float:
+        """Compute Bayesian BM25 score with a pre-computed IDF value."""
+        raw = self.bm25.score_with_idf(term_freq, doc_length, idf_val)
         avg_dl = self.bm25.stats.avg_doc_length
         doc_len_ratio = doc_length / avg_dl if avg_dl > 0 else 1.0
         return float(

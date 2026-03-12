@@ -19,6 +19,15 @@ scalar values.  Used by the SQL compiler for:
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
+import math
+import random
+import re
+import uuid
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any
 
 from pglast.ast import (
@@ -71,55 +80,41 @@ class ExprEvaluator:
     ) -> None:
         self._subquery_executor = subquery_executor
         self._sequences = sequences
+        self._dispatch: dict[type, Any] = {
+            ColumnRef: self._eval_column_ref,
+            A_Const: self._eval_const,
+            A_Expr: self._eval_a_expr,
+            FuncCall: self._eval_func_call,
+            NullTest: self._eval_null_test,
+            BoolExpr: self._eval_bool_expr,
+            CaseExpr: self._eval_case,
+            TypeCast: self._eval_type_cast,
+            CoalesceExpr: self._eval_coalesce,
+            SubLink: self._eval_sublink,
+            A_ArrayExpr: self._eval_a_array_expr,
+            MinMaxExpr: self._eval_min_max,
+            SQLValueFunction: self._eval_sql_value_function,
+        }
 
     def evaluate(self, node: Any, row: dict[str, Any]) -> Any:
         """Evaluate *node* against *row* and return the result."""
-        if isinstance(node, ColumnRef):
-            return self._eval_column_ref(node, row)
-
-        if isinstance(node, A_Const):
-            return self._eval_const(node)
-
-        if isinstance(node, A_Expr):
-            return self._eval_a_expr(node, row)
-
-        if isinstance(node, FuncCall):
-            return self._eval_func_call(node, row)
-
-        if isinstance(node, NullTest):
-            return self._eval_null_test(node, row)
-
-        if isinstance(node, BoolExpr):
-            return self._eval_bool_expr(node, row)
-
-        if isinstance(node, CaseExpr):
-            return self._eval_case(node, row)
-
-        if isinstance(node, TypeCast):
-            return self._eval_type_cast(node, row)
-
-        if isinstance(node, CoalesceExpr):
-            return self._eval_coalesce(node, row)
-
-        if isinstance(node, SubLink):
-            return self._eval_sublink(node, row)
-
-        if isinstance(node, A_ArrayExpr):
-            if node.elements is None:
-                return []
-            return [self.evaluate(e, row) for e in node.elements]
-
-        if isinstance(node, MinMaxExpr):
-            return self._eval_min_max(node, row)
-
-        if isinstance(node, SQLValueFunction):
-            return self._eval_sql_value_function(node)
+        handler = self._dispatch.get(type(node))
+        if handler is not None:
+            return handler(node, row)
 
         # NamedArgExpr: func(name => value) -- evaluate the inner arg
         if type(node).__name__ == "NamedArgExpr":
             return self.evaluate(node.arg, row)
 
         raise ValueError(f"Unsupported expression node: {type(node).__name__}")
+
+    def _eval_a_array_expr(
+        self, node: A_ArrayExpr, row: dict[str, Any]
+    ) -> Any:
+        """Evaluate an array expression."""
+        if node.elements is None:
+            return []
+        return [self.evaluate(e, row) for e in node.elements]
 
     # -- Leaf nodes ----------------------------------------------------
 
@@ -135,7 +130,7 @@ class ExprEvaluator:
         return row.get(col_name)
 
     @staticmethod
-    def _eval_const(node: A_Const) -> Any:
+    def _eval_const(node: A_Const, row: dict[str, Any] | None = None) -> Any:
         if node.isnull:
             return None
         val = node.val
@@ -446,8 +441,10 @@ class ExprEvaluator:
     # -- SQLValueFunction (CURRENT_DATE, CURRENT_TIMESTAMP) -----------
 
     @staticmethod
-    def _eval_sql_value_function(node: SQLValueFunction) -> Any:
-        from datetime import datetime, timezone
+    def _eval_sql_value_function(
+        node: SQLValueFunction, row: dict[str, Any] | None = None
+    ) -> Any:
+
 
         op = SQLValueFunctionOp(node.op)
         now = datetime.now(timezone.utc)
@@ -621,12 +618,12 @@ def _json_access(obj: Any, key: Any, *, as_text: bool) -> Any:
 
     ``->`` returns JSON, ``->>`` returns text.
     """
-    import json as json_mod
+
 
     if obj is None:
         return None
     if isinstance(obj, str):
-        obj = json_mod.loads(obj)
+        obj = json.loads(obj)
     if isinstance(obj, dict):
         result = obj.get(str(key) if not isinstance(key, str) else key)
     elif isinstance(obj, list) and isinstance(key, int):
@@ -637,7 +634,7 @@ def _json_access(obj: Any, key: Any, *, as_text: bool) -> Any:
         return None
     if as_text:
         if isinstance(result, (dict, list)):
-            return json_mod.dumps(result, ensure_ascii=False)
+            return json.dumps(result, ensure_ascii=False)
         return str(result)
     return result
 
@@ -648,12 +645,12 @@ def _json_path_access(obj: Any, path_str: Any, *, as_text: bool) -> Any:
     Path is a PostgreSQL text array literal like '{a,b,c}'.
     Follows Def 5.2.3 recursive path evaluation.
     """
-    import json as json_mod
+
 
     if obj is None or path_str is None:
         return None
     if isinstance(obj, str):
-        obj = json_mod.loads(obj)
+        obj = json.loads(obj)
 
     # Parse PostgreSQL array literal '{a,b,c}' into keys
     path = str(path_str).strip("{}")
@@ -676,7 +673,7 @@ def _json_path_access(obj: Any, path_str: Any, *, as_text: bool) -> Any:
         return None
     if as_text:
         if isinstance(obj, (dict, list)):
-            return json_mod.dumps(obj, ensure_ascii=False)
+            return json.dumps(obj, ensure_ascii=False)
         return str(obj)
     return obj
 
@@ -686,7 +683,7 @@ def _json_contains(container: Any, contained: Any) -> bool:
 
     Returns True if *container* contains *contained* at every level.
     """
-    import json as json_mod
+
 
     if container is None or contained is None:
         return False
@@ -695,11 +692,11 @@ def _json_contains(container: Any, contained: Any) -> bool:
         # plain scalar string (which would fail json.loads).
         stripped = container.strip()
         if stripped and stripped[0] in ('{', '['):
-            container = json_mod.loads(container)
+            container = json.loads(container)
     if isinstance(contained, str):
         stripped = contained.strip()
         if stripped and stripped[0] in ('{', '['):
-            contained = json_mod.loads(contained)
+            contained = json.loads(contained)
 
     if isinstance(contained, dict):
         if not isinstance(container, dict):
@@ -725,8 +722,8 @@ def _json_has_key(obj: Any, key: Any) -> bool:
     if obj is None:
         return False
     if isinstance(obj, str):
-        import json as json_mod
-        obj = json_mod.loads(obj)
+    
+        obj = json.loads(obj)
     if isinstance(obj, dict):
         return str(key) in obj
     if isinstance(obj, list):
@@ -752,8 +749,8 @@ def _json_has_any_key(obj: Any, keys: Any) -> bool:
     if obj is None or keys is None:
         return False
     if isinstance(obj, str):
-        import json as json_mod
-        obj = json_mod.loads(obj)
+    
+        obj = json.loads(obj)
     keys = _parse_pg_array_literal(keys)
     if isinstance(obj, dict):
         return any(k in obj for k in keys)
@@ -765,8 +762,8 @@ def _json_has_all_keys(obj: Any, keys: Any) -> bool:
     if obj is None or keys is None:
         return False
     if isinstance(obj, str):
-        import json as json_mod
-        obj = json_mod.loads(obj)
+    
+        obj = json.loads(obj)
     keys = _parse_pg_array_literal(keys)
     if isinstance(obj, dict):
         return all(k in obj for k in keys)
@@ -775,7 +772,7 @@ def _json_has_all_keys(obj: Any, keys: Any) -> bool:
 
 def _overlaps(range1: Any, range2: Any) -> bool:
     """Test whether two date/time ranges overlap (OVERLAPS operator)."""
-    from datetime import datetime
+
     if range1 is None or range2 is None:
         return False
     if isinstance(range1, (list, tuple)) and isinstance(range2, (list, tuple)):
@@ -857,13 +854,13 @@ _CAST_MAP: dict[str, type] = {
 
 
 def _cast_value(value: Any, type_name: str) -> Any:
-    import json as json_mod
+
 
     if type_name in ("json", "jsonb"):
         if isinstance(value, (dict, list)):
             return value
         if isinstance(value, str):
-            return json_mod.loads(value)
+            return json.loads(value)
         return value
     if type_name == "uuid":
         return str(value)
@@ -883,674 +880,891 @@ def _cast_value(value: Any, type_name: str) -> Any:
     return cast_type(value)
 
 
-_SCALAR_FUNCTIONS: dict[str, Any] = {}
-
-
 def _call_scalar_function(name: str, args: list[Any]) -> Any:
-    # String functions
-    if name == "upper":
-        return str(args[0]).upper() if args[0] is not None else None
-    if name == "lower":
-        return str(args[0]).lower() if args[0] is not None else None
-    if name == "length":
-        return len(str(args[0])) if args[0] is not None else None
-    if name in ("trim", "btrim"):
-        if args[0] is None:
-            return None
-        chars = str(args[1]) if len(args) > 1 else None
-        return str(args[0]).strip(chars)
-    if name == "ltrim":
-        if args[0] is None:
-            return None
-        chars = str(args[1]) if len(args) > 1 else None
-        return str(args[0]).lstrip(chars)
-    if name == "rtrim":
-        if args[0] is None:
-            return None
-        chars = str(args[1]) if len(args) > 1 else None
-        return str(args[0]).rstrip(chars)
-    if name == "replace":
-        if any(a is None for a in args[:3]):
-            return None
-        return str(args[0]).replace(str(args[1]), str(args[2]))
-    if name == "substring" or name == "substr":
-        if args[0] is None:
-            return None
-        s = str(args[0])
-        start = int(args[1]) - 1 if len(args) > 1 else 0
-        length = int(args[2]) if len(args) > 2 else len(s) - start
-        return s[start : start + length]
-    if name == "concat":
-        return "".join(str(a) if a is not None else "" for a in args)
-    if name == "concat_ws":
-        if not args or args[0] is None:
-            return None
-        sep = str(args[0])
-        return sep.join(str(a) for a in args[1:] if a is not None)
-    if name == "left":
-        if args[0] is None:
-            return None
-        return str(args[0])[: int(args[1])]
-    if name == "right":
-        if args[0] is None:
-            return None
-        n = int(args[1])
-        return str(args[0])[-n:] if n > 0 else ""
+    fn = _SCALAR_FUNCTIONS.get(name)
+    if fn is None:
+        raise ValueError(f"Unknown scalar function: {name}")
+    return fn(args)
 
-    # Math functions
-    if name == "abs":
-        return abs(args[0]) if args[0] is not None else None
-    if name == "round":
-        if args[0] is None:
-            return None
-        ndigits = int(args[1]) if len(args) > 1 else 0
-        return round(args[0], ndigits)
-    if name == "ceil" or name == "ceiling":
-        if args[0] is None:
-            return None
-        import math
-        return math.ceil(args[0])
-    if name == "floor":
-        if args[0] is None:
-            return None
-        import math
-        return math.floor(args[0])
 
-    # Additional string functions
-    if name == "initcap":
-        return str(args[0]).title() if args[0] is not None else None
-    if name == "translate":
-        if any(a is None for a in args[:3]):
-            return None
-        s, from_chars, to_chars = str(args[0]), str(args[1]), str(args[2])
-        table = str.maketrans(
-            from_chars,
-            to_chars[:len(from_chars)].ljust(len(from_chars)),
-            from_chars[len(to_chars):] if len(to_chars) < len(from_chars) else "",
-        )
-        return s.translate(table)
-    if name == "ascii":
-        if args[0] is None:
-            return None
-        s = str(args[0])
-        return ord(s[0]) if s else 0
-    if name == "chr":
-        if args[0] is None:
-            return None
-        return chr(int(args[0]))
-    if name == "starts_with":
-        if args[0] is None or args[1] is None:
-            return None
-        return str(args[0]).startswith(str(args[1]))
-    if name in ("char_length", "character_length"):
-        return len(str(args[0])) if args[0] is not None else None
-    if name == "position":
-        if args[0] is None or args[1] is None:
-            return None
-        # pglast: POSITION(sub IN str) -> position(str, sub)
-        idx = str(args[0]).find(str(args[1]))
-        return idx + 1 if idx >= 0 else 0
-    if name == "strpos":
-        if args[0] is None or args[1] is None:
-            return None
-        idx = str(args[0]).find(str(args[1]))
-        return idx + 1 if idx >= 0 else 0
-    if name == "octet_length":
-        if args[0] is None:
-            return None
-        return len(str(args[0]).encode("utf-8"))
-    if name == "md5":
-        if args[0] is None:
-            return None
-        import hashlib
-        return hashlib.md5(str(args[0]).encode("utf-8")).hexdigest()
-    if name == "format":
-        if args[0] is None:
-            return None
-        fmt = str(args[0])
-        # PostgreSQL uses %s for strings, %I for identifiers, %L for literals
-        # Map to Python format: replace %s with %s, %I and %L with %s
-        fmt = fmt.replace("%I", "%s").replace("%L", "'%s'")
-        return fmt % tuple(args[1:])
-    if name == "regexp_match":
-        if args[0] is None or args[1] is None:
-            return None
-        import re
-        m = re.search(str(args[1]), str(args[0]))
-        if m is None:
-            return None
-        groups = m.groups()
-        return list(groups) if groups else [m.group()]
-    if name == "regexp_matches":
-        if args[0] is None or args[1] is None:
-            return None
-        import re
-        flags_str = str(args[2]) if len(args) > 2 and args[2] is not None else ""
-        flags = re.DOTALL if "s" in flags_str else 0
-        if "i" in flags_str:
-            flags |= re.IGNORECASE
-        if "g" in flags_str:
-            return [
-                list(m) if isinstance(m, tuple) else [m]
-                for m in re.findall(str(args[1]), str(args[0]), flags)
-            ]
-        m = re.search(str(args[1]), str(args[0]), flags)
-        if m is None:
-            return None
-        groups = m.groups()
-        return [list(groups)] if groups else [[m.group()]]
-    if name == "regexp_replace":
-        if args[0] is None or args[1] is None:
-            return None
-        import re
-        replacement = str(args[2]) if len(args) > 2 and args[2] is not None else ""
-        flags_str = str(args[3]) if len(args) > 3 and args[3] is not None else ""
-        count = 0 if "g" in flags_str else 1
-        flags = 0
-        if "i" in flags_str:
-            flags |= re.IGNORECASE
-        return re.sub(str(args[1]), replacement, str(args[0]), count=count, flags=flags)
-    if name == "overlay":
-        if args[0] is None or args[1] is None or args[2] is None:
-            return None
-        s = str(args[0])
-        repl = str(args[1])
-        pos = int(args[2]) - 1  # 1-based to 0-based
-        length = int(args[3]) if len(args) > 3 and args[3] is not None else len(repl)
-        return s[:pos] + repl + s[pos + length:]
-    if name == "lpad":
-        if args[0] is None:
-            return None
-        s, length = str(args[0]), int(args[1])
-        fill = str(args[2]) if len(args) > 2 and args[2] is not None else " "
-        if len(s) >= length:
-            return s[:length]
-        pad_len = length - len(s)
-        pad = (fill * (pad_len // len(fill) + 1))[:pad_len]
-        return pad + s
-    if name == "rpad":
-        if args[0] is None:
-            return None
-        s, length = str(args[0]), int(args[1])
-        fill = str(args[2]) if len(args) > 2 and args[2] is not None else " "
-        if len(s) >= length:
-            return s[:length]
-        pad_len = length - len(s)
-        pad = (fill * (pad_len // len(fill) + 1))[:pad_len]
-        return s + pad
-    if name == "repeat":
-        if args[0] is None:
-            return None
-        return str(args[0]) * int(args[1])
-    if name == "reverse":
-        return str(args[0])[::-1] if args[0] is not None else None
-    if name == "split_part":
-        if any(a is None for a in args[:3]):
-            return None
-        parts = str(args[0]).split(str(args[1]))
-        n = int(args[2])
-        return parts[n - 1] if 1 <= n <= len(parts) else ""
-    if name == "encode":
-        if args[0] is None or args[1] is None:
-            return None
-        import base64
-        data = args[0]
-        if isinstance(data, str):
-            data = data.encode("utf-8")
-        fmt = str(args[1]).lower()
-        if fmt == "base64":
-            return base64.b64encode(data).decode("ascii")
-        if fmt == "hex":
-            return data.hex()
-        if fmt == "escape":
-            # PostgreSQL escape format: printable ASCII as-is, others as \\NNN octal
-            parts = []
-            for b in data:
-                if 32 <= b < 127 and b != 92:  # printable, not backslash
-                    parts.append(chr(b))
-                else:
-                    parts.append("\\%03o" % b)
-            return "".join(parts)
-        raise ValueError(f"Unsupported encode format: {fmt}")
-    if name == "decode":
-        if args[0] is None or args[1] is None:
-            return None
-        import base64
-        import re
-        text = str(args[0])
-        fmt = str(args[1]).lower()
-        if fmt == "base64":
-            return base64.b64decode(text)
-        if fmt == "hex":
-            return bytes.fromhex(text)
-        if fmt == "escape":
-            # Reverse of escape encoding: \\NNN octal sequences back to bytes
-            result = bytearray()
-            i = 0
-            while i < len(text):
-                if text[i] == "\\" and i + 3 < len(text) and re.match(
-                    r"[0-7]{3}", text[i + 1 : i + 4]
-                ):
-                    result.append(int(text[i + 1 : i + 4], 8))
-                    i += 4
-                else:
-                    result.append(ord(text[i]))
-                    i += 1
-            return bytes(result)
-        raise ValueError(f"Unsupported decode format: {fmt}")
-    if name == "regexp_split_to_array":
-        if args[0] is None or args[1] is None:
-            return None
-        import re
-        text = str(args[0])
-        pattern = str(args[1])
-        flags = 0
-        if len(args) > 2 and args[2] is not None:
-            flags_str = str(args[2])
-            if "i" in flags_str:
-                flags |= re.IGNORECASE
-        return re.split(pattern, text, flags=flags)
+# -- Scalar function helpers ------------------------------------------------
+#
+# Each helper takes ``(args: list[Any]) -> Any`` and implements one
+# (or a small family of) SQL scalar function(s).  They are collected
+# in ``_SCALAR_FUNCTIONS`` for O(1) dispatch by ``_call_scalar_function``.
+#
 
-    # Additional math functions
-    if name in ("power", "pow"):
-        if args[0] is None or args[1] is None:
-            return None
-        return args[0] ** args[1]
-    if name == "sqrt":
-        if args[0] is None:
-            return None
-        import math
-        return math.sqrt(args[0])
-    if name in ("log", "log10"):
-        if args[0] is None:
-            return None
-        import math
-        if len(args) > 1 and args[1] is not None:
-            # LOG(b, x) = log base b of x
-            return math.log(args[1]) / math.log(args[0])
-        return math.log10(args[0])
-    if name == "ln":
-        if args[0] is None:
-            return None
-        import math
-        return math.log(args[0])
-    if name == "exp":
-        if args[0] is None:
-            return None
-        import math
-        return math.exp(args[0])
-    if name == "mod":
-        if args[0] is None or args[1] is None:
-            return None
-        return args[0] % args[1] if args[1] != 0 else None
-    if name == "trunc":
-        if args[0] is None:
-            return None
-        import math
-        if len(args) > 1 and args[1] is not None:
-            factor = 10 ** int(args[1])
-            return math.trunc(args[0] * factor) / factor
-        return math.trunc(args[0])
-    if name == "sign":
-        if args[0] is None:
-            return None
-        return (args[0] > 0) - (args[0] < 0)
-    if name == "pi":
-        import math
-        return math.pi
-    if name == "random":
-        import random
-        return random.random()
-    if name == "cbrt":
-        if args[0] is None:
-            return None
-        v = args[0]
-        return -((-v) ** (1.0 / 3.0)) if v < 0 else v ** (1.0 / 3.0)
-    if name == "degrees":
-        if args[0] is None:
-            return None
-        import math
-        return math.degrees(args[0])
-    if name == "radians":
-        if args[0] is None:
-            return None
-        import math
-        return math.radians(args[0])
-    if name == "sin":
-        if args[0] is None:
-            return None
-        import math
-        return math.sin(args[0])
-    if name == "cos":
-        if args[0] is None:
-            return None
-        import math
-        return math.cos(args[0])
-    if name == "tan":
-        if args[0] is None:
-            return None
-        import math
-        return math.tan(args[0])
-    if name == "asin":
-        if args[0] is None:
-            return None
-        import math
-        return math.asin(args[0])
-    if name == "acos":
-        if args[0] is None:
-            return None
-        import math
-        return math.acos(args[0])
-    if name == "atan":
-        if args[0] is None:
-            return None
-        import math
-        return math.atan(args[0])
-    if name == "atan2":
-        if args[0] is None or args[1] is None:
-            return None
-        import math
-        return math.atan2(args[0], args[1])
-    if name == "div":
-        if args[0] is None or args[1] is None:
-            return None
-        if args[1] == 0:
-            return None
-        return int(args[0] // args[1])
-    if name == "gcd":
-        if args[0] is None or args[1] is None:
-            return None
-        import math
-        return math.gcd(int(args[0]), int(args[1]))
-    if name == "lcm":
-        if args[0] is None or args[1] is None:
-            return None
-        import math
-        a, b = int(args[0]), int(args[1])
-        return abs(a * b) // math.gcd(a, b) if a and b else 0
-    if name == "width_bucket":
-        if any(a is None for a in args[:4]):
-            return None
-        val, lo, hi, n = args[0], args[1], args[2], int(args[3])
-        if hi == lo or n <= 0:
-            return None
-        if val < lo:
-            return 0
-        if val >= hi:
-            return n + 1
-        return int((val - lo) / ((hi - lo) / n)) + 1
-    if name == "min_scale":
-        if args[0] is None:
-            return None
-        from decimal import Decimal
-        d = Decimal(str(args[0])).normalize()
-        # normalize() removes trailing zeros; the exponent tells us the scale
-        exp = d.as_tuple().exponent
-        return -exp if exp < 0 else 0
-    if name == "trim_scale":
-        if args[0] is None:
-            return None
-        from decimal import Decimal
-        d = Decimal(str(args[0])).normalize()
-        # Convert back: if no fractional part, return int; otherwise float
-        if d == d.to_integral_value():
-            return int(d)
-        return float(d)
+# -- String helpers --
 
-    # Date/time functions
-    if name == "now":
-        from datetime import datetime, timezone
-        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-    if name in ("extract", "date_part"):
-        if args[0] is None or args[1] is None:
-            return None
-        return _extract_datetime_field(str(args[0]).lower(), str(args[1]))
-    if name == "date_trunc":
-        if args[0] is None or args[1] is None:
-            return None
-        return _date_trunc(str(args[0]).lower(), str(args[1]))
 
-    if name == "make_timestamp":
-        if any(a is None for a in args[:6]):
-            return None
-        y, m, d = int(args[0]), int(args[1]), int(args[2])
-        h, mi, s = int(args[3]), int(args[4]), float(args[5])
-        sec = int(s)
-        usec = int((s - sec) * 1_000_000)
-        from datetime import datetime
-        dt = datetime(y, m, d, h, mi, sec, usec)
-        return dt.isoformat()
+def _sf_upper(args: list[Any]) -> Any:
+    return str(args[0]).upper() if args[0] is not None else None
 
-    if name == "make_interval":
-        # make_interval(years, months, weeks, days, hours, mins, secs)
-        from datetime import timedelta
-        years = int(args[0]) if len(args) > 0 and args[0] is not None else 0
-        months = int(args[1]) if len(args) > 1 and args[1] is not None else 0
-        weeks = int(args[2]) if len(args) > 2 and args[2] is not None else 0
-        days = int(args[3]) if len(args) > 3 and args[3] is not None else 0
-        hours = int(args[4]) if len(args) > 4 and args[4] is not None else 0
-        mins = int(args[5]) if len(args) > 5 and args[5] is not None else 0
-        secs = float(args[6]) if len(args) > 6 and args[6] is not None else 0
-        total_days = years * 365 + months * 30 + weeks * 7 + days
-        td = timedelta(days=total_days, hours=hours, minutes=mins, seconds=secs)
-        total_seconds = int(td.total_seconds())
-        h_part = total_seconds // 3600
-        m_part = (total_seconds % 3600) // 60
-        s_part = total_seconds % 60
-        return f"{h_part:02d}:{m_part:02d}:{s_part:02d}"
 
-    if name == "make_date":
-        if any(a is None for a in args[:3]):
-            return None
-        from datetime import date
-        return date(int(args[0]), int(args[1]), int(args[2])).isoformat()
+def _sf_lower(args: list[Any]) -> Any:
+    return str(args[0]).lower() if args[0] is not None else None
 
-    if name == "to_char":
-        if args[0] is None:
-            return None
-        return _to_char(str(args[0]), str(args[1]) if len(args) > 1 else "")
 
-    if name == "to_date":
-        if args[0] is None:
-            return None
-        return _to_date(str(args[0]), str(args[1]) if len(args) > 1 else "")
-
-    if name == "to_timestamp":
-        if args[0] is None:
-            return None
-        return _to_timestamp(
-            str(args[0]), str(args[1]) if len(args) > 1 else ""
-        )
-
-    if name == "age":
-        if not args or args[0] is None:
-            return None
-        return _age(args)
-
-    if name == "to_number":
-        if args[0] is None:
-            return None
-        import re
-        s = str(args[0])
-        # Strip non-numeric characters except digits, dots, minus
-        cleaned = re.sub(r"[^\d.\-]", "", s)
-        if not cleaned or cleaned == "-":
-            return 0
-        return float(cleaned)
-
-    if name == "overlaps":
-        if len(args) < 4 or any(a is None for a in args[:4]):
-            return None
-        from datetime import datetime
-        s1 = datetime.fromisoformat(str(args[0]))
-        e1 = datetime.fromisoformat(str(args[1]))
-        s2 = datetime.fromisoformat(str(args[2]))
-        e2 = datetime.fromisoformat(str(args[3]))
-        # Ensure start <= end for each range
-        if s1 > e1:
-            s1, e1 = e1, s1
-        if s2 > e2:
-            s2, e2 = e2, s2
-        return s1 < e2 and s2 < e1
-    if name == "isfinite":
-        if args[0] is None:
-            return None
-        val = str(args[0]).strip().lower()
-        return val not in ("infinity", "-infinity")
-    if name == "clock_timestamp":
-        from datetime import datetime, timezone
-        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-    if name == "timeofday":
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc)
-        # PostgreSQL format: "Wed Mar 09 15:30:00.123456 2026 UTC"
-        weekday = now.strftime("%a")
-        month = now.strftime("%b")
-        day = now.strftime("%d")
-        time_part = now.strftime("%H:%M:%S.%f")
-        year = now.strftime("%Y")
-        return f"{weekday} {month} {day} {time_part} {year} UTC"
-
-    # Type checking
-    if name == "typeof":
-        if args[0] is None:
-            return "null"
-        if isinstance(args[0], int):
-            return "integer"
-        if isinstance(args[0], float):
-            return "real"
-        if isinstance(args[0], str):
-            return "text"
-        if isinstance(args[0], bool):
-            return "boolean"
-        return "unknown"
-
-    # JSON functions (Paper 1, Section 5.2-5.3)
-    if name == "json_build_object":
-        return _json_build_object(args)
-    if name == "jsonb_build_object":
-        return _json_build_object(args)
-    if name == "json_build_array":
-        return list(args)
-    if name == "jsonb_build_array":
-        return list(args)
-    if name == "json_typeof" or name == "jsonb_typeof":
-        return _json_typeof(args[0] if args else None)
-    if name == "json_array_length" or name == "jsonb_array_length":
-        return _json_array_length(args[0] if args else None)
-    if name in ("json_extract_path", "json_extract_path_text",
-                 "jsonb_extract_path", "jsonb_extract_path_text"):
-        as_text = name.endswith("_text")
-        return _json_extract_path(args, as_text=as_text)
-    if name in ("to_json", "to_jsonb", "row_to_json"):
-        return args[0] if args else None
-    if name in ("jsonb_set", "jsonb_insert"):
-        return _jsonb_set(args)
-    if name in ("json_each", "jsonb_each", "json_each_text", "jsonb_each_text"):
-        return _json_each(args, as_text=name.endswith("_text"))
-    if name in ("json_array_elements", "jsonb_array_elements",
-                "json_array_elements_text", "jsonb_array_elements_text"):
-        return _json_array_elements(args, as_text=name.endswith("_text"))
-    if name in ("json_object_keys", "jsonb_object_keys"):
-        if not args or args[0] is None:
-            return None
-        obj = args[0]
-        if isinstance(obj, str):
-            import json as json_mod
-            obj = json_mod.loads(obj)
-        if isinstance(obj, dict):
-            return list(obj.keys())
+def _sf_length(args: list[Any]) -> Any:
+    return len(str(args[0])) if args[0] is not None else None
+def _sf_trim(args: list[Any]) -> Any:
+    if args[0] is None:
         return None
-    if name in ("jsonb_strip_nulls", "json_strip_nulls"):
-        if not args or args[0] is None:
-            return None
-        import json as json_mod
-        obj = args[0]
-        if isinstance(obj, str):
-            obj = json_mod.loads(obj)
+    chars = str(args[1]) if len(args) > 1 else None
+    return str(args[0]).strip(chars)
 
-        def _strip_nulls(v: Any) -> Any:
-            if isinstance(v, dict):
-                return {
-                    k: _strip_nulls(val)
-                    for k, val in v.items()
-                    if val is not None
-                }
-            # Do NOT recurse into arrays per PostgreSQL semantics
-            return v
 
-        return _strip_nulls(obj)
+def _sf_ltrim(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    chars = str(args[1]) if len(args) > 1 else None
+    return str(args[0]).lstrip(chars)
 
-    # UUID functions
-    if name == "gen_random_uuid":
-        import uuid
-        return str(uuid.uuid4())
 
-    # Array functions
-    if name == "array_length":
-        if not args or args[0] is None:
-            return None
-        arr = args[0]
-        if isinstance(arr, str):
-            import json as json_mod
-            arr = json_mod.loads(arr)
-        if not isinstance(arr, list):
-            return None
-        return len(arr)
-    if name == "array_upper":
-        if not args or args[0] is None:
-            return None
-        arr = args[0]
-        if isinstance(arr, str):
-            import json as json_mod
-            arr = json_mod.loads(arr)
-        if not isinstance(arr, list) or not arr:
-            return None
-        return len(arr)
-    if name == "array_lower":
-        if not args or args[0] is None:
-            return None
-        arr = args[0]
-        if isinstance(arr, str):
-            import json as json_mod
-            arr = json_mod.loads(arr)
-        if not isinstance(arr, list) or not arr:
-            return None
-        return 1
-    if name == "array_cat":
-        if len(args) < 2:
-            return None
-        a = args[0] if isinstance(args[0], list) else []
-        b = args[1] if isinstance(args[1], list) else []
-        return a + b
-    if name == "array_append":
-        if not args or args[0] is None:
-            return None
-        arr = args[0] if isinstance(args[0], list) else [args[0]]
-        return arr + [args[1]] if len(args) > 1 else arr
-    if name == "array_remove":
-        if not args or args[0] is None:
-            return None
-        arr = args[0] if isinstance(args[0], list) else []
-        val = args[1] if len(args) > 1 else None
-        return [x for x in arr if x != val]
-    if name == "cardinality":
-        if not args or args[0] is None:
-            return None
-        arr = args[0]
-        if isinstance(arr, str):
-            import json as json_mod
-            arr = json_mod.loads(arr)
-        if not isinstance(arr, list):
-            return None
-        return len(arr)
+def _sf_rtrim(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    chars = str(args[1]) if len(args) > 1 else None
+    return str(args[0]).rstrip(chars)
 
-    raise ValueError(f"Unknown scalar function: {name}")
+
+def _sf_replace(args: list[Any]) -> Any:
+    if any(a is None for a in args[:3]):
+        return None
+    return str(args[0]).replace(str(args[1]), str(args[2]))
+
+
+def _sf_substring(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    s = str(args[0])
+    start = int(args[1]) - 1 if len(args) > 1 else 0
+    length = int(args[2]) if len(args) > 2 else len(s) - start
+    return s[start : start + length]
+
+
+def _sf_concat(args: list[Any]) -> Any:
+    return "".join(str(a) if a is not None else "" for a in args)
+
+
+def _sf_concat_ws(args: list[Any]) -> Any:
+    if not args or args[0] is None:
+        return None
+    sep = str(args[0])
+    return sep.join(str(a) for a in args[1:] if a is not None)
+
+
+def _sf_left(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return str(args[0])[: int(args[1])]
+
+
+def _sf_right(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    n = int(args[1])
+    return str(args[0])[-n:] if n > 0 else ""
+
+
+def _sf_initcap(args: list[Any]) -> Any:
+    return str(args[0]).title() if args[0] is not None else None
+
+
+# -- Math helpers --
+
+
+def _sf_abs(args: list[Any]) -> Any:
+    return abs(args[0]) if args[0] is not None else None
+
+
+def _sf_round(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    ndigits = int(args[1]) if len(args) > 1 else 0
+    return round(args[0], ndigits)
+
+
+def _sf_ceil(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return math.ceil(args[0])
+
+
+def _sf_floor(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return math.floor(args[0])
+
+
+# -- Additional string helpers --
+
+
+def _sf_translate(args: list[Any]) -> Any:
+    if any(a is None for a in args[:3]):
+        return None
+    s, from_chars, to_chars = str(args[0]), str(args[1]), str(args[2])
+    table = str.maketrans(
+        from_chars,
+        to_chars[:len(from_chars)].ljust(len(from_chars)),
+        from_chars[len(to_chars):] if len(to_chars) < len(from_chars) else "",
+    )
+    return s.translate(table)
+
+
+def _sf_ascii(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    s = str(args[0])
+    return ord(s[0]) if s else 0
+
+
+def _sf_chr(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return chr(int(args[0]))
+
+
+def _sf_starts_with(args: list[Any]) -> Any:
+    if args[0] is None or args[1] is None:
+        return None
+    return str(args[0]).startswith(str(args[1]))
+
+
+def _sf_position(args: list[Any]) -> Any:
+    if args[0] is None or args[1] is None:
+        return None
+    # pglast: POSITION(sub IN str) -> position(str, sub)
+    idx = str(args[0]).find(str(args[1]))
+    return idx + 1 if idx >= 0 else 0
+
+
+def _sf_strpos(args: list[Any]) -> Any:
+    if args[0] is None or args[1] is None:
+        return None
+    idx = str(args[0]).find(str(args[1]))
+    return idx + 1 if idx >= 0 else 0
+
+
+def _sf_octet_length(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return len(str(args[0]).encode("utf-8"))
+
+
+def _sf_md5(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return hashlib.md5(str(args[0]).encode("utf-8")).hexdigest()
+
+
+def _sf_format(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    fmt = str(args[0])
+    fmt = fmt.replace("%I", "%s").replace("%L", "'%s'")
+    return fmt % tuple(args[1:])
+
+
+def _sf_regexp_match(args: list[Any]) -> Any:
+    if args[0] is None or args[1] is None:
+        return None
+    m = re.search(str(args[1]), str(args[0]))
+    if m is None:
+        return None
+    groups = m.groups()
+    return list(groups) if groups else [m.group()]
+
+
+def _sf_regexp_matches(args: list[Any]) -> Any:
+    if args[0] is None or args[1] is None:
+        return None
+    flags_str = str(args[2]) if len(args) > 2 and args[2] is not None else ""
+    flags = re.DOTALL if "s" in flags_str else 0
+    if "i" in flags_str:
+        flags |= re.IGNORECASE
+    if "g" in flags_str:
+        return [
+            list(m) if isinstance(m, tuple) else [m]
+            for m in re.findall(str(args[1]), str(args[0]), flags)
+        ]
+    m = re.search(str(args[1]), str(args[0]), flags)
+    if m is None:
+        return None
+    groups = m.groups()
+    return [list(groups)] if groups else [[m.group()]]
+
+
+def _sf_regexp_replace(args: list[Any]) -> Any:
+    if args[0] is None or args[1] is None:
+        return None
+    replacement = str(args[2]) if len(args) > 2 and args[2] is not None else ""
+    flags_str = str(args[3]) if len(args) > 3 and args[3] is not None else ""
+    count = 0 if "g" in flags_str else 1
+    flags = 0
+    if "i" in flags_str:
+        flags |= re.IGNORECASE
+    return re.sub(str(args[1]), replacement, str(args[0]), count=count, flags=flags)
+
+
+def _sf_overlay(args: list[Any]) -> Any:
+    if args[0] is None or args[1] is None or args[2] is None:
+        return None
+    s = str(args[0])
+    repl = str(args[1])
+    pos = int(args[2]) - 1  # 1-based to 0-based
+    length = int(args[3]) if len(args) > 3 and args[3] is not None else len(repl)
+    return s[:pos] + repl + s[pos + length:]
+
+
+def _sf_lpad(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    s, length = str(args[0]), int(args[1])
+    fill = str(args[2]) if len(args) > 2 and args[2] is not None else " "
+    if len(s) >= length:
+        return s[:length]
+    pad_len = length - len(s)
+    pad = (fill * (pad_len // len(fill) + 1))[:pad_len]
+    return pad + s
+
+
+def _sf_rpad(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    s, length = str(args[0]), int(args[1])
+    fill = str(args[2]) if len(args) > 2 and args[2] is not None else " "
+    if len(s) >= length:
+        return s[:length]
+    pad_len = length - len(s)
+    pad = (fill * (pad_len // len(fill) + 1))[:pad_len]
+    return s + pad
+
+
+def _sf_repeat(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return str(args[0]) * int(args[1])
+
+
+def _sf_reverse(args: list[Any]) -> Any:
+    return str(args[0])[::-1] if args[0] is not None else None
+
+
+def _sf_split_part(args: list[Any]) -> Any:
+    if any(a is None for a in args[:3]):
+        return None
+    parts = str(args[0]).split(str(args[1]))
+    n = int(args[2])
+    return parts[n - 1] if 1 <= n <= len(parts) else ""
+
+
+def _sf_encode(args: list[Any]) -> Any:
+    if args[0] is None or args[1] is None:
+        return None
+    data = args[0]
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    fmt = str(args[1]).lower()
+    if fmt == "base64":
+        return base64.b64encode(data).decode("ascii")
+    if fmt == "hex":
+        return data.hex()
+    if fmt == "escape":
+        parts = []
+        for b in data:
+            if 32 <= b < 127 and b != 92:
+                parts.append(chr(b))
+            else:
+                parts.append("\\%03o" % b)
+        return "".join(parts)
+    raise ValueError(f"Unsupported encode format: {fmt}")
+
+
+def _sf_decode(args: list[Any]) -> Any:
+    if args[0] is None or args[1] is None:
+        return None
+    text = str(args[0])
+    fmt = str(args[1]).lower()
+    if fmt == "base64":
+        return base64.b64decode(text)
+    if fmt == "hex":
+        return bytes.fromhex(text)
+    if fmt == "escape":
+        result = bytearray()
+        i = 0
+        while i < len(text):
+            if text[i] == "\\" and i + 3 < len(text) and re.match(
+                r"[0-7]{3}", text[i + 1 : i + 4]
+            ):
+                result.append(int(text[i + 1 : i + 4], 8))
+                i += 4
+            else:
+                result.append(ord(text[i]))
+                i += 1
+        return bytes(result)
+    raise ValueError(f"Unsupported decode format: {fmt}")
+
+
+def _sf_regexp_split_to_array(args: list[Any]) -> Any:
+    if args[0] is None or args[1] is None:
+        return None
+    text = str(args[0])
+    pattern = str(args[1])
+    flags = 0
+    if len(args) > 2 and args[2] is not None:
+        flags_str = str(args[2])
+        if "i" in flags_str:
+            flags |= re.IGNORECASE
+    return re.split(pattern, text, flags=flags)
+
+
+def _sf_power(args: list[Any]) -> Any:
+    if args[0] is None or args[1] is None:
+        return None
+    return args[0] ** args[1]
+
+
+def _sf_sqrt(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return math.sqrt(args[0])
+
+
+def _sf_log(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    if len(args) > 1 and args[1] is not None:
+        return math.log(args[1]) / math.log(args[0])
+    return math.log10(args[0])
+
+
+def _sf_ln(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return math.log(args[0])
+
+
+def _sf_exp(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return math.exp(args[0])
+
+
+def _sf_mod(args: list[Any]) -> Any:
+    if args[0] is None or args[1] is None:
+        return None
+    return args[0] % args[1] if args[1] != 0 else None
+
+
+def _sf_trunc(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    if len(args) > 1 and args[1] is not None:
+        factor = 10 ** int(args[1])
+        return math.trunc(args[0] * factor) / factor
+    return math.trunc(args[0])
+
+
+def _sf_sign(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return (args[0] > 0) - (args[0] < 0)
+
+
+def _sf_pi(args: list[Any]) -> Any:
+    return math.pi
+
+
+def _sf_random(args: list[Any]) -> Any:
+    return random.random()
+
+
+def _sf_cbrt(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    v = args[0]
+    return -((-v) ** (1.0 / 3.0)) if v < 0 else v ** (1.0 / 3.0)
+
+
+def _sf_degrees(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return math.degrees(args[0])
+
+
+def _sf_radians(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return math.radians(args[0])
+
+
+def _sf_sin(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return math.sin(args[0])
+
+
+def _sf_cos(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return math.cos(args[0])
+
+
+def _sf_tan(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return math.tan(args[0])
+
+
+def _sf_asin(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return math.asin(args[0])
+
+
+def _sf_acos(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return math.acos(args[0])
+
+
+def _sf_atan(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return math.atan(args[0])
+
+
+def _sf_atan2(args: list[Any]) -> Any:
+    if args[0] is None or args[1] is None:
+        return None
+    return math.atan2(args[0], args[1])
+
+
+def _sf_div(args: list[Any]) -> Any:
+    if args[0] is None or args[1] is None:
+        return None
+    if args[1] == 0:
+        return None
+    return int(args[0] // args[1])
+
+
+def _sf_gcd(args: list[Any]) -> Any:
+    if args[0] is None or args[1] is None:
+        return None
+    return math.gcd(int(args[0]), int(args[1]))
+
+
+def _sf_lcm(args: list[Any]) -> Any:
+    if args[0] is None or args[1] is None:
+        return None
+    a, b = int(args[0]), int(args[1])
+    return abs(a * b) // math.gcd(a, b) if a and b else 0
+
+
+def _sf_width_bucket(args: list[Any]) -> Any:
+    if any(a is None for a in args[:4]):
+        return None
+    val, lo, hi, n = args[0], args[1], args[2], int(args[3])
+    if hi == lo or n <= 0:
+        return None
+    if val < lo:
+        return 0
+    if val >= hi:
+        return n + 1
+    return int((val - lo) / ((hi - lo) / n)) + 1
+
+
+def _sf_min_scale(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    d = Decimal(str(args[0])).normalize()
+    exp = d.as_tuple().exponent
+    return -exp if exp < 0 else 0
+
+
+def _sf_trim_scale(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    d = Decimal(str(args[0])).normalize()
+    if d == d.to_integral_value():
+        return int(d)
+    return float(d)
+
+
+# -- Date/time scalar helpers --
+
+
+def _sf_now(args: list[Any]) -> Any:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _sf_extract(args: list[Any]) -> Any:
+    if args[0] is None or args[1] is None:
+        return None
+    return _extract_datetime_field(str(args[0]).lower(), str(args[1]))
+
+
+def _sf_date_trunc(args: list[Any]) -> Any:
+    if args[0] is None or args[1] is None:
+        return None
+    return _date_trunc(str(args[0]).lower(), str(args[1]))
+
+
+def _sf_make_timestamp(args: list[Any]) -> Any:
+    if any(a is None for a in args[:6]):
+        return None
+    y, mo, d = int(args[0]), int(args[1]), int(args[2])
+    h, mi, s = int(args[3]), int(args[4]), float(args[5])
+    sec = int(s)
+    usec = int((s - sec) * 1_000_000)
+    dt = datetime(y, mo, d, h, mi, sec, usec)
+    return dt.isoformat()
+
+
+def _sf_make_interval(args: list[Any]) -> Any:
+    years = int(args[0]) if len(args) > 0 and args[0] is not None else 0
+    months = int(args[1]) if len(args) > 1 and args[1] is not None else 0
+    weeks = int(args[2]) if len(args) > 2 and args[2] is not None else 0
+    days = int(args[3]) if len(args) > 3 and args[3] is not None else 0
+    hours = int(args[4]) if len(args) > 4 and args[4] is not None else 0
+    mins = int(args[5]) if len(args) > 5 and args[5] is not None else 0
+    secs = float(args[6]) if len(args) > 6 and args[6] is not None else 0
+    total_days = years * 365 + months * 30 + weeks * 7 + days
+    td = timedelta(days=total_days, hours=hours, minutes=mins, seconds=secs)
+    total_seconds = int(td.total_seconds())
+    h_part = total_seconds // 3600
+    m_part = (total_seconds % 3600) // 60
+    s_part = total_seconds % 60
+    return f"{h_part:02d}:{m_part:02d}:{s_part:02d}"
+
+
+def _sf_make_date(args: list[Any]) -> Any:
+    if any(a is None for a in args[:3]):
+        return None
+    return date(int(args[0]), int(args[1]), int(args[2])).isoformat()
+
+
+def _sf_to_char(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return _to_char(str(args[0]), str(args[1]) if len(args) > 1 else "")
+
+
+def _sf_to_date(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return _to_date(str(args[0]), str(args[1]) if len(args) > 1 else "")
+
+
+def _sf_to_timestamp(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    return _to_timestamp(str(args[0]), str(args[1]) if len(args) > 1 else "")
+
+
+def _sf_age(args: list[Any]) -> Any:
+    if not args or args[0] is None:
+        return None
+    return _age(args)
+
+
+def _sf_to_number(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    s = str(args[0])
+    cleaned = re.sub(r"[^\d.\-]", "", s)
+    if not cleaned or cleaned == "-":
+        return 0
+    return float(cleaned)
+
+
+def _sf_overlaps(args: list[Any]) -> Any:
+    if len(args) < 4 or any(a is None for a in args[:4]):
+        return None
+    s1 = datetime.fromisoformat(str(args[0]))
+    e1 = datetime.fromisoformat(str(args[1]))
+    s2 = datetime.fromisoformat(str(args[2]))
+    e2 = datetime.fromisoformat(str(args[3]))
+    if s1 > e1:
+        s1, e1 = e1, s1
+    if s2 > e2:
+        s2, e2 = e2, s2
+    return s1 < e2 and s2 < e1
+
+
+def _sf_isfinite(args: list[Any]) -> Any:
+    if args[0] is None:
+        return None
+    val = str(args[0]).strip().lower()
+    return val not in ("infinity", "-infinity")
+
+
+def _sf_clock_timestamp(args: list[Any]) -> Any:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _sf_timeofday(args: list[Any]) -> Any:
+    now = datetime.now(timezone.utc)
+    weekday = now.strftime("%a")
+    month = now.strftime("%b")
+    day = now.strftime("%d")
+    time_part = now.strftime("%H:%M:%S.%f")
+    year = now.strftime("%Y")
+    return f"{weekday} {month} {day} {time_part} {year} UTC"
+
+
+# -- Type checking helpers --
+
+
+def _sf_typeof(args: list[Any]) -> Any:
+    if args[0] is None:
+        return "null"
+    if isinstance(args[0], int):
+        return "integer"
+    if isinstance(args[0], float):
+        return "real"
+    if isinstance(args[0], str):
+        return "text"
+    if isinstance(args[0], bool):
+        return "boolean"
+    return "unknown"
+
+
+# -- JSON scalar helpers --
+
+
+def _sf_json_build_object(args: list[Any]) -> Any:
+    return _json_build_object(args)
+
+
+def _sf_json_build_array(args: list[Any]) -> Any:
+    return list(args)
+
+
+def _sf_json_typeof(args: list[Any]) -> Any:
+    return _json_typeof(args[0] if args else None)
+
+
+def _sf_json_array_length(args: list[Any]) -> Any:
+    return _json_array_length(args[0] if args else None)
+
+
+def _sf_json_extract_path(args: list[Any]) -> Any:
+    return _json_extract_path(args, as_text=False)
+
+
+def _sf_json_extract_path_text(args: list[Any]) -> Any:
+    return _json_extract_path(args, as_text=True)
+
+
+def _sf_to_json(args: list[Any]) -> Any:
+    return args[0] if args else None
+
+
+def _sf_jsonb_set(args: list[Any]) -> Any:
+    return _jsonb_set(args)
+
+
+def _sf_json_each(args: list[Any]) -> Any:
+    return _json_each(args, as_text=False)
+
+
+def _sf_json_each_text(args: list[Any]) -> Any:
+    return _json_each(args, as_text=True)
+
+
+def _sf_json_array_elements(args: list[Any]) -> Any:
+    return _json_array_elements(args, as_text=False)
+
+
+def _sf_json_array_elements_text(args: list[Any]) -> Any:
+    return _json_array_elements(args, as_text=True)
+
+
+def _sf_json_object_keys(args: list[Any]) -> Any:
+    if not args or args[0] is None:
+        return None
+    obj = args[0]
+    if isinstance(obj, str):
+        obj = json.loads(obj)
+    if isinstance(obj, dict):
+        return list(obj.keys())
+    return None
+
+
+def _sf_jsonb_strip_nulls(args: list[Any]) -> Any:
+    if not args or args[0] is None:
+        return None
+    obj = args[0]
+    if isinstance(obj, str):
+        obj = json.loads(obj)
+
+    def _strip_nulls(v: Any) -> Any:
+        if isinstance(v, dict):
+            return {
+                k: _strip_nulls(val)
+                for k, val in v.items()
+                if val is not None
+            }
+        return v
+
+    return _strip_nulls(obj)
+
+
+# -- UUID helpers --
+
+
+def _sf_gen_random_uuid(args: list[Any]) -> Any:
+    return str(uuid.uuid4())
+
+
+# -- Array helpers --
+
+
+def _sf_array_length(args: list[Any]) -> Any:
+    if not args or args[0] is None:
+        return None
+    arr = args[0]
+    if isinstance(arr, str):
+        arr = json.loads(arr)
+    if not isinstance(arr, list):
+        return None
+    return len(arr)
+
+
+def _sf_array_upper(args: list[Any]) -> Any:
+    if not args or args[0] is None:
+        return None
+    arr = args[0]
+    if isinstance(arr, str):
+        arr = json.loads(arr)
+    if not isinstance(arr, list) or not arr:
+        return None
+    return len(arr)
+
+
+def _sf_array_lower(args: list[Any]) -> Any:
+    if not args or args[0] is None:
+        return None
+    arr = args[0]
+    if isinstance(arr, str):
+        arr = json.loads(arr)
+    if not isinstance(arr, list) or not arr:
+        return None
+    return 1
+
+
+def _sf_array_cat(args: list[Any]) -> Any:
+    if len(args) < 2:
+        return None
+    a = args[0] if isinstance(args[0], list) else []
+    b = args[1] if isinstance(args[1], list) else []
+    return a + b
+
+
+def _sf_array_append(args: list[Any]) -> Any:
+    if not args or args[0] is None:
+        return None
+    arr = args[0] if isinstance(args[0], list) else [args[0]]
+    return arr + [args[1]] if len(args) > 1 else arr
+
+
+def _sf_array_remove(args: list[Any]) -> Any:
+    if not args or args[0] is None:
+        return None
+    arr = args[0] if isinstance(args[0], list) else []
+    val = args[1] if len(args) > 1 else None
+    return [x for x in arr if x != val]
+
+
+def _sf_cardinality(args: list[Any]) -> Any:
+    if not args or args[0] is None:
+        return None
+    arr = args[0]
+    if isinstance(arr, str):
+        arr = json.loads(arr)
+    if not isinstance(arr, list):
+        return None
+    return len(arr)
+
+
+# -- Dispatch table --------------------------------------------------------
+
+_SCALAR_FUNCTIONS: dict[str, Any] = {
+    "upper": _sf_upper, "lower": _sf_lower, "length": _sf_length,
+    "trim": _sf_trim, "btrim": _sf_trim,
+    "ltrim": _sf_ltrim, "rtrim": _sf_rtrim,
+    "replace": _sf_replace, "substring": _sf_substring, "substr": _sf_substring,
+    "concat": _sf_concat, "concat_ws": _sf_concat_ws,
+    "left": _sf_left, "right": _sf_right,
+    "initcap": _sf_initcap, "translate": _sf_translate,
+    "ascii": _sf_ascii, "chr": _sf_chr, "starts_with": _sf_starts_with,
+    "char_length": _sf_length, "character_length": _sf_length,
+    "position": _sf_position, "strpos": _sf_strpos,
+    "octet_length": _sf_octet_length, "md5": _sf_md5, "format": _sf_format,
+    "regexp_match": _sf_regexp_match, "regexp_matches": _sf_regexp_matches,
+    "regexp_replace": _sf_regexp_replace, "overlay": _sf_overlay,
+    "lpad": _sf_lpad, "rpad": _sf_rpad,
+    "repeat": _sf_repeat, "reverse": _sf_reverse, "split_part": _sf_split_part,
+    "encode": _sf_encode, "decode": _sf_decode,
+    "regexp_split_to_array": _sf_regexp_split_to_array,
+    "abs": _sf_abs, "round": _sf_round,
+    "ceil": _sf_ceil, "ceiling": _sf_ceil, "floor": _sf_floor,
+    "power": _sf_power, "pow": _sf_power, "sqrt": _sf_sqrt,
+    "log": _sf_log, "log10": _sf_log, "ln": _sf_ln, "exp": _sf_exp,
+    "mod": _sf_mod, "trunc": _sf_trunc, "sign": _sf_sign,
+    "pi": _sf_pi, "random": _sf_random, "cbrt": _sf_cbrt,
+    "degrees": _sf_degrees, "radians": _sf_radians,
+    "sin": _sf_sin, "cos": _sf_cos, "tan": _sf_tan,
+    "asin": _sf_asin, "acos": _sf_acos, "atan": _sf_atan, "atan2": _sf_atan2,
+    "div": _sf_div, "gcd": _sf_gcd, "lcm": _sf_lcm,
+    "width_bucket": _sf_width_bucket,
+    "min_scale": _sf_min_scale, "trim_scale": _sf_trim_scale,
+    "now": _sf_now, "extract": _sf_extract, "date_part": _sf_extract,
+    "date_trunc": _sf_date_trunc,
+    "make_timestamp": _sf_make_timestamp, "make_interval": _sf_make_interval,
+    "make_date": _sf_make_date,
+    "to_char": _sf_to_char, "to_date": _sf_to_date,
+    "to_timestamp": _sf_to_timestamp,
+    "age": _sf_age, "to_number": _sf_to_number,
+    "overlaps": _sf_overlaps, "isfinite": _sf_isfinite,
+    "clock_timestamp": _sf_clock_timestamp, "timeofday": _sf_timeofday,
+    "typeof": _sf_typeof,
+    "json_build_object": _sf_json_build_object,
+    "jsonb_build_object": _sf_json_build_object,
+    "json_build_array": _sf_json_build_array,
+    "jsonb_build_array": _sf_json_build_array,
+    "json_typeof": _sf_json_typeof, "jsonb_typeof": _sf_json_typeof,
+    "json_array_length": _sf_json_array_length,
+    "jsonb_array_length": _sf_json_array_length,
+    "json_extract_path": _sf_json_extract_path,
+    "json_extract_path_text": _sf_json_extract_path_text,
+    "jsonb_extract_path": _sf_json_extract_path,
+    "jsonb_extract_path_text": _sf_json_extract_path_text,
+    "to_json": _sf_to_json, "to_jsonb": _sf_to_json, "row_to_json": _sf_to_json,
+    "jsonb_set": _sf_jsonb_set, "jsonb_insert": _sf_jsonb_set,
+    "json_each": _sf_json_each, "jsonb_each": _sf_json_each,
+    "json_each_text": _sf_json_each_text, "jsonb_each_text": _sf_json_each_text,
+    "json_array_elements": _sf_json_array_elements,
+    "jsonb_array_elements": _sf_json_array_elements,
+    "json_array_elements_text": _sf_json_array_elements_text,
+    "jsonb_array_elements_text": _sf_json_array_elements_text,
+    "json_object_keys": _sf_json_object_keys,
+    "jsonb_object_keys": _sf_json_object_keys,
+    "jsonb_strip_nulls": _sf_jsonb_strip_nulls,
+    "json_strip_nulls": _sf_jsonb_strip_nulls,
+    "gen_random_uuid": _sf_gen_random_uuid,
+    "array_length": _sf_array_length, "array_upper": _sf_array_upper,
+    "array_lower": _sf_array_lower, "array_cat": _sf_array_cat,
+    "array_append": _sf_array_append, "array_remove": _sf_array_remove,
+    "cardinality": _sf_cardinality,
+}
 
 
 def _extract_datetime_field(field: str, timestamp_str: str) -> Any:
     """Extract a field from a timestamp/date string (EXTRACT / DATE_PART)."""
-    from datetime import datetime
+
 
     dt = datetime.fromisoformat(timestamp_str)
     if field == "year":
@@ -1581,7 +1795,7 @@ def _extract_datetime_field(field: str, timestamp_str: str) -> Any:
 
 def _date_trunc(precision: str, timestamp_str: str) -> str:
     """Truncate a timestamp to the given precision (DATE_TRUNC)."""
-    from datetime import datetime
+
 
     dt = datetime.fromisoformat(timestamp_str)
     if precision == "year":
@@ -1623,8 +1837,8 @@ def _json_typeof(value: Any) -> str | None:
     if value is None:
         return None
     if isinstance(value, str):
-        import json as json_mod
-        value = json_mod.loads(value)
+    
+        value = json.loads(value)
     if isinstance(value, dict):
         return "object"
     if isinstance(value, list):
@@ -1642,12 +1856,12 @@ def _json_typeof(value: Any) -> str | None:
 
 def _json_array_length(value: Any) -> int | None:
     """Return the number of elements in a JSON array."""
-    import json as json_mod
+
 
     if value is None:
         return None
     if isinstance(value, str):
-        value = json_mod.loads(value)
+        value = json.loads(value)
     if isinstance(value, list):
         return len(value)
     return None
@@ -1659,13 +1873,13 @@ def _json_extract_path(args: list[Any], *, as_text: bool) -> Any:
     Implements Paper 1, Definition 5.2.3 (recursive path evaluation):
     ``eval(h, [k1, k2, ...])``
     """
-    import json as json_mod
+
 
     if not args or args[0] is None:
         return None
     obj = args[0]
     if isinstance(obj, str):
-        obj = json_mod.loads(obj)
+        obj = json.loads(obj)
     for key in args[1:]:
         if key is None:
             return None
@@ -1680,7 +1894,7 @@ def _json_extract_path(args: list[Any], *, as_text: bool) -> Any:
             return None
     if as_text:
         if isinstance(obj, (dict, list)):
-            return json_mod.dumps(obj, ensure_ascii=False)
+            return json.dumps(obj, ensure_ascii=False)
         return str(obj)
     return obj
 
@@ -1690,13 +1904,13 @@ def _jsonb_set(args: list[Any]) -> Any:
 
     Sets a value in a JSON document at the given path.
     """
-    import json as json_mod
+
 
     if len(args) < 3 or args[0] is None:
         return None
     target = args[0]
     if isinstance(target, str):
-        target = json_mod.loads(target)
+        target = json.loads(target)
 
     path_str = str(args[1]).strip("{}")
     keys = [k.strip() for k in path_str.split(",")]
@@ -1735,20 +1949,20 @@ def _jsonb_set(args: list[Any]) -> Any:
 
 def _json_each(args: list[Any], *, as_text: bool) -> list[dict]:
     """Expand a JSON object into key-value rows."""
-    import json as json_mod
+
 
     if not args or args[0] is None:
         return []
     obj = args[0]
     if isinstance(obj, str):
-        obj = json_mod.loads(obj)
+        obj = json.loads(obj)
     if not isinstance(obj, dict):
         return []
     rows = []
     for k, v in obj.items():
         if as_text:
             if isinstance(v, (dict, list)):
-                v = json_mod.dumps(v, ensure_ascii=False)
+                v = json.dumps(v, ensure_ascii=False)
             else:
                 v = str(v) if v is not None else None
         rows.append({"key": k, "value": v})
@@ -1757,20 +1971,20 @@ def _json_each(args: list[Any], *, as_text: bool) -> list[dict]:
 
 def _json_array_elements(args: list[Any], *, as_text: bool) -> list[Any]:
     """Expand a JSON array into individual elements."""
-    import json as json_mod
+
 
     if not args or args[0] is None:
         return []
     arr = args[0]
     if isinstance(arr, str):
-        arr = json_mod.loads(arr)
+        arr = json.loads(arr)
     if not isinstance(arr, list):
         return []
     if as_text:
         result_list = []
         for v in arr:
             if isinstance(v, (dict, list)):
-                result_list.append(json_mod.dumps(v, ensure_ascii=False))
+                result_list.append(json.dumps(v, ensure_ascii=False))
             else:
                 result_list.append(str(v) if v is not None else None)
         return result_list
@@ -1802,7 +2016,7 @@ def _pg_format_to_strftime(fmt: str) -> str:
 
 def _to_char(value: str, fmt: str) -> str:
     """TO_CHAR(timestamp, format)"""
-    from datetime import datetime
+
     try:
         dt = datetime.fromisoformat(str(value))
     except (ValueError, TypeError):
@@ -1813,7 +2027,7 @@ def _to_char(value: str, fmt: str) -> str:
 
 def _to_date(text: str, fmt: str) -> str:
     """TO_DATE(text, format) -- returns ISO date string."""
-    from datetime import datetime
+
     py_fmt = _pg_format_to_strftime(fmt)
     try:
         dt = datetime.strptime(text, py_fmt)
@@ -1824,7 +2038,7 @@ def _to_date(text: str, fmt: str) -> str:
 
 def _to_timestamp(text: str, fmt: str) -> str:
     """TO_TIMESTAMP(text, format) -- returns ISO timestamp string."""
-    from datetime import datetime
+
     py_fmt = _pg_format_to_strftime(fmt)
     try:
         dt = datetime.strptime(text, py_fmt)
@@ -1835,7 +2049,7 @@ def _to_timestamp(text: str, fmt: str) -> str:
 
 def _age(args: list[Any]) -> str:
     """AGE(timestamp1 [, timestamp2]) -- returns interval-like string."""
-    from datetime import datetime
+
     try:
         dt1 = datetime.fromisoformat(str(args[0]))
         dt2 = (
