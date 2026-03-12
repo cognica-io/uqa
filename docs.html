@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Documentation &mdash; UQA</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ====== Hero ====== -->
+<header class="hero hero-compact">
+  <h1><span>UQA</span> Documentation</h1>
+  <p class="tagline">Quick reference for SQL syntax, Python API, and cross-paradigm features.</p>
+</header>
+
+<!-- ====== Nav ====== -->
+<nav>
+  <ul>
+    <li><a href="index.html">Overview</a></li>
+    <li><a href="docs.html" class="active">Docs</a></li>
+    <li><a href="examples.html">Examples</a></li>
+    <li><a href="benchmarks-data/">Benchmarks</a></li>
+  </ul>
+</nav>
+
+<div class="page-with-toc">
+
+<!-- ====== TOC ====== -->
+<aside class="toc">
+  <ul>
+    <li><a href="#quickstart">Quick Start</a></li>
+    <li><a href="#sql-ddl">DDL</a></li>
+    <li><a href="#sql-dml">DML</a></li>
+    <li><a href="#sql-queries">Queries</a></li>
+    <li class="toc-h3"><a href="#joins">JOINs</a></li>
+    <li class="toc-h3"><a href="#subqueries">Subqueries</a></li>
+    <li class="toc-h3"><a href="#cte">CTEs</a></li>
+    <li class="toc-h3"><a href="#window">Window Functions</a></li>
+    <li class="toc-h3"><a href="#aggregates">Aggregates</a></li>
+    <li><a href="#types">Data Types</a></li>
+    <li><a href="#functions">Scalar Functions</a></li>
+    <li><a href="#json">JSON/JSONB</a></li>
+    <li><a href="#vectors">Vector Search</a></li>
+    <li><a href="#text-search">Text Search</a></li>
+    <li><a href="#graph">Graph Queries</a></li>
+    <li><a href="#fusion">Fusion</a></li>
+    <li><a href="#fdw">Foreign Data Wrappers</a></li>
+    <li><a href="#python-api">Python API</a></li>
+    <li class="toc-h3"><a href="#engine">Engine</a></li>
+    <li class="toc-h3"><a href="#querybuilder">QueryBuilder</a></li>
+    <li class="toc-h3"><a href="#analysis">Text Analysis</a></li>
+    <li><a href="#transactions">Transactions</a></li>
+    <li><a href="#explain">EXPLAIN / ANALYZE</a></li>
+  </ul>
+</aside>
+
+<!-- ====== Content ====== -->
+<div class="content">
+
+<!-- ============ Quick Start ============ -->
+<section id="quickstart">
+  <h2>Quick Start</h2>
+
+  <h3>Installation</h3>
+<pre><code><span class="cm"># From PyPI</span>
+pip install uqa
+
+<span class="cm"># From source</span>
+pip install -e .
+
+<span class="cm"># With dev dependencies</span>
+pip install -e ".[dev]"</code></pre>
+
+  <h3>Interactive Shell</h3>
+<pre><code>usql                 <span class="cm"># In-memory database</span>
+usql --db mydata.db  <span class="cm"># Persistent SQLite-backed database</span></code></pre>
+
+  <h3>Python</h3>
+<pre><code><span class="kw">from</span> uqa.engine <span class="kw">import</span> Engine
+
+engine = Engine(db_path=<span class="st">"research.db"</span>)
+
+engine.sql(<span class="st">"""
+    CREATE TABLE papers (
+        id SERIAL PRIMARY KEY,
+        title TEXT NOT NULL,
+        year INTEGER NOT NULL
+    )
+"""</span>)
+
+engine.sql(<span class="st">"""INSERT INTO papers (title, year) VALUES
+    ('attention is all you need', 2017),
+    ('bert pre-training', 2019)
+"""</span>)
+
+result = engine.sql(<span class="st">"SELECT * FROM papers ORDER BY year"</span>)
+print(result)
+
+engine.close()</code></pre>
+</section>
+
+<!-- ============ DDL ============ -->
+<section id="sql-ddl">
+  <h2>Data Definition Language</h2>
+
+  <h3>CREATE TABLE</h3>
+<pre><code><span class="kw">CREATE TABLE</span> employees (
+    id <span class="kw">SERIAL PRIMARY KEY</span>,
+    name <span class="kw">TEXT NOT NULL</span>,
+    email <span class="kw">TEXT UNIQUE</span>,
+    dept_id <span class="kw">INTEGER REFERENCES</span> departments(id),
+    salary <span class="kw">NUMERIC</span>(10,2) <span class="kw">DEFAULT</span> 0,
+    active <span class="kw">BOOLEAN DEFAULT TRUE</span>,
+    hired_at <span class="kw">TIMESTAMP DEFAULT</span> <span class="fn">NOW</span>(),
+    <span class="kw">CHECK</span> (salary >= 0)
+);
+
+<span class="kw">CREATE TABLE IF NOT EXISTS</span> logs (id <span class="kw">SERIAL</span>, msg <span class="kw">TEXT</span>);
+<span class="kw">CREATE TEMPORARY TABLE</span> scratch (x <span class="kw">INTEGER</span>);
+<span class="kw">CREATE TABLE</span> summary <span class="kw">AS SELECT</span> dept_id, <span class="fn">COUNT</span>(*) <span class="kw">FROM</span> employees <span class="kw">GROUP BY</span> dept_id;</code></pre>
+
+  <h3>ALTER TABLE</h3>
+<pre><code><span class="kw">ALTER TABLE</span> employees <span class="kw">ADD COLUMN</span> bio <span class="kw">TEXT</span>;
+<span class="kw">ALTER TABLE</span> employees <span class="kw">DROP COLUMN</span> bio;
+<span class="kw">ALTER TABLE</span> employees <span class="kw">RENAME COLUMN</span> name <span class="kw">TO</span> full_name;
+<span class="kw">ALTER TABLE</span> employees <span class="kw">RENAME TO</span> staff;
+<span class="kw">ALTER TABLE</span> employees <span class="kw">ALTER COLUMN</span> salary <span class="kw">SET DEFAULT</span> 50000;
+<span class="kw">ALTER TABLE</span> employees <span class="kw">ALTER COLUMN</span> salary <span class="kw">SET NOT NULL</span>;</code></pre>
+
+  <h3>Indexes</h3>
+<pre><code><span class="cm">-- B-tree index</span>
+<span class="kw">CREATE INDEX</span> idx_dept <span class="kw">ON</span> employees (dept_id);
+
+<span class="cm">-- HNSW vector index (explicit creation required)</span>
+<span class="kw">CREATE INDEX</span> idx_emb <span class="kw">ON</span> papers <span class="kw">USING</span> hnsw (embedding)
+    <span class="kw">WITH</span> (ef_construction = 200, m = 16);
+
+<span class="kw">DROP INDEX</span> idx_dept;
+<span class="kw">DROP INDEX IF EXISTS</span> idx_emb;</code></pre>
+
+  <h3>Sequences</h3>
+<pre><code><span class="kw">CREATE SEQUENCE</span> order_seq;
+<span class="kw">SELECT</span> <span class="fn">NEXTVAL</span>(<span class="st">'order_seq'</span>);
+<span class="kw">SELECT</span> <span class="fn">CURRVAL</span>(<span class="st">'order_seq'</span>);
+<span class="kw">SELECT</span> <span class="fn">SETVAL</span>(<span class="st">'order_seq'</span>, 100);
+<span class="kw">ALTER SEQUENCE</span> order_seq <span class="kw">RESTART WITH</span> 1;</code></pre>
+
+  <h3>Views</h3>
+<pre><code><span class="kw">CREATE VIEW</span> active_staff <span class="kw">AS</span>
+    <span class="kw">SELECT</span> * <span class="kw">FROM</span> employees <span class="kw">WHERE</span> active = <span class="kw">TRUE</span>;
+<span class="kw">DROP VIEW IF EXISTS</span> active_staff;</code></pre>
+</section>
+
+<!-- ============ DML ============ -->
+<section id="sql-dml">
+  <h2>Data Manipulation Language</h2>
+
+  <h3>INSERT</h3>
+<pre><code><span class="kw">INSERT INTO</span> employees (name, salary) <span class="kw">VALUES</span> (<span class="st">'Alice'</span>, 90000);
+
+<span class="cm">-- Multiple rows</span>
+<span class="kw">INSERT INTO</span> employees (name, salary) <span class="kw">VALUES</span>
+    (<span class="st">'Bob'</span>, 85000), (<span class="st">'Carol'</span>, 92000);
+
+<span class="cm">-- Insert from query</span>
+<span class="kw">INSERT INTO</span> archive <span class="kw">SELECT</span> * <span class="kw">FROM</span> employees <span class="kw">WHERE</span> active = <span class="kw">FALSE</span>;
+
+<span class="cm">-- UPSERT</span>
+<span class="kw">INSERT INTO</span> employees (id, name, salary) <span class="kw">VALUES</span> (1, <span class="st">'Alice'</span>, 95000)
+    <span class="kw">ON CONFLICT</span> (id) <span class="kw">DO UPDATE SET</span> salary = <span class="kw">EXCLUDED</span>.salary;
+
+<span class="cm">-- RETURNING</span>
+<span class="kw">INSERT INTO</span> employees (name) <span class="kw">VALUES</span> (<span class="st">'Dave'</span>) <span class="kw">RETURNING</span> id, name;</code></pre>
+
+  <h3>UPDATE</h3>
+<pre><code><span class="kw">UPDATE</span> employees <span class="kw">SET</span> salary = salary * 1.1 <span class="kw">WHERE</span> dept_id = 3;
+
+<span class="cm">-- UPDATE with FROM (join)</span>
+<span class="kw">UPDATE</span> employees e <span class="kw">SET</span> salary = salary + d.bonus
+    <span class="kw">FROM</span> departments d <span class="kw">WHERE</span> e.dept_id = d.id;
+
+<span class="kw">UPDATE</span> employees <span class="kw">SET</span> active = <span class="kw">FALSE</span> <span class="kw">WHERE</span> id = 5 <span class="kw">RETURNING</span> *;</code></pre>
+
+  <h3>DELETE</h3>
+<pre><code><span class="kw">DELETE FROM</span> employees <span class="kw">WHERE</span> active = <span class="kw">FALSE</span>;
+
+<span class="cm">-- DELETE with USING (join)</span>
+<span class="kw">DELETE FROM</span> employees e <span class="kw">USING</span> departments d
+    <span class="kw">WHERE</span> e.dept_id = d.id <span class="kw">AND</span> d.name = <span class="st">'Closed'</span>;
+
+<span class="kw">DELETE FROM</span> employees <span class="kw">WHERE</span> id = 10 <span class="kw">RETURNING</span> id, name;</code></pre>
+</section>
+
+<!-- ============ Queries ============ -->
+<section id="sql-queries">
+  <h2>Queries</h2>
+<pre><code><span class="kw">SELECT</span> <span class="kw">DISTINCT</span> dept_id, <span class="fn">COUNT</span>(*) <span class="kw">AS</span> cnt,
+       <span class="fn">AVG</span>(salary) <span class="kw">AS</span> avg_sal
+<span class="kw">FROM</span> employees
+<span class="kw">WHERE</span> active = <span class="kw">TRUE</span> <span class="kw">AND</span> salary <span class="kw">BETWEEN</span> 50000 <span class="kw">AND</span> 150000
+<span class="kw">GROUP BY</span> dept_id
+<span class="kw">HAVING</span> <span class="fn">COUNT</span>(*) > 3
+<span class="kw">ORDER BY</span> avg_sal <span class="kw">DESC NULLS LAST</span>
+<span class="kw">LIMIT</span> 10 <span class="kw">OFFSET</span> 0;</code></pre>
+
+  <h3 id="joins">JOINs</h3>
+  <p>All standard JOIN types are supported. The DPccp optimizer automatically selects the optimal join order for 2+ tables.</p>
+<pre><code><span class="cm">-- INNER JOIN</span>
+<span class="kw">SELECT</span> e.name, d.name <span class="kw">AS</span> dept
+<span class="kw">FROM</span> employees e <span class="kw">INNER JOIN</span> departments d <span class="kw">ON</span> e.dept_id = d.id;
+
+<span class="cm">-- LEFT / RIGHT / FULL OUTER JOIN</span>
+<span class="kw">SELECT</span> e.name, d.name
+<span class="kw">FROM</span> employees e <span class="kw">LEFT JOIN</span> departments d <span class="kw">ON</span> e.dept_id = d.id;
+
+<span class="cm">-- CROSS JOIN</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> colors <span class="kw">CROSS JOIN</span> sizes;
+
+<span class="cm">-- Non-equality condition</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> events a <span class="kw">JOIN</span> events b
+    <span class="kw">ON</span> a.end_time >= b.start_time <span class="kw">AND</span> a.end_time <= b.end_time;
+
+<span class="cm">-- LATERAL subquery</span>
+<span class="kw">SELECT</span> d.name, top.name, top.salary
+<span class="kw">FROM</span> departments d,
+     <span class="kw">LATERAL</span> (<span class="kw">SELECT</span> * <span class="kw">FROM</span> employees e
+              <span class="kw">WHERE</span> e.dept_id = d.id
+              <span class="kw">ORDER BY</span> salary <span class="kw">DESC LIMIT</span> 3) top;</code></pre>
+
+  <h3 id="subqueries">Subqueries</h3>
+<pre><code><span class="cm">-- IN subquery</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> employees
+<span class="kw">WHERE</span> dept_id <span class="kw">IN</span> (<span class="kw">SELECT</span> id <span class="kw">FROM</span> departments <span class="kw">WHERE</span> budget > 100000);
+
+<span class="cm">-- EXISTS</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> departments d
+<span class="kw">WHERE EXISTS</span> (<span class="kw">SELECT</span> 1 <span class="kw">FROM</span> employees e <span class="kw">WHERE</span> e.dept_id = d.id);
+
+<span class="cm">-- Scalar subquery</span>
+<span class="kw">SELECT</span> name, salary,
+       salary - (<span class="kw">SELECT</span> <span class="fn">AVG</span>(salary) <span class="kw">FROM</span> employees) <span class="kw">AS</span> diff
+<span class="kw">FROM</span> employees;
+
+<span class="cm">-- Derived table</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> (<span class="kw">SELECT</span> dept_id, <span class="fn">AVG</span>(salary) <span class="kw">AS</span> avg_sal
+               <span class="kw">FROM</span> employees <span class="kw">GROUP BY</span> dept_id) sub
+<span class="kw">WHERE</span> sub.avg_sal > 80000;</code></pre>
+
+  <h3 id="cte">Common Table Expressions</h3>
+<pre><code><span class="cm">-- Simple CTE</span>
+<span class="kw">WITH</span> dept_stats <span class="kw">AS</span> (
+    <span class="kw">SELECT</span> dept_id, <span class="fn">AVG</span>(salary) <span class="kw">AS</span> avg_sal
+    <span class="kw">FROM</span> employees <span class="kw">GROUP BY</span> dept_id
+)
+<span class="kw">SELECT</span> e.name, d.avg_sal
+<span class="kw">FROM</span> employees e <span class="kw">JOIN</span> dept_stats d <span class="kw">ON</span> e.dept_id = d.dept_id;
+
+<span class="cm">-- Recursive CTE</span>
+<span class="kw">WITH RECURSIVE</span> tree <span class="kw">AS</span> (
+    <span class="kw">SELECT</span> id, name, 1 <span class="kw">AS</span> depth
+    <span class="kw">FROM</span> org <span class="kw">WHERE</span> parent_id <span class="kw">IS NULL</span>
+    <span class="kw">UNION ALL</span>
+    <span class="kw">SELECT</span> o.id, o.name, t.depth + 1
+    <span class="kw">FROM</span> org o <span class="kw">JOIN</span> tree t <span class="kw">ON</span> o.parent_id = t.id
+)
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> tree <span class="kw">ORDER BY</span> depth;</code></pre>
+
+  <h3 id="window">Window Functions</h3>
+<pre><code><span class="cm">-- Ranking</span>
+<span class="kw">SELECT</span> name, salary,
+    <span class="fn">ROW_NUMBER</span>() <span class="kw">OVER</span> (<span class="kw">ORDER BY</span> salary <span class="kw">DESC</span>) <span class="kw">AS</span> rn,
+    <span class="fn">RANK</span>()       <span class="kw">OVER</span> (<span class="kw">ORDER BY</span> salary <span class="kw">DESC</span>) <span class="kw">AS</span> rnk,
+    <span class="fn">DENSE_RANK</span>() <span class="kw">OVER</span> (<span class="kw">ORDER BY</span> salary <span class="kw">DESC</span>) <span class="kw">AS</span> drnk
+<span class="kw">FROM</span> employees;
+
+<span class="cm">-- Running total with frame</span>
+<span class="kw">SELECT</span> sale_date, amount,
+    <span class="fn">SUM</span>(amount) <span class="kw">OVER</span> (<span class="kw">ORDER BY</span> sale_date
+        <span class="kw">ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW</span>) <span class="kw">AS</span> running
+<span class="kw">FROM</span> sales;
+
+<span class="cm">-- LAG / LEAD</span>
+<span class="kw">SELECT</span> name, salary,
+    <span class="fn">LAG</span>(salary, 1) <span class="kw">OVER</span> (<span class="kw">ORDER BY</span> salary) <span class="kw">AS</span> prev,
+    <span class="fn">LEAD</span>(salary, 1) <span class="kw">OVER</span> (<span class="kw">ORDER BY</span> salary) <span class="kw">AS</span> next
+<span class="kw">FROM</span> employees;
+
+<span class="cm">-- Named window</span>
+<span class="kw">SELECT</span> name,
+    <span class="fn">SUM</span>(salary) <span class="kw">OVER</span> w,
+    <span class="fn">AVG</span>(salary) <span class="kw">OVER</span> w
+<span class="kw">FROM</span> employees
+<span class="kw">WINDOW</span> w <span class="kw">AS</span> (<span class="kw">PARTITION BY</span> dept_id <span class="kw">ORDER BY</span> hired_at);</code></pre>
+
+  <h3 id="aggregates">Aggregates</h3>
+<pre><code><span class="cm">-- Basic</span>
+<span class="kw">SELECT</span> dept_id,
+    <span class="fn">COUNT</span>(*), <span class="fn">SUM</span>(salary), <span class="fn">AVG</span>(salary),
+    <span class="fn">MIN</span>(salary), <span class="fn">MAX</span>(salary),
+    <span class="fn">STDDEV</span>(salary), <span class="fn">VARIANCE</span>(salary)
+<span class="kw">FROM</span> employees <span class="kw">GROUP BY</span> dept_id;
+
+<span class="cm">-- FILTER clause</span>
+<span class="kw">SELECT</span>
+    <span class="fn">COUNT</span>(*) <span class="kw">FILTER</span> (<span class="kw">WHERE</span> status = <span class="st">'active'</span>) <span class="kw">AS</span> active,
+    <span class="fn">COUNT</span>(*) <span class="kw">FILTER</span> (<span class="kw">WHERE</span> status = <span class="st">'inactive'</span>) <span class="kw">AS</span> inactive
+<span class="kw">FROM</span> users;
+
+<span class="cm">-- STRING_AGG and ARRAY_AGG</span>
+<span class="kw">SELECT</span> dept_id,
+    <span class="fn">STRING_AGG</span>(name, <span class="st">', '</span> <span class="kw">ORDER BY</span> name) <span class="kw">AS</span> names,
+    <span class="fn">ARRAY_AGG</span>(salary) <span class="kw">AS</span> salaries
+<span class="kw">FROM</span> employees <span class="kw">GROUP BY</span> dept_id;
+
+<span class="cm">-- Statistical: correlation, regression</span>
+<span class="kw">SELECT</span> <span class="fn">CORR</span>(revenue, ad_spend) <span class="kw">AS</span> r,
+       <span class="fn">REGR_SLOPE</span>(revenue, ad_spend) <span class="kw">AS</span> slope,
+       <span class="fn">REGR_R2</span>(revenue, ad_spend) <span class="kw">AS</span> r_squared
+<span class="kw">FROM</span> campaigns;
+
+<span class="cm">-- Ordered set aggregates</span>
+<span class="kw">SELECT</span> <span class="fn">PERCENTILE_CONT</span>(0.5) <span class="kw">WITHIN GROUP</span> (<span class="kw">ORDER BY</span> salary) <span class="kw">AS</span> median,
+       <span class="fn">MODE</span>() <span class="kw">WITHIN GROUP</span> (<span class="kw">ORDER BY</span> dept_id) <span class="kw">AS</span> most_common_dept
+<span class="kw">FROM</span> employees;</code></pre>
+
+  <h3>Set Operations</h3>
+<pre><code><span class="kw">SELECT</span> name <span class="kw">FROM</span> staff_2024
+<span class="kw">UNION ALL</span>
+<span class="kw">SELECT</span> name <span class="kw">FROM</span> staff_2025
+<span class="kw">ORDER BY</span> name;
+
+<span class="kw">SELECT</span> id <span class="kw">FROM</span> table_a
+<span class="kw">INTERSECT</span>
+<span class="kw">SELECT</span> id <span class="kw">FROM</span> table_b;
+
+<span class="kw">SELECT</span> id <span class="kw">FROM</span> all_users
+<span class="kw">EXCEPT</span>
+<span class="kw">SELECT</span> id <span class="kw">FROM</span> blocked_users;</code></pre>
+</section>
+
+<!-- ============ Data Types ============ -->
+<section id="types">
+  <h2>Data Types</h2>
+  <table>
+    <thead><tr><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>INTEGER</code>, <code>BIGINT</code></td><td>Signed integers (64-bit)</td></tr>
+      <tr><td><code>SERIAL</code>, <code>BIGSERIAL</code></td><td>Auto-incrementing integer (backed by sequence)</td></tr>
+      <tr><td><code>REAL</code>, <code>FLOAT</code>, <code>DOUBLE PRECISION</code></td><td>IEEE 754 floating point</td></tr>
+      <tr><td><code>NUMERIC(p,s)</code></td><td>Exact decimal with precision and scale</td></tr>
+      <tr><td><code>TEXT</code>, <code>VARCHAR(n)</code></td><td>Variable-length text</td></tr>
+      <tr><td><code>BOOLEAN</code></td><td><code>TRUE</code> / <code>FALSE</code></td></tr>
+      <tr><td><code>DATE</code></td><td>Calendar date (<code>YYYY-MM-DD</code>)</td></tr>
+      <tr><td><code>TIMESTAMP</code>, <code>TIMESTAMPTZ</code></td><td>Date and time (with optional timezone)</td></tr>
+      <tr><td><code>INTERVAL</code></td><td>Time duration</td></tr>
+      <tr><td><code>JSON</code>, <code>JSONB</code></td><td>JSON data (access via <code>-></code>, <code>->></code>)</td></tr>
+      <tr><td><code>UUID</code></td><td>Universally unique identifier</td></tr>
+      <tr><td><code>BYTEA</code></td><td>Binary data</td></tr>
+      <tr><td><code>INTEGER[]</code></td><td>Array type</td></tr>
+      <tr><td><code>VECTOR(N)</code></td><td>N-dimensional vector (stored as JSON array)</td></tr>
+    </tbody>
+  </table>
+  <div class="note">
+    <strong>Note:</strong> <code>VECTOR(N)</code> is a storage type, not an index directive. Vectors are stored in the document store. Create an HNSW index explicitly with <code>CREATE INDEX ... USING hnsw</code> for approximate nearest neighbor search, or use brute-force exact search without an index.
+  </div>
+</section>
+
+<!-- ============ Scalar Functions ============ -->
+<section id="functions">
+  <h2>Scalar Functions</h2>
+
+  <h3>String</h3>
+  <p><code>UPPER</code>, <code>LOWER</code>, <code>LENGTH</code>, <code>SUBSTRING</code>, <code>TRIM</code>/<code>LTRIM</code>/<code>RTRIM</code>, <code>CONCAT</code>, <code>CONCAT_WS</code>, <code>REPLACE</code>, <code>POSITION</code>, <code>LPAD</code>/<code>RPAD</code>, <code>REPEAT</code>, <code>REVERSE</code>, <code>SPLIT_PART</code>, <code>LEFT</code>/<code>RIGHT</code>, <code>INITCAP</code>, <code>TRANSLATE</code>, <code>OVERLAY</code>, <code>FORMAT</code>, <code>MD5</code>, <code>CHR</code>/<code>ASCII</code>, <code>STARTS_WITH</code>, <code>ENCODE</code>/<code>DECODE</code></p>
+
+  <h3>Regex</h3>
+  <p><code>REGEXP_MATCH</code>, <code>REGEXP_REPLACE</code>, <code>REGEXP_SPLIT_TO_ARRAY</code>, <code>REGEXP_SPLIT_TO_TABLE</code></p>
+
+  <h3>Math</h3>
+  <p><code>ABS</code>, <code>ROUND</code>, <code>CEIL</code>/<code>FLOOR</code>, <code>TRUNC</code>, <code>POWER</code>/<code>SQRT</code>/<code>CBRT</code>, <code>LOG</code>/<code>LN</code>/<code>EXP</code>, <code>MOD</code>, <code>SIGN</code>, <code>PI</code>, <code>RANDOM</code>, <code>DEGREES</code>/<code>RADIANS</code>, <code>GCD</code>/<code>LCM</code>, <code>FACTORIAL</code>, <code>WIDTH_BUCKET</code></p>
+  <p>Trigonometric: <code>SIN</code>, <code>COS</code>, <code>TAN</code>, <code>ASIN</code>, <code>ACOS</code>, <code>ATAN</code>, <code>ATAN2</code></p>
+
+  <h3>Date/Time</h3>
+  <p><code>NOW()</code>, <code>CURRENT_DATE</code>, <code>CURRENT_TIMESTAMP</code>, <code>CLOCK_TIMESTAMP()</code>, <code>EXTRACT(field FROM col)</code>, <code>DATE_TRUNC('unit', col)</code>, <code>DATE_PART('field', col)</code>, <code>AGE()</code>, <code>TO_CHAR</code>/<code>TO_DATE</code>/<code>TO_TIMESTAMP</code>, <code>MAKE_DATE</code>/<code>MAKE_TIMESTAMP</code>/<code>MAKE_INTERVAL</code>, <code>ISFINITE</code>, <code>OVERLAPS</code></p>
+
+  <h3>Conditional</h3>
+  <p><code>COALESCE</code>, <code>NULLIF</code>, <code>GREATEST</code>, <code>LEAST</code>, <code>CASE ... WHEN ... THEN ... ELSE ... END</code></p>
+
+  <h3>Table Functions (FROM clause)</h3>
+<pre><code><span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">GENERATE_SERIES</span>(1, 10);
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">GENERATE_SERIES</span>(<span class="st">'2024-01-01'</span>::timestamp, <span class="st">'2024-12-01'</span>::timestamp, <span class="st">'1 month'</span>);
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">UNNEST</span>(<span class="kw">ARRAY</span>[1, 2, 3]);
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">REGEXP_SPLIT_TO_TABLE</span>(<span class="st">'a,b,c'</span>, <span class="st">','</span>);</code></pre>
+</section>
+
+<!-- ============ JSON ============ -->
+<section id="json">
+  <h2>JSON/JSONB</h2>
+
+  <h3>Operators</h3>
+  <table>
+    <thead><tr><th>Operator</th><th>Description</th><th>Example</th></tr></thead>
+    <tbody>
+      <tr><td><code>-></code></td><td>Get field as JSON</td><td><code>data->'name'</code></td></tr>
+      <tr><td><code>->></code></td><td>Get field as text</td><td><code>data->>'name'</code></td></tr>
+      <tr><td><code>#></code></td><td>Get nested path as JSON</td><td><code>data#>'{a,b}'</code></td></tr>
+      <tr><td><code>#>></code></td><td>Get nested path as text</td><td><code>data#>>'{a,b}'</code></td></tr>
+      <tr><td><code>@></code></td><td>Contains</td><td><code>data @> '{"key":"val"}'</code></td></tr>
+      <tr><td><code><@</code></td><td>Contained by</td><td><code>'{"a":1}' <@ data</code></td></tr>
+      <tr><td><code>?</code></td><td>Key exists</td><td><code>data ? 'key'</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>Functions</h3>
+<pre><code><span class="kw">SELECT</span> <span class="fn">JSON_BUILD_OBJECT</span>(<span class="st">'name'</span>, <span class="st">'Alice'</span>, <span class="st">'age'</span>, 30);
+<span class="kw">SELECT</span> <span class="fn">JSON_BUILD_ARRAY</span>(1, 2, <span class="st">'three'</span>);
+<span class="kw">SELECT</span> <span class="fn">JSON_TYPEOF</span>(<span class="st">'[1,2]'</span>::jsonb);     <span class="cm">-- 'array'</span>
+<span class="kw">SELECT</span> <span class="fn">JSON_ARRAY_LENGTH</span>(<span class="st">'[1,2,3]'</span>);    <span class="cm">-- 3</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">JSON_EACH</span>(<span class="st">'{"a":1,"b":2}'</span>);
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">JSON_ARRAY_ELEMENTS</span>(<span class="st">'[1,2,3]'</span>);
+<span class="kw">SELECT</span> <span class="fn">JSONB_SET</span>(<span class="st">'{"a":1}'</span>::jsonb, <span class="st">'{b}'</span>, <span class="st">'2'</span>);</code></pre>
+</section>
+
+<!-- ============ Vector Search ============ -->
+<section id="vectors">
+  <h2>Vector Search</h2>
+  <p>UQA follows the <strong>pgvector</strong> model: <code>VECTOR(N)</code> is a storage type. Vectors are stored in the document store as JSON arrays. HNSW indexes are created explicitly.</p>
+
+<pre><code><span class="cm">-- Create table with vector column</span>
+<span class="kw">CREATE TABLE</span> papers (
+    id <span class="kw">SERIAL PRIMARY KEY</span>,
+    title <span class="kw">TEXT</span>,
+    embedding <span class="kw">VECTOR</span>(384)
+);
+
+<span class="cm">-- Insert vectors</span>
+<span class="kw">INSERT INTO</span> papers (title, embedding) <span class="kw">VALUES</span>
+    (<span class="st">'attention is all you need'</span>, <span class="kw">ARRAY</span>[0.1, 0.2, ...]);
+
+<span class="cm">-- Brute-force KNN (no index needed, exact results)</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">knn_match</span>(embedding, <span class="kw">ARRAY</span>[0.1, 0.2, ...], 5)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Create HNSW index for approximate (faster) search</span>
+<span class="kw">CREATE INDEX</span> idx_emb <span class="kw">ON</span> papers <span class="kw">USING</span> hnsw (embedding)
+    <span class="kw">WITH</span> (ef_construction = 200, m = 16);
+
+<span class="cm">-- Now knn_match uses HNSW (same query syntax)</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">knn_match</span>(embedding, <span class="kw">ARRAY</span>[0.1, 0.2, ...], 10)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Drop and recreate index (vectors remain in document store)</span>
+<span class="kw">DROP INDEX</span> idx_emb;
+<span class="kw">CREATE INDEX</span> idx_emb <span class="kw">ON</span> papers <span class="kw">USING</span> hnsw (embedding);</code></pre>
+</section>
+
+<!-- ============ Text Search ============ -->
+<section id="text-search">
+  <h2>Text Search</h2>
+  <p>Full-text search with BM25 scoring, powered by an inverted index with configurable text analysis pipelines.</p>
+
+<pre><code><span class="cm">-- BM25 full-text search</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">text_match</span>(title, <span class="st">'attention transformer'</span>)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Bayesian BM25 (calibrated probability in [0,1])</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">bayesian_match</span>(title, <span class="st">'deep learning'</span>)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Create a custom analyzer with stemming</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">create_analyzer</span>(<span class="st">'english'</span>, <span class="st">'{
+    "tokenizer": {"type": "standard"},
+    "token_filters": [
+        {"type": "lowercase"},
+        {"type": "stop", "language": "english"},
+        {"type": "porter_stem"}
+    ]
+}'</span>);
+
+<span class="cm">-- FROM-clause text search</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">text_search</span>(<span class="st">'attention'</span>, <span class="st">'title'</span>, <span class="st">'papers'</span>);</code></pre>
+</section>
+
+<!-- ============ Graph Queries ============ -->
+<section id="graph">
+  <h2>Graph Queries</h2>
+  <p>Apache AGE compatible openCypher integration for property graph queries on named graphs.</p>
+
+<pre><code><span class="cm">-- Create a named graph</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">create_graph</span>(<span class="st">'social'</span>);
+
+<span class="cm">-- Create vertices and edges</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">cypher</span>(<span class="st">'social'</span>, <span class="st">$$
+    CREATE (a:Person {name: 'Alice', age: 30})
+           -[:KNOWS]->
+           (b:Person {name: 'Bob', age: 25})
+    RETURN a.name, b.name
+$$</span>) <span class="kw">AS</span> (a agtype, b agtype);
+
+<span class="cm">-- Pattern matching with WHERE</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">cypher</span>(<span class="st">'social'</span>, <span class="st">$$
+    MATCH (p:Person)-[:KNOWS]->(friend:Person)
+    WHERE p.age > 25
+    RETURN p.name, friend.name
+    ORDER BY p.name
+$$</span>) <span class="kw">AS</span> (person agtype, friend agtype);
+
+<span class="cm">-- Variable-length paths</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">cypher</span>(<span class="st">'social'</span>, <span class="st">$$
+    MATCH (a:Person {name: 'Alice'})-[:KNOWS*1..3]->(remote)
+    RETURN remote.name
+$$</span>) <span class="kw">AS</span> (name agtype);
+
+<span class="cm">-- Graph traversal (SQL functions)</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">traverse</span>(1, <span class="st">'cited_by'</span>, 2);
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">rpq</span>(<span class="st">'cited_by/cited_by'</span>, 1);</code></pre>
+</section>
+
+<!-- ============ Fusion ============ -->
+<section id="fusion">
+  <h2>Multi-Signal Fusion</h2>
+  <p>Combine relevance signals from different paradigms (text, vector, graph) into a single ranked result.</p>
+
+<pre><code><span class="cm">-- Log-odds fusion: text + vector + graph</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
+    <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
+    <span class="fn">knn_match</span>(embedding, <span class="kw">ARRAY</span>[0.1, 0.2, ...], 5),
+    <span class="fn">traverse_match</span>(1, <span class="st">'cited_by'</span>, 2)
+)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Probabilistic AND / OR / NOT</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_prob_and</span>(
+    <span class="fn">bayesian_match</span>(title, <span class="st">'neural'</span>),
+    <span class="fn">knn_match</span>(embedding, <span class="kw">ARRAY</span>[...], 10)
+)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- EXPLAIN shows fusion plan</span>
+<span class="kw">EXPLAIN SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
+    <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
+    <span class="fn">knn_match</span>(embedding, <span class="kw">ARRAY</span>[...], 5)
+);</code></pre>
+</section>
+
+<!-- ============ FDW ============ -->
+<section id="fdw">
+  <h2>Foreign Data Wrappers</h2>
+  <p>Query external data sources (Parquet, CSV, JSON, remote servers) as if they were local tables.</p>
+
+<pre><code><span class="cm">-- Register a DuckDB-backed server</span>
+<span class="kw">CREATE SERVER</span> warehouse <span class="kw">FOREIGN DATA WRAPPER</span> duckdb_fdw;
+
+<span class="cm">-- Map a Parquet directory with Hive partitioning</span>
+<span class="kw">CREATE FOREIGN TABLE</span> sales (
+    id <span class="kw">INTEGER</span>, name <span class="kw">TEXT</span>, amount <span class="kw">INTEGER</span>,
+    year <span class="kw">INTEGER</span>, month <span class="kw">INTEGER</span>
+) <span class="kw">SERVER</span> warehouse <span class="kw">OPTIONS</span> (
+    source <span class="st">'/data/sales/**/*.parquet'</span>,
+    hive_partitioning <span class="st">'true'</span>
+);
+
+<span class="cm">-- Predicates pushed down to DuckDB for partition pruning</span>
+<span class="kw">SELECT</span> name, <span class="fn">SUM</span>(amount) <span class="kw">FROM</span> sales
+<span class="kw">WHERE</span> year <span class="kw">IN</span> (2024, 2025) <span class="kw">AND</span> month > 6
+<span class="kw">GROUP BY</span> name;
+
+<span class="cm">-- Arrow Flight SQL for remote servers</span>
+<span class="kw">CREATE SERVER</span> remote <span class="kw">FOREIGN DATA WRAPPER</span> arrow_fdw
+    <span class="kw">OPTIONS</span> (host <span class="st">'flights.example.com'</span>, port <span class="st">'8815'</span>);
+
+<span class="cm">-- Full SQL works on foreign tables</span>
+<span class="kw">SELECT</span> s.name, e.dept
+<span class="kw">FROM</span> sales s <span class="kw">JOIN</span> employees e <span class="kw">ON</span> s.rep_id = e.id
+<span class="kw">ORDER BY</span> s.amount <span class="kw">DESC LIMIT</span> 10;</code></pre>
+</section>
+
+<!-- ============ Python API ============ -->
+<section id="python-api">
+  <h2>Python API</h2>
+
+  <h3 id="engine">Engine</h3>
+<pre><code><span class="kw">from</span> uqa.engine <span class="kw">import</span> Engine
+
+<span class="cm"># In-memory</span>
+engine = Engine()
+
+<span class="cm"># Persistent (SQLite-backed)</span>
+engine = Engine(db_path=<span class="st">"research.db"</span>)
+
+<span class="cm"># With tuning parameters</span>
+engine = Engine(
+    db_path=<span class="st">"research.db"</span>,
+    parallel_workers=4,    <span class="cm"># ThreadPool concurrency</span>
+    spill_threshold=100000 <span class="cm"># Disk spill after 100K rows</span>
+)
+
+<span class="cm"># SQL interface</span>
+result = engine.sql(<span class="st">"SELECT * FROM papers"</span>)
+print(result.columns)  <span class="cm"># ['id', 'title', 'year']</span>
+print(result.rows)     <span class="cm"># [{'id': 1, 'title': '...', ...}]</span>
+
+<span class="cm"># Arrow / Parquet export</span>
+arrow_table = result.to_arrow()
+result.to_parquet(<span class="st">"papers.parquet"</span>)
+
+<span class="cm"># Context manager</span>
+<span class="kw">with</span> Engine(db_path=<span class="st">"data.db"</span>) <span class="kw">as</span> engine:
+    engine.sql(<span class="st">"SELECT 1"</span>)</code></pre>
+
+  <h3 id="querybuilder">QueryBuilder (Fluent API)</h3>
+<pre><code><span class="kw">from</span> uqa.core.types <span class="kw">import</span> Equals, GreaterThanOrEqual
+
+<span class="cm"># Text search with BM25 scoring</span>
+result = (
+    engine.query(table=<span class="st">"papers"</span>)
+    .term(<span class="st">"attention"</span>, field=<span class="st">"title"</span>)
+    .score_bm25(<span class="st">"attention"</span>)
+    .execute()
+)
+
+<span class="cm"># Boolean composition</span>
+q1 = engine.query(table=<span class="st">"papers"</span>).term(<span class="st">"neural"</span>, field=<span class="st">"title"</span>)
+q2 = engine.query(table=<span class="st">"papers"</span>).term(<span class="st">"network"</span>, field=<span class="st">"title"</span>)
+combined = q1.and_(q2)
+
+<span class="cm"># Filter + aggregate</span>
+result = (
+    engine.query(table=<span class="st">"employees"</span>)
+    .filter(<span class="st">"dept"</span>, Equals(<span class="st">"Engineering"</span>))
+    .aggregate(<span class="st">"salary"</span>, <span class="st">"avg"</span>)
+)
+
+<span class="cm"># Graph traversal</span>
+team = engine.query(table=<span class="st">"org"</span>).traverse(ceo_id, <span class="st">"manages"</span>, max_hops=3)
+total_salary = team.vertex_aggregate(<span class="st">"salary"</span>, <span class="st">"sum"</span>)
+
+<span class="cm"># Multi-signal fusion</span>
+result = (
+    engine.query(table=<span class="st">"papers"</span>)
+    .term(<span class="st">"attention"</span>, field=<span class="st">"title"</span>)
+    .score_bayesian_bm25(<span class="st">"attention"</span>)
+    .knn(query_vector, k=10, field=<span class="st">"embedding"</span>)
+    .fuse_log_odds()
+    .execute()
+)
+
+<span class="cm"># Arrow export</span>
+arrow_table = engine.query(table=<span class="st">"papers"</span>).term(<span class="st">"ai"</span>, field=<span class="st">"title"</span>).execute_arrow()
+engine.query(table=<span class="st">"papers"</span>).execute_parquet(<span class="st">"results.parquet"</span>)</code></pre>
+
+  <h3 id="analysis">Text Analysis</h3>
+<pre><code><span class="kw">from</span> uqa.analysis <span class="kw">import</span> (
+    Analyzer, StandardTokenizer, LowerCaseFilter,
+    StopWordFilter, PorterStemFilter
+)
+
+<span class="cm"># Build a custom analyzer</span>
+analyzer = Analyzer(
+    tokenizer=StandardTokenizer(),
+    token_filters=[
+        LowerCaseFilter(),
+        StopWordFilter(language=<span class="st">"english"</span>),
+        PorterStemFilter(),
+    ],
+)
+
+tokens = analyzer.analyze(<span class="st">"The quick brown foxes jumped over lazy dogs"</span>)
+<span class="cm"># ['quick', 'brown', 'fox', 'jump', 'lazi', 'dog']</span>
+
+<span class="cm"># Register for reuse</span>
+<span class="kw">from</span> uqa.analysis <span class="kw">import</span> register_analyzer
+register_analyzer(<span class="st">"english_stem"</span>, analyzer)
+
+<span class="cm"># Or via SQL</span>
+engine.sql(<span class="st">"""SELECT * FROM create_analyzer('english_stem', '{
+    "tokenizer": {"type": "standard"},
+    "token_filters": [{"type": "lowercase"}, {"type": "stop"}, {"type": "porter_stem"}]
+}')"""</span>)</code></pre>
+</section>
+
+<!-- ============ Transactions ============ -->
+<section id="transactions">
+  <h2>Transactions</h2>
+<pre><code><span class="kw">BEGIN</span>;
+<span class="kw">INSERT INTO</span> accounts (name, balance) <span class="kw">VALUES</span> (<span class="st">'Alice'</span>, 1000);
+<span class="kw">SAVEPOINT</span> sp1;
+<span class="kw">UPDATE</span> accounts <span class="kw">SET</span> balance = balance - 100 <span class="kw">WHERE</span> name = <span class="st">'Alice'</span>;
+<span class="kw">ROLLBACK TO SAVEPOINT</span> sp1;  <span class="cm">-- undo the UPDATE</span>
+<span class="kw">COMMIT</span>;                     <span class="cm">-- INSERT is committed</span></code></pre>
+
+  <h3>Python API</h3>
+<pre><code><span class="kw">with</span> engine.begin() <span class="kw">as</span> tx:
+    engine.sql(<span class="st">"INSERT INTO logs (msg) VALUES ('hello')"</span>)
+    tx.savepoint(<span class="st">"sp1"</span>)
+    engine.sql(<span class="st">"INSERT INTO logs (msg) VALUES ('world')"</span>)
+    tx.rollback_to(<span class="st">"sp1"</span>)
+    <span class="cm"># only 'hello' is committed</span></code></pre>
+</section>
+
+<!-- ============ EXPLAIN / ANALYZE ============ -->
+<section id="explain">
+  <h2>EXPLAIN / ANALYZE</h2>
+<pre><code><span class="cm">-- Show query plan</span>
+<span class="kw">EXPLAIN SELECT</span> * <span class="kw">FROM</span> employees <span class="kw">WHERE</span> salary > 80000;
+
+<span class="cm">-- Show plan with execution stats</span>
+<span class="kw">EXPLAIN ANALYZE SELECT</span> e.name, d.name
+<span class="kw">FROM</span> employees e <span class="kw">JOIN</span> departments d <span class="kw">ON</span> e.dept_id = d.id;
+
+<span class="cm">-- Collect column statistics for the optimizer</span>
+<span class="kw">ANALYZE</span> employees;</code></pre>
+</section>
+
+</div><!-- .content -->
+</div><!-- .page-with-toc -->
+
+<!-- ====== Footer ====== -->
+<footer>
+  <div class="container">
+    <p>
+      UQA &mdash; Unified Query Algebra
+      &middot; <a href="https://github.com/cognica-io/uqa">GitHub</a>
+      &middot; <a href="https://pypi.org/project/uqa/">PyPI</a>
+      &middot; <a href="https://cognica.io">Cognica</a>
+      &middot; AGPL-3.0
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

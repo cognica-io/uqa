@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Examples &mdash; UQA</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ====== Hero ====== -->
+<header class="hero hero-compact">
+  <h1><span>UQA</span> Examples</h1>
+  <p class="tagline">Runnable examples covering SQL, fluent API, and cross-paradigm queries.</p>
+</header>
+
+<!-- ====== Nav ====== -->
+<nav>
+  <ul>
+    <li><a href="index.html">Overview</a></li>
+    <li><a href="docs.html">Docs</a></li>
+    <li><a href="examples.html" class="active">Examples</a></li>
+    <li><a href="benchmarks-data/">Benchmarks</a></li>
+  </ul>
+</nav>
+
+<div class="page-with-toc">
+
+<!-- ====== TOC ====== -->
+<aside class="toc">
+  <ul>
+    <li><a href="#getting-started">Getting Started</a></li>
+    <li><a href="#text-search">Full-Text Search</a></li>
+    <li><a href="#vector-search">Vector Search</a></li>
+    <li><a href="#hybrid-fusion">Hybrid Fusion</a></li>
+    <li><a href="#joins-subqueries">JOINs &amp; Subqueries</a></li>
+    <li><a href="#analytics">Analytics</a></li>
+    <li><a href="#graph-queries">Graph Queries</a></li>
+    <li><a href="#fdw-parquet">FDW &amp; Parquet</a></li>
+    <li><a href="#text-analysis">Text Analysis</a></li>
+    <li><a href="#arrow-export">Arrow / Parquet Export</a></li>
+    <li><a href="#fluent-api">Fluent API</a></li>
+    <li><a href="#hierarchical">Hierarchical Data</a></li>
+    <li><a href="#source-files">Source Files</a></li>
+  </ul>
+</aside>
+
+<!-- ====== Content ====== -->
+<div class="content">
+
+<!-- ============ Getting Started ============ -->
+<section id="getting-started">
+  <h2>Getting Started</h2>
+  <div class="note">
+    <strong>Tip:</strong> All examples below are self-contained. Copy any block into a Python file or the <code>usql</code> shell and run it directly.
+  </div>
+
+  <span class="example-tag tag-python">Python</span>
+<pre><code><span class="kw">from</span> uqa.engine <span class="kw">import</span> Engine
+
+<span class="cm"># Create an in-memory engine (or pass db_path for persistence)</span>
+engine = Engine()
+
+<span class="cm"># Create a table and insert data</span>
+engine.sql(<span class="st">"""
+    CREATE TABLE books (
+        id SERIAL PRIMARY KEY,
+        title TEXT NOT NULL,
+        author TEXT NOT NULL,
+        year INTEGER,
+        rating REAL
+    )
+"""</span>)
+
+engine.sql(<span class="st">"""INSERT INTO books (title, author, year, rating) VALUES
+    ('The Pragmatic Programmer', 'Hunt & Thomas', 1999, 4.6),
+    ('Clean Code', 'Robert Martin', 2008, 4.4),
+    ('Designing Data-Intensive Applications', 'Martin Kleppmann', 2017, 4.8),
+    ('Structure and Interpretation of Computer Programs', 'Abelson & Sussman', 1984, 4.5),
+    ('Introduction to Algorithms', 'Cormen et al.', 2009, 4.3)
+"""</span>)
+
+<span class="cm"># Query</span>
+result = engine.sql(<span class="st">"""
+    SELECT title, author, rating
+    FROM books
+    WHERE year >= 2000
+    ORDER BY rating DESC
+"""</span>)
+
+<span class="kw">for</span> row <span class="kw">in</span> result:
+    print(f<span class="st">"{row['title']}: {row['rating']}"</span>)
+
+engine.close()</code></pre>
+</section>
+
+<!-- ============ Full-Text Search ============ -->
+<section id="text-search">
+  <h2>Full-Text Search</h2>
+
+  <span class="example-tag tag-sql">SQL</span>
+  <h3>BM25 Search</h3>
+<pre><code><span class="cm">-- Standard BM25 full-text search</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">text_match</span>(title, <span class="st">'attention mechanism transformer'</span>)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Bayesian BM25: calibrated P(relevant) in [0,1]</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">bayesian_match</span>(title, <span class="st">'deep learning optimization'</span>)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Combine text search with relational filters</span>
+<span class="kw">SELECT</span> title, year, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">text_match</span>(title, <span class="st">'neural network'</span>)
+    <span class="kw">AND</span> year >= 2020
+    <span class="kw">AND</span> citations > 100
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC LIMIT</span> 10;</code></pre>
+
+  <span class="example-tag tag-python">Python</span>
+  <h3>Fluent API Text Search</h3>
+<pre><code>result = (
+    engine.query(table=<span class="st">"papers"</span>)
+    .term(<span class="st">"attention"</span>, field=<span class="st">"title"</span>)
+    .score_bayesian_bm25(<span class="st">"attention"</span>)
+    .execute()
+)
+
+<span class="kw">for</span> entry <span class="kw">in</span> result.entries:
+    print(f<span class="st">"doc_id={entry.doc_id}, score={entry.payload.score:.4f}"</span>)</code></pre>
+</section>
+
+<!-- ============ Vector Search ============ -->
+<section id="vector-search">
+  <h2>Vector Search</h2>
+
+  <span class="example-tag tag-sql">SQL</span>
+  <h3>KNN with HNSW Index</h3>
+<pre><code><span class="cm">-- Create table with vector column</span>
+<span class="kw">CREATE TABLE</span> documents (
+    id <span class="kw">SERIAL PRIMARY KEY</span>,
+    title <span class="kw">TEXT</span>,
+    embedding <span class="kw">VECTOR</span>(4)
+);
+
+<span class="cm">-- Insert documents with embeddings</span>
+<span class="kw">INSERT INTO</span> documents (title, embedding) <span class="kw">VALUES</span>
+    (<span class="st">'machine learning basics'</span>,    <span class="kw">ARRAY</span>[0.9, 0.1, 0.0, 0.2]),
+    (<span class="st">'deep neural networks'</span>,       <span class="kw">ARRAY</span>[0.8, 0.3, 0.1, 0.1]),
+    (<span class="st">'natural language processing'</span>, <span class="kw">ARRAY</span>[0.2, 0.8, 0.7, 0.1]),
+    (<span class="st">'computer vision models'</span>,     <span class="kw">ARRAY</span>[0.7, 0.2, 0.3, 0.5]),
+    (<span class="st">'reinforcement learning'</span>,     <span class="kw">ARRAY</span>[0.6, 0.1, 0.2, 0.8]);
+
+<span class="cm">-- Brute-force exact KNN (no index)</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> documents
+<span class="kw">WHERE</span> <span class="fn">knn_match</span>(embedding, <span class="kw">ARRAY</span>[0.85, 0.15, 0.05, 0.15], 3)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Create HNSW index for faster approximate search</span>
+<span class="kw">CREATE INDEX</span> idx_doc_emb <span class="kw">ON</span> documents <span class="kw">USING</span> hnsw (embedding)
+    <span class="kw">WITH</span> (ef_construction = 128, m = 16);
+
+<span class="cm">-- Same query now uses HNSW (transparent to the user)</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> documents
+<span class="kw">WHERE</span> <span class="fn">knn_match</span>(embedding, <span class="kw">ARRAY</span>[0.85, 0.15, 0.05, 0.15], 3)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <span class="example-tag tag-python">Python</span>
+  <h3>Fluent API Vector Search</h3>
+<pre><code>query_vec = [0.85, 0.15, 0.05, 0.15]
+
+<span class="cm"># KNN search</span>
+result = (
+    engine.query(table=<span class="st">"documents"</span>)
+    .knn(query_vec, k=3, field=<span class="st">"embedding"</span>)
+    .execute()
+)
+
+<span class="cm"># Threshold-based search</span>
+result = (
+    engine.query(table=<span class="st">"documents"</span>)
+    .vector(query_vec, threshold=0.7, field=<span class="st">"embedding"</span>)
+    .execute()
+)</code></pre>
+</section>
+
+<!-- ============ Hybrid Fusion ============ -->
+<section id="hybrid-fusion">
+  <h2>Hybrid Fusion</h2>
+  <p>Combine text, vector, and graph signals into a single relevance score.</p>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">-- Log-odds fusion: text + vector</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
+    <span class="fn">text_match</span>(title, <span class="st">'attention transformer'</span>),
+    <span class="fn">knn_match</span>(embedding, <span class="kw">ARRAY</span>[0.1, 0.2, 0.3, 0.4], 10)
+)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC LIMIT</span> 5;
+
+<span class="cm">-- Three-signal fusion: text + vector + graph</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
+    <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
+    <span class="fn">knn_match</span>(embedding, <span class="kw">ARRAY</span>[0.1, 0.2, ...], 5),
+    <span class="fn">traverse_match</span>(1, <span class="st">'cited_by'</span>, 2)
+) <span class="kw">AND</span> year >= 2020
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Probabilistic boolean: find papers matching text OR similar vectors</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_prob_or</span>(
+    <span class="fn">bayesian_match</span>(title, <span class="st">'neural network'</span>),
+    <span class="fn">knn_match</span>(embedding, <span class="kw">ARRAY</span>[...], 10)
+)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Exclude certain topics with probabilistic NOT</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_prob_and</span>(
+    <span class="fn">text_match</span>(title, <span class="st">'machine learning'</span>),
+    <span class="fn">fuse_prob_not</span>(<span class="fn">text_match</span>(title, <span class="st">'supervised'</span>))
+)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <span class="example-tag tag-python">Python</span>
+<pre><code><span class="cm"># Fluent API: multi-signal fusion</span>
+result = (
+    engine.query(table=<span class="st">"papers"</span>)
+    .term(<span class="st">"attention"</span>, field=<span class="st">"title"</span>)
+    .score_bayesian_bm25(<span class="st">"attention"</span>)
+    .knn(query_vector, k=10, field=<span class="st">"embedding"</span>)
+    .fuse_log_odds()
+    .execute()
+)
+
+<span class="kw">for</span> entry <span class="kw">in</span> result.top_k(5):
+    print(f<span class="st">"doc_id={entry.doc_id}, score={entry.payload.score:.4f}"</span>)</code></pre>
+</section>
+
+<!-- ============ JOINs & Subqueries ============ -->
+<section id="joins-subqueries">
+  <h2>JOINs &amp; Subqueries</h2>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">-- Setup</span>
+<span class="kw">CREATE TABLE</span> departments (id <span class="kw">SERIAL PRIMARY KEY</span>, name <span class="kw">TEXT</span>, budget <span class="kw">INTEGER</span>);
+<span class="kw">CREATE TABLE</span> employees (
+    id <span class="kw">SERIAL PRIMARY KEY</span>, name <span class="kw">TEXT</span>,
+    dept_id <span class="kw">INTEGER REFERENCES</span> departments(id), salary <span class="kw">INTEGER</span>
+);
+
+<span class="kw">INSERT INTO</span> departments (name, budget) <span class="kw">VALUES</span>
+    (<span class="st">'Engineering'</span>, 500000), (<span class="st">'Marketing'</span>, 200000), (<span class="st">'Research'</span>, 300000);
+
+<span class="kw">INSERT INTO</span> employees (name, dept_id, salary) <span class="kw">VALUES</span>
+    (<span class="st">'Alice'</span>, 1, 120000), (<span class="st">'Bob'</span>, 1, 110000),
+    (<span class="st">'Carol'</span>, 2, 95000), (<span class="st">'Dave'</span>, 3, 130000),
+    (<span class="st">'Eve'</span>, 3, 125000);
+
+<span class="cm">-- JOIN with aggregation</span>
+<span class="kw">SELECT</span> d.name <span class="kw">AS</span> department,
+       <span class="fn">COUNT</span>(*) <span class="kw">AS</span> headcount,
+       <span class="fn">AVG</span>(e.salary) <span class="kw">AS</span> avg_salary
+<span class="kw">FROM</span> employees e
+<span class="kw">INNER JOIN</span> departments d <span class="kw">ON</span> e.dept_id = d.id
+<span class="kw">GROUP BY</span> d.name
+<span class="kw">ORDER BY</span> avg_salary <span class="kw">DESC</span>;
+
+<span class="cm">-- Employees earning above their department average</span>
+<span class="kw">SELECT</span> e.name, e.salary, dept_avg.avg_sal
+<span class="kw">FROM</span> employees e
+<span class="kw">JOIN</span> (<span class="kw">SELECT</span> dept_id, <span class="fn">AVG</span>(salary) <span class="kw">AS</span> avg_sal
+      <span class="kw">FROM</span> employees <span class="kw">GROUP BY</span> dept_id) dept_avg
+    <span class="kw">ON</span> e.dept_id = dept_avg.dept_id
+<span class="kw">WHERE</span> e.salary > dept_avg.avg_sal;
+
+<span class="cm">-- Top earner per department (LATERAL subquery)</span>
+<span class="kw">SELECT</span> d.name, top.name <span class="kw">AS</span> top_earner, top.salary
+<span class="kw">FROM</span> departments d,
+     <span class="kw">LATERAL</span> (<span class="kw">SELECT</span> name, salary <span class="kw">FROM</span> employees e
+              <span class="kw">WHERE</span> e.dept_id = d.id
+              <span class="kw">ORDER BY</span> salary <span class="kw">DESC LIMIT</span> 1) top;
+
+<span class="cm">-- Recursive org chart</span>
+<span class="kw">CREATE TABLE</span> org (id <span class="kw">SERIAL</span>, name <span class="kw">TEXT</span>, manager_id <span class="kw">INTEGER</span>);
+<span class="kw">INSERT INTO</span> org (name, manager_id) <span class="kw">VALUES</span>
+    (<span class="st">'CEO'</span>, <span class="kw">NULL</span>), (<span class="st">'VP Eng'</span>, 1), (<span class="st">'VP Sales'</span>, 1),
+    (<span class="st">'Lead Dev'</span>, 2), (<span class="st">'Sr Dev'</span>, 4);
+
+<span class="kw">WITH RECURSIVE</span> tree <span class="kw">AS</span> (
+    <span class="kw">SELECT</span> id, name, 0 <span class="kw">AS</span> depth <span class="kw">FROM</span> org <span class="kw">WHERE</span> manager_id <span class="kw">IS NULL</span>
+    <span class="kw">UNION ALL</span>
+    <span class="kw">SELECT</span> o.id, o.name, t.depth + 1
+    <span class="kw">FROM</span> org o <span class="kw">JOIN</span> tree t <span class="kw">ON</span> o.manager_id = t.id
+)
+<span class="kw">SELECT</span> <span class="fn">REPEAT</span>(<span class="st">'  '</span>, depth) || name <span class="kw">AS</span> org_chart <span class="kw">FROM</span> tree;</code></pre>
+</section>
+
+<!-- ============ Analytics ============ -->
+<section id="analytics">
+  <h2>Analytics</h2>
+
+  <span class="example-tag tag-sql">SQL</span>
+  <h3>Window Functions</h3>
+<pre><code><span class="kw">CREATE TABLE</span> sales (
+    id <span class="kw">SERIAL</span>, rep <span class="kw">TEXT</span>, region <span class="kw">TEXT</span>,
+    amount <span class="kw">INTEGER</span>, sale_date <span class="kw">DATE</span>
+);
+
+<span class="kw">INSERT INTO</span> sales (rep, region, amount, sale_date) <span class="kw">VALUES</span>
+    (<span class="st">'Alice'</span>, <span class="st">'East'</span>, 500, <span class="st">'2024-01-15'</span>),
+    (<span class="st">'Alice'</span>, <span class="st">'East'</span>, 300, <span class="st">'2024-02-10'</span>),
+    (<span class="st">'Bob'</span>,   <span class="st">'West'</span>, 700, <span class="st">'2024-01-20'</span>),
+    (<span class="st">'Bob'</span>,   <span class="st">'West'</span>, 400, <span class="st">'2024-03-05'</span>),
+    (<span class="st">'Carol'</span>, <span class="st">'East'</span>, 600, <span class="st">'2024-02-28'</span>);
+
+<span class="cm">-- Running total per rep</span>
+<span class="kw">SELECT</span> rep, sale_date, amount,
+    <span class="fn">SUM</span>(amount) <span class="kw">OVER</span> (<span class="kw">PARTITION BY</span> rep <span class="kw">ORDER BY</span> sale_date
+        <span class="kw">ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW</span>) <span class="kw">AS</span> running_total
+<span class="kw">FROM</span> sales;
+
+<span class="cm">-- Rank within region</span>
+<span class="kw">SELECT</span> rep, region, <span class="fn">SUM</span>(amount) <span class="kw">AS</span> total,
+    <span class="fn">RANK</span>() <span class="kw">OVER</span> (<span class="kw">PARTITION BY</span> region <span class="kw">ORDER BY</span> <span class="fn">SUM</span>(amount) <span class="kw">DESC</span>) <span class="kw">AS</span> rnk
+<span class="kw">FROM</span> sales
+<span class="kw">GROUP BY</span> rep, region;</code></pre>
+
+  <h3>Aggregates with FILTER</h3>
+<pre><code><span class="cm">-- Conditional aggregation</span>
+<span class="kw">SELECT</span> region,
+    <span class="fn">SUM</span>(amount) <span class="kw">AS</span> total,
+    <span class="fn">SUM</span>(amount) <span class="kw">FILTER</span> (<span class="kw">WHERE</span> amount >= 500) <span class="kw">AS</span> big_deals,
+    <span class="fn">COUNT</span>(*) <span class="kw">FILTER</span> (<span class="kw">WHERE</span> amount < 500) <span class="kw">AS</span> small_deal_count
+<span class="kw">FROM</span> sales <span class="kw">GROUP BY</span> region;
+
+<span class="cm">-- Monthly summary with date functions</span>
+<span class="kw">SELECT</span> <span class="fn">DATE_TRUNC</span>(<span class="st">'month'</span>, sale_date) <span class="kw">AS</span> month,
+    <span class="fn">COUNT</span>(*) <span class="kw">AS</span> num_sales,
+    <span class="fn">SUM</span>(amount) <span class="kw">AS</span> revenue,
+    <span class="fn">ROUND</span>(<span class="fn">AVG</span>(amount), 2) <span class="kw">AS</span> avg_deal
+<span class="kw">FROM</span> sales
+<span class="kw">GROUP BY</span> <span class="fn">DATE_TRUNC</span>(<span class="st">'month'</span>, sale_date)
+<span class="kw">ORDER BY</span> month;</code></pre>
+
+  <h3>JSON Analytics</h3>
+<pre><code><span class="kw">CREATE TABLE</span> events (id <span class="kw">SERIAL</span>, data <span class="kw">JSONB</span>);
+<span class="kw">INSERT INTO</span> events (data) <span class="kw">VALUES</span>
+    (<span class="st">'{"type": "click", "page": "/home", "duration": 5}'</span>::jsonb),
+    (<span class="st">'{"type": "click", "page": "/about", "duration": 3}'</span>::jsonb),
+    (<span class="st">'{"type": "view", "page": "/home", "duration": 12}'</span>::jsonb);
+
+<span class="kw">SELECT</span> data->><span class="st">'type'</span> <span class="kw">AS</span> event_type,
+    data->><span class="st">'page'</span> <span class="kw">AS</span> page,
+    <span class="fn">AVG</span>(<span class="kw">CAST</span>(data->><span class="st">'duration'</span> <span class="kw">AS INTEGER</span>)) <span class="kw">AS</span> avg_duration
+<span class="kw">FROM</span> events
+<span class="kw">GROUP BY</span> data->><span class="st">'type'</span>, data->><span class="st">'page'</span>;</code></pre>
+</section>
+
+<!-- ============ Graph Queries ============ -->
+<section id="graph-queries">
+  <h2>Graph Queries</h2>
+
+  <span class="example-tag tag-sql">SQL</span>
+  <h3>Social Network</h3>
+<pre><code><span class="cm">-- Create named graph</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">create_graph</span>(<span class="st">'social'</span>);
+
+<span class="cm">-- Build the graph</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">cypher</span>(<span class="st">'social'</span>, <span class="st">$$
+    CREATE (a:Person {name: 'Alice', age: 30, city: 'Seoul'})
+    CREATE (b:Person {name: 'Bob', age: 25, city: 'Tokyo'})
+    CREATE (c:Person {name: 'Carol', age: 35, city: 'Seoul'})
+    CREATE (d:Person {name: 'Dave', age: 28, city: 'London'})
+    CREATE (a)-[:KNOWS {since: 2020}]->(b)
+    CREATE (a)-[:KNOWS {since: 2019}]->(c)
+    CREATE (b)-[:KNOWS {since: 2021}]->(d)
+    CREATE (c)-[:KNOWS {since: 2022}]->(d)
+    RETURN a.name
+$$</span>) <span class="kw">AS</span> (name agtype);
+
+<span class="cm">-- Friends of friends</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">cypher</span>(<span class="st">'social'</span>, <span class="st">$$
+    MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(friend)-[:KNOWS]->(fof)
+    WHERE fof.name <> 'Alice'
+    RETURN DISTINCT fof.name, fof.city
+$$</span>) <span class="kw">AS</span> (name agtype, city agtype);
+
+<span class="cm">-- Variable-length path: reachable within 3 hops</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">cypher</span>(<span class="st">'social'</span>, <span class="st">$$
+    MATCH (a:Person {name: 'Alice'})-[:KNOWS*1..3]->(reachable)
+    RETURN DISTINCT reachable.name
+$$</span>) <span class="kw">AS</span> (name agtype);
+
+<span class="cm">-- MERGE: create if not exists, update if exists</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">cypher</span>(<span class="st">'social'</span>, <span class="st">$$
+    MERGE (p:Person {name: 'Eve'})
+    ON CREATE SET p.age = 26
+    ON MATCH SET p.last_seen = 'today'
+    RETURN p.name, p.age
+$$</span>) <span class="kw">AS</span> (name agtype, age agtype);
+
+<span class="cm">-- Aggregation in Cypher</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">cypher</span>(<span class="st">'social'</span>, <span class="st">$$
+    MATCH (p:Person)
+    WITH p.city AS city, COUNT(*) AS cnt
+    WHERE cnt > 1
+    RETURN city, cnt
+    ORDER BY cnt DESC
+$$</span>) <span class="kw">AS</span> (city agtype, cnt agtype);</code></pre>
+
+  <span class="example-tag tag-sql">SQL</span>
+  <h3>SQL Graph Functions</h3>
+<pre><code><span class="cm">-- BFS traversal from vertex 1, up to 2 hops via 'cited_by'</span>
+<span class="kw">SELECT</span> _doc_id, title <span class="kw">FROM</span> <span class="fn">traverse</span>(1, <span class="st">'cited_by'</span>, 2);
+
+<span class="cm">-- Regular path query: 2-hop cited_by chain</span>
+<span class="kw">SELECT</span> _doc_id, title <span class="kw">FROM</span> <span class="fn">rpq</span>(<span class="st">'cited_by/cited_by'</span>, 1);
+
+<span class="cm">-- Graph reachability as a scored signal (for fusion)</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">traverse_match</span>(1, <span class="st">'cited_by'</span>, 3)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+</section>
+
+<!-- ============ FDW ============ -->
+<section id="fdw-parquet">
+  <h2>Foreign Data Wrappers &amp; Parquet</h2>
+
+  <span class="example-tag tag-sql">SQL</span>
+  <h3>DuckDB FDW with Hive Partitioning</h3>
+<pre><code><span class="cm">-- Register DuckDB server</span>
+<span class="kw">CREATE SERVER</span> dw <span class="kw">FOREIGN DATA WRAPPER</span> duckdb_fdw;
+
+<span class="cm">-- Map a Parquet directory with Hive partitioning</span>
+<span class="kw">CREATE FOREIGN TABLE</span> orders (
+    order_id <span class="kw">INTEGER</span>, customer <span class="kw">TEXT</span>, amount <span class="kw">REAL</span>,
+    year <span class="kw">INTEGER</span>, month <span class="kw">INTEGER</span>
+) <span class="kw">SERVER</span> dw <span class="kw">OPTIONS</span> (
+    source <span class="st">'/data/orders/**/*.parquet'</span>,
+    hive_partitioning <span class="st">'true'</span>
+);
+
+<span class="cm">-- Query with predicate pushdown (partition pruning)</span>
+<span class="kw">SELECT</span> customer, <span class="fn">SUM</span>(amount) <span class="kw">AS</span> total
+<span class="kw">FROM</span> orders
+<span class="kw">WHERE</span> year = 2025 <span class="kw">AND</span> month <span class="kw">BETWEEN</span> 1 <span class="kw">AND</span> 3
+<span class="kw">GROUP BY</span> customer
+<span class="kw">ORDER BY</span> total <span class="kw">DESC LIMIT</span> 10;
+
+<span class="cm">-- Join foreign table with local table</span>
+<span class="kw">SELECT</span> o.customer, e.name <span class="kw">AS</span> rep, <span class="fn">SUM</span>(o.amount)
+<span class="kw">FROM</span> orders o
+<span class="kw">JOIN</span> employees e <span class="kw">ON</span> o.customer = e.name
+<span class="kw">GROUP BY</span> o.customer, e.name;</code></pre>
+
+  <h3>CSV Files</h3>
+<pre><code><span class="kw">CREATE FOREIGN TABLE</span> logs (
+    ts <span class="kw">TEXT</span>, level <span class="kw">TEXT</span>, msg <span class="kw">TEXT</span>
+) <span class="kw">SERVER</span> dw <span class="kw">OPTIONS</span> (source <span class="st">'/var/log/app.csv'</span>);
+
+<span class="kw">SELECT</span> level, <span class="fn">COUNT</span>(*) <span class="kw">FROM</span> logs <span class="kw">GROUP BY</span> level;</code></pre>
+</section>
+
+<!-- ============ Text Analysis ============ -->
+<section id="text-analysis">
+  <h2>Text Analysis Pipeline</h2>
+
+  <span class="example-tag tag-python">Python</span>
+<pre><code><span class="kw">from</span> uqa.analysis <span class="kw">import</span> (
+    Analyzer, StandardTokenizer, LetterTokenizer,
+    NGramTokenizer, KeywordTokenizer,
+    LowerCaseFilter, StopWordFilter, PorterStemFilter,
+    ASCIIFoldingFilter, SynonymFilter, EdgeNGramFilter,
+    HTMLStripCharFilter, MappingCharFilter,
+)
+
+<span class="cm"># Standard English analyzer with stemming</span>
+english = Analyzer(
+    tokenizer=StandardTokenizer(),
+    token_filters=[
+        LowerCaseFilter(),
+        StopWordFilter(language=<span class="st">"english"</span>),
+        PorterStemFilter(),
+    ],
+)
+print(english.analyze(<span class="st">"The quick brown foxes are jumping"</span>))
+<span class="cm"># ['quick', 'brown', 'fox', 'jump']</span>
+
+<span class="cm"># Autocomplete analyzer with edge n-grams</span>
+autocomplete = Analyzer(
+    tokenizer=StandardTokenizer(),
+    token_filters=[
+        LowerCaseFilter(),
+        EdgeNGramFilter(min_gram=2, max_gram=8),
+    ],
+)
+print(autocomplete.analyze(<span class="st">"machine learning"</span>))
+<span class="cm"># ['ma', 'mac', 'mach', ..., 'le', 'lea', 'lear', ...]</span>
+
+<span class="cm"># Synonym expansion</span>
+synonyms = Analyzer(
+    tokenizer=StandardTokenizer(),
+    token_filters=[
+        LowerCaseFilter(),
+        SynonymFilter(synonyms={<span class="st">"ml"</span>: [<span class="st">"machine learning"</span>], <span class="st">"ai"</span>: [<span class="st">"artificial intelligence"</span>]}),
+    ],
+)
+print(synonyms.analyze(<span class="st">"ml models"</span>))
+<span class="cm"># ['ml', 'machine learning', 'models']</span>
+
+<span class="cm"># HTML stripping</span>
+html_analyzer = Analyzer(
+    char_filters=[HTMLStripCharFilter()],
+    tokenizer=StandardTokenizer(),
+    token_filters=[LowerCaseFilter()],
+)
+print(html_analyzer.analyze(<span class="st">"&lt;p&gt;Hello &lt;b&gt;World&lt;/b&gt;&lt;/p&gt;"</span>))
+<span class="cm"># ['hello', 'world']</span></code></pre>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">-- Create analyzer via SQL</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">create_analyzer</span>(<span class="st">'my_english'</span>, <span class="st">'{
+    "tokenizer": {"type": "standard"},
+    "token_filters": [
+        {"type": "lowercase"},
+        {"type": "stop", "language": "english"},
+        {"type": "porter_stem"}
+    ],
+    "char_filters": [{"type": "html_strip"}]
+}'</span>);
+
+<span class="cm">-- List all analyzers</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">list_analyzers</span>();
+
+<span class="cm">-- Drop a custom analyzer</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">drop_analyzer</span>(<span class="st">'my_english'</span>);</code></pre>
+</section>
+
+<!-- ============ Arrow Export ============ -->
+<section id="arrow-export">
+  <h2>Arrow / Parquet Export</h2>
+
+  <span class="example-tag tag-python">Python</span>
+<pre><code><span class="kw">from</span> uqa.engine <span class="kw">import</span> Engine
+
+engine = Engine()
+engine.sql(<span class="st">"CREATE TABLE t (id SERIAL, name TEXT, score REAL)"</span>)
+engine.sql(<span class="st">"INSERT INTO t (name, score) VALUES ('a', 1.5), ('b', 2.3), ('c', 0.8)"</span>)
+
+<span class="cm"># SQL result to Arrow Table (zero-copy from execution engine)</span>
+result = engine.sql(<span class="st">"SELECT * FROM t ORDER BY score DESC"</span>)
+arrow_table = result.to_arrow()
+print(arrow_table.schema)
+print(arrow_table.to_pandas())
+
+<span class="cm"># SQL result to Parquet file</span>
+result.to_parquet(<span class="st">"output.parquet"</span>)
+
+<span class="cm"># Fluent API to Arrow</span>
+arrow_table = (
+    engine.query(table=<span class="st">"t"</span>)
+    .execute_arrow()
+)
+
+<span class="cm"># Fluent API to Parquet</span>
+engine.query(table=<span class="st">"t"</span>).execute_parquet(<span class="st">"fluent_output.parquet"</span>)
+
+engine.close()</code></pre>
+</section>
+
+<!-- ============ Fluent API ============ -->
+<section id="fluent-api">
+  <h2>Fluent QueryBuilder API</h2>
+
+  <span class="example-tag tag-python">Python</span>
+  <h3>Boolean Composition</h3>
+<pre><code><span class="kw">from</span> uqa.engine <span class="kw">import</span> Engine
+<span class="kw">from</span> uqa.core.types <span class="kw">import</span> Equals, GreaterThanOrEqual, Between
+
+engine = Engine()
+<span class="cm"># ... (create and populate table)</span>
+
+<span class="cm"># Boolean AND: intersection of two term queries</span>
+q1 = engine.query(table=<span class="st">"papers"</span>).term(<span class="st">"neural"</span>, field=<span class="st">"title"</span>)
+q2 = engine.query(table=<span class="st">"papers"</span>).term(<span class="st">"network"</span>, field=<span class="st">"title"</span>)
+both = q1.and_(q2).execute()
+
+<span class="cm"># Boolean OR: union of results</span>
+either = q1.or_(q2).execute()
+
+<span class="cm"># Relational filter</span>
+result = (
+    engine.query(table=<span class="st">"papers"</span>)
+    .filter(<span class="st">"year"</span>, GreaterThanOrEqual(2020))
+    .filter(<span class="st">"citations"</span>, Between(100, 10000))
+    .execute()
+)
+
+<span class="cm"># Facets: count documents per field value</span>
+facets = engine.query(table=<span class="st">"papers"</span>).facet(<span class="st">"category"</span>)
+<span class="kw">for</span> value, count <span class="kw">in</span> facets.items():
+    print(f<span class="st">"{value}: {count}"</span>)</code></pre>
+
+  <h3>EXPLAIN</h3>
+<pre><code><span class="cm"># View the query plan</span>
+plan = (
+    engine.query(table=<span class="st">"papers"</span>)
+    .term(<span class="st">"attention"</span>, field=<span class="st">"title"</span>)
+    .score_bm25(<span class="st">"attention"</span>)
+    .knn(query_vector, k=5, field=<span class="st">"embedding"</span>)
+    .fuse_log_odds()
+    .explain()
+)
+print(plan)</code></pre>
+</section>
+
+<!-- ============ Hierarchical Data ============ -->
+<section id="hierarchical">
+  <h2>Hierarchical Data</h2>
+
+  <span class="example-tag tag-python">Python</span>
+<pre><code><span class="kw">from</span> uqa.core.types <span class="kw">import</span> Equals
+
+<span class="cm"># Add nested documents</span>
+engine.add_document(table=<span class="st">"orders"</span>, document={
+    <span class="st">"customer"</span>: <span class="st">"Alice"</span>,
+    <span class="st">"shipping"</span>: {<span class="st">"city"</span>: <span class="st">"Seoul"</span>, <span class="st">"country"</span>: <span class="st">"KR"</span>},
+    <span class="st">"items"</span>: [
+        {<span class="st">"name"</span>: <span class="st">"Widget"</span>, <span class="st">"price"</span>: 25.00, <span class="st">"qty"</span>: 3},
+        {<span class="st">"name"</span>: <span class="st">"Gadget"</span>, <span class="st">"price"</span>: 49.99, <span class="st">"qty"</span>: 1},
+    ]
+})
+
+<span class="cm"># Path filter: find orders shipping to Seoul</span>
+result = (
+    engine.query(table=<span class="st">"orders"</span>)
+    .path_filter(<span class="st">"shipping.city"</span>, Equals(<span class="st">"Seoul"</span>))
+    .execute()
+)
+
+<span class="cm"># Path aggregate: total price across items</span>
+result = (
+    engine.query(table=<span class="st">"orders"</span>)
+    .path_aggregate(<span class="st">"items.price"</span>, <span class="st">"sum"</span>)
+    .execute()
+)</code></pre>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">-- SQL equivalents</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> orders <span class="kw">WHERE</span> <span class="fn">path_filter</span>(<span class="st">'shipping.city'</span>, <span class="st">'Seoul'</span>);
+<span class="kw">SELECT</span> *, <span class="fn">path_agg</span>(<span class="st">'items.price'</span>, <span class="st">'sum'</span>) <span class="kw">AS</span> total <span class="kw">FROM</span> orders;
+<span class="kw">SELECT</span> <span class="fn">path_value</span>(<span class="st">'shipping.country'</span>) <span class="kw">AS</span> country <span class="kw">FROM</span> orders;</code></pre>
+</section>
+
+<!-- ============ Source Files ============ -->
+<section id="source-files">
+  <h2>Source Files</h2>
+  <p>Complete runnable examples are in the repository:</p>
+
+  <div class="grid">
+    <div class="card">
+      <h3>SQL Examples</h3>
+      <p>
+        <a href="https://github.com/cognica-io/uqa/tree/main/examples/sql">examples/sql/</a><br>
+        basics, functions, graph, fusion, joins_and_subqueries, analytics, analysis, export, fdw
+      </p>
+    </div>
+    <div class="card">
+      <h3>Fluent API Examples</h3>
+      <p>
+        <a href="https://github.com/cognica-io/uqa/tree/main/examples/fluent">examples/fluent/</a><br>
+        text_search, vector_and_hybrid, graph, hierarchical, multi_paradigm, analysis, export
+      </p>
+    </div>
+  </div>
+
+  <span class="example-tag tag-shell">Shell</span>
+<pre><code><span class="cm"># Run all examples</span>
+python examples/sql/basics.py
+python examples/sql/functions.py
+python examples/sql/graph.py
+python examples/sql/fusion.py
+python examples/sql/joins_and_subqueries.py
+python examples/sql/analytics.py
+python examples/sql/analysis.py
+python examples/sql/export.py
+python examples/sql/fdw.py
+
+python examples/fluent/text_search.py
+python examples/fluent/vector_and_hybrid.py
+python examples/fluent/graph.py
+python examples/fluent/hierarchical.py
+python examples/fluent/multi_paradigm.py
+python examples/fluent/analysis.py
+python examples/fluent/export.py</code></pre>
+</section>
+
+</div><!-- .content -->
+</div><!-- .page-with-toc -->
+
+<!-- ====== Footer ====== -->
+<footer>
+  <div class="container">
+    <p>
+      UQA &mdash; Unified Query Algebra
+      &middot; <a href="https://github.com/cognica-io/uqa">GitHub</a>
+      &middot; <a href="https://pypi.org/project/uqa/">PyPI</a>
+      &middot; <a href="https://cognica.io">Cognica</a>
+      &middot; AGPL-3.0
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
