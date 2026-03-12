@@ -1,5 +1,27 @@
 # History
 
+## 0.11.1 (2026-03-12)
+
+Public API improvements and quickstart example.
+
+### Public API
+
+- **`engine.get_document(doc_id, table)`**: retrieve a document by ID from a table's document store; returns the stored dict or `None`
+- **`engine.get_graph_store(table)`**: return the `GraphStore` associated with a table for direct vertex lookups and index building
+- **`engine.get_table_analyzer(table, field)`**: symmetric getter for `set_table_analyzer()`; returns the analyzer assigned to a table field
+
+### Examples
+
+- **`examples/quickstart.py`**: hybrid search (text + vector + fusion) in under 30 lines, demonstrating `text_match`, `knn_match`, `fuse_log_odds`, and `EXPLAIN`
+- Removed all `engine._tables[...]` private API access from 8 example files, replaced with public `get_document()`, `get_graph_store()`, and `set_table_analyzer()` calls
+
+### Documentation
+
+- Updated README with quickstart section and `get_document()` usage
+- Updated `docs/references/uqa-api-manual.md` with new public API methods
+- Updated GitHub Pages (`docs.html`, `examples.html`) with new API documentation and quickstart links
+
+
 ## 0.11.0 (2026-03-12)
 
 Query optimizer overhaul, vector index architecture redesign, and USQL formal grammar specification.
