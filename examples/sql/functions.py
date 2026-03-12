@@ -25,7 +25,7 @@ from uqa.engine import Engine
 # Data setup
 # ======================================================================
 
-engine = Engine(vector_dimensions=8, max_elements=50)
+engine = Engine()
 
 # -- SQL table: articles with vector column --
 engine.sql("""

@@ -125,7 +125,7 @@ class TestParallelExecutor:
 class TestParallelBooleanOps:
     @pytest.fixture
     def engine(self):
-        e = Engine(vector_dimensions=4, max_elements=10, parallel_workers=4)
+        e = Engine(parallel_workers=4)
         e.sql(
             "CREATE TABLE docs ("
             "id INTEGER PRIMARY KEY, "
@@ -208,7 +208,7 @@ class TestParallelBooleanOps:
 class TestParallelFusion:
     @pytest.fixture
     def engine(self):
-        e = Engine(vector_dimensions=4, max_elements=10, parallel_workers=4)
+        e = Engine(parallel_workers=4)
         e.sql(
             "CREATE TABLE docs ("
             "id INTEGER PRIMARY KEY, "
@@ -315,7 +315,7 @@ class TestSQLParallel:
 
     def test_sql_fusion_query_with_parallel(self):
         """SQL fusion query works with parallel execution."""
-        e = Engine(parallel_workers=4, vector_dimensions=4)
+        e = Engine(parallel_workers=4)
         e.sql(
             "CREATE TABLE docs ("
             "id INTEGER PRIMARY KEY, "

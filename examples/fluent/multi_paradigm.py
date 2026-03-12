@@ -36,7 +36,7 @@ from uqa.engine import Engine
 # Data setup: product catalog with text, vectors, graph, and nested data
 # ======================================================================
 
-engine = Engine(vector_dimensions=8, max_elements=100)
+engine = Engine()
 rng = np.random.RandomState(42)
 
 # -- Products table (text + vector) --

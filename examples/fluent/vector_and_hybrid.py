@@ -26,7 +26,7 @@ from uqa.engine import Engine
 # Data setup: 10 products with descriptions and embeddings
 # ======================================================================
 
-engine = Engine(vector_dimensions=8, max_elements=50)
+engine = Engine()
 
 engine.sql("""
     CREATE TABLE products (

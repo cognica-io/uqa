@@ -37,11 +37,9 @@ def _random_vector(dim: int = 8, seed: int = 42) -> np.ndarray:
 
 
 def _make_index(
-    conn, dimensions: int = 8, max_elements: int = 100
+    conn, dimensions: int = 8,
 ) -> SQLiteVectorIndex:
-    return SQLiteVectorIndex(
-        conn, dimensions=dimensions, max_elements=max_elements
-    )
+    return SQLiteVectorIndex(conn, dimensions=dimensions)
 
 
 # ======================================================================
@@ -250,45 +248,48 @@ class TestPersistence:
 
 
 class TestEngineIntegration:
-    def test_table_has_vector_index(self, tmp_path):
+    def test_create_index_using_hnsw(self, tmp_path):
         from uqa.engine import Engine
         from uqa.storage.vector_index import HNSWIndex
 
         db = str(tmp_path / "test.db")
-        with Engine(db_path=db, vector_dimensions=8) as engine:
+        with Engine(db_path=db) as engine:
             engine.sql(
                 "CREATE TABLE docs ("
                 "  id SERIAL PRIMARY KEY,"
                 "  emb VECTOR(8)"
                 ")"
             )
-            # Per-table vector indexes are HNSWIndex (in-memory)
+            assert engine._tables["docs"].vector_indexes == {}
+
+            engine.sql("CREATE INDEX idx_emb ON docs USING hnsw (emb)")
             assert "emb" in engine._tables["docs"].vector_indexes
             assert isinstance(
                 engine._tables["docs"].vector_indexes["emb"], HNSWIndex
             )
 
-    def test_in_memory_table_has_vector_index(self):
+    def test_vector_stored_in_document_store(self):
         from uqa.engine import Engine
-        from uqa.storage.vector_index import HNSWIndex
 
-        with Engine(vector_dimensions=8) as engine:
+        with Engine() as engine:
             engine.sql(
                 "CREATE TABLE docs ("
                 "  id SERIAL PRIMARY KEY,"
-                "  emb VECTOR(8)"
+                "  emb VECTOR(4)"
                 ")"
             )
-            assert "emb" in engine._tables["docs"].vector_indexes
-            assert isinstance(
-                engine._tables["docs"].vector_indexes["emb"], HNSWIndex
+            engine.sql(
+                "INSERT INTO docs (emb) VALUES (ARRAY[1.0, 0, 0, 0])"
             )
+            doc = engine._tables["docs"].document_store.get(1)
+            assert doc is not None
+            assert doc["emb"] == [1.0, 0.0, 0.0, 0.0]
 
-    def test_sql_insert_populates_vector_index(self, tmp_path):
+    def test_sql_insert_with_hnsw_index(self, tmp_path):
         from uqa.engine import Engine
 
         db = str(tmp_path / "test.db")
-        with Engine(db_path=db, vector_dimensions=8) as engine:
+        with Engine(db_path=db) as engine:
             engine.sql(
                 "CREATE TABLE docs ("
                 "  id SERIAL PRIMARY KEY,"
@@ -296,6 +297,8 @@ class TestEngineIntegration:
                 "  emb VECTOR(8)"
                 ")"
             )
+            engine.sql("CREATE INDEX idx_emb ON docs USING hnsw (emb)")
+
             vec = np.array([1.0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
             arr = "ARRAY[" + ",".join(str(float(v)) for v in vec) + "]"
             engine.sql(
@@ -310,13 +313,38 @@ class TestEngineIntegration:
             assert len(result.entries) == 1
             assert result.entries[0].doc_id == 1
 
-    def test_add_document_populates_vector_index(self, tmp_path):
+    def test_brute_force_knn_without_index(self):
+        from uqa.engine import Engine
+
+        with Engine() as engine:
+            engine.sql(
+                "CREATE TABLE docs ("
+                "  id SERIAL PRIMARY KEY,"
+                "  title TEXT,"
+                "  emb VECTOR(8)"
+                ")"
+            )
+            vec = np.array([1.0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
+            arr = "ARRAY[" + ",".join(str(float(v)) for v in vec) + "]"
+            engine.sql(
+                f"INSERT INTO docs (title, emb) VALUES ('test', {arr})"
+            )
+
+            # No HNSW index -- knn_match falls back to brute-force
+            result = engine.sql(
+                "SELECT title FROM docs WHERE knn_match(emb, $1, 1)",
+                params=[vec],
+            )
+            assert len(result.rows) == 1
+            assert result.rows[0]["title"] == "test"
+
+    def test_add_document_stores_vector(self, tmp_path):
         from uqa.engine import Engine
 
         db = str(tmp_path / "test.db")
         vec = np.array([1.0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
 
-        with Engine(db_path=db, vector_dimensions=8) as engine:
+        with Engine(db_path=db) as engine:
             engine.sql(
                 "CREATE TABLE docs ("
                 "  id SERIAL PRIMARY KEY,"
@@ -328,13 +356,9 @@ class TestEngineIntegration:
                 1, {"title": "test"}, table="docs", embedding=vec
             )
 
-            vec_idx = engine._tables["docs"].vector_indexes["emb"]
-            assert len(vec_idx._doc_id_to_internal) == 1
-
-            query = np.array([1.0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
-            result = vec_idx.search_knn(query, k=1)
-            assert len(result.entries) == 1
-            assert result.entries[0].doc_id == 1
+            doc = engine._tables["docs"].document_store.get(1)
+            assert doc is not None
+            assert doc["emb"] == [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     def test_sql_data_persists_across_engine_restart(self, tmp_path):
         from uqa.engine import Engine
@@ -354,18 +378,18 @@ class TestEngineIntegration:
                 f"INSERT INTO docs (title, emb) VALUES ('test', {arr})"
             )
 
-        # Scalar data persists; vector indexes are rebuilt as empty
-        # on engine restart (HNSWIndex is in-memory only).
+        # Both scalar and vector data persist across restart
         with Engine(db_path=db) as engine:
-            result = engine.sql("SELECT title FROM docs")
+            result = engine.sql("SELECT title, emb FROM docs")
             assert len(result.rows) == 1
             assert result.rows[0]["title"] == "test"
+            assert result.rows[0]["emb"] == [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     def test_delete_document_removes_from_store(self, tmp_path):
         from uqa.engine import Engine
 
         db = str(tmp_path / "test.db")
-        with Engine(db_path=db, vector_dimensions=8) as engine:
+        with Engine(db_path=db) as engine:
             engine.sql(
                 "CREATE TABLE docs ("
                 "  id SERIAL PRIMARY KEY,"
@@ -378,15 +402,13 @@ class TestEngineIntegration:
                 1, {"title": "test"}, table="docs", embedding=vec
             )
             engine.delete_document(1, table="docs")
-
-            # Document is removed from the document store
             assert engine._tables["docs"].document_store.get(1) is None
 
-    def test_multiple_vectors_in_table(self, tmp_path):
+    def test_create_index_on_existing_data(self, tmp_path):
         from uqa.engine import Engine
 
         db = str(tmp_path / "test.db")
-        with Engine(db_path=db, vector_dimensions=4) as engine:
+        with Engine(db_path=db) as engine:
             engine.sql(
                 "CREATE TABLE docs ("
                 "  id SERIAL PRIMARY KEY,"
@@ -400,8 +422,18 @@ class TestEngineIntegration:
                     i, {"title": f"doc{i}"}, table="docs", embedding=vec
                 )
 
+            # No index yet -- verify brute-force works
+            query = _random_vector(4, seed=3)
+            result = engine.sql(
+                "SELECT id FROM docs WHERE knn_match(emb, $1, 1)",
+                params=[query],
+            )
+            assert result.rows[0]["id"] == 3
+
+            # Create HNSW index on existing data
+            engine.sql("CREATE INDEX idx_emb ON docs USING hnsw (emb)")
             vec_idx = engine._tables["docs"].vector_indexes["emb"]
             assert len(vec_idx._doc_id_to_internal) == 5
-            query = _random_vector(4, seed=3)
-            result = vec_idx.search_knn(query, k=1)
-            assert result.entries[0].doc_id == 3
+
+            result2 = vec_idx.search_knn(query, k=1)
+            assert result2.entries[0].doc_id == 3

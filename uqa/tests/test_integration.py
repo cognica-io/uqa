@@ -31,7 +31,7 @@ from uqa.core.posting_list import PostingList
 @pytest.fixture
 def engine_with_docs() -> Engine:
     """Engine populated with sample documents, vectors, and graph data."""
-    engine = Engine(vector_dimensions=16, max_elements=100)
+    engine = Engine()
     engine.sql(
         "CREATE TABLE papers ("
         "id INTEGER PRIMARY KEY, "

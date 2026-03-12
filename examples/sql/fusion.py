@@ -26,7 +26,7 @@ from uqa.engine import Engine
 # Data setup: academic papers with text, vectors, and citation graph
 # ======================================================================
 
-engine = Engine(vector_dimensions=8, max_elements=50)
+engine = Engine()
 
 # -- SQL table with vector column --
 engine.sql("""

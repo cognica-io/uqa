@@ -26,7 +26,7 @@ from uqa.sql.compiler import SQLCompiler, SQLResult
 @pytest.fixture
 def engine() -> Engine:
     """Build an engine with a SQL table and a citation graph."""
-    e = Engine(vector_dimensions=8, max_elements=100)
+    e = Engine()
 
     # -- DDL: create table -------------------------------------------
     e.sql("""
@@ -63,7 +63,7 @@ def engine() -> Engine:
 
 class TestDDL:
     def test_create_table(self) -> None:
-        e = Engine(vector_dimensions=8, max_elements=100)
+        e = Engine()
         e.sql("CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT NOT NULL)")
         assert "users" in e._tables
         table = e._tables["users"]
@@ -76,19 +76,19 @@ class TestDDL:
             engine.sql("CREATE TABLE papers (id SERIAL PRIMARY KEY)")
 
     def test_drop_table(self) -> None:
-        e = Engine(vector_dimensions=8, max_elements=100)
+        e = Engine()
         e.sql("CREATE TABLE temp (id SERIAL PRIMARY KEY)")
         assert "temp" in e._tables
         e.sql("DROP TABLE temp")
         assert "temp" not in e._tables
 
     def test_drop_table_if_exists(self) -> None:
-        e = Engine(vector_dimensions=8, max_elements=100)
+        e = Engine()
         # Should not raise
         e.sql("DROP TABLE IF EXISTS nonexistent")
 
     def test_drop_table_missing_raises(self) -> None:
-        e = Engine(vector_dimensions=8, max_elements=100)
+        e = Engine()
         with pytest.raises(ValueError, match="does not exist"):
             e.sql("DROP TABLE nonexistent")
 
@@ -99,21 +99,21 @@ class TestDDL:
 
 class TestInsert:
     def test_insert_single_row(self) -> None:
-        e = Engine(vector_dimensions=8, max_elements=100)
+        e = Engine()
         e.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, name TEXT)")
         result = e.sql("INSERT INTO t (name) VALUES ('alice')")
         assert result.rows[0]["inserted"] == 1
         assert e._tables["t"].row_count == 1
 
     def test_insert_multiple_rows(self) -> None:
-        e = Engine(vector_dimensions=8, max_elements=100)
+        e = Engine()
         e.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, val INTEGER)")
         result = e.sql("INSERT INTO t (val) VALUES (10), (20), (30)")
         assert result.rows[0]["inserted"] == 3
         assert e._tables["t"].row_count == 3
 
     def test_insert_auto_increment(self) -> None:
-        e = Engine(vector_dimensions=8, max_elements=100)
+        e = Engine()
         e.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, name TEXT)")
         e.sql("INSERT INTO t (name) VALUES ('a')")
         e.sql("INSERT INTO t (name) VALUES ('b')")
@@ -122,12 +122,12 @@ class TestInsert:
         assert r.rows[1]["id"] == 2
 
     def test_insert_missing_table_raises(self) -> None:
-        e = Engine(vector_dimensions=8, max_elements=100)
+        e = Engine()
         with pytest.raises(ValueError, match="does not exist"):
             e.sql("INSERT INTO missing (x) VALUES (1)")
 
     def test_insert_not_null_violation(self) -> None:
-        e = Engine(vector_dimensions=8, max_elements=100)
+        e = Engine()
         e.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, name TEXT NOT NULL)")
         with pytest.raises(ValueError, match="NOT NULL"):
             e.sql("INSERT INTO t (id) VALUES (1)")
@@ -174,7 +174,7 @@ class TestBasicSelect:
         assert result.rows[0]["year"] >= result.rows[1]["year"]
 
     def test_select_from_missing_table_raises(self) -> None:
-        e = Engine(vector_dimensions=8, max_elements=100)
+        e = Engine()
         with pytest.raises(ValueError, match="does not exist"):
             e.sql("SELECT * FROM missing")
 
@@ -514,7 +514,7 @@ class TestAnalyze:
         assert year_stats.distinct_count == 5
 
     def test_analyze_all_tables(self) -> None:
-        e = Engine(vector_dimensions=8, max_elements=100)
+        e = Engine()
         e.sql("CREATE TABLE t1 (id SERIAL PRIMARY KEY, val INTEGER)")
         e.sql("CREATE TABLE t2 (id SERIAL PRIMARY KEY, name TEXT)")
         e.sql("INSERT INTO t1 (val) VALUES (1), (2), (3)")
@@ -635,7 +635,7 @@ class TestEdgeCases:
 @pytest.fixture
 def hybrid_engine() -> Engine:
     """Engine with table, graph, and vector data for hybrid queries."""
-    e = Engine(vector_dimensions=8, max_elements=100)
+    e = Engine()
     e.sql("""
         CREATE TABLE papers (
             id SERIAL PRIMARY KEY,

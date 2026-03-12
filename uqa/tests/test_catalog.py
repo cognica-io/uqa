@@ -646,19 +646,19 @@ class TestEnginePersistenceAPI:
                 1, {"title": "test"}, table="docs", embedding=vec
             )
 
-            # Document persists via SQLite-backed store
+            # Document and vector persist via SQLite-backed store
             store = engine._tables["docs"].document_store
-            assert store.get(1) is not None
+            doc = store.get(1)
+            assert doc is not None
+            assert doc["embedding"] == [1.0, 0.0, 0.0, 0.0]
 
-            # Vector search works within the same session (HNSW is
-            # in-memory and not serialized across restarts)
-            query = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
-            vec_idx = next(
-                iter(engine._tables["docs"].vector_indexes.values())
+            # Vector search via brute-force (no HNSW index created)
+            result = engine.sql(
+                "SELECT id FROM docs WHERE knn_match(embedding, $1, 1)",
+                params=[np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)],
             )
-            pl = vec_idx.search_knn(query, k=1)
-            assert len(pl.entries) == 1
-            assert pl.entries[0].doc_id == 1
+            assert len(result.rows) == 1
+            assert result.rows[0]["id"] == 1
 
     def test_add_graph_persists(self, tmp_path):
         db = str(tmp_path / "test.db")
@@ -869,7 +869,7 @@ class TestEnginePersistenceBackwardCompat:
         engine.close()
 
     def test_add_document_without_persistence(self):
-        engine = Engine(vector_dimensions=4)
+        engine = Engine()
         engine.sql("""
             CREATE TABLE docs (
                 id INT PRIMARY KEY,
@@ -890,7 +890,7 @@ class TestEnginePersistenceBackwardCompat:
 
     def test_delete_document_in_memory(self):
         """delete_document works in pure in-memory mode."""
-        engine = Engine(vector_dimensions=4)
+        engine = Engine()
         engine.sql("""
             CREATE TABLE docs (
                 id INT PRIMARY KEY,

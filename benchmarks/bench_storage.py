@@ -185,7 +185,7 @@ class TestVectorIndex:
                 "CREATE TABLE IF NOT EXISTS _vectors "
                 "(doc_id INTEGER PRIMARY KEY, dimensions INTEGER, embedding BLOB)"
             )
-            vi = SQLiteVectorIndex(conn, dimensions=128, max_elements=n + 100)
+            vi = SQLiteVectorIndex(conn, dimensions=128)
             for i in range(n):
                 vi.add(i + 1, vecs[i])
             count = vi.count()
@@ -205,7 +205,7 @@ class TestVectorIndex:
             "CREATE TABLE IF NOT EXISTS _vectors "
             "(doc_id INTEGER PRIMARY KEY, dimensions INTEGER, embedding BLOB)"
         )
-        vi = SQLiteVectorIndex(conn, dimensions=128, max_elements=n + 100)
+        vi = SQLiteVectorIndex(conn, dimensions=128)
         for i in range(n):
             vi.add(i + 1, vecs[i])
 

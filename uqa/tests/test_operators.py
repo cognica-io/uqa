@@ -87,7 +87,7 @@ def inv_index(sample_documents: list[dict]) -> InvertedIndex:
 @pytest.fixture
 def vec_index(sample_vectors: dict[int, np.ndarray]) -> HNSWIndex:
     dim = 64
-    index = HNSWIndex(dimensions=dim, max_elements=100)
+    index = HNSWIndex(dimensions=dim)
     for doc_id, vector in sample_vectors.items():
         index.add(doc_id, vector)
     return index
@@ -496,7 +496,7 @@ class TestInvertedIndex:
 class TestHNSWIndex:
     def test_add_and_knn(self) -> None:
         rng = np.random.RandomState(42)
-        idx = HNSWIndex(dimensions=16, max_elements=10)
+        idx = HNSWIndex(dimensions=16)
         vectors = {i: rng.randn(16).astype(np.float32) for i in range(1, 6)}
         for doc_id, vec in vectors.items():
             idx.add(doc_id, vec)
@@ -506,7 +506,7 @@ class TestHNSWIndex:
 
     def test_search_threshold(self) -> None:
         rng = np.random.RandomState(42)
-        idx = HNSWIndex(dimensions=16, max_elements=10)
+        idx = HNSWIndex(dimensions=16)
         vectors = {i: rng.randn(16).astype(np.float32) for i in range(1, 6)}
         for doc_id, vec in vectors.items():
             idx.add(doc_id, vec)
