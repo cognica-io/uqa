@@ -458,7 +458,7 @@ class TestCrossParadigmExplain:
 class TestCrossParadigmOptimizerCorrectness:
     @pytest.fixture
     def engine(self):
-        e = Engine(vector_dimensions=16, max_elements=100)
+        e = Engine()
         e.sql(
             "CREATE TABLE papers ("
             "id INTEGER PRIMARY KEY, "
@@ -552,7 +552,7 @@ class TestCrossParadigmOptimizerCorrectness:
 class TestSQLCrossParadigmOptimizer:
     def test_explain_shows_fusion_plan(self):
         """EXPLAIN on a fusion query shows LogOddsFusion in the plan."""
-        e = Engine(vector_dimensions=4, max_elements=10)
+        e = Engine()
         e.sql(
             "CREATE TABLE docs ("
             "id INTEGER PRIMARY KEY, "
@@ -576,7 +576,7 @@ class TestSQLCrossParadigmOptimizer:
 
     def test_explain_shows_traverse(self):
         """EXPLAIN on a traverse query shows TraverseOp."""
-        e = Engine(vector_dimensions=4, max_elements=10)
+        e = Engine()
         from uqa.core.types import Edge, Vertex
 
         e.sql(

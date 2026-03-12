@@ -436,8 +436,8 @@ class TestGraphPatternPushdown:
             ],
         )
         pm = PatternMatchOperator(pattern)
-        # Filter on "age" > 30
-        filtered = FilterOperator("age", GreaterThan(30), pm)
+        # Filter on "a.age" > 30 (qualified to vertex "a")
+        filtered = FilterOperator("a.age", GreaterThan(30), pm)
 
         stats = IndexStats(total_docs=5)
         optimizer = QueryOptimizer(stats)
@@ -464,7 +464,7 @@ class TestGraphPatternPushdown:
             ],
         )
         pm = PatternMatchOperator(pattern)
-        filtered = FilterOperator("dept", Equals("eng"), pm)
+        filtered = FilterOperator("a.dept", Equals("eng"), pm)
 
         stats = IndexStats(total_docs=5)
         optimizer = QueryOptimizer(stats)
@@ -518,8 +518,10 @@ class TestJoinPatternFusion:
         optimizer = QueryOptimizer(stats)
         optimized = optimizer.optimize(composed)
 
-        # The composition should be fused into just the pattern match
-        assert isinstance(optimized, PatternMatchOperator)
+        # The composition preserves both children (no unsafe fusion)
+        assert isinstance(optimized, ComposedOperator)
+        assert len(optimized.operators) == 2
+        assert isinstance(optimized.operators[1], PatternMatchOperator)
 
 
 # ===========================================================================

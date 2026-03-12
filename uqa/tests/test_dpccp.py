@@ -198,6 +198,7 @@ class TestJoinOrderOptimizer:
     def test_three_way_join_produces_operator(self) -> None:
         from uqa.planner.join_order import JoinOrderOptimizer
         from uqa.joins.inner import InnerJoinOperator
+        from uqa.joins.index import IndexJoinOperator
 
         relations = [
             {"alias": "a", "operator": _FakeOp("a"), "table": None,
@@ -216,7 +217,8 @@ class TestJoinOrderOptimizer:
 
         optimizer = JoinOrderOptimizer()
         operator, table = optimizer.optimize(relations, predicates)
-        assert isinstance(operator, InnerJoinOperator)
+        # Optimizer chooses IndexJoin or InnerJoin based on cardinality
+        assert isinstance(operator, (InnerJoinOperator, IndexJoinOperator))
         assert table is None
 
 

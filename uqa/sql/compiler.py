@@ -791,15 +791,17 @@ class SQLCompiler:
                         f"FOREIGN KEY constraint violated: "
                         f"referenced table '{_ref_table}' does not exist"
                     )
-                for doc_id in parent.document_store.doc_ids:
-                    if parent.document_store.get_field(doc_id, _ref_col) == value:
-                        return
-                raise ValueError(
-                    f"FOREIGN KEY constraint violated: "
-                    f"key ({_fk_col})=({value}) in table "
-                    f"'{_child_table}' is not present in "
-                    f"table '{_ref_table}'"
-                )
+                parent_values = {
+                    parent.document_store.get_field(did, _ref_col)
+                    for did in parent.document_store.doc_ids
+                }
+                if value not in parent_values:
+                    raise ValueError(
+                        f"FOREIGN KEY constraint violated: "
+                        f"key ({_fk_col})=({value}) in table "
+                        f"'{_child_table}' is not present in "
+                        f"table '{_ref_table}'"
+                    )
 
             table.fk_insert_validators.append(_validate_insert)
 
@@ -821,17 +823,17 @@ class SQLCompiler:
                 child = _engine._tables.get(_child_table)
                 if child is None:
                     return
-                for child_id in child.document_store.doc_ids:
-                    child_val = child.document_store.get_field(
-                        child_id, _fk_col
+                child_fk_values = {
+                    child.document_store.get_field(cid, _fk_col)
+                    for cid in child.document_store.doc_ids
+                }
+                if ref_value in child_fk_values:
+                    raise ValueError(
+                        f"FOREIGN KEY constraint violated: "
+                        f"key ({_ref_col})=({ref_value}) in table "
+                        f"'{_ref_table}' is still referenced from "
+                        f"table '{_child_table}'"
                     )
-                    if child_val == ref_value:
-                        raise ValueError(
-                            f"FOREIGN KEY constraint violated: "
-                            f"key ({_ref_col})=({ref_value}) in table "
-                            f"'{_ref_table}' is still referenced from "
-                            f"table '{_child_table}'"
-                        )
 
             # Register on the parent table (if it exists now).
             # Also defer: if the parent is created later, the
@@ -870,15 +872,17 @@ class SQLCompiler:
                         f"FOREIGN KEY constraint violated: "
                         f"referenced table '{_ref_table}' does not exist"
                     )
-                for doc_id in parent.document_store.doc_ids:
-                    if parent.document_store.get_field(doc_id, _ref_col) == new_value:
-                        return
-                raise ValueError(
-                    f"FOREIGN KEY constraint violated: "
-                    f"key ({_fk_col})=({new_value}) in table "
-                    f"'{_child_table}' is not present in "
-                    f"table '{_ref_table}'"
-                )
+                parent_values = {
+                    parent.document_store.get_field(did, _ref_col)
+                    for did in parent.document_store.doc_ids
+                }
+                if new_value not in parent_values:
+                    raise ValueError(
+                        f"FOREIGN KEY constraint violated: "
+                        f"key ({_fk_col})=({new_value}) in table "
+                        f"'{_child_table}' is not present in "
+                        f"table '{_ref_table}'"
+                    )
 
             table.fk_update_validators.append(_validate_update)
 
@@ -902,17 +906,17 @@ class SQLCompiler:
                 child = _engine._tables.get(_child_table)
                 if child is None:
                     return
-                for child_id in child.document_store.doc_ids:
-                    child_val = child.document_store.get_field(
-                        child_id, _fk_col
+                child_fk_values = {
+                    child.document_store.get_field(cid, _fk_col)
+                    for cid in child.document_store.doc_ids
+                }
+                if old_value in child_fk_values:
+                    raise ValueError(
+                        f"FOREIGN KEY constraint violated: "
+                        f"key ({_ref_col})=({old_value}) in table "
+                        f"'{_ref_table}' is still referenced from "
+                        f"table '{_child_table}'"
                     )
-                    if child_val == old_value:
-                        raise ValueError(
-                            f"FOREIGN KEY constraint violated: "
-                            f"key ({_ref_col})=({old_value}) in table "
-                            f"'{_ref_table}' is still referenced from "
-                            f"table '{_child_table}'"
-                        )
 
             if parent_table is not None:
                 parent_table.fk_update_validators.append(
@@ -1361,12 +1365,6 @@ class SQLCompiler:
     def _compile_create_index(self, stmt: IndexStmt) -> SQLResult:
         from uqa.storage.index_types import IndexDef, IndexType
 
-        index_manager = getattr(self._engine, "_index_manager", None)
-        if index_manager is None:
-            raise ValueError(
-                "Index operations require a persistent engine (db_path)"
-            )
-
         index_name = stmt.idxname
         table_name = stmt.relation.relname
 
@@ -1383,6 +1381,79 @@ class SQLCompiler:
                     f"in table '{table_name}'"
                 )
             columns.append(col_name)
+
+        access_method = (stmt.accessMethod or "btree").lower()
+
+        if access_method == "hnsw":
+            # HNSW vector index: CREATE INDEX ... USING hnsw
+            if len(columns) != 1:
+                raise ValueError(
+                    "HNSW index must be created on exactly one column"
+                )
+            col_name = columns[0]
+            col_def = table.columns[col_name]
+            if col_def.vector_dimensions is None:
+                raise ValueError(
+                    f"Column '{col_name}' is not a VECTOR column"
+                )
+
+            # Parse WITH parameters: ef_construction, m
+            params: dict[str, int] = {}
+            if stmt.options:
+                from pglast.ast import DefElem
+                for opt in stmt.options:
+                    if isinstance(opt, DefElem):
+                        key = opt.defname.lower()
+                        if key in ("ef_construction", "m"):
+                            val = opt.arg
+                            if hasattr(val, "ival"):
+                                params[key] = val.ival
+                            elif hasattr(val, "sval"):
+                                params[key] = int(val.sval)
+
+            # Build HNSW index with custom parameters
+            from uqa.storage.vector_index import HNSWIndex
+
+            kwargs: dict[str, Any] = {
+                "dimensions": col_def.vector_dimensions,
+            }
+            if "ef_construction" in params:
+                kwargs["ef_construction"] = params["ef_construction"]
+            if "m" in params:
+                kwargs["m"] = params["m"]
+
+            hnsw = HNSWIndex(**kwargs)
+
+            # Re-index existing vectors from the document store
+            for doc_id in table.document_store.doc_ids:
+                doc = table.document_store.get(doc_id)
+                if doc is not None and col_name in doc:
+                    import numpy as np
+                    vec = np.asarray(doc[col_name], dtype=np.float32)
+                    hnsw.add(doc_id, vec)
+
+            table.vector_indexes[col_name] = hnsw
+
+            # Persist index definition if catalog is available
+            index_manager = getattr(self._engine, "_index_manager", None)
+            if index_manager is not None:
+                index_def = IndexDef(
+                    name=index_name,
+                    index_type=IndexType.HNSW,
+                    table_name=table_name,
+                    columns=tuple(columns),
+                    parameters=params,
+                )
+                self._engine._catalog.save_index(index_def)
+
+            return SQLResult([], [])
+
+        # BTREE index (default)
+        index_manager = getattr(self._engine, "_index_manager", None)
+        if index_manager is None:
+            raise ValueError(
+                "Index operations require a persistent engine (db_path)"
+            )
 
         index_def = IndexDef(
             name=index_name,
@@ -1451,14 +1522,22 @@ class SQLCompiler:
                 elem.name for elem in on_conflict.infer.indexElems
             ]
 
+        # Build hash index for O(1) conflict lookups
+        conflict_index: dict[tuple, int] = {}
+        if on_conflict is not None and conflict_cols:
+            for doc_id in table.document_store.doc_ids:
+                doc = table.document_store.get(doc_id)
+                if doc is not None:
+                    key = tuple(doc.get(c) for c in conflict_cols)
+                    conflict_index[key] = doc_id
+
         # Insert rows with ON CONFLICT and RETURNING support
         returning_rows: list[dict[str, Any]] = []
         inserted = 0
         for src_row in source_rows:
             if on_conflict is not None and conflict_cols:
-                existing_id = self._find_conflict(
-                    table, conflict_cols, src_row
-                )
+                key = tuple(src_row.get(c) for c in conflict_cols)
+                existing_id = conflict_index.get(key)
                 if existing_id is not None:
                     action = OnConflictAction(on_conflict.action)
                     if action == OnConflictAction.ONCONFLICT_NOTHING:
@@ -1468,8 +1547,15 @@ class SQLCompiler:
                         table, existing_id, src_row,
                         on_conflict.targetList,
                     )
+                    # Update index if conflict columns changed
+                    updated_doc = table.document_store.get(existing_id)
+                    if updated_doc is not None:
+                        new_key = tuple(updated_doc.get(c) for c in conflict_cols)
+                        if new_key != key:
+                            conflict_index.pop(key, None)
+                            conflict_index[new_key] = existing_id
                     if stmt.returningList:
-                        doc = table.document_store.get(existing_id)
+                        doc = updated_doc
                         if doc:
                             returning_rows.append(
                                 self._project_returning(
@@ -1481,6 +1567,10 @@ class SQLCompiler:
 
             doc_id, _ = table.insert(src_row)
             inserted += 1
+            # Update conflict index for subsequent rows in the batch
+            if on_conflict is not None and conflict_cols:
+                new_key = tuple(src_row.get(c) for c in conflict_cols)
+                conflict_index[new_key] = doc_id
             if stmt.returningList:
                 doc = table.document_store.get(doc_id)
                 if doc:
@@ -2384,7 +2474,30 @@ class SQLCompiler:
 
         else:
             is_star = self._is_select_star(stmt.targetList)
-            if not is_star:
+            if is_star and join_source:
+                # SELECT * on a join: expand to explicit columns matching
+                # PostgreSQL behavior (table columns in FROM order, no
+                # internal fields like _doc_id/_score, no qualified
+                # duplicates).
+                join_tables = self._collect_join_tables(stmt.fromClause)
+                star_targets: list[tuple[str, Any]] = []
+                for alias, cols in join_tables:
+                    for col in cols:
+                        star_targets.append((
+                            col,
+                            ColumnRef(fields=(
+                                PgString(sval=alias),
+                                PgString(sval=col),
+                            )),
+                        ))
+                if star_targets:
+                    physical = ExprProjectOp(
+                        physical, star_targets,
+                        subquery_executor=self._compile_select,
+                        sequences=self._engine._sequences,
+                    )
+                    expected_cols = [name for name, _ in star_targets]
+            elif not is_star:
                 # Check whether ORDER BY references columns outside
                 # the SELECT list.  If so, defer projection until
                 # after the sort so the sort keys are still available.
@@ -2570,36 +2683,15 @@ class SQLCompiler:
         For text_match/bayesian_match function calls, wraps the node
         so the ExprEvaluator reads ``_score`` from the row instead.
 
-        When multiple columns share the same unqualified name (e.g.
-        ``e.name`` and ``d.name`` in a JOIN), the output names are
-        disambiguated using qualified forms to avoid dict key collisions.
+        Output column names follow PostgreSQL convention: the unqualified
+        column name is always used, even when multiple columns share the
+        same name (e.g. ``SELECT a.id, b.id`` produces two ``id`` columns).
+        Use explicit aliases (``AS``) to disambiguate when needed.
         """
-        # First pass: collect inferred names and detect duplicates
-        raw: list[tuple[str, str | None, Any]] = []
-        name_counts: dict[str, int] = {}
-        for target in target_list:
-            name = self._infer_target_name(target)
-            # Qualified name for ColumnRef with table alias
-            qual_name: str | None = None
-            val = target.val
-            if (
-                target.name is None
-                and isinstance(val, ColumnRef)
-                and len(val.fields) >= 2
-                and hasattr(val.fields[0], "sval")
-            ):
-                qual_name = (
-                    f"{val.fields[0].sval}.{val.fields[-1].sval}"
-                )
-            raw.append((name, qual_name, val))
-            name_counts[name] = name_counts.get(name, 0) + 1
-
-        # Second pass: build targets with disambiguation
         targets: list[tuple[str, Any]] = []
-        for name, qual_name, val in raw:
-            output_name = name
-            if name_counts[name] > 1 and qual_name is not None:
-                output_name = qual_name
+        for target in target_list:
+            output_name = self._infer_target_name(target)
+            val = target.val
             # text_match/bayesian_match -> read _score column
             if isinstance(val, FuncCall):
                 fn = val.funcname[-1].sval.lower()
@@ -3172,6 +3264,155 @@ class SQLCompiler:
         # Everything else: not pushable
         return [], where_node
 
+    # -- Join predicate pushdown -------------------------------------------
+
+    def _partition_where_for_joins(
+        self, where_clause: Any, source_op: Any
+    ) -> tuple[dict[str, list], Any]:
+        """Partition WHERE conjuncts into per-alias pushable and remaining.
+
+        Decomposes AND conjuncts and classifies each by the table aliases
+        it references.  Single-alias conjuncts whose alias has a reachable
+        _TableScanOperator below an inner join are pushable.  Everything
+        else stays as deferred WHERE.
+
+        Returns (pushable_per_alias, remaining_where_node).
+        """
+        conjuncts = self._extract_and_conjuncts(where_clause)
+        scan_aliases = self._collect_inner_join_scan_aliases(source_op)
+
+        pushable: dict[str, list] = {}
+        remaining: list = []
+
+        for conj in conjuncts:
+            aliases = self._collect_conjunct_aliases(conj)
+            if len(aliases) == 1:
+                alias = next(iter(aliases))
+                if alias in scan_aliases:
+                    pushable.setdefault(alias, []).append(conj)
+                    continue
+            remaining.append(conj)
+
+        remaining_node = self._reconstruct_and(remaining)
+        return pushable, remaining_node
+
+    @staticmethod
+    def _extract_and_conjuncts(node: Any) -> list:
+        """Flatten nested AND expressions into a list of conjuncts."""
+        if isinstance(node, BoolExpr) and node.boolop == BoolExprType.AND_EXPR:
+            result: list = []
+            for arg in node.args:
+                result.extend(
+                    SQLCompiler._extract_and_conjuncts(arg)
+                )
+            return result
+        return [node]
+
+    @staticmethod
+    def _collect_conjunct_aliases(node: Any) -> set[str]:
+        """Collect table alias prefixes from ColumnRef nodes in an AST subtree."""
+        aliases: set[str] = set()
+        SQLCompiler._walk_for_column_aliases(node, aliases)
+        return aliases
+
+    @staticmethod
+    def _walk_for_column_aliases(node: Any, aliases: set[str]) -> None:
+        """Recursively walk AST, extracting alias prefixes from ColumnRef."""
+        if isinstance(node, ColumnRef):
+            if node.fields and len(node.fields) >= 2:
+                first = node.fields[0]
+                alias = first.sval if hasattr(first, "sval") else str(first)
+                aliases.add(alias)
+            return
+
+        # Recurse into common AST node attributes
+        for attr in ("lexpr", "rexpr", "args", "arg", "xpr", "val"):
+            child = getattr(node, attr, None)
+            if child is None:
+                continue
+            if isinstance(child, (list, tuple)):
+                for c in child:
+                    if c is not None:
+                        SQLCompiler._walk_for_column_aliases(c, aliases)
+            else:
+                SQLCompiler._walk_for_column_aliases(child, aliases)
+
+    @staticmethod
+    def _collect_inner_join_scan_aliases(op: Any) -> set[str]:
+        """Collect aliases from _TableScanOperator leaves reachable via inner joins.
+
+        Only scans behind INNER/INDEX/CROSS joins are safe for predicate
+        pushdown.  Scans behind outer joins are excluded to preserve
+        correct NULL-extension semantics.
+        """
+        from uqa.joins.inner import InnerJoinOperator
+        from uqa.joins.index import IndexJoinOperator
+        from uqa.joins.cross import CrossJoinOperator
+
+        aliases: set[str] = set()
+        if isinstance(op, _TableScanOperator) and op._alias:
+            aliases.add(op._alias)
+        elif isinstance(
+            op, (InnerJoinOperator, IndexJoinOperator, CrossJoinOperator)
+        ):
+            aliases |= SQLCompiler._collect_inner_join_scan_aliases(op.left)
+            aliases |= SQLCompiler._collect_inner_join_scan_aliases(op.right)
+        return aliases
+
+    @staticmethod
+    def _reconstruct_and(conjuncts: list) -> Any:
+        """Rebuild a BoolExpr AND node from a list of conjuncts."""
+        if not conjuncts:
+            return None
+        if len(conjuncts) == 1:
+            return conjuncts[0]
+        return BoolExpr(
+            boolop=BoolExprType.AND_EXPR, args=tuple(conjuncts)
+        )
+
+    def _inject_join_filters(
+        self, join_op: Any, pushable: dict[str, list]
+    ) -> Any:
+        """Walk join operator tree and wrap matching table scans with filters."""
+        from uqa.joins.inner import InnerJoinOperator
+        from uqa.joins.index import IndexJoinOperator
+        from uqa.joins.cross import CrossJoinOperator
+
+        if isinstance(
+            join_op, (InnerJoinOperator, IndexJoinOperator, CrossJoinOperator)
+        ):
+            new_left = self._inject_scan_filter(join_op.left, pushable)
+            new_right = self._inject_scan_filter(join_op.right, pushable)
+            if new_left is not join_op.left or new_right is not join_op.right:
+                if isinstance(join_op, CrossJoinOperator):
+                    return CrossJoinOperator(new_left, new_right)
+                return type(join_op)(
+                    new_left, new_right, join_op.condition
+                )
+        return join_op
+
+    def _inject_scan_filter(
+        self, scan: Any, pushable: dict[str, list]
+    ) -> Any:
+        """Wrap a scan with a filter if pushable predicates match its alias."""
+        from uqa.joins.inner import InnerJoinOperator
+        from uqa.joins.index import IndexJoinOperator
+        from uqa.joins.cross import CrossJoinOperator
+
+        if isinstance(
+            scan, (InnerJoinOperator, IndexJoinOperator, CrossJoinOperator)
+        ):
+            return self._inject_join_filters(scan, pushable)
+
+        if isinstance(scan, _TableScanOperator):
+            alias = scan._alias
+            if alias and alias in pushable:
+                where_node = self._reconstruct_and(pushable[alias])
+                return _FilteredScanOperator(
+                    scan, where_node, self._compile_select
+                )
+        return scan
+
     def _apply_deferred_where(self, physical: Any, where_node: Any) -> Any:
         """Apply WHERE predicates as physical filter on joined/graph rows.
 
@@ -3267,6 +3508,10 @@ class SQLCompiler:
         foreign_source = isinstance(source_op, _ForeignTableScanOperator)
         deferred_where = None
 
+        # 3.5. Constant folding: evaluate compile-time constant expressions
+        if stmt.whereClause is not None:
+            stmt = self._fold_stmt_where(stmt)
+
         # 4. WHERE clause
         if stmt.whereClause is not None:
             if foreign_source:
@@ -3278,7 +3523,18 @@ class SQLCompiler:
                 if pushable:
                     source_op.pushdown_predicates = pushable
                 deferred_where = remaining
-            elif graph_source or join_source:
+            elif join_source:
+                # Push single-table predicates below the join for
+                # early filtering; keep cross-table predicates deferred.
+                pushable, remaining = self._partition_where_for_joins(
+                    stmt.whereClause, source_op
+                )
+                if pushable:
+                    source_op = self._inject_join_filters(
+                        source_op, pushable
+                    )
+                deferred_where = remaining
+            elif graph_source:
                 # Defer WHERE to physical ExprFilterOp layer
                 deferred_where = stmt.whereClause
             else:
@@ -4124,6 +4380,46 @@ class SQLCompiler:
             )
         )
 
+    def _collect_join_tables(
+        self, from_clause: tuple | None
+    ) -> list[tuple[str, list[str]]]:
+        """Collect (alias, column_names) for all tables in a FROM clause.
+
+        Walks JoinExpr/RangeVar nodes in left-to-right order, matching
+        PostgreSQL's ``SELECT *`` column expansion order.
+        """
+        if from_clause is None:
+            return []
+        result: list[tuple[str, list[str]]] = []
+        for node in from_clause:
+            self._walk_from_for_tables(node, result)
+        return result
+
+    def _walk_from_for_tables(
+        self, node: Any, out: list[tuple[str, list[str]]]
+    ) -> None:
+        """Recursively collect tables from a FROM clause node."""
+        if isinstance(node, RangeVar):
+            alias = (
+                node.alias.aliasname
+                if node.alias is not None
+                else node.relname
+            )
+            table = self._engine._tables.get(node.relname)
+            if table is not None and table.columns:
+                cols = list(table.columns.keys())
+            else:
+                cols = []
+            out.append((alias, cols))
+        elif isinstance(node, JoinExpr):
+            self._walk_from_for_tables(node.larg, out)
+            self._walk_from_for_tables(node.rarg, out)
+        elif isinstance(node, RangeSubselect):
+            alias = (
+                node.alias.aliasname if node.alias else "_subquery"
+            )
+            out.append((alias, []))
+
     def _build_traverse_from(
         self, args: tuple
     ) -> tuple[Table | None, Any]:
@@ -4727,8 +5023,8 @@ class SQLCompiler:
         if not self._flatten_inner_joins(node, relations, predicates):
             return None
 
-        # DPccp is worthwhile only for 3+ relations
-        if len(relations) < 3:
+        # DPccp is worthwhile for 2+ relations (determines build side)
+        if len(relations) < 2:
             return None
 
         from uqa.planner.join_order import JoinOrderOptimizer
@@ -5748,6 +6044,193 @@ class SQLCompiler:
         from uqa.operators.boolean import IntersectOperator
         return IntersectOperator([source_op, where_op])
 
+    # -- Constant folding --------------------------------------------------
+
+    # Side-effecting functions that must not be folded at compile time.
+    _NO_FOLD_FUNCS = frozenset({
+        "random", "nextval", "currval", "now",
+        "current_timestamp", "clock_timestamp",
+        "statement_timestamp", "timeofday",
+    })
+
+    def _fold_stmt_where(self, stmt: SelectStmt) -> SelectStmt:
+        """Return a new SelectStmt with the WHERE clause constant-folded."""
+        folded = self._fold_constants(stmt.whereClause)
+        if folded is stmt.whereClause:
+            return stmt
+        # pglast AST nodes are dataclass-like; shallow-copy with new where
+        import copy
+        new_stmt = copy.copy(stmt)
+        new_stmt.whereClause = folded
+        return new_stmt
+
+    def _fold_constants(self, node: Any) -> Any:
+        """Bottom-up constant folding for AST expressions.
+
+        Evaluates constant sub-expressions at compile time.  Conservative
+        scope: only folds A_Expr with A_Const operands and BoolExpr with
+        fully constant args.  Skips ColumnRef, side-effecting functions,
+        and SubLink nodes.
+        """
+        if node is None:
+            return None
+
+        if isinstance(node, A_Const):
+            return node
+
+        if isinstance(node, ColumnRef):
+            return node
+
+        if isinstance(node, A_Expr):
+            return self._fold_a_expr(node)
+
+        if isinstance(node, BoolExpr):
+            return self._fold_bool_expr(node)
+
+        # FuncCall: fold only if all args are constant and function is pure
+        if isinstance(node, FuncCall):
+            return self._fold_func_call(node)
+
+        return node
+
+    def _fold_a_expr(self, node: A_Expr) -> Any:
+        """Try to fold an A_Expr with constant operands."""
+        new_lexpr = self._fold_constants(node.lexpr)
+        new_rexpr = self._fold_constants(node.rexpr)
+
+        if isinstance(new_lexpr, A_Const) and isinstance(new_rexpr, A_Const):
+            try:
+                from uqa.sql.expr_evaluator import ExprEvaluator
+                evaluator = ExprEvaluator()
+                folded = A_Expr(
+                    kind=node.kind, name=node.name,
+                    lexpr=new_lexpr, rexpr=new_rexpr,
+                )
+                result = evaluator.evaluate(folded, {})
+                return self._value_to_a_const(result)
+            except Exception:
+                pass
+
+        if new_lexpr is not node.lexpr or new_rexpr is not node.rexpr:
+            return A_Expr(
+                kind=node.kind, name=node.name,
+                lexpr=new_lexpr, rexpr=new_rexpr,
+            )
+        return node
+
+    def _fold_bool_expr(self, node: BoolExpr) -> Any:
+        """Try to fold a BoolExpr, including partial evaluation.
+
+        AND: remove True constants; if any False -> False.
+        OR:  remove False constants; if any True -> True.
+        NOT: fold if operand is constant.
+        """
+        new_args = tuple(self._fold_constants(arg) for arg in node.args)
+
+        # Full fold: all args are constants
+        if all(isinstance(a, A_Const) for a in new_args):
+            try:
+                from uqa.sql.expr_evaluator import ExprEvaluator
+                evaluator = ExprEvaluator()
+                folded = BoolExpr(boolop=node.boolop, args=new_args)
+                result = evaluator.evaluate(folded, {})
+                return self._value_to_a_const(result)
+            except Exception:
+                pass
+
+        # Partial fold for AND/OR with some constant args
+        if node.boolop == BoolExprType.AND_EXPR:
+            surviving: list = []
+            for arg in new_args:
+                if isinstance(arg, A_Const) and not arg.isnull:
+                    val = self._const_to_bool(arg)
+                    if val is False:
+                        return A_Const(val=PgBoolean(boolval=False))
+                    # True -> skip (identity element for AND)
+                    continue
+                surviving.append(arg)
+            if not surviving:
+                return A_Const(val=PgBoolean(boolval=True))
+            if len(surviving) == 1:
+                return surviving[0]
+            return BoolExpr(
+                boolop=BoolExprType.AND_EXPR, args=tuple(surviving)
+            )
+
+        if node.boolop == BoolExprType.OR_EXPR:
+            surviving = []
+            for arg in new_args:
+                if isinstance(arg, A_Const) and not arg.isnull:
+                    val = self._const_to_bool(arg)
+                    if val is True:
+                        return A_Const(val=PgBoolean(boolval=True))
+                    # False -> skip (identity element for OR)
+                    continue
+                surviving.append(arg)
+            if not surviving:
+                return A_Const(val=PgBoolean(boolval=False))
+            if len(surviving) == 1:
+                return surviving[0]
+            return BoolExpr(
+                boolop=BoolExprType.OR_EXPR, args=tuple(surviving)
+            )
+
+        if new_args != tuple(node.args):
+            return BoolExpr(boolop=node.boolop, args=new_args)
+        return node
+
+    @staticmethod
+    def _const_to_bool(node: A_Const) -> bool | None:
+        """Extract boolean truth value from an A_Const."""
+        if node.isnull:
+            return None
+        val = node.val
+        if isinstance(val, PgBoolean):
+            return val.boolval
+        if isinstance(val, PgInteger):
+            return val.ival != 0
+        if isinstance(val, PgFloat):
+            return float(val.fval) != 0.0
+        if isinstance(val, PgString):
+            return len(val.sval) > 0
+        return None
+
+    def _fold_func_call(self, node: FuncCall) -> Any:
+        """Fold a FuncCall if all args are constant and function is pure."""
+        func_name = node.funcname[-1].sval.lower() if node.funcname else ""
+        if func_name in self._NO_FOLD_FUNCS:
+            return node
+
+        if node.args is None:
+            return node
+
+        new_args = tuple(self._fold_constants(arg) for arg in node.args)
+        if new_args != tuple(node.args):
+            return FuncCall(
+                funcname=node.funcname, args=new_args,
+                agg_star=node.agg_star, agg_distinct=node.agg_distinct,
+                func_variadic=node.func_variadic, funcformat=node.funcformat,
+                over=node.over,
+            )
+        return node
+
+    @staticmethod
+    def _value_to_a_const(value: Any) -> A_Const:
+        """Convert a Python value to an A_Const AST node."""
+        if value is None:
+            return A_Const(isnull=True)
+        if isinstance(value, bool):
+            return A_Const(val=PgBoolean(boolval=value))
+        if isinstance(value, int):
+            return A_Const(val=PgInteger(ival=value))
+        if isinstance(value, float):
+            return A_Const(val=PgFloat(fval=str(value)))
+        if isinstance(value, str):
+            return A_Const(val=PgString(sval=value))
+        raise ValueError(
+            f"Cannot convert {type(value).__name__} to A_Const"
+        )
+
     @staticmethod
     def _extract_column_name(node: Any) -> str:
         if isinstance(node, ColumnRef):
@@ -5888,6 +6371,42 @@ class _TableScanOperator:
 
     def cost_estimate(self, stats: Any) -> float:
         return float(len(self._table.document_store.doc_ids))
+
+
+class _FilteredScanOperator:
+    """Wraps a scan operator and filters its output using a WHERE predicate.
+
+    Used to push single-table WHERE predicates below join operators,
+    reducing the number of rows that enter the join.  The predicate is
+    an AST node evaluated via ExprEvaluator against each entry's fields.
+    """
+
+    def __init__(
+        self,
+        scan: _TableScanOperator,
+        where_node: Any,
+        subquery_executor: Any,
+    ) -> None:
+        self._scan = scan
+        self._where_node = where_node
+        self._subquery_executor = subquery_executor
+
+    def execute(self, context: Any) -> PostingList:
+        from uqa.sql.expr_evaluator import ExprEvaluator
+
+        pl = self._scan.execute(context)
+        evaluator = ExprEvaluator(
+            subquery_executor=self._subquery_executor
+        )
+        filtered: list[PostingEntry] = []
+        for entry in pl:
+            if evaluator.evaluate(self._where_node, entry.payload.fields):
+                filtered.append(entry)
+        return PostingList(filtered)
+
+    def cost_estimate(self, stats: Any) -> float:
+        base = self._scan.cost_estimate(stats)
+        return base * 0.5
 
 
 class _ForeignTableScanOperator:
@@ -6331,10 +6850,15 @@ class _CalibratedKNNOperator:
         self.field = field
 
     def execute(self, context: Any) -> PostingList:
+        from uqa.operators.primitive import _brute_force_knn
+
         vec_idx = context.vector_indexes.get(self.field)
-        if vec_idx is None:
-            return PostingList()
-        raw_pl = vec_idx.search_knn(self.query_vector, self.k)
+        if vec_idx is not None:
+            raw_pl = vec_idx.search_knn(self.query_vector, self.k)
+        else:
+            raw_pl = _brute_force_knn(
+                context, self.field, self.query_vector, self.k
+            )
         entries = [
             PostingEntry(
                 e.doc_id,
