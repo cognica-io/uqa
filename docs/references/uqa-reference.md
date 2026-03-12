@@ -735,13 +735,13 @@ The optimizer uses a **CardinalityEstimator** backed by per-column statistics: e
 
 **Parallel Executor**: Independent operator branches (children of Union, Intersect, and Fusion operators) execute concurrently via ThreadPoolExecutor. Configurable via `parallel_workers` (default: 4, 0 to disable).
 
-**Volcano Iterator Engine**: Pull-based pipelined execution using Apache Arrow columnar batches (RecordBatch). Physical operators implement open/next/close. Selection vectors enable lazy filtering without materializing intermediate results.
+**Volcano Iterator Engine**: Pull-based pipelined execution using Apache Arrow columnar batches (RecordBatch). Physical operators implement open/next/close. Selection vectors enable lazy filtering without materializing intermediate results. Vectorized fast paths use Arrow compute kernels (`pc.equal`, `pc.add`, `pc.sort_indices`, etc.) for simple predicates, projections, and sorts, falling back to per-row Python evaluation for complex expressions.
 
 **Disk Spilling**: Blocking operators (sort, hash-aggregate, distinct) spill intermediate data to temporary Arrow IPC files when input exceeds `spill_threshold` rows:
 
 | Operator | Strategy |
 |----------|----------|
-| SortOp | External merge sort with k-way min-heap merge |
+| SortOp | Arrow-native `pc.sort_indices()` for in-memory sort; external merge sort with k-way min-heap merge for spilled runs |
 | HashAggOp | Grace hash: partition into 16 on-disk files, aggregate each independently |
 | DistinctOp | Hash partition dedup: same 16-partition strategy |
 

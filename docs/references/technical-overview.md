@@ -3,7 +3,7 @@
 **Jaepil Jeong**
 Cognica, Inc.
 *Email: jaepil@cognica.io*
-Date: Mar 11, 2026
+Date: Mar 12, 2026
 
 *"Logic pervades the world: the limits of the world are also its limits."*
 — Ludwig Wittgenstein
@@ -426,14 +426,15 @@ The physical layer in `uqa/execution/` uses the **Volcano iterator model**: each
 
 | Operator | Type | Strategy |
 |----------|------|----------|
-| `FilterOp` | Streaming | Predicate evaluation per batch |
+| `FilterOp` | Streaming | Vectorized Arrow compute for simple predicates; per-row fallback for LIKE, BETWEEN |
 | `ExprFilterOp` | Streaming | Complex expressions via `ExprEvaluator` |
 | `ProjectOp` | Streaming | Column selection |
-| `SortOp` | Blocking | External merge sort (spills to Arrow IPC) |
+| `ExprProjectOp` | Streaming | Vectorized Arrow compute for column refs and arithmetic; per-row fallback for complex expressions |
+| `SortOp` | Blocking | Arrow-native `pc.sort_indices()` with Python stable sort fallback; external merge sort for disk spilling |
 | `HashAggOp` | Blocking | Grace hash partitioning (spills to disk) |
 | `DistinctOp` | Blocking | Hash partition dedup |
 | `LimitOp` | Streaming | LIMIT/OFFSET |
-| `WindowOp` | Blocking | Window function evaluation |
+| `WindowOp` | Blocking | Window function evaluation with bisect-based RANGE frame bounds |
 
 ### 6.4 Storage Architecture
 

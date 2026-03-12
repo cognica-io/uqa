@@ -1,5 +1,55 @@
 # History
 
+## 0.11.2 (2026-03-12)
+
+Performance optimization across core, storage, execution engine, and scoring subsystems. 21 files changed, ~27 optimizations spanning 4 categories.
+
+### Core
+
+- **`PostingList.from_sorted()` classmethod**: bypass O(n log n) sort + O(n) dedup for pre-sorted entries; used by ~25 internal callers (ScoreOperator, FilterOperator, FacetOperator, fusion operators, SQLite index readers, compiler scan operators, BTreeIndex, aggregation/hierarchical operators)
+- **LIKE/ILike regex caching**: `@functools.lru_cache(256)` on SQL LIKE pattern-to-compiled-regex conversion
+
+### Storage
+
+- **SQLite batch writes**: `executemany()` for posting list inserts instead of per-term `execute()`
+- **Deferred skip pointer rebuilds**: track dirty (field, term) pairs; rebuild lazily via `flush_skip_pointers()` before first query after writes
+- **Positions binary encoding**: `struct.pack`/`struct.unpack` replaces `json.dumps`/`json.loads` for posting list positions (backward-compatible: detects legacy JSON format at read time)
+- **`get_field()` prepared statement cache**: per-field SQL string cache avoids f-string construction per call
+- **IndexStats caching**: cache `IndexStats` on instance after first computation; invalidate on `add_document()`, `remove_document()`, `clear()`
+- **Vector batch load**: hnswlib `add_items()` batch API on startup instead of per-vector `add()`
+- **`iter_all()` for SeqScanOp**: single `SELECT * ORDER BY _rowid` instead of N individual `get(doc_id)` calls
+- **InvertedIndex O(1) term freq lookup**: changed `_index` from `dict[key, list]` to `dict[key, dict[DocId, PostingEntry]]`; `get_term_freq()` is now O(1) instead of O(df)
+- **InvertedIndex efficient `remove_document`**: reverse map `_doc_terms` tracks which posting lists contain each document; removal touches only relevant entries instead of scanning entire index
+
+### Execution Engine
+
+- **Arrow-native sort**: `pc.sort_indices()` for single-pass C++ multi-key sort with `null_placement`; falls back to Python stable sort when keys have mixed NULLS FIRST/LAST
+- **Vectorized ExprProjectOp**: simple expressions (column refs, constants, arithmetic +/-/*/) evaluated directly on Arrow arrays via `pc.add`/`pc.subtract`/`pc.multiply`/`pc.divide`, bypassing row-by-row `to_rows()`/`from_rows()` conversion; complex expressions (CASE, COALESCE, function calls, JSON, subqueries) fall back to ExprEvaluator
+- **Arrow compute FilterOp**: vectorized `pc.equal`/`pc.greater`/`pc.less`/`pc.is_null` for simple scalar predicates; falls back to per-row evaluation for LIKE, BETWEEN, custom predicates
+- **PostingListScanOp entry caching**: cache `entries` reference in `open()` instead of O(n) copy on every `next()` call
+- **HashAggOp ExprEvaluator reuse**: single evaluator created in `open()` and reused across all groups instead of per-group instantiation
+- **Window RANGE frame bisect**: `bisect_left`/`bisect_right` for O(log n) peer group boundary lookup replacing O(n) linear scan
+
+### Scoring
+
+- **BM25/BayesianBM25 `score_with_idf()`**: pre-computed IDF value accepted directly, avoiding redundant `doc_freq` lookups in the inner scoring loop
+- **ScoreOperator loop invariant hoisting**: `doc_freq` hoisted outside per-doc loop (per-term constant), `get_doc_length` hoisted outside per-term loop (per-doc constant); for a 3-term query over 1000 docs: `doc_freq` calls reduced from 3000 to 3, `get_doc_length` calls from 3000 to 1000
+- **WAND cursor-based pivot skipping**: replaced O(|union|) full-materialization with cursor-based pivot advancement using binary search (`_advance_cursor`); complexity reduced from O(|union|) to O(|result| * T * log(df))
+- **BlockMaxWAND cursor-based pivot skipping**: same cursor-based algorithm using per-block max scores from BlockMaxIndex for tighter pruning bounds
+
+### SQL Compiler
+
+- **ExprEvaluator dispatch table**: replaced 14-type `isinstance` chain with `dict[type, Callable]` for O(1) node evaluation dispatch
+- **Scalar function dispatch table**: replaced ~100-branch if/elif chain in `_call_scalar_function()` with module-level `dict[str, Callable]` lookup
+- **Module-level imports**: moved ~30 inline `import json/re/math/base64/...` from hot paths to module top level across `expr_evaluator.py`, `sqlite_document_store.py`, `types.py`
+- **CTE/View materialization skip**: transient tables (CTEs, views, derived) skip inverted index building since they are never text-searched
+- **Progressive k-expansion for HNSW threshold search**: starts with k=100, doubles until last result falls below threshold or index exhausted; preserves O(d log N) advantage instead of scanning entire index
+
+### Benchmarks
+
+- 185 pytest-benchmark tests across 8 suites (posting list, storage, compiler, execution, planner, scoring, graph, end-to-end SQL)
+
+
 ## 0.11.1 (2026-03-12)
 
 Public API improvements and quickstart example.

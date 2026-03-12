@@ -198,7 +198,7 @@ uqa/
     cypher/       openCypher lexer, parser, AST, posting-list-based compiler
   fdw/            Foreign Data Wrappers: DuckDB (Parquet/CSV/JSON), Arrow Flight SQL, Hive partitioning
   joins/          Hash, sort-merge, index, graph, cross-paradigm, similarity joins
-  execution/      Volcano iterator engine: Apache Arrow columnar batches, physical operators, disk spilling
+  execution/      Volcano iterator engine: Apache Arrow columnar batches, vectorized operators, disk spilling
   planner/        Cost model, cardinality estimator, optimizer, DPccp join enumerator, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
