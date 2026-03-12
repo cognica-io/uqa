@@ -611,6 +611,16 @@ print(result.rows)     <span class="cm"># [{'id': 1, 'title': '...', ...}]</span
 arrow_table = result.to_arrow()
 result.to_parquet(<span class="st">"papers.parquet"</span>)
 
+<span class="cm"># Retrieve a document by ID</span>
+doc = engine.get_document(1, table=<span class="st">"papers"</span>)
+
+<span class="cm"># Access a table's graph store</span>
+gs = engine.get_graph_store(<span class="st">"papers"</span>)
+
+<span class="cm"># Get/set field analyzer</span>
+engine.set_table_analyzer(<span class="st">"papers"</span>, <span class="st">"title"</span>, <span class="st">"english_stem"</span>)
+analyzer = engine.get_table_analyzer(<span class="st">"papers"</span>, <span class="st">"title"</span>)
+
 <span class="cm"># Context manager</span>
 <span class="kw">with</span> Engine(db_path=<span class="st">"data.db"</span>) <span class="kw">as</span> engine:
     engine.sql(<span class="st">"SELECT 1"</span>)</code></pre>
