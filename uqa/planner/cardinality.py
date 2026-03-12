@@ -127,10 +127,13 @@ class CardinalityEstimator:
             case ScoreOperator(source=src):
                 return self.estimate(src, stats)
             case IntersectOperator(operands=ops):
-                child_cards = [self.estimate(o, stats) for o in ops]
-                result = child_cards[0] if child_cards else 0.0
+                child_cards = sorted([self.estimate(o, stats) for o in ops])
+                if not child_cards:
+                    return 0.0
+                result = child_cards[0]
                 for card in child_cards[1:]:
-                    result = (result * card) / n
+                    sel = card / n if n > 0 else 1.0
+                    result *= sel ** 0.5  # sqrt damping for correlated predicates
                 return max(1.0, result)
             case UnionOperator(operands=ops):
                 child_cards = [self.estimate(o, stats) for o in ops]
@@ -277,6 +280,9 @@ class CardinalityEstimator:
             estimate = (nv ** k) * (density ** e) * label_sel
             return max(1.0, min(nv, estimate))
 
+        # Heuristic fallback: n^1.5 captures the super-linear growth of
+        # pattern match results (more than linear scan but less than the
+        # full n^k cross-product) when no graph statistics are available.
         return min(n, n ** 1.5)
 
     def _estimate_rpq(
@@ -295,6 +301,9 @@ class CardinalityEstimator:
             estimate = (nv ** 2) * density
             return max(1.0, min(nv, estimate))
 
+        # Heuristic fallback: n^1.5 approximates RPQ result size when no
+        # graph stats are available.  RPQs can reach any (start, end) pair
+        # so result size is between n (single hop) and n^2 (all pairs).
         return min(n, n ** 1.5)
 
     def estimate_join(
@@ -403,6 +412,9 @@ class CardinalityEstimator:
                 else:
                     b_span = float(b_high) - float(b_low)
                     if b_span <= 0:
+                        # Zero-width bucket: the point [low, high] fully
+                        # overlaps if it touches the bucket boundary, so
+                        # count it as 1.0 (100% overlap).
                         overlapping += 1.0
                         continue
                     clamp_low = max(float(low), float(b_low))

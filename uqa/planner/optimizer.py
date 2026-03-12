@@ -60,14 +60,14 @@ class QueryOptimizer:
         source = op.source
         if isinstance(source, IntersectOperator):
             new_operands = []
-            pushed = False
+            any_pushed = False
             for child in source.operands:
-                if not pushed and self._filter_applies_to(op, child):
+                if self._filter_applies_to(op, child):
                     new_operands.append(FilterOperator(op.field, op.predicate, child))
-                    pushed = True
+                    any_pushed = True
                 else:
                     new_operands.append(child)
-            if pushed:
+            if any_pushed:
                 return self._recurse_children(IntersectOperator(new_operands))
 
         return FilterOperator(
@@ -96,14 +96,22 @@ class QueryOptimizer:
                 field = op.field
                 predicate = op.predicate
 
-                # Find a vertex pattern variable whose constraints can absorb
-                # this filter.  We add a lambda that checks the property.
+                # Parse field: "b.name" -> variable="b", prop="name"
+                # Only push if we can identify the target vertex.
+                parts = field.split(".", 1)
+                if len(parts) != 2:
+                    # Unqualified field: cannot determine target vertex;
+                    # keep as post-filter.
+                    return FilterOperator(field, predicate, inner)
+
+                target_var, prop = parts
+
                 new_vertex_patterns = []
                 pushed = False
                 for vp in pattern.vertex_patterns:
-                    if not pushed:
+                    if not pushed and vp.variable == target_var:
                         new_constraint = (
-                            lambda v, f=field, p=predicate: (
+                            lambda v, f=prop, p=predicate: (
                                 f in v.properties and p.evaluate(v.properties[f])
                             )
                         )
@@ -184,11 +192,13 @@ class QueryOptimizer:
         if isinstance(op, ComposedOperator) and len(op.operators) == 2:
             first, second = op.operators
             if isinstance(second, PatternMatchOperator):
-                # If the first operator produces join results that constrain
-                # pattern matching, we can fold the join condition into the
-                # pattern.  For now, we optimize by only executing the
-                # pattern match (which already handles constraints).
-                return PatternMatchOperator(second.pattern)
+                # The first operator cannot be safely folded into pattern
+                # constraints without deep analysis of its semantics.
+                # Recurse into both children instead of discarding the first.
+                return ComposedOperator([
+                    self._fuse_join_pattern(first),
+                    self._fuse_join_pattern(second),
+                ])
 
         # Recurse
         if isinstance(op, IntersectOperator):

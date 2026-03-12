@@ -13,6 +13,13 @@ if TYPE_CHECKING:
     from uqa.core.types import IndexStats
     from uqa.operators.base import Operator
 
+# Named constants for cost estimation weights
+SCORE_OVERHEAD_FACTOR = 1.1
+FILTER_SCAN_FRACTION = 0.1
+GROUP_BY_OVERHEAD_FACTOR = 1.5
+VERTEX_AGG_FRACTION = 0.2
+TRAVERSE_FRACTION = 0.1
+
 
 class CostModel:
     """Operator cost estimation for query optimization (Definition 6.2.1, Paper 1)."""
@@ -55,21 +62,21 @@ class CostModel:
             case IndexScanOperator():
                 return op.cost_estimate(stats)
             case ScoreOperator(source=src):
-                return self.estimate(src, stats) * 1.1
+                return self.estimate(src, stats) * SCORE_OVERHEAD_FACTOR
             case FilterOperator(source=src):
                 base = float(stats.total_docs)
                 if src is not None:
-                    base = self.estimate(src, stats) + base * 0.1
+                    base = self.estimate(src, stats) + base * FILTER_SCAN_FRACTION
                 return base
             case IntersectOperator(operands=ops):
                 child_costs = [self.estimate(o, stats) for o in ops]
-                return min(child_costs) if child_costs else 0.0
+                return sum(child_costs) if child_costs else 0.0
             case UnionOperator(operands=ops):
                 return sum(self.estimate(o, stats) for o in ops)
             case AggregateOperator():
                 return float(stats.total_docs)
             case GroupByOperator():
-                return float(stats.total_docs) * 1.5
+                return float(stats.total_docs) * GROUP_BY_OVERHEAD_FACTOR
             case LogOddsFusionOperator(signals=sigs):
                 return sum(self.estimate(s, stats) for s in sigs)
             case ProbBoolFusionOperator(signals=sigs):
@@ -97,9 +104,9 @@ class CostModel:
                     cost += self.estimate(op.source, stats)
                 return cost
             case VertexAggregationOperator():
-                return float(stats.total_docs) * 0.2
+                return float(stats.total_docs) * VERTEX_AGG_FRACTION
             case TraverseOperator():
-                return float(stats.total_docs) * 0.1
+                return float(stats.total_docs) * TRAVERSE_FRACTION
             case PatternMatchOperator():
                 return float(stats.total_docs) ** 2
             case RegularPathQueryOperator():

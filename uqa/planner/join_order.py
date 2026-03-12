@@ -22,6 +22,11 @@ from uqa.planner.join_graph import JoinGraph
 if TYPE_CHECKING:
     from uqa.sql.table import Table
 
+# Use index join when the smaller side has fewer rows than this threshold.
+# Index join is O(|L1| * log|L2|) vs hash join O(|L1| + |L2|); for small
+# inputs the lower constant factor of binary search wins.
+INDEX_JOIN_THRESHOLD = 100
+
 
 class JoinOrderOptimizer:
     """Determines optimal join ordering using DPccp.
@@ -136,7 +141,6 @@ class JoinOrderOptimizer:
             return CrossJoinOperator(left_op, right_op)
 
         from uqa.joins.base import JoinCondition
-        from uqa.joins.inner import InnerJoinOperator
 
         condition = JoinCondition(
             left_field=plan.join_edge.left_field,
@@ -154,4 +158,11 @@ class JoinOrderOptimizer:
                 right_field=edge.left_field,
             )
 
+        # Select join algorithm based on estimated cardinality
+        min_card = min(plan.left.cardinality, plan.right.cardinality)
+        if min_card <= INDEX_JOIN_THRESHOLD:
+            from uqa.joins.index import IndexJoinOperator
+            return IndexJoinOperator(left_op, right_op, condition)
+
+        from uqa.joins.inner import InnerJoinOperator
         return InnerJoinOperator(left_op, right_op, condition)

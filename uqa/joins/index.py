@@ -12,6 +12,16 @@ from uqa.core.posting_list import GeneralizedPostingList
 from uqa.core.types import GeneralizedPostingEntry, Payload, PostingEntry
 from uqa.joins.base import JoinCondition, JoinOperator
 
+# Union of both entry types that flow through join operators.
+JoinEntry = PostingEntry | GeneralizedPostingEntry
+
+
+def _entry_doc_id(entry: JoinEntry) -> int:
+    """Extract doc_id from either PostingEntry or GeneralizedPostingEntry."""
+    if hasattr(entry, "doc_ids"):
+        return entry.doc_ids[0]  # type: ignore[union-attr]
+    return entry.doc_id  # type: ignore[union-attr]
+
 
 class IndexJoinOperator(JoinOperator):
     """Index join using binary search on the right side (Section 6.3, Paper 1).
@@ -34,7 +44,7 @@ class IndexJoinOperator(JoinOperator):
         right_entries = self._get_entries(self.right, context)
 
         # Build sorted index on right join key: (key, entry) pairs sorted by key
-        keyed_right: list[tuple[object, PostingEntry]] = []
+        keyed_right: list[tuple[object, JoinEntry]] = []
         for entry in right_entries:
             key = entry.payload.fields.get(self.condition.right_field)
             if key is not None:
@@ -60,7 +70,10 @@ class IndexJoinOperator(JoinOperator):
                 merged_score = left_entry.payload.score + right_entry.payload.score
                 result.append(
                     GeneralizedPostingEntry(
-                        doc_ids=(left_entry.doc_id, right_entry.doc_id),
+                        doc_ids=(
+                            _entry_doc_id(left_entry),
+                            _entry_doc_id(right_entry),
+                        ),
                         payload=Payload(
                             score=merged_score, fields=merged_fields
                         ),
@@ -71,7 +84,7 @@ class IndexJoinOperator(JoinOperator):
         return GeneralizedPostingList(result)
 
     @staticmethod
-    def _get_entries(source: object, context: object) -> list[PostingEntry]:
+    def _get_entries(source: object, context: object) -> list[JoinEntry]:
         if hasattr(source, "execute"):
             pl = source.execute(context)  # type: ignore[attr-defined]
             return list(pl)

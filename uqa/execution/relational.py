@@ -136,14 +136,12 @@ class ExprFilterOp(PhysicalOperator):
 
     def open(self) -> None:
         self._child.open()
-
-    def next(self) -> Batch | None:
         from uqa.sql.expr_evaluator import ExprEvaluator
-
-        evaluator = ExprEvaluator(
+        self._evaluator = ExprEvaluator(
             subquery_executor=self._subquery_executor
         )
 
+    def next(self) -> Batch | None:
         while True:
             batch = self._child.next()
             if batch is None:
@@ -157,7 +155,7 @@ class ExprFilterOp(PhysicalOperator):
             rows = batch.to_rows()
             active: list[int] = []
             for i, row in enumerate(rows):
-                result = evaluator.evaluate(self._where_node, row)
+                result = self._evaluator.evaluate(self._where_node, row)
                 if result:
                     active.append(i)
 
@@ -226,10 +224,13 @@ class ExprProjectOp(PhysicalOperator):
 
     def open(self) -> None:
         self._child.open()
+        from uqa.sql.expr_evaluator import ExprEvaluator
+        self._evaluator = ExprEvaluator(
+            subquery_executor=self._subquery_executor,
+            sequences=self._sequences,
+        )
 
     def next(self) -> Batch | None:
-        from uqa.sql.expr_evaluator import ExprEvaluator
-
         batch = self._child.next()
         if batch is None:
             return None
@@ -237,15 +238,11 @@ class ExprProjectOp(PhysicalOperator):
         batch = batch.compact()
         input_rows = batch.to_rows()
 
-        evaluator = ExprEvaluator(
-            subquery_executor=self._subquery_executor,
-            sequences=self._sequences,
-        )
         output_rows: list[dict[str, Any]] = []
         for row in input_rows:
             out: dict[str, Any] = {}
             for col_name, node in self._targets:
-                out[col_name] = evaluator.evaluate(node, row)
+                out[col_name] = self._evaluator.evaluate(node, row)
             output_rows.append(out)
 
         if not output_rows:
