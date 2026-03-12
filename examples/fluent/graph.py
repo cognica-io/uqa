@@ -30,7 +30,7 @@ engine = Engine()
 
 engine.sql("CREATE TABLE network (id INTEGER PRIMARY KEY, name TEXT)")
 
-gs = engine._tables["network"].graph_store
+gs = engine.get_graph_store("network")
 
 # -- Vertices: employees --
 employees = [

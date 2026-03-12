@@ -289,6 +289,19 @@ class Engine:
             if vec_idx is not None:
                 vec_idx.add(doc_id, vec_array)
 
+    def get_document(
+        self, doc_id: DocId, table: str
+    ) -> dict[str, Any] | None:
+        """Retrieve a document by its ID from the given table.
+
+        Returns the stored document dict, or ``None`` if the document
+        does not exist.
+        """
+        tbl = self._tables.get(table)
+        if tbl is None:
+            raise ValueError(f"Table '{table}' does not exist")
+        return tbl.document_store.get(doc_id)
+
     def delete_document(self, doc_id: DocId, table: str) -> None:
         """Remove a document from a table's storage and indexes."""
         tbl = self._tables.get(table)
@@ -296,6 +309,13 @@ class Engine:
             raise ValueError(f"Table '{table}' does not exist")
         tbl.document_store.delete(doc_id)
         tbl.inverted_index.remove_document(doc_id)
+
+    def get_graph_store(self, table: str) -> GraphStore:
+        """Return the graph store associated with the given table."""
+        tbl = self._tables.get(table)
+        if tbl is None:
+            raise ValueError(f"Table '{table}' does not exist")
+        return tbl.graph_store
 
     def add_graph_vertex(self, vertex: Vertex, table: str) -> None:
         """Add a graph vertex to a table's graph store."""
@@ -389,6 +409,19 @@ class Engine:
             raise ValueError(f"Table '{table_name}' does not exist")
         analyzer = get_analyzer(analyzer_name)
         tbl.inverted_index.set_field_analyzer(field, analyzer)
+
+    def get_table_analyzer(
+        self, table_name: str, field: str
+    ) -> Any:
+        """Return the analyzer assigned to a table field.
+
+        Returns the field-specific analyzer if one has been set via
+        :meth:`set_table_analyzer`, otherwise the default analyzer.
+        """
+        tbl = self._tables.get(table_name)
+        if tbl is None:
+            raise ValueError(f"Table '{table_name}' does not exist")
+        return tbl.inverted_index.get_field_analyzer(field)
 
     # -- Scoring parameters (Papers 3-4) -------------------------------
 

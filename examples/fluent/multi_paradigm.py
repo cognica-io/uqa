@@ -105,7 +105,7 @@ for pid, name, desc, cat, price, rating, stock in catalog:
     }, table="products", embedding=vec)
 
 # -- "also_bought" graph edges --
-gs = engine._tables["products"].graph_store
+gs = engine.get_graph_store("products")
 for pid, name, desc, cat, price, rating, stock in catalog:
     gs.add_vertex(Vertex(pid, "", {
         "name": name, "category": cat, "price": price, "rating": rating,
@@ -196,7 +196,7 @@ results = (
     .execute()
 )
 for entry in sorted(results, key=lambda e: e.doc_id):
-    doc = engine._tables["products"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="products")
     print(f"  [{entry.doc_id}] {doc['name']} (${doc['price']:.2f})")
 
 # 1b. Vector search: find products similar to "audio" category
@@ -206,7 +206,7 @@ audio_query = (audio_query / np.linalg.norm(audio_query)).astype(np.float32)
 
 results = engine.query(table="products").knn(audio_query, k=3).execute()
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
-    doc = engine._tables["products"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="products")
     print(f"  [{entry.doc_id}] sim={entry.payload.score:.4f}  "
           f"{doc['name']} [{doc['category']}]")
 
@@ -220,7 +220,7 @@ results = (
     .execute()
 )
 for entry in results:
-    doc = engine._tables["products"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="products")
     print(f"  [{entry.doc_id}] {doc['name']} (${doc['price']:.2f})")
 
 # 1d. BM25 scored text + filter
@@ -236,7 +236,7 @@ results = (
     .execute()
 )
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
-    doc = engine._tables["products"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="products")
     print(f"  [{entry.doc_id}] score={entry.payload.score:.4f}  "
           f"{doc['name']} (rating: {doc['rating']})")
 
@@ -303,7 +303,7 @@ fused = engine.query(table="products").fuse_log_odds(
 )
 results = fused.execute()
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True)[:5]:
-    doc = engine._tables["products"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="products")
     print(f"  [{entry.doc_id}] fused={entry.payload.score:.4f}  "
           f"{doc['name']} [{doc['category']}]")
 
@@ -324,7 +324,7 @@ results = (
     .execute()
 )
 for entry in sorted(results, key=lambda e: e.doc_id):
-    doc = engine._tables["orders"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="orders")
     total = entry.payload.fields.get("_path_aggregate", 0)
     print(f"  {doc['order_id']} ({doc['customer']}): ${total:.2f}")
 
@@ -339,7 +339,7 @@ results = (
 )
 grand = 0.0
 for entry in sorted(results, key=lambda e: e.doc_id):
-    doc = engine._tables["orders"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="orders")
     total = entry.payload.fields.get("_path_aggregate", 0)
     grand += total
     print(f"  {doc['order_id']}: ${total:.2f}")
@@ -353,7 +353,7 @@ results = (
     .execute()
 )
 for entry in sorted(results, key=lambda e: e.doc_id):
-    doc = engine._tables["orders"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="orders")
     count = entry.payload.fields.get("_path_aggregate", 0)
     print(f"  {doc['order_id']}: {count} item(s)")
 
@@ -365,7 +365,7 @@ results = (
     .execute()
 )
 for entry in results:
-    doc = engine._tables["orders"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="orders")
     print(f"  {doc['order_id']} ({doc['customer']})")
 
 # 3e. Revenue by shipping method
@@ -414,7 +414,7 @@ for mode_name, fuse_fn in [
     top = sorted(results, key=lambda e: e.payload.score, reverse=True)[:3]
     print(f"\n  {mode_name}:")
     for entry in top:
-        doc = engine._tables["products"].document_store.get(entry.doc_id)
+        doc = engine.get_document(entry.doc_id, table="products")
         print(f"    score={entry.payload.score:.4f}  {doc['name']}")
 
 

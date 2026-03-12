@@ -32,7 +32,7 @@ engine.sql("""
     )
 """)
 
-gs = engine._tables["employees"].graph_store
+gs = engine.get_graph_store("employees")
 
 # Employees
 employees = [

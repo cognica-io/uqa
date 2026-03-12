@@ -193,8 +193,8 @@ print("\n--- 8. Assign analyzer to table field ---")
 # Use Python API to assign the stemming analyzer to the 'body' field
 from uqa.analysis import get_analyzer
 
+engine.set_table_analyzer("articles", "body", "stem_analyzer")
 stem = get_analyzer("stem_analyzer")
-engine._tables["articles"].inverted_index.set_field_analyzer("body", stem)
 print("  Assigned 'stem_analyzer' to articles.body")
 print(f"  'stem_analyzer' pipeline: {stem.analyze('transformers are running')}")
 

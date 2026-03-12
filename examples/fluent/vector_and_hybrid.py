@@ -94,7 +94,7 @@ audio_query = audio_query / np.linalg.norm(audio_query)
 
 results = engine.query(table="products").knn(audio_query, k=3).execute()
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
-    doc = engine._tables["products"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="products")
     print(f"  [{entry.doc_id}] sim={entry.payload.score:.4f}  {doc['name']}")
 
 
@@ -104,7 +104,7 @@ for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
 print("\n--- 2. Threshold vector search: similarity > 0.5 ---")
 results = engine.query(table="products").vector(audio_query, threshold=0.5).execute()
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
-    doc = engine._tables["products"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="products")
     print(f"  [{entry.doc_id}] sim={entry.payload.score:.4f}  {doc['name']}")
 
 
@@ -119,7 +119,7 @@ results = (
     .execute()
 )
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
-    doc = engine._tables["products"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="products")
     print(f"  [{entry.doc_id}] sim={entry.payload.score:.4f}  "
           f"${doc['price']:.2f}  {doc['name']}")
 
@@ -132,7 +132,7 @@ text_q = engine.query(table="products").term("wireless")
 vec_q = engine.query(table="products").knn(audio_query, k=5)
 results = text_q.and_(vec_q).execute()
 for entry in results:
-    doc = engine._tables["products"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="products")
     print(f"  [{entry.doc_id}] {doc['name']} [${doc['price']:.2f}]")
 
 
@@ -150,7 +150,7 @@ results = (
     .execute()
 )
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
-    doc = engine._tables["products"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="products")
     print(f"  [{entry.doc_id}] sim={entry.payload.score:.4f}  "
           f"{doc['name']} [{doc['category']}]")
 
@@ -177,7 +177,7 @@ vec_signal = engine.query(table="products").knn(display_query, k=5)
 fused = engine.query(table="products").fuse_log_odds(text_signal, vec_signal, alpha=0.6)
 results = fused.execute()
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
-    doc = engine._tables["products"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="products")
     print(f"  [{entry.doc_id}] fused={entry.payload.score:.4f}  {doc['name']}")
 
 
@@ -190,7 +190,7 @@ vec_signal = engine.query(table="products").vector(audio_query, threshold=0.3)
 
 results = engine.query(table="products").fuse_prob_and(text_signal, vec_signal).execute()
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
-    doc = engine._tables["products"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="products")
     print(f"  [{entry.doc_id}] P(and)={entry.payload.score:.4f}  {doc['name']}")
 
 
@@ -203,7 +203,7 @@ vec_signal = engine.query(table="products").vector(peripherals_query, threshold=
 
 results = engine.query(table="products").fuse_prob_or(text_signal, vec_signal).execute()
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True)[:5]:
-    doc = engine._tables["products"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="products")
     print(f"  [{entry.doc_id}] P(or)={entry.payload.score:.4f}  {doc['name']}")
 
 
@@ -221,7 +221,7 @@ results = (
     .execute()
 )
 for entry in results:
-    doc = engine._tables["products"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="products")
     print(f"  [{entry.doc_id}] {doc['name']} (rating: {doc['rating']})")
 
 

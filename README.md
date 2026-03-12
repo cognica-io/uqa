@@ -420,6 +420,9 @@ result = engine.sql("""
 """)
 print(result)
 
+# Retrieve a document by ID
+doc = engine.get_document(1, table="papers")
+
 engine.close()  # or use: with Engine(db_path="...") as engine:
 ```
 
@@ -475,6 +478,12 @@ engine.query(table="papers").term("attention", field="title").execute_parquet("r
 ```
 
 ## Examples
+
+### Quickstart
+
+```bash
+python examples/quickstart.py      # Hybrid search in under 30 lines
+```
 
 ### Fluent API (`examples/fluent/`)
 

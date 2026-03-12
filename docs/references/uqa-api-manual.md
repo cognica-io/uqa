@@ -75,6 +75,12 @@ engine.add_document(
 Add a document to a table's storage and indexes.
 
 ```python
+engine.get_document(doc_id: DocId, table: str) -> dict[str, Any] | None
+```
+
+Retrieve a document by its ID from the given table. Returns the stored document dict, or ``None`` if the document does not exist.
+
+```python
 engine.delete_document(doc_id: DocId, table: str) -> None
 ```
 
@@ -85,9 +91,10 @@ Remove a document from a table's storage and indexes.
 ```python
 engine.add_graph_vertex(vertex: Vertex, table: str) -> None
 engine.add_graph_edge(edge: Edge, table: str) -> None
+engine.get_graph_store(table: str) -> GraphStore
 ```
 
-Add vertices and edges to a table's graph store.
+Add vertices and edges to a table's graph store. ``get_graph_store()`` returns the ``GraphStore`` associated with a table for direct vertex lookups and index building.
 
 ### Named Graphs
 
@@ -106,6 +113,7 @@ Manage named graphs for Cypher queries. Named graphs are persisted via the SQLit
 engine.create_analyzer(name: str, config: dict[str, Any]) -> None
 engine.drop_analyzer(name: str) -> None
 engine.set_table_analyzer(table_name: str, field: str, analyzer_name: str) -> None
+engine.get_table_analyzer(table_name: str, field: str) -> Any
 ```
 
 Create named analyzers and assign them to table fields for custom tokenization.

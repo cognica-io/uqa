@@ -107,7 +107,7 @@ print("=" * 70)
 print("\n--- 1. path_aggregate: SUM of items.price per order ---")
 results = engine.query(table="orders").path_aggregate("items.price", "sum").execute()
 for entry in sorted(results, key=lambda e: e.doc_id):
-    doc = engine._tables["orders"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="orders")
     total = entry.payload.fields.get("_path_aggregate", 0)
     print(f"  {doc['order_id']} ({doc['customer']}): ${total:.2f}")
 
@@ -118,7 +118,7 @@ for entry in sorted(results, key=lambda e: e.doc_id):
 print("\n--- 2. path_aggregate: COUNT of items.name per order ---")
 results = engine.query(table="orders").path_aggregate("items.name", "count").execute()
 for entry in sorted(results, key=lambda e: e.doc_id):
-    doc = engine._tables["orders"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="orders")
     count = entry.payload.fields.get("_path_aggregate", 0)
     print(f"  {doc['order_id']}: {count} item(s)")
 
@@ -132,7 +132,7 @@ max_results = engine.query(table="orders").path_aggregate("items.price", "max").
 min_map = {e.doc_id: e.payload.fields.get("_path_aggregate") for e in min_results}
 max_map = {e.doc_id: e.payload.fields.get("_path_aggregate") for e in max_results}
 for doc_id in sorted(min_map.keys()):
-    doc = engine._tables["orders"].document_store.get(doc_id)
+    doc = engine.get_document(doc_id, table="orders")
     print(f"  {doc['order_id']}: ${min_map[doc_id]:.2f} - ${max_map[doc_id]:.2f}")
 
 
@@ -142,7 +142,7 @@ for doc_id in sorted(min_map.keys()):
 print("\n--- 4. path_aggregate: AVG price per order ---")
 results = engine.query(table="orders").path_aggregate("items.price", "avg").execute()
 for entry in sorted(results, key=lambda e: e.doc_id):
-    doc = engine._tables["orders"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="orders")
     avg = entry.payload.fields.get("_path_aggregate", 0)
     print(f"  {doc['order_id']}: ${avg:.2f}")
 
@@ -153,7 +153,7 @@ for entry in sorted(results, key=lambda e: e.doc_id):
 print("\n--- 5. Filter: status = 'shipped' ---")
 results = engine.query(table="orders").filter("status", Equals("shipped")).execute()
 for entry in results:
-    doc = engine._tables["orders"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="orders")
     print(f"  {doc['order_id']} ({doc['customer']})")
 
 
@@ -163,7 +163,7 @@ for entry in results:
 print("\n--- 6. Nested filter: shipping.city = 'Seoul' ---")
 results = engine.query(table="orders").filter("shipping.city", Equals("Seoul")).execute()
 for entry in results:
-    doc = engine._tables["orders"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="orders")
     print(f"  {doc['order_id']} ({doc['customer']})")
 
 
@@ -173,7 +173,7 @@ for entry in results:
 print("\n--- 7. Nested filter: shipping.method = 'express' ---")
 results = engine.query(table="orders").filter("shipping.method", Equals("express")).execute()
 for entry in results:
-    doc = engine._tables["orders"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="orders")
     ship = doc["shipping"]
     print(f"  {doc['order_id']} -> {ship['city']} (${ship['cost']:.2f})")
 
@@ -184,7 +184,7 @@ for entry in results:
 print("\n--- 8. Nested filter: shipping.cost > 10 ---")
 results = engine.query(table="orders").filter("shipping.cost", GreaterThan(10)).execute()
 for entry in results:
-    doc = engine._tables["orders"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="orders")
     print(f"  {doc['order_id']}: shipping ${doc['shipping']['cost']:.2f}")
 
 
@@ -199,7 +199,7 @@ results = (
     .execute()
 )
 for entry in results:
-    doc = engine._tables["orders"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="orders")
     print(f"  {doc['order_id']} ({doc['customer']}) [{doc['status']}]")
 
 
@@ -216,7 +216,7 @@ results = (
 )
 grand_total = 0.0
 for entry in sorted(results, key=lambda e: e.doc_id):
-    doc = engine._tables["orders"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="orders")
     total = entry.payload.fields.get("_path_aggregate", 0)
     grand_total += total
     print(f"  {doc['order_id']} ({doc['customer']}): ${total:.2f}")
@@ -229,7 +229,7 @@ print(f"  Grand total: ${grand_total:.2f}")
 print("\n--- 11. Array filter: items.name = 'Webcam' ---")
 results = engine.query(table="orders").filter("items.name", Equals("Webcam")).execute()
 for entry in results:
-    doc = engine._tables["orders"].document_store.get(entry.doc_id)
+    doc = engine.get_document(entry.doc_id, table="orders")
     print(f"  {doc['order_id']} ({doc['customer']})")
 
 
@@ -255,7 +255,7 @@ sum_map = {e.doc_id: e.payload.fields.get("_path_aggregate", 0) for e in sum_res
 count_map = {e.doc_id: e.payload.fields.get("_path_aggregate", 0) for e in count_results}
 
 for doc_id in sorted(sum_map.keys()):
-    doc = engine._tables["orders"].document_store.get(doc_id)
+    doc = engine.get_document(doc_id, table="orders")
     total = sum_map[doc_id]
     count = count_map.get(doc_id, 0)
     ship = doc["shipping"]["cost"]

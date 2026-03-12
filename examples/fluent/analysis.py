@@ -380,7 +380,7 @@ engine.set_table_analyzer("papers", "abstract", "english_stem")
 print("  Assigned 'english_stem' to papers.abstract")
 
 # Verify the analyzer is active
-analyzer = engine._tables["papers"].inverted_index.get_field_analyzer("abstract")
+analyzer = engine.get_table_analyzer("papers", "abstract")
 print(f"  Analyzer pipeline: {analyzer.analyze('The transformers are running')}")
 
 # Clean up
