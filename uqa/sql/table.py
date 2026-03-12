@@ -159,15 +159,9 @@ class Table:
         # ValueError on violation.
         self.fk_update_validators: list[Any] = []
 
-        # Filter out vector columns -- they are not stored in the
-        # document store (they live in per-field HNSW indexes instead).
-        scalar_columns = [
-            col for col in columns if col.vector_dimensions is None
-        ]
-
         if conn is not None:
             col_pairs = [
-                (col.name, col.type_name) for col in scalar_columns
+                (col.name, col.type_name) for col in columns
             ]
             self.document_store: DocumentStore | SQLiteDocumentStore = (
                 SQLiteDocumentStore(conn, name, col_pairs)
@@ -185,14 +179,8 @@ class Table:
             self.graph_store = GraphStore()
             self.block_max_index = BlockMaxIndex()
 
-        # Per-field HNSW vector indexes for VECTOR columns.
+        # Per-field HNSW vector indexes, created via CREATE INDEX ... USING hnsw.
         self.vector_indexes: dict[str, HNSWIndex] = {}
-        for col in columns:
-            if col.vector_dimensions is not None:
-                self.vector_indexes[col.name] = HNSWIndex(
-                    dimensions=col.vector_dimensions,
-                    max_elements=10000,
-                )
 
         self._next_id = 1
         self._stats: dict[str, ColumnStats] = {}
@@ -290,9 +278,9 @@ class Table:
         for col_name, col_def in self.columns.items():
             if col_name in row and row[col_name] is not None:
                 if col_def.vector_dimensions is not None:
-                    vectors[col_name] = np.asarray(
-                        row[col_name], dtype=np.float32
-                    )
+                    vec = np.asarray(row[col_name], dtype=np.float32)
+                    coerced[col_name] = vec.tolist()
+                    vectors[col_name] = vec
                 elif col_def.type_name in ("json", "jsonb"):
                     coerced[col_name] = _coerce_json(row[col_name])
                 elif col_def.type_name.endswith("[]"):

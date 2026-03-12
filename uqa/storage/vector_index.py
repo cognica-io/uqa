@@ -13,25 +13,29 @@ from numpy.typing import NDArray
 from uqa.core.posting_list import PostingList
 from uqa.core.types import DocId, Payload, PostingEntry
 
+_INITIAL_CAPACITY = 1024
+
 
 class HNSWIndex:
     """Hierarchical Navigable Small World graph for ANN search.
 
     Cost: O(d * log|D|) per query (Definition 6.2.1, Paper 1).
+    Capacity grows automatically on insert.
     """
 
     def __init__(
         self,
         dimensions: int,
-        max_elements: int,
         ef_construction: int = 200,
         m: int = 16,
     ) -> None:
         self.dimensions = dimensions
-        self._max_elements = max_elements
+        self._ef_construction = ef_construction
+        self._m = m
+        self._capacity = _INITIAL_CAPACITY
         self._index = hnswlib.Index(space="cosine", dim=dimensions)
         self._index.init_index(
-            max_elements=max_elements,
+            max_elements=self._capacity,
             ef_construction=ef_construction,
             M=m,
         )
@@ -41,6 +45,9 @@ class HNSWIndex:
         self._next_internal: int = 0
 
     def add(self, doc_id: DocId, vector: NDArray) -> None:
+        if self._next_internal >= self._capacity:
+            self._capacity *= 2
+            self._index.resize_index(self._capacity)
         internal_id = self._next_internal
         self._next_internal += 1
         self._doc_id_to_internal[doc_id] = internal_id
@@ -51,11 +58,12 @@ class HNSWIndex:
 
     def clear(self) -> None:
         """Reset the index by re-initializing the hnswlib graph."""
+        self._capacity = _INITIAL_CAPACITY
         self._index = hnswlib.Index(space="cosine", dim=self.dimensions)
         self._index.init_index(
-            max_elements=self._max_elements,
-            ef_construction=200,
-            M=16,
+            max_elements=self._capacity,
+            ef_construction=self._ef_construction,
+            M=self._m,
         )
         self._index.set_ef(50)
         self._doc_id_to_internal.clear()

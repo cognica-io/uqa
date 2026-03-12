@@ -33,13 +33,9 @@ class Engine:
     def __init__(
         self,
         db_path: str | None = None,
-        vector_dimensions: int = 64,
-        max_elements: int = 10000,
         parallel_workers: int = 4,
         spill_threshold: int = 0,
     ):
-        self._vector_dimensions = vector_dimensions
-        self._max_elements = max_elements
         self._parallel_executor = ParallelExecutor(
             max_workers=parallel_workers
         )
@@ -68,10 +64,6 @@ class Engine:
             self._index_manager = IndexManager(
                 self._catalog.conn, self._catalog
             )
-            self._catalog.set_metadata(
-                "vector_dimensions", str(vector_dimensions)
-            )
-            self._catalog.set_metadata("max_elements", str(max_elements))
             self._load_from_catalog()
 
     # -- Catalog restore -----------------------------------------------
@@ -269,6 +261,21 @@ class Engine:
             pk_col = tbl.columns[tbl.primary_key]
             stored[tbl.primary_key] = pk_col.python_type(doc_id)
 
+        # Store embedding vector in the document store alongside scalar data.
+        vec_col_for_index: str | None = None
+        vec_array = None
+        if embedding is not None:
+            import numpy as np
+
+            vec_col_for_index = next(
+                (name for name, col in tbl.columns.items()
+                 if col.vector_dimensions is not None),
+                None,
+            )
+            if vec_col_for_index is not None:
+                vec_array = np.asarray(embedding, dtype=np.float32)
+                stored[vec_col_for_index] = vec_array.tolist()
+
         tbl.document_store.put(doc_id, stored)
 
         text_fields = {
@@ -277,10 +284,10 @@ class Engine:
         if text_fields:
             tbl.inverted_index.add_document(doc_id, text_fields)
 
-        if embedding is not None:
-            vec_idx = next(iter(tbl.vector_indexes.values()), None)
+        if vec_col_for_index is not None and vec_array is not None:
+            vec_idx = tbl.vector_indexes.get(vec_col_for_index)
             if vec_idx is not None:
-                vec_idx.add(doc_id, embedding)
+                vec_idx.add(doc_id, vec_array)
 
     def delete_document(self, doc_id: DocId, table: str) -> None:
         """Remove a document from a table's storage and indexes."""

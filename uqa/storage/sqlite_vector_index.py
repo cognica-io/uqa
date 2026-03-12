@@ -36,11 +36,10 @@ class SQLiteVectorIndex(HNSWIndex):
         self,
         conn: sqlite3.Connection,
         dimensions: int,
-        max_elements: int,
         ef_construction: int = 200,
         m: int = 16,
     ) -> None:
-        super().__init__(dimensions, max_elements, ef_construction, m)
+        super().__init__(dimensions, ef_construction, m)
         self._conn = conn
         self._load_from_sqlite()
 

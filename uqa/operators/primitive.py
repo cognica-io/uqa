@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections import Counter
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from uqa.core.posting_list import PostingList
 from uqa.core.types import IndexStats, Payload, PostingEntry, Predicate
 from uqa.operators.base import ExecutionContext, Operator
@@ -17,6 +19,70 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
     from uqa.storage.index_abc import Index
+
+
+def _brute_force_knn(
+    context: ExecutionContext, field: str, query: NDArray, k: int,
+) -> PostingList:
+    """Exact KNN via sequential cosine similarity scan over document store."""
+    doc_store = context.document_store
+    if doc_store is None:
+        return PostingList()
+
+    query_f = np.asarray(query, dtype=np.float32)
+    qnorm = np.linalg.norm(query_f)
+    if qnorm == 0:
+        return PostingList()
+    query_unit = query_f / qnorm
+
+    scored: list[tuple[int, float]] = []
+    for doc_id in doc_store.doc_ids:
+        vec_data = doc_store.get_field(doc_id, field)
+        if vec_data is None:
+            continue
+        vec = np.asarray(vec_data, dtype=np.float32)
+        vnorm = np.linalg.norm(vec)
+        if vnorm == 0:
+            continue
+        similarity = float(np.dot(query_unit, vec / vnorm))
+        scored.append((doc_id, similarity))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    entries = [
+        PostingEntry(doc_id, Payload(score=sim))
+        for doc_id, sim in scored[:k]
+    ]
+    return PostingList(entries)
+
+
+def _brute_force_threshold(
+    context: ExecutionContext, field: str, query: NDArray, threshold: float,
+) -> PostingList:
+    """Exact threshold search via sequential cosine similarity scan."""
+    doc_store = context.document_store
+    if doc_store is None:
+        return PostingList()
+
+    query_f = np.asarray(query, dtype=np.float32)
+    qnorm = np.linalg.norm(query_f)
+    if qnorm == 0:
+        return PostingList()
+    query_unit = query_f / qnorm
+
+    entries: list[PostingEntry] = []
+    for doc_id in doc_store.doc_ids:
+        vec_data = doc_store.get_field(doc_id, field)
+        if vec_data is None:
+            continue
+        vec = np.asarray(vec_data, dtype=np.float32)
+        vnorm = np.linalg.norm(vec)
+        if vnorm == 0:
+            continue
+        similarity = float(np.dot(query_unit, vec / vnorm))
+        if similarity >= threshold:
+            entries.append(PostingEntry(doc_id, Payload(score=similarity)))
+
+    return PostingList(entries)
 
 
 class TermOperator(Operator):
@@ -33,9 +99,23 @@ class TermOperator(Operator):
         idx = context.inverted_index
         if idx is None:
             return PostingList()
+
+        # Analyze the query term using the same analyzer that indexed the field
+        analyzer = idx.get_field_analyzer(self.field) if self.field else idx.analyzer
+        tokens = analyzer.analyze(self.term)
+        if not tokens:
+            return PostingList()
+
         if self.field is not None:
-            return idx.get_posting_list(self.field, self.term)
-        return idx.get_posting_list_any_field(self.term)
+            lists = [idx.get_posting_list(self.field, t) for t in tokens]
+        else:
+            lists = [idx.get_posting_list_any_field(t) for t in tokens]
+
+        # Single token: return directly; multiple tokens: intersect
+        result = lists[0]
+        for pl in lists[1:]:
+            result = result.intersect(pl)
+        return result
 
     def cost_estimate(self, stats: IndexStats) -> float:
         if self.field is not None:
@@ -47,6 +127,7 @@ class VectorSimilarityOperator(Operator):
     """Definition 3.1.2: V_theta(q) -> PostingList.
 
     Returns documents with similarity >= threshold.
+    Uses HNSW index if available, otherwise exact sequential scan.
     """
 
     def __init__(
@@ -61,9 +142,11 @@ class VectorSimilarityOperator(Operator):
 
     def execute(self, context: ExecutionContext) -> PostingList:
         vec_idx = context.vector_indexes.get(self.field)
-        if vec_idx is None:
-            return PostingList()
-        return vec_idx.search_threshold(self.query_vector, self.threshold)
+        if vec_idx is not None:
+            return vec_idx.search_threshold(self.query_vector, self.threshold)
+        return _brute_force_threshold(
+            context, self.field, self.query_vector, self.threshold
+        )
 
     def cost_estimate(self, stats: IndexStats) -> float:
         import math
@@ -74,6 +157,7 @@ class KNNOperator(Operator):
     """Definition 3.1.3: KNN_k(q) -> PostingList.
 
     Returns top-k nearest neighbors.
+    Uses HNSW index if available, otherwise exact sequential scan.
     """
 
     def __init__(
@@ -88,9 +172,11 @@ class KNNOperator(Operator):
 
     def execute(self, context: ExecutionContext) -> PostingList:
         vec_idx = context.vector_indexes.get(self.field)
-        if vec_idx is None:
-            return PostingList()
-        return vec_idx.search_knn(self.query_vector, self.k)
+        if vec_idx is not None:
+            return vec_idx.search_knn(self.query_vector, self.k)
+        return _brute_force_knn(
+            context, self.field, self.query_vector, self.k
+        )
 
     def cost_estimate(self, stats: IndexStats) -> float:
         import math

@@ -227,9 +227,7 @@ class UQAShell:
 
     def __init__(self, db_path: str | None = None) -> None:
         self._db_path = db_path
-        self._engine = Engine(
-            db_path=db_path, vector_dimensions=64, max_elements=10000
-        )
+        self._engine = Engine(db_path=db_path)
         self._show_timing = False
         self._expanded = False
         self._output_file: str | None = None
@@ -406,11 +404,7 @@ class UQAShell:
             print(f"Timing is {state}.")
         elif verb == "\\reset":
             self._engine.close()
-            self._engine = Engine(
-                db_path=self._db_path,
-                vector_dimensions=64,
-                max_elements=10000,
-            )
+            self._engine = Engine(db_path=self._db_path)
             self._completer._engine = self._engine
             print("Engine reset.")
         elif verb in ("\\h", "\\help", "\\?"):
