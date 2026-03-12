@@ -166,7 +166,7 @@ graph TD
 
     PAR --> DS[Document Store<br/>SQLite]
     PAR --> II[Inverted Index<br/>SQLite + Analyzer]
-    PAR --> VI[Vector Index<br/>HNSW + SQLite]
+    PAR --> VI[Vector Index<br/>HNSW (optional)]
     PAR --> GS[Graph Store<br/>SQLite]
 
     subgraph Scoring ["Scoring (bayesian-bm25)"]
@@ -202,7 +202,7 @@ uqa/
   planner/        Cost model, cardinality estimator, optimizer, DPccp join enumerator, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          1879 tests across 47 test files
+  tests/          1896 tests across 48 test files
 benchmarks/       185 pytest-benchmark tests across 8 files (posting list, storage, compiler, execution,
                   planner, scoring, graph, end-to-end SQL)
 ```
@@ -303,7 +303,7 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 ### Query Optimizer
 
 - Cost-based optimization with equi-depth histograms and Most Common Values (MCV)
-- **DPccp join order optimization** (Moerkotte & Neumann, 2006) — O(3^n) dynamic programming over connected subgraph complement pairs; produces optimal bushy join trees for INNER JOIN chains with 3+ relations; greedy fallback for 16+ relations; bitmask DP table with bytearray connectivity lookup and incremental connected subgraph enumeration
+- **DPccp join order optimization** (Moerkotte & Neumann, 2006) — O(3^n) dynamic programming over connected subgraph complement pairs; produces optimal bushy join trees for INNER JOIN chains with 2+ relations; greedy fallback for 16+ relations; bitmask DP table with bytearray connectivity lookup and incremental connected subgraph enumeration
 - Filter pushdown into intersections
 - Vector threshold merge (same query vector)
 - Intersect operand reordering by cardinality (cheapest first)

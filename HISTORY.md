@@ -1,8 +1,64 @@
 # History
 
+## 0.11.0 (2026-03-12)
+
+Query optimizer overhaul, vector index architecture redesign, and USQL formal grammar specification.
+
+### Query Optimizer: Correctness Fixes
+
+- **Graph filter pushdown to correct vertex (C2)**: filter on `b.name` was always pushed to the first vertex pattern regardless of which vertex has the field; now parses `variable.property` prefix and pushes the constraint only to the matching vertex pattern
+- **`_fuse_join_pattern` dropping input operator (C1)**: `PatternMatchOperator` fusion discarded the first operator entirely; disabled the unsafe optimization, now recurses children correctly
+- **Filter pushdown to all Intersect children (H1)**: `pushed = True` after the first child prevented pushing to other applicable children; now pushes the filter to ALL children whose schema includes the filter field
+- **ON CONFLICT O(N) full scan per row (C3)**: `_find_conflict` did a linear scan per inserted row; replaced with hash index built before the insert loop for O(1) lookup per row
+- **FK validation O(N) scan per check (C4)**: all 4 FK validators (`_validate_insert`, `_validate_delete`, `_validate_update`, `_validate_parent_update`) did full table scans; replaced with set-based lookups
+
+### Query Optimizer: Performance Improvements
+
+- **DPccp enabled for 2-table joins (H2)**: changed threshold from `len(relations) < 3` to `< 2`, so DPccp chooses optimal join order (including build side) even for 2-table joins
+- **Predicate pushdown below joins (H3)**: AND-decomposed WHERE conjuncts referencing a single table alias are now pushed into that table's scan as `ExprFilterOp`, reducing rows entering the join; cross-table conjuncts remain as deferred WHERE
+- **Constant folding pass (H4)**: bottom-up fold of `A_Expr` with `A_Const` operands and `BoolExpr(AND/OR)` with constant args; skips `ColumnRef`, side-effecting functions (`random`, `nextval`, `now`)
+- **ExprEvaluator cached across batches (H5)**: `ExprFilterOp.next()` and `ExprProjectOp.next()` were creating a new `ExprEvaluator` per batch; moved construction to `open()` for single allocation
+- **Hash join build on smaller side (H7)**: `InnerJoinOperator` now compares input sizes and builds the hash table on the smaller side while preserving left/right output semantics
+
+### Query Optimizer: Cost Model & Cardinality
+
+- **IntersectOperator cost model (M4)**: was `min(child_costs)` but all children must be evaluated; changed to `sum(child_costs)`
+- **Named constants for cost model (M2)**: replaced magic numbers with `SCORE_OVERHEAD_FACTOR`, `FILTER_SCAN_FRACTION`, `GROUP_BY_OVERHEAD_FACTOR`, `VERTEX_AGG_FRACTION`, `TRAVERSE_FRACTION`; uses `graph_stats` for `PatternMatchOperator` cost when available
+- **Independence damping in cardinality (M1)**: strict independence assumption `(result * card) / n` replaced with sqrt damping on subsequent selectivities after sorting children ascending
+- **Histogram zero-width bucket (L1)**: added clarifying comment for correct zero-width bucket behavior
+- **Graph stats fallback (L2)**: added comments explaining the `n^1.5` heuristic fallback when graph statistics are unavailable
+
+### Vector Index Architecture
+
+- **Vectors stored in document store**: `VECTOR(N)` columns are now stored as JSON arrays in the document store (SQLite `_data_{table}` table), not in a separate HNSW index; this enables `DROP INDEX` + re-`CREATE INDEX` workflows
+- **Explicit HNSW index creation**: HNSW indexes are created via `CREATE INDEX ... USING hnsw (column)` with optional `WITH (ef_construction, m)` parameters, matching the pgvector model
+- **Brute-force fallback**: when no HNSW index exists on a vector column, `knn_match()` falls back to exact brute-force cosine similarity scan over all stored vectors
+- **Auto-resize**: `HNSWIndex` automatically doubles capacity when the index is full; removed the `max_elements` constructor parameter
+- **Removed `vector_dimensions` from Table**: vector dimensionality is no longer stored on the table; inferred from the first inserted vector and validated on subsequent inserts
+
+### USQL Grammar Specification
+
+- New `docs/references/usql-grammar.md` — complete formal EBNF grammar specification (ISO 14977 notation) for all implemented SQL syntax, covering 22 sections: DDL, DML, SELECT, CTEs, window functions, aggregates, expressions, data types, scalar functions, JSON/JSONB, arrays, search functions, fusion, Cypher integration, transactions, EXPLAIN/ANALYZE, information_schema, and 2 appendices (operator precedence, reserved words)
+
+### Documentation
+
+- Updated `docs/references/uqa-api-manual.md`, `uqa-reference.md`, `technical-overview.md` for the new vector index architecture (explicit CREATE INDEX, brute-force fallback, document store storage)
+- Removed 4 unimplemented features from `docs/references/usql-manual.md`: `GENERATED ALWAYS AS ... STORED`, `SIMILAR TO`, `ROLLUP`/`CUBE`/`GROUPING SETS`, `NATURAL JOIN`
+- Added `GROUP BY computed expression` to `usql-manual.md` (was implemented but undocumented)
+
+### Bug Fixes
+
+- Fixed DuckDB FDW deprecated API: changed `fetch_arrow_table()` to `to_arrow_table()` for DuckDB 1.4.3+ compatibility
+
+### Tests
+
+- 1896 tests across 48 test files + 185 benchmarks across 8 benchmark files
+- New `test_cost_optimizer.py` with 17 tests: optimizer correctness (graph filter pushdown, Intersect filter, join pattern fusion), cost model (Intersect sum, named constants), cardinality (independence damping, histogram zero-width)
+
+
 ## 0.10.1 (2026-03-11)
 
-DPccp join enumerator optimization, benchmark infrastructure, and DuckDB compatibility fix.
+DPccp join enumerator optimization and benchmark infrastructure.
 
 ### DPccp Join Enumerator Optimization
 
@@ -32,10 +88,6 @@ DPccp join enumerator optimization, benchmark infrastructure, and DuckDB compati
 ### CI
 
 - GitHub Actions benchmark workflow (`.github/workflows/benchmarks.yml`): runs 185 benchmarks on every push and PR, stores baseline in `gh-pages` branch, compares against baseline with 150% alert threshold, comments on and blocks PRs with significant regressions
-
-### Bug Fixes
-
-- Fixed DuckDB FDW compatibility with DuckDB 1.4.3: `to_arrow_table()` renamed to `fetch_arrow_table()`
 
 ### Tests
 
