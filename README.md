@@ -1,6 +1,6 @@
 # UQA — Unified Query Algebra
 
-A database prototype that unifies **relational**, **text retrieval**, **vector search**, and **graph query** paradigms under a single algebraic structure, using posting lists as the universal abstraction. SQL interface targets **PostgreSQL 17** compatibility.
+A database prototype that unifies **relational**, **text retrieval**, **vector search**, **graph query**, and **geospatial** paradigms under a single algebraic structure, using posting lists as the universal abstraction. SQL interface targets **PostgreSQL 17** compatibility.
 
 > **Status:** The unified query algebra theory behind this project is already implemented in production as [Cognica Database](https://cognica.io), a commercial multi-paradigm database engine built in C++20/23. UQA is the research prototype that originated the theory, now open-sourced for academic and experimental use. It is under active development with the goal of becoming a standalone production-grade project. APIs and internals may change as the project matures.
 
@@ -125,6 +125,29 @@ SELECT * FROM cypher('social', $$
     ORDER BY p.name
 $$) AS (name agtype, friend agtype, age agtype);
 
+-- Geospatial: R*Tree spatial index with Haversine distance
+CREATE TABLE restaurants (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    cuisine TEXT NOT NULL,
+    location POINT
+);
+
+CREATE INDEX idx_loc ON restaurants USING rtree (location);
+
+SELECT name, ROUND(ST_Distance(location, POINT(-73.9857, 40.7484)), 0) AS dist_m
+FROM restaurants
+WHERE spatial_within(location, POINT(-73.9857, 40.7484), 5000)
+ORDER BY dist_m;
+
+-- Spatial + text + vector fusion
+SELECT name, _score FROM restaurants
+WHERE fuse_log_odds(
+    text_match(description, 'pizza'),
+    spatial_within(location, POINT(-73.9969, 40.7306), 3000),
+    knn_match(embedding, $1, 5)
+) ORDER BY _score DESC;
+
 -- Text analysis: custom analyzer with stemming
 SELECT * FROM create_analyzer('english_stem', '{
     "tokenizer": {"type": "standard"},
@@ -167,6 +190,7 @@ graph TD
     PAR --> DS[Document Store<br/>SQLite]
     PAR --> II[Inverted Index<br/>SQLite + Analyzer]
     PAR --> VI[Vector Index<br/>HNSW (optional)]
+    PAR --> SI[Spatial Index<br/>R*Tree]
     PAR --> GS[Graph Store<br/>SQLite]
 
     subgraph Scoring ["Scoring (bayesian-bm25)"]
@@ -190,7 +214,7 @@ graph TD
 uqa/
   core/           PostingList, types, hierarchical documents
   analysis/       Text analysis pipeline: CharFilter, Tokenizer, TokenFilter, Analyzer
-  storage/        SQLite-backed stores: documents, inverted index, vectors, graph
+  storage/        SQLite-backed stores: documents, inverted index, vectors, spatial (R*Tree), graph
   operators/      Operator algebra (boolean, primitive, hybrid, aggregation, hierarchical)
   scoring/        BM25, Bayesian BM25, VectorScorer, WAND/BlockMaxWAND (via bayesian-bm25)
   fusion/         Log-odds conjunction, probabilistic boolean (via bayesian-bm25)
@@ -202,7 +226,7 @@ uqa/
   planner/        Cost model, cardinality estimator, optimizer, DPccp join enumerator, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          1896 tests across 48 test files
+  tests/          1927 tests across 49 test files
 benchmarks/       185 pytest-benchmark tests across 8 files (posting list, storage, compiler, execution,
                   planner, scoring, graph, end-to-end SQL)
 ```
@@ -225,7 +249,7 @@ benchmarks/       185 pytest-benchmark tests across 8 files (posting list, stora
 | Views | `CREATE VIEW`, `DROP VIEW` |
 | Window | `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `NTILE`, `LAG`, `LEAD`, `NTH_VALUE`, `PERCENT_RANK`, `CUME_DIST`, aggregates `OVER (PARTITION BY ... ORDER BY ... ROWS/RANGE BETWEEN ...)`, `WINDOW w AS (...)`, `FILTER (WHERE ...)` on window aggregates |
 | Aggregates | `COUNT [DISTINCT]`, `SUM`, `AVG`, `MIN`, `MAX`, `STRING_AGG`, `ARRAY_AGG`, `BOOL_AND`/`EVERY`, `BOOL_OR`, `STDDEV`/`VARIANCE`, `PERCENTILE_CONT/DISC`, `MODE`, `JSON_OBJECT_AGG`, `CORR`, `COVAR_POP/SAMP`, `REGR_*` (10 functions), `FILTER (WHERE ...)`, `ORDER BY` within aggregate |
-| Types | `INTEGER`, `BIGINT`, `SERIAL`, `TEXT`, `VARCHAR`, `REAL`, `FLOAT`, `DOUBLE PRECISION`, `NUMERIC(p,s)`, `BOOLEAN`, `DATE`, `TIME`, `TIMESTAMP`, `TIMESTAMPTZ`, `INTERVAL`, `JSON`/`JSONB`, `UUID`, `BYTEA`, `INTEGER[]` (arrays), `VECTOR(N)` |
+| Types | `INTEGER`, `BIGINT`, `SERIAL`, `TEXT`, `VARCHAR`, `REAL`, `FLOAT`, `DOUBLE PRECISION`, `NUMERIC(p,s)`, `BOOLEAN`, `DATE`, `TIME`, `TIMESTAMP`, `TIMESTAMPTZ`, `INTERVAL`, `JSON`/`JSONB`, `UUID`, `BYTEA`, `INTEGER[]` (arrays), `VECTOR(N)`, `POINT` |
 | Date/Time | `EXTRACT`, `DATE_TRUNC`, `DATE_PART`, `NOW()`, `CURRENT_DATE`, `CURRENT_TIMESTAMP`, `CURRENT_TIME`, `CLOCK_TIMESTAMP`, `TIMEOFDAY`, `AGE`, `TO_CHAR`, `TO_DATE`, `TO_TIMESTAMP`, `MAKE_DATE`, `MAKE_TIMESTAMP`, `MAKE_INTERVAL`, `TO_NUMBER`, `OVERLAPS`, `ISFINITE` |
 | JSON | `->`, `->>`, `#>`, `#>>` operators, `@>` / `<@` containment, `?` / `?|` / `?&` key existence, `JSONB_SET`, `JSONB_STRIP_NULLS`, `JSON_BUILD_OBJECT`, `JSON_BUILD_ARRAY`, `JSON_OBJECT_KEYS`, `JSON_EXTRACT_PATH`, `JSON_TYPEOF`, `JSON_AGG`, `::jsonb` cast |
 | Table Funcs | `GENERATE_SERIES`, `UNNEST`, `REGEXP_SPLIT_TO_TABLE`, `JSON_EACH`/`JSON_EACH_TEXT`, `JSON_ARRAY_ELEMENTS`/`JSON_ARRAY_ELEMENTS_TEXT` |
@@ -245,6 +269,7 @@ benchmarks/       185 pytest-benchmark tests across 8 files (posting list, stora
 | `traverse_match(start, 'label', hops)` | Graph reachability as a scored signal |
 | `path_filter(path, value)` | Hierarchical equality filter (any-match on arrays) |
 | `path_filter(path, op, value)` | Hierarchical comparison filter (`>`, `<`, `>=`, `<=`, `!=`) |
+| `spatial_within(field, POINT(x,y), dist)` | Geospatial range query (R*Tree + Haversine) |
 
 ### Fusion Meta-Functions
 
@@ -254,6 +279,15 @@ benchmarks/       185 pytest-benchmark tests across 8 files (posting list, stora
 | `fuse_prob_and(sig1, sig2, ...)` | Probabilistic AND: P = prod(P_i) |
 | `fuse_prob_or(sig1, sig2, ...)` | Probabilistic OR: P = 1 - prod(1 - P_i) |
 | `fuse_prob_not(signal)` | Probabilistic NOT: P = 1 - P_signal |
+
+### SELECT Spatial Functions
+
+| Function | Description |
+|----------|-------------|
+| `ST_Distance(point1, point2)` | Haversine great-circle distance in meters |
+| `ST_Within(point1, point2, dist)` | Distance predicate (boolean) |
+| `ST_DWithin(point1, point2, dist)` | Alias for ST_Within |
+| `POINT(x, y)` | Construct a POINT value (longitude, latitude) |
 
 ### SELECT Scalar Functions
 
@@ -292,6 +326,7 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 | Field Stats | `_field_stats_{table}` | Per-table field-level statistics (BM25) |
 | Doc Lengths | `_doc_lengths_{table}` | Per-table per-document token lengths (BM25) |
 | Vectors | `_data_{table}` (document store) | Stored as JSON arrays; HNSW index via `CREATE INDEX ... USING hnsw` |
+| Spatial | `_rtree_{table}_{field}` | R*Tree virtual table for POINT columns; created via `CREATE INDEX ... USING rtree` |
 | Graph | `_graph_vertices_{table}`, `_graph_edges_{table}` | Per-table adjacency-indexed graph with vertex labels |
 | Named Graphs | `_named_graphs`, `_graph_{name}_*` | Isolated graph namespaces for Cypher queries |
 | B-tree Indexes | SQLite indexes on `_data_{table}` | `CREATE INDEX` support |
@@ -308,6 +343,7 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 - Vector threshold merge (same query vector)
 - Intersect operand reordering by cardinality (cheapest first)
 - Fusion signal reordering by cost (cheapest first)
+- R*Tree spatial index scan for POINT column range queries
 - B-tree index scan substitution (replace full scans when profitable)
 - FDW predicate pushdown (comparison, IN, LIKE, ILIKE, BETWEEN pushed to DuckDB/Arrow Flight SQL for Hive partition pruning)
 - Cross-paradigm cardinality estimation for text, vector, graph, and fusion operators
@@ -508,6 +544,7 @@ python examples/sql/joins_and_subqueries.py   # JOINs, derived tables, set opera
 python examples/sql/analytics.py              # Aggregates, window functions, JSON, date/time, UPSERT
 python examples/sql/analysis.py               # Text analyzers via SQL: create, list, drop, persistence
 python examples/sql/export.py                 # Arrow/Parquet export from SQL queries
+python examples/sql/spatial.py                 # Geospatial: POINT, R*Tree, spatial_within, ST_Distance, fusion
 python examples/sql/fdw.py                    # Foreign Data Wrappers, Hive partitioning, predicate pushdown
 ```
 

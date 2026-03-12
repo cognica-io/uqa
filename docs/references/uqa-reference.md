@@ -6,7 +6,7 @@
 
 ### 1.1 What is UQA?
 
-UQA (Unified Query Algebra) is a database prototype that unifies four traditionally isolated data paradigms — relational SQL, full-text search, vector search, and graph queries — under a single algebraic structure, using **posting lists** as the universal abstraction.
+UQA (Unified Query Algebra) is a database prototype that unifies five traditionally isolated data paradigms — relational SQL, full-text search, vector search, graph queries, and geospatial — under a single algebraic structure, using **posting lists** as the universal abstraction.
 
 Where conventional systems force users to stitch together a relational database, a search engine, a vector store, and a graph database — each with its own query language, data model, and operational overhead — UQA provides a single engine that speaks SQL enriched with cross-paradigm functions.
 
@@ -151,6 +151,7 @@ Operators are functions that produce posting lists. They are the building blocks
 | TermOperator | term string | PostingList | Documents containing the term |
 | KNNOperator | query vector, $k$ | PostingList | $k$ nearest neighbors by cosine similarity |
 | VectorSimilarityOperator | query vector, $\theta$ | PostingList | Documents with similarity $\geq \theta$ |
+| SpatialWithinOperator | field, center, radius | PostingList | Points within radius (R*Tree + Haversine) |
 | FilterOperator | field, predicate | PostingList | Documents matching the predicate |
 | ScoreOperator | source, scorer | PostingList | Adds relevance scores to documents |
 | FacetOperator | field | dict | Value counts for a field |
@@ -321,6 +322,30 @@ SELECT * FROM orders WHERE path_filter('items.price', '>', 100);
 
 If any element in a nested array matches, the document is included.
 
+#### `spatial_within(field, POINT(x, y), distance_meters)`
+
+Geospatial range query. Returns all points within `distance_meters` of the center point, scored by proximity: `score = 1.0 - (dist / distance_meters)`. Uses the R*Tree spatial index if one exists on the column, otherwise falls back to brute-force Haversine scan.
+
+```sql
+-- All restaurants within 2km of Washington Square Park
+SELECT name, cuisine, rating FROM restaurants
+WHERE spatial_within(location, POINT(-73.9973, 40.7308), 2000)
+ORDER BY rating DESC;
+
+-- With parameter binding
+SELECT name FROM restaurants
+WHERE spatial_within(location, $1, $2) ORDER BY name;
+-- params: [[-73.9973, 40.7308], 2000]
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `field` | column name | The POINT column to search |
+| `POINT(x, y)` | POINT or $N | Center point (longitude, latitude) |
+| `distance_meters` | numeric or $N | Search radius in meters |
+
+Returns: PostingList with `_score` proportional to proximity.
+
 #### `vector_exclude(field, positive_vector, negative_vector, k, threshold)`
 
 KNN search with negative vector exclusion. Retrieves $k$ nearest neighbors to the positive vector, then removes documents whose cosine similarity to the negative vector exceeds the threshold.
@@ -343,7 +368,7 @@ result = engine.sql(
 
 ### 4.2 Fusion Meta-Functions
 
-Fusion functions combine multiple signal functions into a single relevance score. Each signal argument must be a signal function call (`text_match`, `bayesian_match`, `knn_match`, or `traverse_match`). Inside a fusion context, `text_match` is automatically promoted to Bayesian BM25 calibration so all signals produce probabilities in $(0, 1)$.
+Fusion functions combine multiple signal functions into a single relevance score. Each signal argument must be a signal function call (`text_match`, `bayesian_match`, `knn_match`, `traverse_match`, or `spatial_within`). Inside a fusion context, `text_match` is automatically promoted to Bayesian BM25 calibration so all signals produce probabilities in $(0, 1)$.
 
 #### `fuse_log_odds(signal1, signal2, ...[, alpha])`
 
@@ -431,6 +456,37 @@ FROM orders;
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `path` | string | Dot-separated path to a nested field |
+
+#### `POINT(x, y)`
+
+Construct a point value from longitude and latitude.
+
+```sql
+SELECT POINT(-73.9857, 40.7484) AS empire_state;
+INSERT INTO restaurants (name, location) VALUES ('Joes Pizza', POINT(-73.9969, 40.7306));
+```
+
+#### `ST_Distance(point1, point2)`
+
+Compute the Haversine great-circle distance between two POINT values, in meters.
+
+```sql
+SELECT name,
+       ROUND(ST_Distance(location, POINT(-73.9857, 40.7484)), 0) AS dist_m
+FROM restaurants
+WHERE spatial_within(location, POINT(-73.9857, 40.7484), 5000)
+ORDER BY dist_m;
+```
+
+#### `ST_Within(point1, point2, distance_meters)` / `ST_DWithin(...)`
+
+Boolean distance predicate. Returns true if the Haversine distance between the two points is less than or equal to `distance_meters`. `ST_DWithin` is an alias.
+
+```sql
+SELECT name, cuisine FROM restaurants
+WHERE ST_DWithin(location, POINT(-73.9903, 40.7359), 1500)
+ORDER BY name;
+```
 
 ### 4.4 FROM-Clause Table Functions
 
@@ -659,6 +715,7 @@ graph TD
     PAR --> DS[Document Store<br/>SQLite]
     PAR --> II[Inverted Index<br/>SQLite + Analyzer]
     PAR --> VI[Vector Index<br/>HNSW (optional)]
+    PAR --> SI[Spatial Index<br/>R*Tree]
     PAR --> GS[Graph Store<br/>SQLite]
 
     subgraph Scoring ["Scoring (bayesian-bm25)"]
@@ -686,6 +743,8 @@ All storage backends have two implementations: an in-memory variant for ephemera
 
 **HNSWIndex / SQLiteVectorIndex**: Hierarchical Navigable Small World graph for approximate nearest neighbor search. Created explicitly via `CREATE INDEX ... USING hnsw (column)`. Cosine distance metric. Default configuration: ef_construction=200, M=16 (customizable via `WITH` clause). Auto-resizing capacity (no `max_elements` parameter). Vectors are stored in the document store as JSON arrays; the HNSW index is a secondary structure that can be dropped and recreated.
 
+**SpatialIndex**: R*Tree spatial index for POINT columns. Uses SQLite's built-in R*Tree virtual table module for O(log N) bounding box queries. Each point is stored as a degenerate bounding box (min == max). Range queries use a two-pass approach: (1) coarse R*Tree bounding box filter using spherical law of cosines for accurate longitude delta, (2) fine Haversine great-circle distance verification. Created via `CREATE INDEX ... USING rtree (column)`. Per-table, per-field R*Tree tables: `_rtree_{table}_{field}`.
+
 **GraphStore / SQLiteGraphStore**: Adjacency-list graph storage with indexes on (source_id, label), (target_id, label), and (label). Vertex labels stored in a dedicated indexed column for efficient label-based filtering. Vertex and edge properties stored as JSON. Named graphs use isolated `_graph_{name}_*` SQLite tables.
 
 **Catalog**: SQLite-based system catalog managing metadata, table schemas, documents, graph data, vectors, postings, statistics, scoring parameters, named graphs, and custom analyzers. Write-through semantics: every mutation writes to both in-memory structures and SQLite immediately. WAL mode for concurrent reads.
@@ -703,7 +762,7 @@ The SQL compiler uses pglast (PostgreSQL parser) to parse SQL into an AST, then 
 - **CTEs**: WITH ... AS, WITH RECURSIVE
 - **Window functions**: ROW_NUMBER, RANK, DENSE_RANK, NTILE, LAG, LEAD, NTH_VALUE, PERCENT_RANK, CUME_DIST with ROWS/RANGE BETWEEN frames, WINDOW w AS (...), FILTER (WHERE ...) on window aggregates
 - **Aggregates**: COUNT/SUM/AVG/MIN/MAX, STRING_AGG, ARRAY_AGG, BOOL_AND/EVERY, BOOL_OR, STDDEV, VARIANCE, PERCENTILE_CONT/DISC, MODE, JSON_OBJECT_AGG, CORR, COVAR_POP/SAMP, REGR_* (10 functions), FILTER (WHERE ...), ORDER BY within aggregate
-- **Types**: INTEGER, BIGINT, SERIAL, TEXT, VARCHAR, REAL, FLOAT, DOUBLE PRECISION, NUMERIC(p,s), BOOLEAN, DATE, TIME, TIMESTAMP, TIMESTAMPTZ, INTERVAL, JSON/JSONB, UUID, BYTEA, INTEGER[] (arrays), VECTOR(N)
+- **Types**: INTEGER, BIGINT, SERIAL, TEXT, VARCHAR, REAL, FLOAT, DOUBLE PRECISION, NUMERIC(p,s), BOOLEAN, DATE, TIME, TIMESTAMP, TIMESTAMPTZ, INTERVAL, JSON/JSONB, UUID, BYTEA, INTEGER[] (arrays), VECTOR(N), POINT
 - **JSON**: ->, ->>, #>, #>> operators, @>/<@ containment, ?/?|/?& key existence, JSONB_SET, JSONB_STRIP_NULLS, JSON_BUILD_OBJECT/ARRAY, JSON_OBJECT_KEYS, JSON_EXTRACT_PATH, JSON_TYPEOF, JSON_AGG, JSON_EACH, JSON_ARRAY_ELEMENTS
 - **Date/Time**: EXTRACT, DATE_TRUNC, DATE_PART, NOW, CURRENT_DATE/TIME/TIMESTAMP, CLOCK_TIMESTAMP, TIMEOFDAY, AGE, TO_CHAR/TO_DATE/TO_TIMESTAMP, MAKE_DATE/MAKE_TIMESTAMP/MAKE_INTERVAL, TO_NUMBER, OVERLAPS, ISFINITE
 - **Table functions**: GENERATE_SERIES, UNNEST, REGEXP_SPLIT_TO_TABLE, JSON_EACH/JSON_EACH_TEXT, JSON_ARRAY_ELEMENTS/JSON_ARRAY_ELEMENTS_TEXT
@@ -714,7 +773,7 @@ The SQL compiler uses pglast (PostgreSQL parser) to parse SQL into an AST, then 
 - **Transactions**: BEGIN, COMMIT, ROLLBACK, SAVEPOINT
 - **Utility**: EXPLAIN, ANALYZE
 
-The compiler translates WHERE clauses into operator trees (union/intersect/complement), recognizing extended functions like `text_match`, `knn_match`, `traverse_match`, and fusion meta-functions like `fuse_log_odds`.
+The compiler translates WHERE clauses into operator trees (union/intersect/complement), recognizing extended functions like `text_match`, `knn_match`, `traverse_match`, `spatial_within`, and fusion meta-functions like `fuse_log_odds`.
 
 ### 5.4 Query Optimizer
 
@@ -725,7 +784,8 @@ The optimizer applies equivalence-preserving rewrite rules:
 3. **Vector threshold merge**: Combines multiple vector similarity operators with the same query vector into a single search (HNSW if indexed, brute-force otherwise).
 4. **Intersect operand reordering**: Sorts operands by estimated cardinality (cheapest first) for optimal two-pointer intersection.
 5. **Fusion signal reordering**: Sorts signals by cost estimate for early termination.
-6. **Index scan substitution**: Replaces full-table FilterOperator scans with B-tree index scans when the estimated cost is lower.
+6. **R*Tree spatial index scan**: Uses the R*Tree index for POINT column range queries when available.
+7. **Index scan substitution**: Replaces full-table FilterOperator scans with B-tree index scans when the estimated cost is lower.
 
 The optimizer uses a **CardinalityEstimator** backed by per-column statistics: equi-depth histograms and Most Common Values (MCVs), populated by the ANALYZE command.
 
@@ -1302,7 +1362,7 @@ except Exception:
 
 ### 7.1 Unification Through Algebra
 
-The central contribution of UQA is demonstrating that four historically separate data paradigms can be unified under a single algebraic structure without sacrificing the expressivity of any individual paradigm. The posting list abstraction is not a lowest-common-denominator compromise but a genuine isomorphism: every operation in the Boolean algebra of posting lists has a well-defined semantics in each paradigm, and cross-paradigm compositions inherit the algebraic properties (commutativity, associativity, distributivity) of the underlying Boolean algebra.
+The central contribution of UQA is demonstrating that five historically separate data paradigms can be unified under a single algebraic structure without sacrificing the expressivity of any individual paradigm. The posting list abstraction is not a lowest-common-denominator compromise but a genuine isomorphism: every operation in the Boolean algebra of posting lists has a well-defined semantics in each paradigm, and cross-paradigm compositions inherit the algebraic properties (commutativity, associativity, distributivity) of the underlying Boolean algebra.
 
 This means, for example, that a query combining BM25 text scoring with KNN vector search and graph traversal is not an ad-hoc pipeline but a composition of operators whose algebraic properties are formally proven. The query optimizer can apply rewriting rules (filter pushdown, operand reordering) with guaranteed semantic preservation because the rules are derived from the algebraic structure, not from heuristics.
 
@@ -1344,6 +1404,7 @@ Example scripts are provided in the `examples/` directory:
 | `fusion.py` | fuse_log_odds, fuse_prob_and/or/not, EXPLAIN |
 | `analysis.py` | Text analyzers via SQL: create, list, drop, persistence |
 | `export.py` | Arrow/Parquet export from SQL queries, type preservation, JOIN export |
+| `spatial.py` | Geospatial: POINT, R*Tree, spatial_within, ST_Distance, ST_DWithin, fusion |
 | `fdw.py` | Foreign Data Wrappers, DuckDB (Parquet/CSV/JSON), JOINs, Hive partitioning |
 
 

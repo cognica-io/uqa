@@ -1,5 +1,33 @@
 # History
 
+## 0.12.0 (2026-03-12)
+
+Geospatial support: POINT column type with R*Tree spatial indexing, spatial query functions, and cross-paradigm fusion.
+
+### Geospatial
+
+- **POINT column type**: stores 2-D coordinates as `[longitude, latitude]`; persisted as JSON in SQLite
+- **R*Tree spatial index**: `CREATE INDEX ... USING rtree (column)` creates SQLite R*Tree virtual table for O(log N) spatial queries
+- **`spatial_within(field, POINT(x, y), distance_m)`**: indexed range query returning all points within a radius; produces PostingList with proximity scores (`1.0 - dist/max_dist`)
+- **`ST_Distance(point1, point2)`**: scalar Haversine great-circle distance in meters
+- **`ST_Within(point1, point2, distance_m)`**: scalar distance predicate (boolean)
+- **`ST_DWithin(point1, point2, distance_m)`**: alias for ST_Within
+- **`POINT(x, y)` constructor**: usable in SELECT, INSERT VALUES, and WHERE clauses
+- **Two-pass spatial search**: coarse R*Tree bounding box filter + fine Haversine great-circle verification
+- **Bounding box formula**: spherical law of cosines for accurate longitude delta at any latitude and radius
+- **Brute-force fallback**: SpatialWithinOperator scans all documents when no R*Tree index exists
+- **Fusion support**: `spatial_within()` works as a signal in `fuse_log_odds`, `fuse_prob_and`, `fuse_prob_or`
+- **DML integration**: INSERT, UPDATE, DELETE, and TRUNCATE maintain spatial index consistency
+- **Persistence**: R*Tree data persists in SQLite; restored on Engine restart via catalog
+- **Parameter binding**: `$N` parameters supported for POINT coordinates and distance values
+- **Unknown function fallback**: scalar boolean functions in WHERE (e.g., `ST_DWithin`) now fall through to expression evaluation instead of raising an error
+
+### Tests and Examples
+
+- 31 new spatial tests across 5 test classes (TestHaversine, TestSpatialIndex, TestSpatialSQL, TestSpatialPersistence, TestSpatialFusion)
+- 14-example geospatial SQL demo (`examples/sql/spatial.py`)
+- Total: 1927 tests across 49 test files, 18 examples
+
 ## 0.11.2 (2026-03-12)
 
 Performance optimization across core, storage, execution engine, and scoring subsystems. 21 files changed, ~27 optimizations spanning 4 categories.

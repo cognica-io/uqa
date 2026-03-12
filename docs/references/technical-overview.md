@@ -95,6 +95,7 @@ Each paradigm maps into the posting list space through a primitive operator:
 | $V_\theta(q)$ | $PL(\lbrace d \in \mathcal{D} \mid sim(vec(d, f), q) \geq \theta \rbrace)$ | Vector search | `VectorSimilarityOperator` |
 | $KNN_k(q)$ | $PL(D_k)$ where $\|D_k\| = k$, ranked by similarity | Vector search | `KNNOperator` |
 | $Filter_{f,v}(L)$ | $L \cap PL(\lbrace d \in \mathcal{D} \mid d.f = v \rbrace)$ | Relational | `FilterOperator` |
+| $Spatial_r(c)$ | $PL(\lbrace d \in \mathcal{D} \mid haversine(d.f, c) \leq r \rbrace)$ | Geospatial | `SpatialWithinOperator` |
 | $Score_q(L)$ | $(L,\; [s_1, \ldots, s_{\|L\|}])$ | Scoring | `ScoreOperator` |
 
 Because every operator produces a posting list, they compose freely:
@@ -111,7 +112,7 @@ All operators form a monoid under composition. The abstract base class `Operator
 - `compose(other) -> ComposedOperator` — sequential composition (monoid product)
 - `cost_estimate(stats) -> float` — for optimizer decisions
 
-The `ExecutionContext` bundles all storage backends: `DocumentStore`, `InvertedIndex`, `GraphStore`, `BlockMaxIndex`, `IndexManager`, `ParallelExecutor`, and optional `vector_indexes` (HNSW, created explicitly via `CREATE INDEX ... USING hnsw`).
+The `ExecutionContext` bundles all storage backends: `DocumentStore`, `InvertedIndex`, `GraphStore`, `BlockMaxIndex`, `IndexManager`, `ParallelExecutor`, optional `vector_indexes` (HNSW, created explicitly via `CREATE INDEX ... USING hnsw`), and optional `spatial_indexes` (R*Tree, created via `CREATE INDEX ... USING rtree`).
 
 ### 2.3 Boolean Operators
 
@@ -447,6 +448,7 @@ Engine
 |       +-- DocumentStore         (typed columnar storage)
 |       +-- InvertedIndex         (term -> posting list per field)
 |       +-- vector_indexes         (HNSW, created via CREATE INDEX ... USING hnsw)
+|       +-- spatial_indexes        (R*Tree, created via CREATE INDEX ... USING rtree)
 |       +-- ColumnStats           (per-column statistics for optimizer)
 +-- _named_graphs: dict[str, GraphStore]
 |   +-- GraphStore                (adjacency list + property maps)
@@ -468,6 +470,7 @@ The cost-based optimizer in `uqa/planner/` applies:
 - Vector threshold merge (same query vector)
 - Intersect operand reordering by cardinality (cheapest first)
 - Fusion signal reordering by cost
+- R*Tree spatial index scan for POINT column range queries
 - B-tree index scan substitution
 - FDW predicate pushdown (comparison, IN, LIKE, ILIKE, BETWEEN)
 
@@ -489,6 +492,7 @@ The table below maps each formal definition and theorem from the three papers to
 | Operator Monoid (Theorem 3.2.3) | `Operator` ABC + `compose()` in `uqa/operators/base.py` |
 | Term Operator $T(t)$ (Definition 3.1.1) | `TermOperator` in `uqa/operators/primitive.py` |
 | Vector Operators $V_\theta$, $KNN_k$ (Definitions 3.1.2, 3.1.3) | `VectorSimilarityOperator`, `KNNOperator` |
+| Spatial Operator $Spatial_r(c)$ | `SpatialWithinOperator` in `uqa/operators/primitive.py` |
 | Filter Operator (Definition 3.1.4) | `FilterOperator` in `uqa/operators/primitive.py` |
 | Score Operator (Definition 3.1.5) | `ScoreOperator` in `uqa/operators/primitive.py` |
 | Hierarchical Documents (Definition 5.2.1) | `HierarchicalDocument` in `uqa/core/hierarchical.py` |
@@ -538,10 +542,14 @@ flowchart LR
     subgraph "Graph Traversal"
         TR["traverse_match(1, 'cited_by', 2)"] --> PL3["PostingList<br/>P(R=1|graph)"]
     end
+    subgraph "Geospatial"
+        SP["spatial_within(loc, POINT, 5000)"] --> PL4["PostingList<br/>P(R=1|spatial)"]
+    end
     subgraph "Fusion"
         PL1 --> LO["fuse_log_odds"]
         PL2 --> LO
         PL3 --> LO
+        PL4 --> LO
         LO --> PLF["PostingList<br/>P(R=1|all signals)"]
     end
     subgraph "Relational"

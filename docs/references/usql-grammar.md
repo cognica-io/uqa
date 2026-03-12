@@ -154,7 +154,7 @@ create_index_stmt
     ;
 
 index_method
-    = 'btree' | 'hnsw'
+    = 'btree' | 'hnsw' | 'rtree'
     ;
 
 index_column
@@ -171,6 +171,8 @@ drop_index_stmt
 ```
 
 When `index_method` is `hnsw`, the column must be of type `VECTOR(n)`. Supported `index_parameter` names: `ef_construction` (default 200), `m` (default 16).
+
+When `index_method` is `rtree`, the column must be of type `POINT`. Creates an SQLite R*Tree virtual table for O(log N) spatial range queries. No additional parameters are supported.
 
 ### 2.8 Sequences
 
@@ -757,12 +759,15 @@ binary_type = BYTEA ;
 special_type
     = UUID
     | VECTOR '(' integer_literal ')'
+    | POINT
     ;
 
 array_type = data_type '[]' ;
 ```
 
 `VECTOR(n)` defines an n-dimensional vector column. Vectors are stored in the document store as JSON arrays. For approximate nearest neighbor search, create an HNSW index with `CREATE INDEX ... USING hnsw (column)`. Without an index, `knn_match()` uses brute-force exact cosine similarity.
+
+`POINT` defines a 2-D coordinate column storing `[longitude, latitude]`. For O(log N) spatial range queries, create an R*Tree index with `CREATE INDEX ... USING rtree (column)`. Without an index, `spatial_within()` falls back to brute-force Haversine scan.
 
 ---
 
@@ -916,7 +921,18 @@ CURRVAL( sequence_name ) -> integer
 SETVAL( sequence_name, value ) -> integer
 ```
 
-### 10.9 UUID Functions
+### 10.9 Spatial Functions
+
+```
+POINT( x, y ) -> point
+ST_DISTANCE( point, point ) -> numeric
+ST_WITHIN( point, point, distance ) -> boolean
+ST_DWITHIN( point, point, distance ) -> boolean
+```
+
+`POINT(x, y)` constructs a point value from longitude and latitude. `ST_DISTANCE` computes the Haversine great-circle distance in meters. `ST_WITHIN` and `ST_DWITHIN` are boolean distance predicates (aliases for each other).
+
+### 10.10 UUID Functions
 
 ```
 GEN_RANDOM_UUID() -> uuid
@@ -1055,7 +1071,22 @@ traverse_match_call
     ;
 ```
 
-### 13.4 Hierarchical Filters
+### 13.4 Spatial Search
+
+```ebnf
+spatial_within_call
+    = SPATIAL_WITHIN '(' column_name ',' point_arg ',' numeric_literal ')'
+    ;
+
+point_arg
+    = POINT '(' numeric_literal ',' numeric_literal ')'
+    | param_ref
+    ;
+```
+
+`SPATIAL_WITHIN` returns all points within a given distance (meters) of a center point, scored by proximity. Uses the R*Tree index if available, otherwise falls back to brute-force Haversine scan.
+
+### 13.5 Hierarchical Filters
 
 ```ebnf
 path_filter_call
@@ -1083,6 +1114,7 @@ signal
     | bayesian_match_call
     | knn_match_call
     | traverse_match_call
+    | spatial_within_call
     ;
 ```
 
@@ -1266,7 +1298,7 @@ EXISTS, EXPLAIN, FALSE, FETCH, FILTER, FIRST, FLOAT, FOLLOWING, FOR,
 FOREIGN, FROM, FULL, GROUP, HAVING, IF, ILIKE, IN, INDEX, INNER,
 INSERT, INTEGER, INTERSECT, INTERVAL, INTO, IS, JOIN, JSON, JSONB, KEY,
 LAST, LATERAL, LEFT, LIKE, LIMIT, NOT, NULL, NULLS, NUMERIC, OFFSET,
-ON, ONLY, OR, ORDER, OUTER, OVER, PARTITION, PRECEDING, PREPARE,
+ON, ONLY, OR, ORDER, OUTER, OVER, PARTITION, POINT, PRECEDING, PREPARE,
 PRIMARY, RANGE, REAL, RECURSIVE, REFERENCES, RELEASE, RENAME, RESTART,
 RETURNING, RIGHT, ROLLBACK, ROWS, SAVEPOINT, SELECT, SEQUENCE, SERIAL,
 SERVER, SET, SMALLINT, TABLE, TEMP, TEMPORARY, TEXT, THEN, TIMESTAMP,

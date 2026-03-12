@@ -715,6 +715,36 @@ idx.set_field_analyzer("body", custom_analyzer)
 analyzer = idx.get_field_analyzer("body")
 ```
 
+### SpatialIndex (R*Tree)
+
+Spatial columns (`POINT`) store `[longitude, latitude]` pairs in the document store. R*Tree indexes must be created explicitly via `CREATE INDEX ... USING rtree`. Without an index, `spatial_within()` falls back to brute-force Haversine scan.
+
+```sql
+-- Define a POINT column (storage only, no index)
+CREATE TABLE places (id SERIAL PRIMARY KEY, location POINT);
+
+-- Create an R*Tree index explicitly
+CREATE INDEX idx_loc ON places USING rtree (location);
+
+-- Insert with POINT constructor
+INSERT INTO places (location) VALUES (POINT(-73.9857, 40.7484));
+```
+
+Direct Python API:
+
+```python
+from uqa.storage.spatial_index import SpatialIndex, haversine_distance
+
+index = SpatialIndex("places", "location")
+index.add(1, -73.9857, 40.7484)  # (doc_id, longitude, latitude)
+
+# Range search: all points within 2km
+results = index.search_within(-73.9973, 40.7308, 2000)  # returns PostingList
+
+# Haversine distance
+dist = haversine_distance(40.7308, -73.9973, 40.7484, -73.9857)  # meters
+```
+
 ### HNSWIndex (Vector Index)
 
 Vector columns (`VECTOR(n)`) store data in the document store. HNSW indexes must be created explicitly via `CREATE INDEX ... USING hnsw`. Without an index, `knn_match()` falls back to brute-force exact cosine similarity scan.
@@ -913,7 +943,7 @@ All operators implement `execute(context: ExecutionContext) -> PostingList`.
 ```python
 from uqa.operators.primitive import (
     TermOperator, VectorSimilarityOperator, KNNOperator,
-    FilterOperator, FacetOperator, ScoreOperator,
+    SpatialWithinOperator, FilterOperator, FacetOperator, ScoreOperator,
 )
 ```
 
@@ -922,6 +952,7 @@ from uqa.operators.primitive import (
 | `TermOperator(term, field)` | Retrieve posting list for a term |
 | `VectorSimilarityOperator(query, threshold, field)` | Vector similarity >= threshold |
 | `KNNOperator(query, k, field)` | Top-k nearest neighbors |
+| `SpatialWithinOperator(field, cx, cy, dist)` | Spatial range query (R*Tree + Haversine) |
 | `FilterOperator(field, predicate, source)` | Filter entries by predicate |
 | `FacetOperator(field, source)` | Compute facet counts |
 | `ScoreOperator(scorer, source, terms)` | Apply scoring function |
@@ -991,6 +1022,7 @@ context = ExecutionContext(
     document_store=doc_store,
     inverted_index=inv_idx,
     vector_indexes={"embedding": hnsw_index},
+    spatial_indexes={"location": spatial_index},
     graph_store=graph_store,
 )
 ```

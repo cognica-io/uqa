@@ -59,6 +59,7 @@ USQL is UQA's SQL dialect — a PostgreSQL-compatible SQL language extended with
 | `UUID` | Universally unique identifier |
 | `BYTEA` | Binary data |
 | `VECTOR(n)` | Fixed-dimension vector for similarity search |
+| `POINT` | 2-D coordinate (longitude, latitude) for spatial queries |
 | `type[]` | Array of any base type (e.g. `INTEGER[]`, `TEXT[]`) |
 
 ---
@@ -138,10 +139,15 @@ CREATE INDEX index_name ON table_name USING hnsw (vector_col);
 CREATE INDEX index_name ON table_name USING hnsw (vector_col)
     WITH (ef_construction = 200, m = 16);
 
+-- R*Tree spatial index
+CREATE INDEX index_name ON table_name USING rtree (point_col);
+
 DROP INDEX [IF EXISTS] index_name;
 ```
 
 The `USING hnsw` clause creates an HNSW (Hierarchical Navigable Small World) index on a `VECTOR(n)` column for approximate nearest neighbor search. Optional `WITH` parameters control index quality: `ef_construction` (default 200) sets build-time search depth, and `m` (default 16) sets the number of bi-directional links per node.
+
+The `USING rtree` clause creates an R*Tree spatial index on a `POINT` column for O(log N) spatial range queries. The R*Tree stores each point as a degenerate bounding box in SQLite's built-in R*Tree virtual table module. Without an index, `spatial_within()` falls back to brute-force Haversine scan.
 
 ### Views
 
@@ -766,6 +772,24 @@ TO_NUMBER(str)                -- parse string to number
 | `CURRVAL('seq_name')` | Return current value |
 | `SETVAL('seq_name', n)` | Set sequence value |
 
+### Spatial Functions
+
+| Function | Description |
+|----------|-------------|
+| `POINT(x, y)` | Construct a point from longitude and latitude |
+| `ST_Distance(p1, p2)` | Haversine great-circle distance in meters |
+| `ST_Within(p1, p2, dist)` | True if distance <= dist meters |
+| `ST_DWithin(p1, p2, dist)` | Alias for ST_Within |
+
+```sql
+-- Compute distance between two points
+SELECT ST_Distance(POINT(-73.99, 40.73), POINT(-73.98, 40.76)) AS dist_m;
+
+-- Boolean distance predicate in WHERE
+SELECT name FROM restaurants
+WHERE ST_DWithin(location, POINT(-73.9903, 40.7359), 1500);
+```
+
 ### Miscellaneous
 
 | Function | Description |
@@ -899,6 +923,30 @@ SELECT * FROM employees
 WHERE traverse_match(1, 'manages', 3);
 ```
 
+### Spatial Search
+
+```sql
+-- All restaurants within 2km of a point (R*Tree-accelerated)
+SELECT name, cuisine FROM restaurants
+WHERE spatial_within(location, POINT(-73.9973, 40.7308), 2000)
+ORDER BY name;
+
+-- With computed distance
+SELECT name,
+       ROUND(ST_Distance(location, POINT(-73.9857, 40.7484)), 0) AS dist_m
+FROM restaurants
+WHERE spatial_within(location, POINT(-73.9857, 40.7484), 5000)
+ORDER BY dist_m;
+
+-- Parameter binding for center and radius
+SELECT name FROM restaurants
+WHERE spatial_within(location, $1, $2)
+ORDER BY name;
+-- params: [[-73.9973, 40.7308], 2000]
+```
+
+`spatial_within(field, POINT(x, y), distance_meters)` returns all points within the given radius, scored by proximity (`1.0 - dist/max_dist`). Uses the R*Tree index if one exists on the column, otherwise falls back to brute-force Haversine scan.
+
 ### Vector Exclusion
 
 ```sql
@@ -950,6 +998,18 @@ WHERE fuse_prob_or(
 
 ```sql
 WHERE fuse_prob_not(knn_match(embedding, $1, 5))
+```
+
+### Spatial + Fusion
+
+`spatial_within()` can be used as a fusion signal alongside text, vector, and graph signals:
+
+```sql
+SELECT name, _score FROM restaurants
+WHERE fuse_log_odds(
+    text_match(description, 'pizza'),
+    spatial_within(location, POINT(-73.9969, 40.7306), 3000)
+) ORDER BY _score DESC;
 ```
 
 ---
