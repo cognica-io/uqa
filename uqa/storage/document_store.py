@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from uqa.core.hierarchical import HierarchicalDocument
-from uqa.core.types import DocId, FieldName, PathExpr
+
+if TYPE_CHECKING:
+    from uqa.core.types import DocId, FieldName, PathExpr
 
 
 class DocumentStore:

@@ -37,13 +37,9 @@ class LogOddsFusion:
             return 0.5
         if n == 1:
             return probabilities[0]
-        return float(
-            log_odds_conjunction(np.array(probabilities), alpha=self.alpha)
-        )
+        return float(log_odds_conjunction(np.array(probabilities), alpha=self.alpha))
 
-    def fuse_weighted(
-        self, probabilities: list[float], weights: list[float]
-    ) -> float:
+    def fuse_weighted(self, probabilities: list[float], weights: list[float]) -> float:
         """Weighted log-odds conjunction (attention-like, Section 8, Paper 4)."""
         n = len(probabilities)
         if n == 0:

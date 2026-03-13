@@ -21,12 +21,10 @@ class CharFilter(ABC):
     """Base class for character-level text transformations."""
 
     @abstractmethod
-    def filter(self, text: str) -> str:
-        ...
+    def filter(self, text: str) -> str: ...
 
     @abstractmethod
-    def to_dict(self) -> dict[str, Any]:
-        ...
+    def to_dict(self) -> dict[str, Any]: ...
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> CharFilter:

@@ -11,9 +11,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from uqa.core.posting_list import PostingList
-from uqa.core.types import IndexStats
 
 if TYPE_CHECKING:
+    from uqa.core.types import IndexStats
     from uqa.planner.parallel import ParallelExecutor
     from uqa.storage.block_max_index import BlockMaxIndex
     from uqa.storage.document_store import DocumentStore

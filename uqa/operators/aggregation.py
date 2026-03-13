@@ -113,7 +113,9 @@ class MaxMonoid(AggregationMonoid):
 class AggregateOperator(Operator):
     """Applies a monoid aggregation over a posting list field."""
 
-    def __init__(self, source: Operator | None, field: str, monoid: AggregationMonoid) -> None:
+    def __init__(
+        self, source: Operator | None, field: str, monoid: AggregationMonoid
+    ) -> None:
         self.source = source
         self.field = field
         self.monoid = monoid
@@ -140,7 +142,9 @@ class AggregateOperator(Operator):
         result_entry = PostingEntry(
             doc_id=0,
             payload=Payload(
-                score=float(result_value) if isinstance(result_value, (int, float)) else 0.0,
+                score=float(result_value)
+                if isinstance(result_value, (int, float))
+                else 0.0,
                 fields={"_aggregate_field": self.field, "_aggregate": result_value},
             ),
         )
@@ -183,15 +187,19 @@ class GroupByOperator(Operator):
         entries: list[PostingEntry] = []
         for i, (group_key, state) in enumerate(sorted(groups.items())):
             result_value = self.monoid.finalize(state)
-            entries.append(PostingEntry(
-                doc_id=i,
-                payload=Payload(
-                    score=float(result_value) if isinstance(result_value, (int, float)) else 0.0,
-                    fields={
-                        "_group_key": group_key,
-                        "_group_field": self.group_field,
-                        "_aggregate_result": result_value,
-                    },
-                ),
-            ))
+            entries.append(
+                PostingEntry(
+                    doc_id=i,
+                    payload=Payload(
+                        score=float(result_value)
+                        if isinstance(result_value, (int, float))
+                        else 0.0,
+                        fields={
+                            "_group_key": group_key,
+                            "_group_field": self.group_field,
+                            "_aggregate_result": result_value,
+                        },
+                    ),
+                )
+            )
         return PostingList.from_sorted(entries)

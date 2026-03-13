@@ -21,12 +21,10 @@ class TokenFilter(ABC):
     """Base class for token-level transformations."""
 
     @abstractmethod
-    def filter(self, tokens: list[str]) -> list[str]:
-        ...
+    def filter(self, tokens: list[str]) -> list[str]: ...
 
     @abstractmethod
-    def to_dict(self) -> dict[str, Any]:
-        ...
+    def to_dict(self) -> dict[str, Any]: ...
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> TokenFilter:
@@ -67,16 +65,83 @@ class LowerCaseFilter(TokenFilter):
 # -- Stop word lists -------------------------------------------------------
 
 _STOP_WORDS: dict[str, frozenset[str]] = {
-    "english": frozenset({
-        "a", "an", "and", "are", "as", "at", "be", "but", "by", "for",
-        "if", "in", "into", "is", "it", "no", "not", "of", "on", "or",
-        "such", "that", "the", "their", "then", "there", "these", "they",
-        "this", "to", "was", "were", "will", "with", "would", "can",
-        "could", "do", "does", "did", "had", "has", "have", "he", "her",
-        "him", "his", "how", "i", "its", "may", "me", "my", "nor", "our",
-        "own", "she", "should", "so", "some", "than", "too", "us", "very",
-        "we", "what", "when", "which", "who", "whom", "why", "you", "your",
-    }),
+    "english": frozenset(
+        {
+            "a",
+            "an",
+            "and",
+            "are",
+            "as",
+            "at",
+            "be",
+            "but",
+            "by",
+            "for",
+            "if",
+            "in",
+            "into",
+            "is",
+            "it",
+            "no",
+            "not",
+            "of",
+            "on",
+            "or",
+            "such",
+            "that",
+            "the",
+            "their",
+            "then",
+            "there",
+            "these",
+            "they",
+            "this",
+            "to",
+            "was",
+            "were",
+            "will",
+            "with",
+            "would",
+            "can",
+            "could",
+            "do",
+            "does",
+            "did",
+            "had",
+            "has",
+            "have",
+            "he",
+            "her",
+            "him",
+            "his",
+            "how",
+            "i",
+            "its",
+            "may",
+            "me",
+            "my",
+            "nor",
+            "our",
+            "own",
+            "she",
+            "should",
+            "so",
+            "some",
+            "than",
+            "too",
+            "us",
+            "very",
+            "we",
+            "what",
+            "when",
+            "which",
+            "who",
+            "whom",
+            "why",
+            "you",
+            "your",
+        }
+    ),
 }
 
 
@@ -199,12 +264,14 @@ def _porter_stem(word: str) -> str:
     else:
         matched = False
         for suffix in ("ed", "ing"):
-            if word.endswith(suffix) and _vowelinstem(word, len(word) - len(suffix) - 1):
+            if word.endswith(suffix) and _vowelinstem(
+                word, len(word) - len(suffix) - 1
+            ):
                 word = word[: -len(suffix)]
                 matched = True
                 break
         if matched:
-            if word.endswith("at") or word.endswith("bl") or word.endswith("iz"):
+            if word.endswith(("at", "bl", "iz")):
                 word += "e"
             elif _doublec(word, len(word) - 1) and word[-1] not in "lsz":
                 word = word[:-1]
@@ -217,11 +284,26 @@ def _porter_stem(word: str) -> str:
 
     # Step 2
     step2_map = {
-        "ational": "ate", "tional": "tion", "enci": "ence", "anci": "ance",
-        "izer": "ize", "abli": "able", "alli": "al", "entli": "ent",
-        "eli": "e", "ousli": "ous", "ization": "ize", "ation": "ate",
-        "ator": "ate", "alism": "al", "iveness": "ive", "fulness": "ful",
-        "ousness": "ous", "aliti": "al", "iviti": "ive", "biliti": "ble",
+        "ational": "ate",
+        "tional": "tion",
+        "enci": "ence",
+        "anci": "ance",
+        "izer": "ize",
+        "abli": "able",
+        "alli": "al",
+        "entli": "ent",
+        "eli": "e",
+        "ousli": "ous",
+        "ization": "ize",
+        "ation": "ate",
+        "ator": "ate",
+        "alism": "al",
+        "iveness": "ive",
+        "fulness": "ful",
+        "ousness": "ous",
+        "aliti": "al",
+        "iviti": "ive",
+        "biliti": "ble",
     }
     for suffix, replacement in step2_map.items():
         if word.endswith(suffix):
@@ -232,8 +314,13 @@ def _porter_stem(word: str) -> str:
 
     # Step 3
     step3_map = {
-        "icate": "ic", "ative": "", "alize": "al",
-        "iciti": "ic", "ical": "ic", "ful": "", "ness": "",
+        "icate": "ic",
+        "ative": "",
+        "alize": "al",
+        "iciti": "ic",
+        "ical": "ic",
+        "ful": "",
+        "ness": "",
     }
     for suffix, replacement in step3_map.items():
         if word.endswith(suffix):
@@ -244,9 +331,25 @@ def _porter_stem(word: str) -> str:
 
     # Step 4
     step4_suffixes = [
-        "al", "ance", "ence", "er", "ic", "able", "ible", "ant",
-        "ement", "ment", "ent", "ion", "ou", "ism", "ate", "iti",
-        "ous", "ive", "ize",
+        "al",
+        "ance",
+        "ence",
+        "er",
+        "ic",
+        "able",
+        "ible",
+        "ant",
+        "ement",
+        "ment",
+        "ent",
+        "ion",
+        "ou",
+        "ism",
+        "ate",
+        "iti",
+        "ous",
+        "ive",
+        "ize",
     ]
     for suffix in step4_suffixes:
         if word.endswith(suffix):
@@ -267,7 +370,11 @@ def _porter_stem(word: str) -> str:
             word = stem
 
     # Step 5b
-    if _m(word, len(word) - 1) > 1 and _doublec(word, len(word) - 1) and word[-1] == "l":
+    if (
+        _m(word, len(word) - 1) > 1
+        and _doublec(word, len(word) - 1)
+        and word[-1] == "l"
+    ):
         word = word[:-1]
 
     return word

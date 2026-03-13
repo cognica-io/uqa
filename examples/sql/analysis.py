@@ -49,9 +49,7 @@ print("=" * 70)
 # ==================================================================
 # 1. List built-in analyzers
 # ==================================================================
-show("1. list_analyzers()", engine.sql(
-    "SELECT * FROM list_analyzers()"
-))
+show("1. list_analyzers()", engine.sql("SELECT * FROM list_analyzers()"))
 
 
 # ==================================================================
@@ -141,9 +139,9 @@ print(f"  {result.rows[0]['create_analyzer']}")
 # ==================================================================
 # 6. Verify all registered analyzers
 # ==================================================================
-show("6. All analyzers after registration", engine.sql(
-    "SELECT * FROM list_analyzers()"
-))
+show(
+    "6. All analyzers after registration", engine.sql("SELECT * FROM list_analyzers()")
+)
 
 
 # ==================================================================
@@ -178,11 +176,14 @@ engine.sql("""INSERT INTO articles (title, body, category) VALUES
      'alignment')
 """)
 
-show("7a. text_search default analyzer", engine.sql(
-    "SELECT title, _score AS relevance "
-    "FROM text_search('transformer attention', 'body', 'articles') "
-    "ORDER BY relevance DESC"
-))
+show(
+    "7a. text_search default analyzer",
+    engine.sql(
+        "SELECT title, _score AS relevance "
+        "FROM text_search('transformer attention', 'body', 'articles') "
+        "ORDER BY relevance DESC"
+    ),
+)
 
 
 # ==================================================================
@@ -215,9 +216,10 @@ engine.sql("""INSERT INTO articles (title, body, category) VALUES
 
 # The new documents are indexed with the stem analyzer.
 # Searching for 'run' will match 'running' because both stem to 'run'.
-show("9a. Search 'run' (stems to match 'running')", engine.sql(
-    "SELECT id, title FROM articles WHERE id >= 6 ORDER BY id"
-))
+show(
+    "9a. Search 'run' (stems to match 'running')",
+    engine.sql("SELECT id, title FROM articles WHERE id >= 6 ORDER BY id"),
+)
 
 
 # ==================================================================
@@ -229,9 +231,7 @@ for name in ["search_analyzer", "stem_analyzer", "autocomplete", "html_analyzer"
     result = engine.sql(f"SELECT * FROM drop_analyzer('{name}')")
     print(f"  {result.rows[0]['drop_analyzer']}")
 
-show("10a. Remaining analyzers", engine.sql(
-    "SELECT * FROM list_analyzers()"
-))
+show("10a. Remaining analyzers", engine.sql("SELECT * FROM list_analyzers()"))
 
 
 # ==================================================================
@@ -258,13 +258,14 @@ with Engine(db_path=db_path) as e1:
 
 # Clean from global registry to prove catalog restore works
 from uqa.analysis.analyzer import _custom_analyzers
+
 _custom_analyzers.pop("persistent_stemmer", None)
 
 # Session 2: reopen and verify analyzer was restored
 with Engine(db_path=db_path) as e2:
     restored = get_analyzer("persistent_stemmer")
     tokens = restored.analyze("The runners are running")
-    print(f"  Session 2: restored 'persistent_stemmer'")
+    print("  Session 2: restored 'persistent_stemmer'")
     print(f"  Session 2: analyze('The runners are running') -> {tokens}")
     assert "run" in tokens  # 'runners' and 'running' both stem to 'run'
     print("  Persistence verified!")

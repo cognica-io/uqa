@@ -6,10 +6,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from uqa.core.types import DocId, PathExpr, Payload, PostingEntry
-from uqa.core.posting_list import PostingList
+if TYPE_CHECKING:
+    from uqa.core.types import DocId, PathExpr
 
 
 class HierarchicalDocument:
@@ -45,9 +45,7 @@ class HierarchicalDocument:
         return current
 
 
-def project_paths(
-    doc: HierarchicalDocument, paths: list[PathExpr]
-) -> dict[str, Any]:
+def project_paths(doc: HierarchicalDocument, paths: list[PathExpr]) -> dict[str, Any]:
     """Project a document to a subset of paths (Definition 5.3.2)."""
     result: dict[str, Any] = {}
     for path in paths:

@@ -16,16 +16,12 @@ from uqa.core.types import (
     Equals,
     GreaterThan,
     IndexStats,
-    Payload,
-    PostingEntry,
 )
-from uqa.core.posting_list import PostingList
 from uqa.engine import Engine
-from uqa.operators.base import ExecutionContext, Operator
+from uqa.operators.base import ExecutionContext
 from uqa.planner.cardinality import CardinalityEstimator
 from uqa.planner.cost_model import CostModel
 from uqa.planner.optimizer import QueryOptimizer
-
 
 # ==================================================================
 # Cross-paradigm cardinality estimation
@@ -79,7 +75,7 @@ class TestCrossParadigmCardinality:
     def test_log_odds_fusion_union_cardinality(self, stats):
         """LogOddsFusion cardinality is union of signal cardinalities."""
         from uqa.operators.hybrid import LogOddsFusionOperator
-        from uqa.operators.primitive import TermOperator, KNNOperator
+        from uqa.operators.primitive import KNNOperator, TermOperator
 
         term = TermOperator("neural", field="title")
         knn = KNNOperator(np.zeros(16, dtype=np.float32), k=10)
@@ -98,9 +94,7 @@ class TestCrossParadigmCardinality:
         from uqa.operators.primitive import KNNOperator, VectorSimilarityOperator
 
         # Both operands have non-zero cardinality
-        vec1 = VectorSimilarityOperator(
-            np.zeros(16, dtype=np.float32), threshold=0.5
-        )
+        vec1 = VectorSimilarityOperator(np.zeros(16, dtype=np.float32), threshold=0.5)
         knn = KNNOperator(np.zeros(16, dtype=np.float32), k=50)
         fusion = ProbBoolFusionOperator([vec1, knn], mode="and")
 
@@ -132,9 +126,7 @@ class TestCrossParadigmCardinality:
         stats = IndexStats(total_docs=1000, dimensions=16)
         stats._doc_freqs[("_default", "neural")] = 200
 
-        op = HybridTextVectorOperator(
-            "neural", np.zeros(16, dtype=np.float32), 0.5
-        )
+        op = HybridTextVectorOperator("neural", np.zeros(16, dtype=np.float32), 0.5)
         est = CardinalityEstimator()
         card = est.estimate(op, stats)
         text_card = est.estimate(op.term_op, stats)
@@ -152,9 +144,7 @@ class TestCrossParadigmCardinality:
         stats._doc_freqs[("title", "neural")] = 200
 
         source = TermOperator("neural", field="title")
-        op = SemanticFilterOperator(
-            source, np.zeros(16, dtype=np.float32), 0.5
-        )
+        op = SemanticFilterOperator(source, np.zeros(16, dtype=np.float32), 0.5)
         est = CardinalityEstimator()
         card = est.estimate(op, stats)
         src_card = est.estimate(source, stats)
@@ -211,7 +201,7 @@ class TestFusionSignalReordering:
     def test_fusion_preserves_alpha(self, stats):
         """Signal reordering preserves alpha parameter."""
         from uqa.operators.hybrid import LogOddsFusionOperator
-        from uqa.operators.primitive import KNNOperator, TermOperator
+        from uqa.operators.primitive import TermOperator
 
         sig1 = TermOperator("a", field="title")
         sig2 = TermOperator("b", field="title")
@@ -483,8 +473,8 @@ class TestCrossParadigmOptimizerCorrectness:
         """Fusion signal reordering produces same results."""
         from uqa.operators.hybrid import LogOddsFusionOperator
         from uqa.operators.primitive import KNNOperator, ScoreOperator, TermOperator
-        from uqa.scoring.bm25 import BM25Params, BM25Scorer
         from uqa.planner.executor import PlanExecutor
+        from uqa.scoring.bm25 import BM25Params, BM25Scorer
 
         ctx = engine._context_for_table("papers")
         stats = ctx.inverted_index.stats
@@ -521,7 +511,6 @@ class TestCrossParadigmOptimizerCorrectness:
         from uqa.operators.boolean import IntersectOperator
         from uqa.operators.primitive import (
             FilterOperator,
-            KNNOperator,
             TermOperator,
         )
         from uqa.planner.executor import PlanExecutor
@@ -536,9 +525,7 @@ class TestCrossParadigmOptimizerCorrectness:
         unoptimized = PlanExecutor(ctx).execute(tree)
 
         optimizer = QueryOptimizer(stats)
-        optimized_tree = optimizer.optimize(
-            IntersectOperator([filter_op, term])
-        )
+        optimized_tree = optimizer.optimize(IntersectOperator([filter_op, term]))
         optimized = PlanExecutor(ctx).execute(optimized_tree)
 
         assert set(unoptimized.doc_ids) == set(optimized.doc_ids)
@@ -553,13 +540,7 @@ class TestSQLCrossParadigmOptimizer:
     def test_explain_shows_fusion_plan(self):
         """EXPLAIN on a fusion query shows LogOddsFusion in the plan."""
         e = Engine()
-        e.sql(
-            "CREATE TABLE docs ("
-            "id INTEGER PRIMARY KEY, "
-            "title TEXT, "
-            "body TEXT"
-            ")"
-        )
+        e.sql("CREATE TABLE docs (id INTEGER PRIMARY KEY, title TEXT, body TEXT)")
         for i in range(1, 6):
             e.sql(
                 f"INSERT INTO docs (id, title, body) VALUES "
@@ -579,25 +560,16 @@ class TestSQLCrossParadigmOptimizer:
         e = Engine()
         from uqa.core.types import Edge, Vertex
 
-        e.sql(
-            "CREATE TABLE docs ("
-            "id INTEGER PRIMARY KEY, "
-            "name TEXT"
-            ")"
-        )
+        e.sql("CREATE TABLE docs (id INTEGER PRIMARY KEY, name TEXT)")
         for i in range(1, 4):
             e.add_graph_vertex(Vertex(i, "", {"name": f"v{i}"}), table="docs")
         e.add_graph_edge(Edge(1, 1, 2, "knows"), table="docs")
         e.add_graph_edge(Edge(2, 2, 3, "knows"), table="docs")
 
         for i in range(1, 4):
-            e.sql(
-                f"INSERT INTO docs (id, name) VALUES ({i}, 'v{i}')"
-            )
+            e.sql(f"INSERT INTO docs (id, name) VALUES ({i}, 'v{i}')")
 
-        r = e.sql(
-            "EXPLAIN SELECT name FROM docs WHERE traverse_match(1, 'knows', 2)"
-        )
+        r = e.sql("EXPLAIN SELECT name FROM docs WHERE traverse_match(1, 'knows', 2)")
         plan_text = " ".join(row["plan"] for row in r.rows)
         assert "TraverseOp" in plan_text
 

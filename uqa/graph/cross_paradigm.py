@@ -14,12 +14,11 @@ import numpy as np
 from uqa.core.posting_list import PostingList
 from uqa.core.types import Edge, Payload, PostingEntry, Vertex
 from uqa.graph.operators import PatternMatchOperator, TraverseOperator
-from uqa.graph.pattern import GraphPattern
 from uqa.graph.posting_list import GraphPayload, GraphPostingList
 from uqa.graph.store import GraphStore
 
 if TYPE_CHECKING:
-    pass
+    from uqa.graph.pattern import GraphPattern
 
 
 class ToGraphOperator:
@@ -66,9 +65,7 @@ class ToGraphOperator:
         return graph
 
     @staticmethod
-    def _posting_list_to_docs(
-        pl: Any, ctx: object
-    ) -> list[dict[str, Any]]:
+    def _posting_list_to_docs(pl: Any, ctx: object) -> list[dict[str, Any]]:
         docs: list[dict[str, Any]] = []
         for entry in pl:
             doc: dict[str, Any] = {"doc_id": entry.doc_id}
@@ -129,9 +126,7 @@ class SemanticGraphSearchOperator:
                 continue
             sim = self._cosine_similarity(self.query_vector, np.asarray(vec))
             if sim >= self.threshold:
-                new_entry = PostingEntry(
-                    entry.doc_id, Payload(score=float(sim))
-                )
+                new_entry = PostingEntry(entry.doc_id, Payload(score=float(sim)))
                 entries.append(new_entry)
                 gp = gpl.get_graph_payload(entry.doc_id)
                 if gp is not None:
@@ -291,6 +286,7 @@ class TextToGraphOperator:
         for doc in documents:
             text = doc.get(self.text_field, "")
             from uqa.analysis.analyzer import DEFAULT_ANALYZER
+
             tokens = DEFAULT_ANALYZER.analyze(str(text))
             token_set.update(tokens)
 
@@ -326,9 +322,7 @@ class TextToGraphOperator:
         return graph
 
     @staticmethod
-    def _posting_list_to_docs(
-        pl: Any, ctx: object
-    ) -> list[dict[str, Any]]:
+    def _posting_list_to_docs(pl: Any, ctx: object) -> list[dict[str, Any]]:
         docs: list[dict[str, Any]] = []
         for entry in pl:
             doc: dict[str, Any] = {"doc_id": entry.doc_id}

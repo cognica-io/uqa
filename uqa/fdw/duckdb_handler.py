@@ -69,7 +69,10 @@ class DuckDBFDWHandler(FDWHandler):
 
     @classmethod
     def _normalize_source(
-        cls, source: str, *, hive_partitioning: bool = False,
+        cls,
+        source: str,
+        *,
+        hive_partitioning: bool = False,
     ) -> str:
         """Wrap bare file paths in the appropriate DuckDB reader function.
 
@@ -88,10 +91,7 @@ class DuckDBFDWHandler(FDWHandler):
         for ext, reader in cls._FILE_READERS.items():
             if lower.endswith(ext):
                 if hive_partitioning:
-                    return (
-                        f"{reader}('{source}', "
-                        f"hive_partitioning = true)"
-                    )
+                    return f"{reader}('{source}', hive_partitioning = true)"
                 return f"{reader}('{source}')"
         return source
 
@@ -139,14 +139,10 @@ class DuckDBFDWHandler(FDWHandler):
         source = foreign_table.options.get("source")
         if source is None:
             raise ValueError(
-                f"Foreign table '{foreign_table.name}' "
-                f"missing required option 'source'"
+                f"Foreign table '{foreign_table.name}' missing required option 'source'"
             )
 
-        hive = (
-            foreign_table.options.get("hive_partitioning", "").lower()
-            == "true"
-        )
+        hive = foreign_table.options.get("hive_partitioning", "").lower() == "true"
         source = self._normalize_source(source, hive_partitioning=hive)
 
         if columns:

@@ -21,7 +21,10 @@ from __future__ import annotations
 import heapq
 import os
 import tempfile
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 import pyarrow as pa
 import pyarrow.ipc as ipc
@@ -123,7 +126,7 @@ class _SortKey:
     in-memory SortOp behavior.
     """
 
-    __slots__ = ("row", "_parts")
+    __slots__ = ("_parts", "row")
 
     def __init__(
         self,
@@ -144,9 +147,7 @@ class _SortKey:
         ]
 
     def __lt__(self, other: _SortKey) -> bool:
-        for (na, va, desc, nf), (nb, vb, _, _) in zip(
-            self._parts, other._parts
-        ):
+        for (na, va, desc, nf), (nb, vb, _, _) in zip(self._parts, other._parts):
             if na != nb:
                 # nulls_first: NULL sorts before non-NULL
                 # nulls_last (default): non-NULL sorts before NULL
@@ -180,7 +181,5 @@ def merge_sorted_runs(
         yield key.row
         row = next(runs[run_idx], None)
         if row is not None:
-            heapq.heappush(
-                heap, (_SortKey(row, sort_keys), counter, run_idx)
-            )
+            heapq.heappush(heap, (_SortKey(row, sort_keys), counter, run_idx))
             counter += 1

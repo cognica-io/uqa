@@ -39,18 +39,14 @@ class CrossJoinOperator:
                     **left_entry.payload.fields,
                     **right_entry.payload.fields,
                 }
-                merged_score = (
-                    left_entry.payload.score + right_entry.payload.score
-                )
+                merged_score = left_entry.payload.score + right_entry.payload.score
                 result.append(
                     GeneralizedPostingEntry(
                         doc_ids=(
                             _entry_doc_id(left_entry),
                             _entry_doc_id(right_entry),
                         ),
-                        payload=Payload(
-                            score=merged_score, fields=merged_fields
-                        ),
+                        payload=Payload(score=merged_score, fields=merged_fields),
                     )
                 )
 

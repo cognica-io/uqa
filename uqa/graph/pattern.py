@@ -7,10 +7,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from uqa.core.types import Edge, Vertex
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from uqa.core.types import Edge, Vertex
 
 
 @dataclass
@@ -104,9 +107,7 @@ def parse_rpq(expr_str: str) -> RegularPathExpr:
     pos = 0
     result, pos = _parse_alternation(tokens, pos)
     if pos != len(tokens):
-        raise ValueError(
-            f"Unexpected token at position {pos}: {tokens[pos]!r}"
-        )
+        raise ValueError(f"Unexpected token at position {pos}: {tokens[pos]!r}")
     return result
 
 
@@ -125,7 +126,15 @@ def _tokenize(expr_str: str) -> list[str]:
         else:
             # Read a label (sequence of alphanumeric + underscore)
             start = i
-            while i < len(expr_str) and expr_str[i] not in ("(", ")", "/", "|", "*", " ", "\t"):
+            while i < len(expr_str) and expr_str[i] not in (
+                "(",
+                ")",
+                "/",
+                "|",
+                "*",
+                " ",
+                "\t",
+            ):
                 i += 1
             tokens.append(expr_str[start:i])
     return tokens

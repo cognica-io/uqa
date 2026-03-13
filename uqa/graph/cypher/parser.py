@@ -26,14 +26,13 @@ from uqa.graph.cypher.ast import (
     IsNull,
     ListLiteral,
     Literal,
-    MapLiteral,
     MatchClause,
     MergeClause,
     NodePattern,
     OrderByItem,
+    Parameter,
     PathPattern,
     PropertyAccess,
-    Parameter,
     RelPattern,
     ReturnClause,
     ReturnItem,
@@ -77,8 +76,7 @@ class CypherParser:
         tok = self._advance()
         if not is_keyword(tok, keyword):
             raise SyntaxError(
-                f"Expected keyword {keyword}, got "
-                f"{tok.value!r} at position {tok.pos}"
+                f"Expected keyword {keyword}, got {tok.value!r} at position {tok.pos}"
             )
         return tok
 
@@ -103,8 +101,16 @@ class CypherParser:
             return False
         kw = tok.value.upper()
         return kw in (
-            "MATCH", "OPTIONAL", "CREATE", "MERGE", "SET",
-            "DELETE", "DETACH", "RETURN", "WITH", "UNWIND",
+            "MATCH",
+            "OPTIONAL",
+            "CREATE",
+            "MERGE",
+            "SET",
+            "DELETE",
+            "DETACH",
+            "RETURN",
+            "WITH",
+            "UNWIND",
         )
 
     # -- Top-level -----------------------------------------------------
@@ -120,8 +126,7 @@ class CypherParser:
         tok = self._peek()
         if not (tok.type == TokenType.IDENT):
             raise SyntaxError(
-                f"Expected clause keyword, got {tok.value!r} "
-                f"at position {tok.pos}"
+                f"Expected clause keyword, got {tok.value!r} at position {tok.pos}"
             )
         kw = tok.value.upper()
 
@@ -150,9 +155,7 @@ class CypherParser:
         if kw == "UNWIND":
             return self._parse_unwind()
 
-        raise SyntaxError(
-            f"Unexpected keyword {tok.value!r} at position {tok.pos}"
-        )
+        raise SyntaxError(f"Unexpected keyword {tok.value!r} at position {tok.pos}")
 
     # -- MATCH ---------------------------------------------------------
 
@@ -163,9 +166,7 @@ class CypherParser:
         where = None
         if self._match_keyword("WHERE"):
             where = self._parse_expression()
-        return MatchClause(
-            patterns=tuple(patterns), where=where, optional=optional
-        )
+        return MatchClause(patterns=tuple(patterns), where=where, optional=optional)
 
     # -- CREATE --------------------------------------------------------
 
@@ -348,7 +349,9 @@ class CypherParser:
         elements: list[NodePattern | RelPattern] = []
         elements.append(self._parse_node_pattern())
         while self._peek().type in (
-            TokenType.MINUS, TokenType.LT, TokenType.ARROW_LEFT
+            TokenType.MINUS,
+            TokenType.LT,
+            TokenType.ARROW_LEFT,
         ):
             rel = self._parse_rel_pattern()
             elements.append(rel)
@@ -396,9 +399,7 @@ class CypherParser:
         elif self._match(TokenType.MINUS):
             left_arrow = False
         else:
-            raise SyntaxError(
-                f"Expected - or <- at position {self._peek().pos}"
-            )
+            raise SyntaxError(f"Expected - or <- at position {self._peek().pos}")
 
         variable = None
         types: list[str] = []
@@ -410,7 +411,10 @@ class CypherParser:
         has_bracket = self._match(TokenType.LBRACKET) is not None
         if has_bracket:
             # Variable (optional)
-            if self._peek().type == TokenType.IDENT and self._peek().value.upper() not in _KEYWORDS:
+            if (
+                self._peek().type == TokenType.IDENT
+                and self._peek().value.upper() not in _KEYWORDS
+            ):
                 variable = self._advance().value
 
             # Types (:TYPE1|TYPE2)
@@ -442,9 +446,7 @@ class CypherParser:
             elif self._match(TokenType.MINUS):
                 direction = "both"
             else:
-                raise SyntaxError(
-                    f"Expected -> or - at position {self._peek().pos}"
-                )
+                raise SyntaxError(f"Expected -> or - at position {self._peek().pos}")
 
         return RelPattern(
             variable=variable,
@@ -612,13 +614,11 @@ class CypherParser:
                 self._advance()
                 key = self._expect(TokenType.IDENT).value
                 if isinstance(expr, Variable):
-                    expr = PropertyAccess(
-                        variable=expr.name, keys=(key,)
-                    )
+                    expr = PropertyAccess(variable=expr.name, keys=(key,))
                 elif isinstance(expr, PropertyAccess):
                     expr = PropertyAccess(
                         variable=expr.variable,
-                        keys=expr.keys + (key,),
+                        keys=(*expr.keys, key),
                     )
                 else:
                     expr = BinaryOp(op=".", left=expr, right=Literal(key))
@@ -626,6 +626,7 @@ class CypherParser:
             elif self._peek().type == TokenType.LBRACKET:
                 self._advance()
                 from uqa.graph.cypher.ast import ListIndex
+
                 idx = self._parse_expression()
                 self._expect(TokenType.RBRACKET)
                 expr = ListIndex(expr=expr, index=idx)
@@ -689,16 +690,17 @@ class CypherParser:
                 return self._parse_case()
 
             # Check for function call: name(...)
-            if self._pos + 1 < len(self._tokens) and self._tokens[self._pos + 1].type == TokenType.LPAREN:
+            if (
+                self._pos + 1 < len(self._tokens)
+                and self._tokens[self._pos + 1].type == TokenType.LPAREN
+            ):
                 return self._parse_function_call()
 
             # Plain variable
             self._advance()
             return Variable(tok.value)
 
-        raise SyntaxError(
-            f"Unexpected token {tok.value!r} at position {tok.pos}"
-        )
+        raise SyntaxError(f"Unexpected token {tok.value!r} at position {tok.pos}")
 
     def _parse_list_literal(self) -> ListLiteral:
         self._expect(TokenType.LBRACKET)
@@ -725,9 +727,7 @@ class CypherParser:
                 while self._match(TokenType.COMMA):
                     args.append(self._parse_expression())
         self._expect(TokenType.RPAREN)
-        return FunctionCall(
-            name=name, args=tuple(args), distinct=distinct
-        )
+        return FunctionCall(name=name, args=tuple(args), distinct=distinct)
 
     def _parse_case(self) -> CaseExpr:
         self._expect_keyword("CASE")
@@ -754,14 +754,51 @@ class CypherParser:
 
 # A set of Cypher keywords that cannot be used as bare variable names
 # in relationship patterns.
-_KEYWORDS = frozenset({
-    "AND", "AS", "ASC", "BY", "CASE", "CONTAINS", "CREATE", "DELETE",
-    "DESC", "DETACH", "DISTINCT", "ELSE", "END", "ENDS", "EXISTS",
-    "FALSE", "IN", "IS", "LIMIT", "MATCH", "MERGE", "NODE", "NOT",
-    "NULL", "ON", "OPTIONAL", "OR", "ORDER", "RELATIONSHIP", "REMOVE",
-    "RETURN", "SET", "SKIP", "STARTS", "THEN", "TRUE", "UNWIND",
-    "WHEN", "WHERE", "WITH", "XOR",
-})
+_KEYWORDS = frozenset(
+    {
+        "AND",
+        "AS",
+        "ASC",
+        "BY",
+        "CASE",
+        "CONTAINS",
+        "CREATE",
+        "DELETE",
+        "DESC",
+        "DETACH",
+        "DISTINCT",
+        "ELSE",
+        "END",
+        "ENDS",
+        "EXISTS",
+        "FALSE",
+        "IN",
+        "IS",
+        "LIMIT",
+        "MATCH",
+        "MERGE",
+        "NODE",
+        "NOT",
+        "NULL",
+        "ON",
+        "OPTIONAL",
+        "OR",
+        "ORDER",
+        "RELATIONSHIP",
+        "REMOVE",
+        "RETURN",
+        "SET",
+        "SKIP",
+        "STARTS",
+        "THEN",
+        "TRUE",
+        "UNWIND",
+        "WHEN",
+        "WHERE",
+        "WITH",
+        "XOR",
+    }
+)
 
 
 def parse_cypher(source: str) -> CypherQuery:

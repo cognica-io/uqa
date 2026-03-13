@@ -114,101 +114,127 @@ print("\n  Tables created: departments, employees, projects, salary_grades")
 # ==================================================================
 # 1. INNER JOIN
 # ==================================================================
-show("1. INNER JOIN: employees with departments", engine.sql("""
+show(
+    "1. INNER JOIN: employees with departments",
+    engine.sql("""
     SELECT e.name, d.name AS dept, e.salary
     FROM employees e
     INNER JOIN departments d ON e.dept_id = d.id
     ORDER BY e.salary DESC
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 2. LEFT JOIN (includes employees without department)
 # ==================================================================
-show("2. LEFT JOIN: all employees, even unassigned", engine.sql("""
+show(
+    "2. LEFT JOIN: all employees, even unassigned",
+    engine.sql("""
     SELECT e.name, COALESCE(d.name, '(none)') AS dept, e.salary
     FROM employees e
     LEFT JOIN departments d ON e.dept_id = d.id
     ORDER BY e.name
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 3. RIGHT JOIN (includes departments without employees)
 # ==================================================================
-show("3. RIGHT JOIN: all departments, even empty", engine.sql("""
+show(
+    "3. RIGHT JOIN: all departments, even empty",
+    engine.sql("""
     SELECT COALESCE(e.name, '(vacant)') AS employee, d.name AS dept
     FROM employees e
     RIGHT JOIN departments d ON e.dept_id = d.id
     ORDER BY d.name, e.name
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 4. FULL OUTER JOIN
 # ==================================================================
-show("4. FULL OUTER JOIN: all employees + all departments", engine.sql("""
+show(
+    "4. FULL OUTER JOIN: all employees + all departments",
+    engine.sql("""
     SELECT
         COALESCE(e.name, '(vacant)') AS employee,
         COALESCE(d.name, '(none)') AS dept
     FROM employees e
     FULL OUTER JOIN departments d ON e.dept_id = d.id
     ORDER BY dept, employee
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 5. CROSS JOIN
 # ==================================================================
-show("5. CROSS JOIN: employees x salary grades (first 8)", engine.sql("""
+show(
+    "5. CROSS JOIN: employees x salary grades (first 8)",
+    engine.sql("""
     SELECT e.name, g.grade, g.min_salary, g.max_salary
     FROM employees e
     CROSS JOIN salary_grades g
     ORDER BY e.name, g.min_salary
     LIMIT 8
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 6. Non-equality JOIN: salary-to-grade mapping
 # ==================================================================
-show("6. Non-equality JOIN: salary grade lookup", engine.sql("""
+show(
+    "6. Non-equality JOIN: salary grade lookup",
+    engine.sql("""
     SELECT e.name, e.salary, g.grade
     FROM employees e
     INNER JOIN salary_grades g
         ON e.salary >= g.min_salary AND e.salary <= g.max_salary
     ORDER BY e.salary DESC
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 7. Self-JOIN via multiple FROM tables
 # ==================================================================
-show("7. Multiple FROM: employees in same department", engine.sql("""
+show(
+    "7. Multiple FROM: employees in same department",
+    engine.sql("""
     SELECT e1.name AS employee1, e2.name AS employee2
     FROM employees e1, employees e2
     WHERE e1.dept_id = e2.dept_id
       AND e1.name < e2.name
     ORDER BY e1.name
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 8. Multi-table JOIN: employee -> department -> project
 # ==================================================================
-show("8. Multi-table JOIN: employees leading projects", engine.sql("""
+show(
+    "8. Multi-table JOIN: employees leading projects",
+    engine.sql("""
     SELECT e.name AS lead, d.name AS dept, p.name AS project, p.status
     FROM projects p
     INNER JOIN employees e ON p.lead_id = e.id
     INNER JOIN departments d ON p.dept_id = d.id
     ORDER BY p.name
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 9. Subquery in FROM (derived table)
 # ==================================================================
-show("9. Derived table: department salary stats", engine.sql("""
+show(
+    "9. Derived table: department salary stats",
+    engine.sql("""
     SELECT dept_stats.dept, dept_stats.headcount, dept_stats.avg_salary
     FROM (
         SELECT d.name AS dept,
@@ -220,7 +246,8 @@ show("9. Derived table: department salary stats", engine.sql("""
     ) AS dept_stats
     WHERE dept_stats.headcount >= 2
     ORDER BY dept_stats.avg_salary DESC
-"""))
+"""),
+)
 
 
 # ==================================================================
@@ -241,15 +268,18 @@ engine.sql("""
     INNER JOIN departments d ON e.dept_id = d.id
     WHERE e.salary >= 130000
 """)
-show("10. INSERT INTO ... SELECT result", engine.sql(
-    "SELECT name, dept, salary FROM senior_employees ORDER BY salary DESC"
-))
+show(
+    "10. INSERT INTO ... SELECT result",
+    engine.sql("SELECT name, dept, salary FROM senior_employees ORDER BY salary DESC"),
+)
 
 
 # ==================================================================
 # 11. UNION
 # ==================================================================
-show("11. UNION: engineering + sales employees", engine.sql("""
+show(
+    "11. UNION: engineering + sales employees",
+    engine.sql("""
     SELECT e.name, d.name AS dept FROM employees e
     INNER JOIN departments d ON e.dept_id = d.id
     WHERE d.name = 'Engineering'
@@ -258,43 +288,53 @@ show("11. UNION: engineering + sales employees", engine.sql("""
     INNER JOIN departments d ON e.dept_id = d.id
     WHERE d.name = 'Sales'
     ORDER BY dept, name
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 12. UNION ALL (preserves duplicates)
 # ==================================================================
-show("12. UNION ALL: project leads + high earners (may overlap)", engine.sql("""
+show(
+    "12. UNION ALL: project leads + high earners (may overlap)",
+    engine.sql("""
     SELECT e.name FROM employees e
     INNER JOIN projects p ON p.lead_id = e.id
     UNION ALL
     SELECT name FROM employees WHERE salary >= 130000
     ORDER BY name
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 13. INTERSECT: employees who are BOTH project leads AND high earners
 # ==================================================================
-show("13. INTERSECT: project leads who earn >= 130000", engine.sql("""
+show(
+    "13. INTERSECT: project leads who earn >= 130000",
+    engine.sql("""
     SELECT e.name FROM employees e
     INNER JOIN projects p ON p.lead_id = e.id
     INTERSECT
     SELECT name FROM employees WHERE salary >= 130000
     ORDER BY name
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 14. EXCEPT: project leads who are NOT high earners
 # ==================================================================
-show("14. EXCEPT: project leads earning < 130000", engine.sql("""
+show(
+    "14. EXCEPT: project leads earning < 130000",
+    engine.sql("""
     SELECT e.name FROM employees e
     INNER JOIN projects p ON p.lead_id = e.id
     EXCEPT
     SELECT name FROM employees WHERE salary >= 130000
     ORDER BY name
-"""))
+"""),
+)
 
 
 # ==================================================================
@@ -317,7 +357,9 @@ engine.sql("""INSERT INTO org_chart (name, manager_id) VALUES
     ('Mgr2',  5)
 """)
 
-show("15. WITH RECURSIVE: full org tree from CEO", engine.sql("""
+show(
+    "15. WITH RECURSIVE: full org tree from CEO",
+    engine.sql("""
     WITH RECURSIVE org_tree AS (
         SELECT id, name, manager_id, 1 AS depth
         FROM org_chart
@@ -328,7 +370,8 @@ show("15. WITH RECURSIVE: full org tree from CEO", engine.sql("""
         INNER JOIN org_tree t ON o.manager_id = t.id
     )
     SELECT name, depth FROM org_tree ORDER BY depth, name
-"""))
+"""),
+)
 
 
 # ==================================================================
@@ -344,16 +387,21 @@ engine.sql("""
     INNER JOIN departments d ON e.dept_id = d.id
     GROUP BY d.name
 """)
-show("16. CREATE TABLE AS SELECT", engine.sql(
-    "SELECT dept, headcount, total_salary, avg_salary "
-    "FROM dept_summary ORDER BY total_salary DESC"
-))
+show(
+    "16. CREATE TABLE AS SELECT",
+    engine.sql(
+        "SELECT dept, headcount, total_salary, avg_salary "
+        "FROM dept_summary ORDER BY total_salary DESC"
+    ),
+)
 
 
 # ==================================================================
 # 17. Chained UNION with ORDER BY and LIMIT
 # ==================================================================
-show("17. Chained UNION with LIMIT", engine.sql("""
+show(
+    "17. Chained UNION with LIMIT",
+    engine.sql("""
     SELECT name, 'engineering' AS source FROM employees WHERE dept_id = 1
     UNION ALL
     SELECT name, 'sales' AS source FROM employees WHERE dept_id = 2
@@ -361,13 +409,16 @@ show("17. Chained UNION with LIMIT", engine.sql("""
     SELECT name, 'marketing' AS source FROM employees WHERE dept_id = 3
     ORDER BY name
     LIMIT 5
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 18. Correlated subquery: employees earning above department average
 # ==================================================================
-show("18. Correlated subquery: above dept avg salary", engine.sql("""
+show(
+    "18. Correlated subquery: above dept avg salary",
+    engine.sql("""
     SELECT e.name, e.salary, d.name AS dept
     FROM employees e
     INNER JOIN departments d ON e.dept_id = d.id
@@ -376,13 +427,16 @@ show("18. Correlated subquery: above dept avg salary", engine.sql("""
         WHERE e2.dept_id = e.dept_id
     )
     ORDER BY e.salary DESC
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 19. EXISTS subquery: departments with active projects
 # ==================================================================
-show("19. EXISTS: departments with active projects", engine.sql("""
+show(
+    "19. EXISTS: departments with active projects",
+    engine.sql("""
     SELECT d.name AS dept, d.budget
     FROM departments d
     WHERE EXISTS (
@@ -390,19 +444,23 @@ show("19. EXISTS: departments with active projects", engine.sql("""
         WHERE p.dept_id = d.id AND p.status = 'active'
     )
     ORDER BY d.budget DESC
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 20. Scalar subquery: employee count per department inline
 # ==================================================================
-show("20. Scalar subquery: department + employee count", engine.sql("""
+show(
+    "20. Scalar subquery: department + employee count",
+    engine.sql("""
     SELECT d.name AS dept,
            d.budget,
            (SELECT COUNT(*) FROM employees e WHERE e.dept_id = d.id) AS headcount
     FROM departments d
     ORDER BY headcount DESC
-"""))
+"""),
+)
 
 
 print("\n" + "=" * 70)

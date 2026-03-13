@@ -60,9 +60,7 @@ class BayesianBM25Scorer:
         idf_val = self.bm25.idf(doc_freq)
         return self.score_with_idf(term_freq, doc_length, idf_val)
 
-    def score_with_idf(
-        self, term_freq: int, doc_length: int, idf_val: float
-    ) -> float:
+    def score_with_idf(self, term_freq: int, doc_length: int, idf_val: float) -> float:
         """Compute Bayesian BM25 score with a pre-computed IDF value."""
         raw = self.bm25.score_with_idf(term_freq, doc_length, idf_val)
         avg_dl = self.bm25.stats.avg_doc_length

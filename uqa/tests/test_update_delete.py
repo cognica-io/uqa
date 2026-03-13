@@ -50,9 +50,7 @@ class TestUpdateBasic:
         assert r.rows[0]["price"] == 12.0
 
     def test_update_multiple_columns(self, engine):
-        r = engine.sql(
-            "UPDATE products SET price = 15.00, quantity = 75 WHERE id = 2"
-        )
+        r = engine.sql("UPDATE products SET price = 15.00, quantity = 75 WHERE id = 2")
         assert r.rows[0]["updated"] == 1
         r = engine.sql("SELECT price, quantity FROM products WHERE id = 2")
         assert r.rows[0]["price"] == 15.0
@@ -61,9 +59,7 @@ class TestUpdateBasic:
     def test_update_multiple_rows(self, engine):
         r = engine.sql("UPDATE products SET category = 'sale' WHERE price < 20")
         assert r.rows[0]["updated"] == 2
-        r = engine.sql(
-            "SELECT id FROM products WHERE category = 'sale' ORDER BY id"
-        )
+        r = engine.sql("SELECT id FROM products WHERE category = 'sale' ORDER BY id")
         assert [row["id"] for row in r.rows] == [1, 3]
 
     def test_update_all_rows(self, engine):
@@ -99,9 +95,7 @@ class TestUpdateExpressions:
         assert r.rows[0].get("category") is None
 
     def test_update_with_coalesce(self, engine):
-        engine.sql(
-            "UPDATE products SET category = COALESCE(category, 'uncategorized')"
-        )
+        engine.sql("UPDATE products SET category = COALESCE(category, 'uncategorized')")
         r = engine.sql("SELECT id, category FROM products WHERE id = 3")
         assert r.rows[0]["category"] == "uncategorized"
 
@@ -110,9 +104,7 @@ class TestUpdateExpressions:
             "UPDATE products SET category = "
             "CASE WHEN price > 20 THEN 'premium' ELSE 'standard' END"
         )
-        r = engine.sql(
-            "SELECT id, category FROM products ORDER BY id"
-        )
+        r = engine.sql("SELECT id, category FROM products ORDER BY id")
         assert r.rows[0]["category"] == "standard"
         assert r.rows[1]["category"] == "premium"
         assert r.rows[2]["category"] == "standard"
@@ -123,9 +115,7 @@ class TestUpdateExpressions:
         assert r.rows[0]["name"] == "WIDGET"
 
     def test_update_with_concat(self, engine):
-        engine.sql(
-            "UPDATE products SET name = name || ' (v2)' WHERE id = 1"
-        )
+        engine.sql("UPDATE products SET name = name || ' (v2)' WHERE id = 1")
         r = engine.sql("SELECT name FROM products WHERE id = 1")
         assert r.rows[0]["name"] == "Widget (v2)"
 
@@ -146,16 +136,12 @@ class TestUpdateConstraints:
 
 class TestUpdateWithWhere:
     def test_update_where_is_null(self, engine):
-        engine.sql(
-            "UPDATE products SET category = 'misc' WHERE category IS NULL"
-        )
+        engine.sql("UPDATE products SET category = 'misc' WHERE category IS NULL")
         r = engine.sql("SELECT category FROM products WHERE id = 3")
         assert r.rows[0]["category"] == "misc"
 
     def test_update_where_is_not_null(self, engine):
-        engine.sql(
-            "UPDATE products SET price = price * 2 WHERE category IS NOT NULL"
-        )
+        engine.sql("UPDATE products SET price = price * 2 WHERE category IS NOT NULL")
         r = engine.sql("SELECT id, price FROM products ORDER BY id")
         assert r.rows[0]["price"] == 21.0  # Widget
         assert r.rows[1]["price"] == 50.0  # Gadget
@@ -169,19 +155,13 @@ class TestUpdateWithWhere:
         assert r.rows[2]["quantity"] == 0
 
     def test_update_where_between(self, engine):
-        engine.sql(
-            "UPDATE products SET category = 'mid' "
-            "WHERE price BETWEEN 5 AND 15"
-        )
-        r = engine.sql(
-            "SELECT id FROM products WHERE category = 'mid' ORDER BY id"
-        )
+        engine.sql("UPDATE products SET category = 'mid' WHERE price BETWEEN 5 AND 15")
+        r = engine.sql("SELECT id FROM products WHERE category = 'mid' ORDER BY id")
         assert [row["id"] for row in r.rows] == [1, 3]
 
     def test_update_where_and(self, engine):
         engine.sql(
-            "UPDATE products SET price = 0 "
-            "WHERE category = 'tools' AND quantity > 50"
+            "UPDATE products SET price = 0 WHERE category = 'tools' AND quantity > 50"
         )
         r = engine.sql("SELECT price FROM products WHERE id = 1")
         assert r.rows[0]["price"] == 0.0
@@ -191,33 +171,25 @@ class TestUpdateTextIndex:
     def test_update_reindexes_text(self, engine):
         """After UPDATE, text search should reflect new values."""
         # Before: Widget is searchable
-        r = engine.sql(
-            "SELECT id FROM products WHERE text_match(name, 'widget')"
-        )
+        r = engine.sql("SELECT id FROM products WHERE text_match(name, 'widget')")
         assert len(r.rows) == 1
 
         # Update the name
         engine.sql("UPDATE products SET name = 'Sprocket' WHERE id = 1")
 
         # 'widget' should no longer match
-        r = engine.sql(
-            "SELECT id FROM products WHERE text_match(name, 'widget')"
-        )
+        r = engine.sql("SELECT id FROM products WHERE text_match(name, 'widget')")
         assert len(r.rows) == 0
 
         # 'sprocket' should match
-        r = engine.sql(
-            "SELECT id FROM products WHERE text_match(name, 'sprocket')"
-        )
+        r = engine.sql("SELECT id FROM products WHERE text_match(name, 'sprocket')")
         assert len(r.rows) == 1
         assert r.rows[0]["id"] == 1
 
     def test_update_non_text_preserves_index(self, engine):
         """Updating non-text columns should preserve text search."""
         engine.sql("UPDATE products SET price = 99.99 WHERE id = 1")
-        r = engine.sql(
-            "SELECT id FROM products WHERE text_match(name, 'widget')"
-        )
+        r = engine.sql("SELECT id FROM products WHERE text_match(name, 'widget')")
         assert len(r.rows) == 1
 
 
@@ -275,10 +247,7 @@ class TestDeleteWithWhere:
         assert [row["id"] for row in r.rows] == [3]
 
     def test_delete_where_and(self, engine):
-        engine.sql(
-            "DELETE FROM products "
-            "WHERE category = 'tools' AND price > 5"
-        )
+        engine.sql("DELETE FROM products WHERE category = 'tools' AND price > 5")
         r = engine.sql("SELECT id FROM products ORDER BY id")
         assert [row["id"] for row in r.rows] == [2, 3]
 
@@ -286,24 +255,18 @@ class TestDeleteWithWhere:
 class TestDeleteTextIndex:
     def test_delete_removes_from_index(self, engine):
         """After DELETE, text search should not find deleted rows."""
-        r = engine.sql(
-            "SELECT id FROM products WHERE text_match(name, 'widget')"
-        )
+        r = engine.sql("SELECT id FROM products WHERE text_match(name, 'widget')")
         assert len(r.rows) == 1
 
         engine.sql("DELETE FROM products WHERE id = 1")
 
-        r = engine.sql(
-            "SELECT id FROM products WHERE text_match(name, 'widget')"
-        )
+        r = engine.sql("SELECT id FROM products WHERE text_match(name, 'widget')")
         assert len(r.rows) == 0
 
     def test_delete_preserves_other_index_entries(self, engine):
         """Deleting one doc should not affect other docs in the index."""
         engine.sql("DELETE FROM products WHERE id = 1")
-        r = engine.sql(
-            "SELECT id FROM products WHERE text_match(name, 'gadget')"
-        )
+        r = engine.sql("SELECT id FROM products WHERE text_match(name, 'gadget')")
         assert len(r.rows) == 1
         assert r.rows[0]["id"] == 2
 
@@ -318,9 +281,7 @@ class TestUpdateDeletePersistence:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = os.path.join(tmpdir, "test.db")
             with Engine(db_path=db) as e:
-                e.sql(
-                    "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)"
-                )
+                e.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
                 e.sql("INSERT INTO t (id, val) VALUES (1, 10), (2, 20)")
                 e.sql("UPDATE t SET val = 99 WHERE id = 1")
 
@@ -333,9 +294,7 @@ class TestUpdateDeletePersistence:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = os.path.join(tmpdir, "test.db")
             with Engine(db_path=db) as e:
-                e.sql(
-                    "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)"
-                )
+                e.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
                 e.sql("INSERT INTO t (id, val) VALUES (1, 10), (2, 20)")
                 e.sql("DELETE FROM t WHERE id = 1")
 
@@ -348,17 +307,8 @@ class TestUpdateDeletePersistence:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = os.path.join(tmpdir, "test.db")
             with Engine(db_path=db) as e:
-                e.sql(
-                    "CREATE TABLE t ("
-                    "id INTEGER PRIMARY KEY, "
-                    "price REAL, "
-                    "name TEXT"
-                    ")"
-                )
-                e.sql(
-                    "INSERT INTO t (id, price, name) "
-                    "VALUES (1, 10.0, 'item')"
-                )
+                e.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, price REAL, name TEXT)")
+                e.sql("INSERT INTO t (id, price, name) VALUES (1, 10.0, 'item')")
                 e.sql("UPDATE t SET price = price * 2, name = UPPER(name)")
 
             with Engine(db_path=db) as e:
@@ -434,8 +384,7 @@ class TestInsertReturning:
             "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)"
         )
         result = pg17_engine.sql(
-            "INSERT INTO t (id, name, age) VALUES (1, 'Alice', 30) "
-            "RETURNING *"
+            "INSERT INTO t (id, name, age) VALUES (1, 'Alice', 30) RETURNING *"
         )
         assert len(result.rows) == 1
         assert result.rows[0]["id"] == 1
@@ -447,8 +396,7 @@ class TestInsertReturning:
             "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)"
         )
         result = pg17_engine.sql(
-            "INSERT INTO t (id, name, age) VALUES (1, 'Alice', 30) "
-            "RETURNING id, name"
+            "INSERT INTO t (id, name, age) VALUES (1, 'Alice', 30) RETURNING id, name"
         )
         assert result.columns == ["id", "name"]
         assert result.rows[0]["id"] == 1
@@ -456,9 +404,7 @@ class TestInsertReturning:
         assert "age" not in result.rows[0]
 
     def test_returning_with_alias(self, pg17_engine):
-        pg17_engine.sql(
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)"
-        )
+        pg17_engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
         result = pg17_engine.sql(
             "INSERT INTO t (id, name) VALUES (1, 'Alice') "
             "RETURNING id AS user_id, name AS user_name"
@@ -467,9 +413,7 @@ class TestInsertReturning:
         assert result.rows[0]["user_name"] == "Alice"
 
     def test_returning_multi_row(self, pg17_engine):
-        pg17_engine.sql(
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)"
-        )
+        pg17_engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
         result = pg17_engine.sql(
             "INSERT INTO t (id, name) VALUES (1, 'Alice'), (2, 'Bob') "
             "RETURNING id, name"
@@ -481,9 +425,7 @@ class TestInsertReturning:
 
     def test_returning_serial(self, pg17_engine):
         pg17_engine.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, name TEXT)")
-        result = pg17_engine.sql(
-            "INSERT INTO t (name) VALUES ('Alice') RETURNING id"
-        )
+        result = pg17_engine.sql("INSERT INTO t (name) VALUES ('Alice') RETURNING id")
         assert result.rows[0]["id"] == 1
 
 
@@ -511,8 +453,7 @@ class TestUpdateReturning:
 
     def test_returning_multiple_rows(self, engine_with_table):
         result = engine_with_table.sql(
-            "UPDATE users SET age = age + 1 WHERE age < 35 "
-            "RETURNING id, age"
+            "UPDATE users SET age = age + 1 WHERE age < 35 RETURNING id, age"
         )
         assert len(result.rows) == 2
         for row in result.rows:
@@ -535,22 +476,16 @@ class TestUpdateReturning:
 
 class TestDeleteReturning:
     def test_returning_deleted_row(self, engine_with_table):
-        result = engine_with_table.sql(
-            "DELETE FROM users WHERE id = 1 RETURNING *"
-        )
+        result = engine_with_table.sql("DELETE FROM users WHERE id = 1 RETURNING *")
         assert len(result.rows) == 1
         assert result.rows[0]["id"] == 1
         assert result.rows[0]["name"] == "Alice"
         # Verify row is actually gone
-        check = engine_with_table.sql(
-            "SELECT COUNT(*) AS cnt FROM users WHERE id = 1"
-        )
+        check = engine_with_table.sql("SELECT COUNT(*) AS cnt FROM users WHERE id = 1")
         assert check.rows[0]["cnt"] == 0
 
     def test_returning_specific_columns(self, engine_with_table):
-        result = engine_with_table.sql(
-            "DELETE FROM users WHERE id = 2 RETURNING name"
-        )
+        result = engine_with_table.sql("DELETE FROM users WHERE id = 2 RETURNING name")
         assert result.columns == ["name"]
         assert result.rows[0]["name"] == "Bob"
 
@@ -563,9 +498,7 @@ class TestDeleteReturning:
         assert names == {"Alice", "Carol"}
 
     def test_returning_no_match(self, engine_with_table):
-        result = engine_with_table.sql(
-            "DELETE FROM users WHERE id = 999 RETURNING id"
-        )
+        result = engine_with_table.sql("DELETE FROM users WHERE id = 999 RETURNING id")
         assert result.columns == ["id"]
         assert len(result.rows) == 0
 
@@ -577,41 +510,31 @@ class TestDeleteReturning:
 
 class TestOnConflictDoNothing:
     def test_skip_on_conflict(self, pg17_engine):
-        pg17_engine.sql(
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)"
-        )
+        pg17_engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
         pg17_engine.sql("INSERT INTO t (id, name) VALUES (1, 'Alice')")
         pg17_engine.sql(
-            "INSERT INTO t (id, name) VALUES (1, 'Bob') "
-            "ON CONFLICT (id) DO NOTHING"
+            "INSERT INTO t (id, name) VALUES (1, 'Bob') ON CONFLICT (id) DO NOTHING"
         )
         result = pg17_engine.sql("SELECT name FROM t WHERE id = 1")
         assert result.rows[0]["name"] == "Alice"
 
     def test_insert_non_conflicting(self, pg17_engine):
-        pg17_engine.sql(
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)"
-        )
+        pg17_engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
         pg17_engine.sql("INSERT INTO t (id, name) VALUES (1, 'Alice')")
         pg17_engine.sql(
-            "INSERT INTO t (id, name) VALUES (2, 'Bob') "
-            "ON CONFLICT (id) DO NOTHING"
+            "INSERT INTO t (id, name) VALUES (2, 'Bob') ON CONFLICT (id) DO NOTHING"
         )
         result = pg17_engine.sql("SELECT COUNT(*) AS cnt FROM t")
         assert result.rows[0]["cnt"] == 2
 
     def test_multi_row_partial_conflict(self, pg17_engine):
-        pg17_engine.sql(
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)"
-        )
+        pg17_engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
         pg17_engine.sql("INSERT INTO t (id, name) VALUES (1, 'Alice')")
         pg17_engine.sql(
             "INSERT INTO t (id, name) VALUES (1, 'Dup'), (2, 'Bob') "
             "ON CONFLICT (id) DO NOTHING"
         )
-        result = pg17_engine.sql(
-            "SELECT COUNT(*) AS cnt FROM t"
-        )
+        result = pg17_engine.sql("SELECT COUNT(*) AS cnt FROM t")
         assert result.rows[0]["cnt"] == 2
         result = pg17_engine.sql("SELECT name FROM t WHERE id = 1")
         assert result.rows[0]["name"] == "Alice"
@@ -627,9 +550,7 @@ class TestOnConflictDoUpdate:
         pg17_engine.sql(
             "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, score INTEGER)"
         )
-        pg17_engine.sql(
-            "INSERT INTO t (id, name, score) VALUES (1, 'Alice', 100)"
-        )
+        pg17_engine.sql("INSERT INTO t (id, name, score) VALUES (1, 'Alice', 100)")
         pg17_engine.sql(
             "INSERT INTO t (id, name, score) VALUES (1, 'Alice', 200) "
             "ON CONFLICT (id) DO UPDATE SET score = excluded.score"
@@ -641,9 +562,7 @@ class TestOnConflictDoUpdate:
         pg17_engine.sql(
             "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, score INTEGER)"
         )
-        pg17_engine.sql(
-            "INSERT INTO t (id, name, score) VALUES (1, 'Alice', 100)"
-        )
+        pg17_engine.sql("INSERT INTO t (id, name, score) VALUES (1, 'Alice', 100)")
         pg17_engine.sql(
             "INSERT INTO t (id, name, score) VALUES (1, 'Alicia', 200) "
             "ON CONFLICT (id) DO UPDATE "
@@ -654,9 +573,7 @@ class TestOnConflictDoUpdate:
         assert result.rows[0]["score"] == 200
 
     def test_upsert_no_conflict_inserts(self, pg17_engine):
-        pg17_engine.sql(
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)"
-        )
+        pg17_engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
         pg17_engine.sql(
             "INSERT INTO t (id, name) VALUES (1, 'Alice') "
             "ON CONFLICT (id) DO UPDATE SET name = excluded.name"
@@ -668,9 +585,7 @@ class TestOnConflictDoUpdate:
         pg17_engine.sql(
             "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, score INTEGER)"
         )
-        pg17_engine.sql(
-            "INSERT INTO t (id, name, score) VALUES (1, 'Alice', 100)"
-        )
+        pg17_engine.sql("INSERT INTO t (id, name, score) VALUES (1, 'Alice', 100)")
         result = pg17_engine.sql(
             "INSERT INTO t (id, name, score) VALUES (1, 'Alice', 200) "
             "ON CONFLICT (id) DO UPDATE SET score = excluded.score "
@@ -681,9 +596,7 @@ class TestOnConflictDoUpdate:
         assert result.rows[0]["score"] == 200
 
     def test_upsert_on_unique_column(self, pg17_engine):
-        pg17_engine.sql(
-            "CREATE TABLE t (id INTEGER, email TEXT UNIQUE, name TEXT)"
-        )
+        pg17_engine.sql("CREATE TABLE t (id INTEGER, email TEXT UNIQUE, name TEXT)")
         pg17_engine.sql(
             "INSERT INTO t (id, email, name) VALUES (1, 'a@b.com', 'Alice')"
         )
@@ -711,10 +624,7 @@ class TestUpdateFrom:
             "CREATE TABLE employees "
             "(id INT PRIMARY KEY, name TEXT, dept_id INT, salary INT)"
         )
-        e.sql(
-            "CREATE TABLE departments "
-            "(id INT PRIMARY KEY, name TEXT, budget INT)"
-        )
+        e.sql("CREATE TABLE departments (id INT PRIMARY KEY, name TEXT, budget INT)")
         e.sql("INSERT INTO departments VALUES (1, 'Engineering', 100000)")
         e.sql("INSERT INTO departments VALUES (2, 'Sales', 50000)")
         e.sql("INSERT INTO employees VALUES (1, 'Alice', 1, 50000)")
@@ -729,10 +639,7 @@ class TestUpdateFrom:
             "WHERE employees.dept_id = departments.id "
             "AND departments.name = 'Engineering'"
         )
-        r = uf_engine.sql(
-            "SELECT id, name, dept_id, salary "
-            "FROM employees ORDER BY id"
-        )
+        r = uf_engine.sql("SELECT id, name, dept_id, salary FROM employees ORDER BY id")
         # Alice: Engineering budget 100000 / 2 = 50000
         assert r.rows[0]["salary"] == 50000
         # Bob: Sales, not updated
@@ -769,9 +676,7 @@ class TestUpdateFrom:
             "WHERE employees.dept_id = departments.id "
             "AND departments.name = 'Engineering'"
         )
-        r = uf_engine.sql(
-            "SELECT id, salary FROM employees ORDER BY id"
-        )
+        r = uf_engine.sql("SELECT id, salary FROM employees ORDER BY id")
         assert r.rows[0]["salary"] == 51000  # Alice
         assert r.rows[1]["salary"] == 40000  # Bob unchanged
         assert r.rows[2]["salary"] == 61000  # Charlie
@@ -786,10 +691,7 @@ class TestDeleteUsing:
     @pytest.fixture
     def du_engine(self):
         e = Engine()
-        e.sql(
-            "CREATE TABLE orders "
-            "(id INT PRIMARY KEY, customer_id INT, total INT)"
-        )
+        e.sql("CREATE TABLE orders (id INT PRIMARY KEY, customer_id INT, total INT)")
         e.sql("CREATE TABLE blacklist (customer_id INT PRIMARY KEY)")
         e.sql("INSERT INTO orders VALUES (1, 10, 100)")
         e.sql("INSERT INTO orders VALUES (2, 20, 200)")

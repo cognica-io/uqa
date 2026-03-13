@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from uqa.planner.cardinality import CardinalityEstimator
 
@@ -70,6 +70,8 @@ class QueryOptimizer:
             if any_pushed:
                 return self._recurse_children(IntersectOperator(new_operands))
 
+        if source is None:
+            return op
         return FilterOperator(
             op.field,
             op.predicate,
@@ -84,9 +86,9 @@ class QueryOptimizer:
         into the vertex pattern constraints so vertices are pruned during
         matching rather than post-filtered.
         """
-        from uqa.operators.primitive import FilterOperator
         from uqa.graph.operators import PatternMatchOperator
         from uqa.graph.pattern import GraphPattern, VertexPattern
+        from uqa.operators.primitive import FilterOperator
 
         if isinstance(op, FilterOperator) and op.source is not None:
             inner = op.source
@@ -110,14 +112,13 @@ class QueryOptimizer:
                 pushed = False
                 for vp in pattern.vertex_patterns:
                     if not pushed and vp.variable == target_var:
-                        new_constraint = (
-                            lambda v, f=prop, p=predicate: (
-                                f in v.properties and p.evaluate(v.properties[f])
-                            )
-                        )
+
+                        def new_constraint(v, f=prop, p=predicate):
+                            return f in v.properties and p.evaluate(v.properties[f])
+
                         new_vp = VertexPattern(
                             vp.variable,
-                            vp.constraints + [new_constraint],
+                            [*vp.constraints, new_constraint],
                         )
                         new_vertex_patterns.append(new_vp)
                         pushed = True
@@ -128,20 +129,20 @@ class QueryOptimizer:
                     new_pattern = GraphPattern(
                         new_vertex_patterns, pattern.edge_patterns
                     )
-                    return PatternMatchOperator(new_pattern)
+                    return cast("Operator", PatternMatchOperator(new_pattern))
 
         # Recurse into children
         return self._recurse_graph_pattern(op)
 
     def _recurse_graph_pattern(self, op: Operator) -> Operator:
         """Recurse into composite operators for graph pattern pushdown."""
+        from uqa.operators.base import ComposedOperator
         from uqa.operators.boolean import (
+            ComplementOperator,
             IntersectOperator,
             UnionOperator,
-            ComplementOperator,
         )
         from uqa.operators.primitive import FilterOperator
-        from uqa.operators.base import ComposedOperator
 
         if isinstance(op, IntersectOperator):
             return IntersectOperator(
@@ -152,9 +153,7 @@ class QueryOptimizer:
                 [self._push_graph_pattern_filters(o) for o in op.operands]
             )
         if isinstance(op, ComplementOperator):
-            return ComplementOperator(
-                self._push_graph_pattern_filters(op.operand)
-            )
+            return ComplementOperator(self._push_graph_pattern_filters(op.operand))
         if isinstance(op, FilterOperator) and op.source is not None:
             return FilterOperator(
                 op.field,
@@ -180,14 +179,14 @@ class QueryOptimizer:
         with an augmented pattern that checks the join condition as a
         vertex constraint.
         """
+        from uqa.graph.operators import PatternMatchOperator
         from uqa.operators.base import ComposedOperator
         from uqa.operators.boolean import (
+            ComplementOperator,
             IntersectOperator,
             UnionOperator,
-            ComplementOperator,
         )
         from uqa.operators.primitive import FilterOperator
-        from uqa.graph.operators import PatternMatchOperator
 
         if isinstance(op, ComposedOperator) and len(op.operators) == 2:
             first, second = op.operators
@@ -195,20 +194,18 @@ class QueryOptimizer:
                 # The first operator cannot be safely folded into pattern
                 # constraints without deep analysis of its semantics.
                 # Recurse into both children instead of discarding the first.
-                return ComposedOperator([
-                    self._fuse_join_pattern(first),
-                    self._fuse_join_pattern(second),
-                ])
+                return ComposedOperator(
+                    [
+                        self._fuse_join_pattern(first),
+                        self._fuse_join_pattern(second),
+                    ]
+                )
 
         # Recurse
         if isinstance(op, IntersectOperator):
-            return IntersectOperator(
-                [self._fuse_join_pattern(o) for o in op.operands]
-            )
+            return IntersectOperator([self._fuse_join_pattern(o) for o in op.operands])
         if isinstance(op, UnionOperator):
-            return UnionOperator(
-                [self._fuse_join_pattern(o) for o in op.operands]
-            )
+            return UnionOperator([self._fuse_join_pattern(o) for o in op.operands])
         if isinstance(op, ComplementOperator):
             return ComplementOperator(self._fuse_join_pattern(op.operand))
         if isinstance(op, FilterOperator) and op.source is not None:
@@ -218,16 +215,15 @@ class QueryOptimizer:
                 self._fuse_join_pattern(op.source),
             )
         if isinstance(op, ComposedOperator):
-            return ComposedOperator(
-                [self._fuse_join_pattern(o) for o in op.operators]
-            )
+            return ComposedOperator([self._fuse_join_pattern(o) for o in op.operators])
         return op
 
     def _merge_vector_thresholds(self, op: Operator) -> Operator:
         """Merge V_theta1(q) AND V_theta2(q) into V_max(theta1,theta2)(q)."""
+        import numpy as np
+
         from uqa.operators.boolean import IntersectOperator
         from uqa.operators.primitive import VectorSimilarityOperator
-        import numpy as np
 
         if not isinstance(op, IntersectOperator):
             return self._recurse_children(op)
@@ -252,9 +248,8 @@ class QueryOptimizer:
             for j in range(i + 1, len(vector_ops)):
                 if used[j]:
                     continue
-                if (
-                    merged.field == vector_ops[j].field
-                    and np.array_equal(merged.query_vector, vector_ops[j].query_vector)
+                if merged.field == vector_ops[j].field and np.array_equal(
+                    merged.query_vector, vector_ops[j].query_vector
                 ):
                     merged = VectorSimilarityOperator(
                         merged.query_vector,
@@ -296,18 +291,14 @@ class QueryOptimizer:
 
         if isinstance(op, LogOddsFusionOperator):
             signals = [self._reorder_fusion_signals(s) for s in op.signals]
-            signals.sort(
-                key=lambda s: self.estimator.estimate(s, self.stats)
-            )
+            signals.sort(key=lambda s: self.estimator.estimate(s, self.stats))
             return LogOddsFusionOperator(
                 signals, alpha=op.alpha, default_prob=op.default_prob
             )
 
         if isinstance(op, ProbBoolFusionOperator):
             signals = [self._reorder_fusion_signals(s) for s in op.signals]
-            signals.sort(
-                key=lambda s: self.estimator.estimate(s, self.stats)
-            )
+            signals.sort(key=lambda s: self.estimator.estimate(s, self.stats))
             return ProbBoolFusionOperator(
                 signals, mode=op.mode, default_prob=op.default_prob
             )
@@ -316,26 +307,22 @@ class QueryOptimizer:
 
     def _recurse_fusion(self, op: Operator) -> Operator:
         """Recurse into composite operators for fusion signal reordering."""
+        from uqa.operators.base import ComposedOperator
         from uqa.operators.boolean import (
+            ComplementOperator,
             IntersectOperator,
             UnionOperator,
-            ComplementOperator,
         )
         from uqa.operators.primitive import FilterOperator
-        from uqa.operators.base import ComposedOperator
 
         if isinstance(op, IntersectOperator):
             return IntersectOperator(
                 [self._reorder_fusion_signals(o) for o in op.operands]
             )
         if isinstance(op, UnionOperator):
-            return UnionOperator(
-                [self._reorder_fusion_signals(o) for o in op.operands]
-            )
+            return UnionOperator([self._reorder_fusion_signals(o) for o in op.operands])
         if isinstance(op, ComplementOperator):
-            return ComplementOperator(
-                self._reorder_fusion_signals(op.operand)
-            )
+            return ComplementOperator(self._reorder_fusion_signals(op.operand))
         if isinstance(op, FilterOperator) and op.source is not None:
             return FilterOperator(
                 op.field,
@@ -377,39 +364,37 @@ class QueryOptimizer:
 
     def _recurse_index_scan(self, op: Operator) -> Operator:
         """Recurse into composite operators for index scan rewriting."""
+        from uqa.operators.base import ComposedOperator
         from uqa.operators.boolean import (
             ComplementOperator,
             IntersectOperator,
             UnionOperator,
         )
-        from uqa.operators.base import ComposedOperator
 
         if isinstance(op, IntersectOperator):
-            return IntersectOperator(
-                [self._apply_index_scan(o) for o in op.operands]
-            )
+            return IntersectOperator([self._apply_index_scan(o) for o in op.operands])
         if isinstance(op, UnionOperator):
-            return UnionOperator(
-                [self._apply_index_scan(o) for o in op.operands]
-            )
+            return UnionOperator([self._apply_index_scan(o) for o in op.operands])
         if isinstance(op, ComplementOperator):
             return ComplementOperator(self._apply_index_scan(op.operand))
         if isinstance(op, ComposedOperator):
-            return ComposedOperator(
-                [self._apply_index_scan(o) for o in op.operators]
-            )
+            return ComposedOperator([self._apply_index_scan(o) for o in op.operators])
         return op
 
     def _recurse_children(self, op: Operator) -> Operator:
         """Recursively optimize children of composite operators."""
-        from uqa.operators.boolean import IntersectOperator, UnionOperator, ComplementOperator
-        from uqa.operators.primitive import FilterOperator, ScoreOperator
         from uqa.operators.base import ComposedOperator
+        from uqa.operators.boolean import (
+            ComplementOperator,
+            IntersectOperator,
+            UnionOperator,
+        )
         from uqa.operators.hybrid import (
             LogOddsFusionOperator,
             ProbBoolFusionOperator,
             ProbNotOperator,
         )
+        from uqa.operators.primitive import FilterOperator, ScoreOperator
 
         match op:
             case IntersectOperator(operands=ops):
@@ -418,7 +403,7 @@ class QueryOptimizer:
                 return UnionOperator([self.optimize(o) for o in ops])
             case ComplementOperator(operand=inner):
                 return ComplementOperator(self.optimize(inner))
-            case FilterOperator(field=f, predicate=p, source=s):
+            case FilterOperator(field=f, predicate=p, source=s) if s is not None:
                 return FilterOperator(f, p, self.optimize(s))
             case ComposedOperator(operators=ops):
                 return ComposedOperator([self.optimize(o) for o in ops])
@@ -447,7 +432,7 @@ class QueryOptimizer:
     @staticmethod
     def _filter_applies_to(filter_op: object, target: Operator) -> bool:
         """Check if a filter is relevant to a specific operand."""
-        from uqa.operators.primitive import TermOperator, FilterOperator
+        from uqa.operators.primitive import FilterOperator, TermOperator
 
         field = getattr(filter_op, "field", None)
         if field is None:

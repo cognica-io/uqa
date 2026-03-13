@@ -84,18 +84,12 @@ class ArrowFlightSQLFDWHandler(FDWHandler):
                 else:
                     clauses.append(f"{p.column} IS NOT NULL")
             elif p.operator == "IN":
-                literals = ", ".join(
-                    cls._quote_literal(v) for v in p.value
-                )
+                literals = ", ".join(cls._quote_literal(v) for v in p.value)
                 clauses.append(f"{p.column} IN ({literals})")
             elif p.operator in ("LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE"):
-                clauses.append(
-                    f"{p.column} {p.operator} {cls._quote_literal(p.value)}"
-                )
+                clauses.append(f"{p.column} {p.operator} {cls._quote_literal(p.value)}")
             else:
-                clauses.append(
-                    f"{p.column} {p.operator} {cls._quote_literal(p.value)}"
-                )
+                clauses.append(f"{p.column} {p.operator} {cls._quote_literal(p.value)}")
         return " AND ".join(clauses)
 
     def scan(
@@ -137,9 +131,7 @@ class ArrowFlightSQLFDWHandler(FDWHandler):
         if not tables:
             import pyarrow as pa
 
-            return pa.table({
-                col: [] for col in foreign_table.columns
-            })
+            return pa.table({col: [] for col in foreign_table.columns})
 
         import pyarrow as pa
 

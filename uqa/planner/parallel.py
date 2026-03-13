@@ -24,9 +24,8 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
-from uqa.core.posting_list import PostingList
-
 if TYPE_CHECKING:
+    from uqa.core.posting_list import PostingList
     from uqa.operators.base import ExecutionContext, Operator
 
 
@@ -66,10 +65,7 @@ class ParallelExecutor:
         Falls back to sequential execution when parallel execution is
         disabled or the number of branches is below the threshold.
         """
-        if (
-            not self.enabled
-            or len(operators) < _MIN_PARALLEL_BRANCHES
-        ):
+        if not self.enabled or len(operators) < _MIN_PARALLEL_BRANCHES:
             return [op.execute(context) for op in operators]
 
         workers = min(self._max_workers, len(operators))
@@ -77,8 +73,7 @@ class ParallelExecutor:
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
             future_to_idx = {
-                pool.submit(op.execute, context): i
-                for i, op in enumerate(operators)
+                pool.submit(op.execute, context): i for i, op in enumerate(operators)
             }
             for future in as_completed(future_to_idx):
                 idx = future_to_idx[future]

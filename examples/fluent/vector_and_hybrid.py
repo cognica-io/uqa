@@ -19,7 +19,7 @@ Demonstrates:
 
 import numpy as np
 
-from uqa.core.types import Equals, GreaterThanOrEqual, LessThanOrEqual
+from uqa.core.types import GreaterThanOrEqual, LessThanOrEqual
 from uqa.engine import Engine
 
 # ======================================================================
@@ -43,26 +43,106 @@ engine.sql("""
 rng = np.random.RandomState(42)
 
 products = [
-    (1, {"name": "wireless noise cancelling headphones", "category": "audio",
-         "brand": "SoundMax", "price": 299.99, "rating": 4.7}),
-    (2, {"name": "bluetooth portable speaker waterproof", "category": "audio",
-         "brand": "SoundMax", "price": 89.99, "rating": 4.3}),
-    (3, {"name": "mechanical gaming keyboard rgb backlit", "category": "peripherals",
-         "brand": "KeyTech", "price": 149.99, "rating": 4.5}),
-    (4, {"name": "ergonomic wireless mouse silent click", "category": "peripherals",
-         "brand": "KeyTech", "price": 49.99, "rating": 4.2}),
-    (5, {"name": "ultrawide curved monitor 34 inch", "category": "displays",
-         "brand": "ViewPro", "price": 599.99, "rating": 4.8}),
-    (6, {"name": "portable external ssd 1tb usb c", "category": "storage",
-         "brand": "DataFast", "price": 119.99, "rating": 4.6}),
-    (7, {"name": "webcam 4k autofocus with microphone", "category": "peripherals",
-         "brand": "ClearView", "price": 79.99, "rating": 4.1}),
-    (8, {"name": "usb c docking station dual monitor", "category": "accessories",
-         "brand": "HubMax", "price": 189.99, "rating": 4.4}),
-    (9, {"name": "wireless earbuds active noise cancellation", "category": "audio",
-         "brand": "SoundMax", "price": 199.99, "rating": 4.6}),
-    (10, {"name": "gaming monitor 27 inch 144hz", "category": "displays",
-          "brand": "ViewPro", "price": 449.99, "rating": 4.5}),
+    (
+        1,
+        {
+            "name": "wireless noise cancelling headphones",
+            "category": "audio",
+            "brand": "SoundMax",
+            "price": 299.99,
+            "rating": 4.7,
+        },
+    ),
+    (
+        2,
+        {
+            "name": "bluetooth portable speaker waterproof",
+            "category": "audio",
+            "brand": "SoundMax",
+            "price": 89.99,
+            "rating": 4.3,
+        },
+    ),
+    (
+        3,
+        {
+            "name": "mechanical gaming keyboard rgb backlit",
+            "category": "peripherals",
+            "brand": "KeyTech",
+            "price": 149.99,
+            "rating": 4.5,
+        },
+    ),
+    (
+        4,
+        {
+            "name": "ergonomic wireless mouse silent click",
+            "category": "peripherals",
+            "brand": "KeyTech",
+            "price": 49.99,
+            "rating": 4.2,
+        },
+    ),
+    (
+        5,
+        {
+            "name": "ultrawide curved monitor 34 inch",
+            "category": "displays",
+            "brand": "ViewPro",
+            "price": 599.99,
+            "rating": 4.8,
+        },
+    ),
+    (
+        6,
+        {
+            "name": "portable external ssd 1tb usb c",
+            "category": "storage",
+            "brand": "DataFast",
+            "price": 119.99,
+            "rating": 4.6,
+        },
+    ),
+    (
+        7,
+        {
+            "name": "webcam 4k autofocus with microphone",
+            "category": "peripherals",
+            "brand": "ClearView",
+            "price": 79.99,
+            "rating": 4.1,
+        },
+    ),
+    (
+        8,
+        {
+            "name": "usb c docking station dual monitor",
+            "category": "accessories",
+            "brand": "HubMax",
+            "price": 189.99,
+            "rating": 4.4,
+        },
+    ),
+    (
+        9,
+        {
+            "name": "wireless earbuds active noise cancellation",
+            "category": "audio",
+            "brand": "SoundMax",
+            "price": 199.99,
+            "rating": 4.6,
+        },
+    ),
+    (
+        10,
+        {
+            "name": "gaming monitor 27 inch 144hz",
+            "category": "displays",
+            "brand": "ViewPro",
+            "price": 449.99,
+            "rating": 4.5,
+        },
+    ),
 ]
 
 # Create embeddings: audio products clustered together, etc.
@@ -120,8 +200,10 @@ results = (
 )
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
     doc = engine.get_document(entry.doc_id, table="products")
-    print(f"  [{entry.doc_id}] sim={entry.payload.score:.4f}  "
-          f"${doc['price']:.2f}  {doc['name']}")
+    print(
+        f"  [{entry.doc_id}] sim={entry.payload.score:.4f}  "
+        f"${doc['price']:.2f}  {doc['name']}"
+    )
 
 
 # ------------------------------------------------------------------
@@ -151,15 +233,19 @@ results = (
 )
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
     doc = engine.get_document(entry.doc_id, table="products")
-    print(f"  [{entry.doc_id}] sim={entry.payload.score:.4f}  "
-          f"{doc['name']} [{doc['category']}]")
+    print(
+        f"  [{entry.doc_id}] sim={entry.payload.score:.4f}  "
+        f"{doc['name']} [{doc['category']}]"
+    )
 
 
 # ------------------------------------------------------------------
 # 6. Vector-conditioned facets: category distribution near audio
 # ------------------------------------------------------------------
 print("\n--- 6. Vector facets: categories among audio-similar docs ---")
-facets = engine.query(table="products").vector_facet("category", audio_query, threshold=0.3)
+facets = engine.query(table="products").vector_facet(
+    "category", audio_query, threshold=0.3
+)
 for cat, count in sorted(facets.counts.items(), key=lambda x: -x[1]):
     print(f"  {cat:>15}: {count}")
 
@@ -171,7 +257,9 @@ print("\n--- 7. Log-odds fusion: 'monitor' text + display vector ---")
 display_query = category_centers["displays"] + rng.randn(8) * 0.05
 display_query = display_query / np.linalg.norm(display_query)
 
-text_signal = engine.query(table="products").term("monitor").score_bayesian_bm25("monitor")
+text_signal = (
+    engine.query(table="products").term("monitor").score_bayesian_bm25("monitor")
+)
 vec_signal = engine.query(table="products").knn(display_query, k=5)
 
 fused = engine.query(table="products").fuse_log_odds(text_signal, vec_signal, alpha=0.6)
@@ -185,10 +273,14 @@ for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
 # 8. Probabilistic AND: high confidence matches
 # ------------------------------------------------------------------
 print("\n--- 8. Prob AND: 'wireless' text AND audio vector ---")
-text_signal = engine.query(table="products").term("wireless").score_bayesian_bm25("wireless")
+text_signal = (
+    engine.query(table="products").term("wireless").score_bayesian_bm25("wireless")
+)
 vec_signal = engine.query(table="products").vector(audio_query, threshold=0.3)
 
-results = engine.query(table="products").fuse_prob_and(text_signal, vec_signal).execute()
+results = (
+    engine.query(table="products").fuse_prob_and(text_signal, vec_signal).execute()
+)
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
     doc = engine.get_document(entry.doc_id, table="products")
     print(f"  [{entry.doc_id}] P(and)={entry.payload.score:.4f}  {doc['name']}")
@@ -198,7 +290,9 @@ for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
 # 9. Probabilistic OR: broader recall
 # ------------------------------------------------------------------
 print("\n--- 9. Prob OR: 'gaming' text OR peripherals vector ---")
-text_signal = engine.query(table="products").term("gaming").score_bayesian_bm25("gaming")
+text_signal = (
+    engine.query(table="products").term("gaming").score_bayesian_bm25("gaming")
+)
 vec_signal = engine.query(table="products").vector(peripherals_query, threshold=0.3)
 
 results = engine.query(table="products").fuse_prob_or(text_signal, vec_signal).execute()
@@ -211,7 +305,9 @@ for entry in sorted(results, key=lambda e: e.payload.score, reverse=True)[:5]:
 # 10. Multi-signal fusion: text + vector + filter pipeline
 # ------------------------------------------------------------------
 print("\n--- 10. Pipeline: fusion -> filter(rating >= 4.5) ---")
-text_signal = engine.query(table="products").term("monitor").score_bayesian_bm25("monitor")
+text_signal = (
+    engine.query(table="products").term("monitor").score_bayesian_bm25("monitor")
+)
 vec_signal = engine.query(table="products").knn(display_query, k=5)
 
 results = (

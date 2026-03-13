@@ -20,12 +20,9 @@ from __future__ import annotations
 
 import sqlite3
 
-import pytest
-
 from uqa.core.types import Edge, Vertex
 from uqa.storage.catalog import Catalog
 from uqa.storage.sqlite_graph_store import SQLiteGraphStore
-
 
 # -- Helpers ---------------------------------------------------------------
 
@@ -105,8 +102,7 @@ class TestWriteThrough:
         store.add_vertex(Vertex(1, "", {"name": "Alice"}))
 
         row = catalog.conn.execute(
-            "SELECT vertex_id, properties_json FROM _graph_vertices "
-            "WHERE vertex_id = 1"
+            "SELECT vertex_id, properties_json FROM _graph_vertices WHERE vertex_id = 1"
         ).fetchone()
         assert row is not None
         assert row[0] == 1
@@ -120,8 +116,7 @@ class TestWriteThrough:
         store.add_edge(Edge(1, 1, 2, "knows", {"since": 2020}))
 
         row = catalog.conn.execute(
-            "SELECT source_id, target_id, label FROM _graph_edges "
-            "WHERE edge_id = 1"
+            "SELECT source_id, target_id, label FROM _graph_edges WHERE edge_id = 1"
         ).fetchone()
         assert row == (1, 2, "knows")
         catalog.close()
@@ -139,9 +134,9 @@ class TestWriteThrough:
         v_count = catalog.conn.execute(
             "SELECT COUNT(*) FROM _graph_vertices"
         ).fetchone()[0]
-        e_count = catalog.conn.execute(
-            "SELECT COUNT(*) FROM _graph_edges"
-        ).fetchone()[0]
+        e_count = catalog.conn.execute("SELECT COUNT(*) FROM _graph_edges").fetchone()[
+            0
+        ]
         assert v_count == 3
         assert e_count == 3
         catalog.close()
@@ -335,9 +330,7 @@ class TestEngineIntegration:
             engine.add_graph_vertex(
                 Vertex(2, "", {"name": "Bob", "age": 25}), table="g"
             )
-            engine.add_graph_edge(
-                Edge(1, 1, 2, "knows", {"since": 2020}), table="g"
-            )
+            engine.add_graph_edge(Edge(1, 1, 2, "knows", {"since": 2020}), table="g")
 
         with Engine(db_path=db) as engine:
             gs = engine._tables["g"].graph_store
@@ -361,9 +354,7 @@ class TestEngineIntegration:
             engine.sql(self._TABLE_DDL)
             engine.add_graph_vertex(Vertex(1, "", {"name": "Alice"}), table="g")
             engine.add_graph_vertex(Vertex(2, "", {"name": "Bob"}), table="g")
-            engine.add_graph_vertex(
-                Vertex(3, "", {"name": "Charlie"}), table="g"
-            )
+            engine.add_graph_vertex(Vertex(3, "", {"name": "Charlie"}), table="g")
             engine.add_graph_edge(Edge(1, 1, 2, "knows", {}), table="g")
             engine.add_graph_edge(Edge(2, 2, 3, "knows", {}), table="g")
 
@@ -383,9 +374,7 @@ class TestEngineIntegration:
             engine.sql(self._TABLE_DDL)
             engine.add_graph_vertex(Vertex(1, "", {"name": "Alice"}), table="g")
             engine.add_graph_vertex(Vertex(2, "", {"name": "Bob"}), table="g")
-            engine.add_graph_vertex(
-                Vertex(3, "", {"name": "Charlie"}), table="g"
-            )
+            engine.add_graph_vertex(Vertex(3, "", {"name": "Charlie"}), table="g")
             engine.add_graph_edge(Edge(1, 1, 2, "knows", {}), table="g")
             engine.add_graph_edge(Edge(2, 1, 3, "knows", {}), table="g")
 

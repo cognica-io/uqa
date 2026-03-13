@@ -15,15 +15,12 @@ import pytest
 
 from uqa.core.posting_list import PostingList
 from uqa.core.types import (
-    Equals,
-    IndexStats,
     Payload,
     PostingEntry,
 )
 from uqa.engine import Engine
 from uqa.operators.base import ExecutionContext, Operator
 from uqa.planner.parallel import ParallelExecutor
-
 
 # ==================================================================
 # ParallelExecutor unit tests
@@ -39,9 +36,7 @@ class _SlowOperator(Operator):
 
     def execute(self, context: ExecutionContext) -> PostingList:
         time.sleep(self._delay)
-        return PostingList([
-            PostingEntry(d, Payload(score=1.0)) for d in self._doc_ids
-        ])
+        return PostingList([PostingEntry(d, Payload(score=1.0)) for d in self._doc_ids])
 
 
 class TestParallelExecutor:
@@ -105,6 +100,7 @@ class TestParallelExecutor:
 
     def test_parallel_error_propagation(self):
         """Errors in parallel branches propagate correctly."""
+
         class _FailOperator(Operator):
             def execute(self, context: ExecutionContext) -> PostingList:
                 raise ValueError("test error")
@@ -126,12 +122,7 @@ class TestParallelBooleanOps:
     @pytest.fixture
     def engine(self):
         e = Engine(parallel_workers=4)
-        e.sql(
-            "CREATE TABLE docs ("
-            "id INTEGER PRIMARY KEY, "
-            "title TEXT, "
-            "cat TEXT)"
-        )
+        e.sql("CREATE TABLE docs (id INTEGER PRIMARY KEY, title TEXT, cat TEXT)")
         docs = [
             {"title": "neural network basics", "cat": "ml"},
             {"title": "transformer models", "cat": "dl"},
@@ -165,11 +156,13 @@ class TestParallelBooleanOps:
             parallel_executor=ParallelExecutor(max_workers=0),
         )
         seq_result = PlanExecutor(ctx_seq).execute(
-            UnionOperator([
-                TermOperator("neural"),
-                TermOperator("bayesian"),
-                TermOperator("reinforcement"),
-            ])
+            UnionOperator(
+                [
+                    TermOperator("neural"),
+                    TermOperator("bayesian"),
+                    TermOperator("reinforcement"),
+                ]
+            )
         )
 
         assert set(par_result.doc_ids) == set(seq_result.doc_ids)
@@ -191,10 +184,12 @@ class TestParallelBooleanOps:
             parallel_executor=ParallelExecutor(max_workers=0),
         )
         seq_result = PlanExecutor(ctx_seq).execute(
-            IntersectOperator([
-                TermOperator("neural"),
-                TermOperator("networks"),
-            ])
+            IntersectOperator(
+                [
+                    TermOperator("neural"),
+                    TermOperator("networks"),
+                ]
+            )
         )
 
         assert set(par_result.doc_ids) == set(seq_result.doc_ids)
@@ -232,8 +227,8 @@ class TestParallelFusion:
         """LogOddsFusion with parallel signals produces correct results."""
         from uqa.operators.hybrid import LogOddsFusionOperator
         from uqa.operators.primitive import KNNOperator, ScoreOperator, TermOperator
-        from uqa.scoring.bm25 import BM25Params, BM25Scorer
         from uqa.planner.executor import PlanExecutor
+        from uqa.scoring.bm25 import BM25Params, BM25Scorer
 
         ctx = engine._context_for_table("docs")
         stats = ctx.inverted_index.stats
@@ -294,16 +289,10 @@ class TestSQLParallel:
     def test_sql_union_query_with_parallel(self):
         """SQL query with OR (union) executes with parallel context."""
         e = Engine(parallel_workers=4)
-        e.sql(
-            "CREATE TABLE docs ("
-            "id INTEGER PRIMARY KEY, "
-            "title TEXT"
-            ")"
-        )
+        e.sql("CREATE TABLE docs (id INTEGER PRIMARY KEY, title TEXT)")
         for i in range(1, 6):
             e.sql(
-                f"INSERT INTO docs (id, title) VALUES "
-                f"({i}, 'neural network paper {i}')"
+                f"INSERT INTO docs (id, title) VALUES ({i}, 'neural network paper {i}')"
             )
         r = e.sql(
             "SELECT title FROM docs WHERE title = 'neural network paper 1' "
@@ -316,13 +305,7 @@ class TestSQLParallel:
     def test_sql_fusion_query_with_parallel(self):
         """SQL fusion query works with parallel execution."""
         e = Engine(parallel_workers=4)
-        e.sql(
-            "CREATE TABLE docs ("
-            "id INTEGER PRIMARY KEY, "
-            "title TEXT, "
-            "body TEXT"
-            ")"
-        )
+        e.sql("CREATE TABLE docs (id INTEGER PRIMARY KEY, title TEXT, body TEXT)")
         for i in range(1, 4):
             e.sql(
                 f"INSERT INTO docs (id, title, body) VALUES "

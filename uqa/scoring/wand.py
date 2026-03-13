@@ -16,9 +16,7 @@ if TYPE_CHECKING:
     from uqa.storage.block_max_index import BlockMaxIndex
 
 
-def _advance_cursor(
-    entries: list[PostingEntry], pos: int, target: int
-) -> int:
+def _advance_cursor(entries: list[PostingEntry], pos: int, target: int) -> int:
     """Advance to first position with doc_id >= target using binary search."""
     lo, hi = pos, len(entries)
     while lo < hi:
@@ -70,9 +68,7 @@ class WANDScorer:
             return PostingList()
 
         # Initialize cursors: entries list and current position per term
-        iterators: list[list[PostingEntry]] = [
-            pl.entries for pl in self.posting_lists
-        ]
+        iterators: list[list[PostingEntry]] = [pl.entries for pl in self.posting_lists]
         positions: list[int] = [0] * num_terms
 
         # Min-heap of (score, doc_id) for top-k tracking
@@ -141,9 +137,7 @@ class WANDScorer:
                     if len(top_k_heap) == self.k:
                         threshold = top_k_heap[0][0]
                 elif actual_score > threshold:
-                    heapq.heapreplace(
-                        top_k_heap, (actual_score, pivot_doc)
-                    )
+                    heapq.heapreplace(top_k_heap, (actual_score, pivot_doc))
                     threshold = top_k_heap[0][0]
 
                 # Advance all cursors pointing at pivot_doc
@@ -205,9 +199,7 @@ class BlockMaxWANDScorer:
         if num_terms == 0:
             return PostingList()
 
-        iterators: list[list[PostingEntry]] = [
-            pl.entries for pl in self.posting_lists
-        ]
+        iterators: list[list[PostingEntry]] = [pl.entries for pl in self.posting_lists]
         positions: list[int] = [0] * num_terms
 
         top_k_heap: list[tuple[float, int]] = []
@@ -278,9 +270,7 @@ class BlockMaxWANDScorer:
                     if len(top_k_heap) == self.k:
                         threshold = top_k_heap[0][0]
                 elif actual_score > threshold:
-                    heapq.heapreplace(
-                        top_k_heap, (actual_score, pivot_doc)
-                    )
+                    heapq.heapreplace(top_k_heap, (actual_score, pivot_doc))
                     threshold = top_k_heap[0][0]
 
                 # Advance all cursors pointing at pivot_doc

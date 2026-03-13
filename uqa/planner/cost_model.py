@@ -25,16 +25,14 @@ class CostModel:
     """Operator cost estimation for query optimization (Definition 6.2.1, Paper 1)."""
 
     def estimate(self, op: Operator, stats: IndexStats) -> float:
-        from uqa.operators.boolean import IntersectOperator, UnionOperator
-        from uqa.operators.primitive import (
-            FilterOperator,
-            IndexScanOperator,
-            KNNOperator,
-            ScoreOperator,
-            TermOperator,
-            VectorSimilarityOperator,
+        from uqa.graph.operators import (
+            PatternMatchOperator,
+            RegularPathQueryOperator,
+            TraverseOperator,
+            VertexAggregationOperator,
         )
         from uqa.operators.aggregation import AggregateOperator, GroupByOperator
+        from uqa.operators.boolean import IntersectOperator, UnionOperator
         from uqa.operators.hybrid import (
             FacetVectorOperator,
             HybridTextVectorOperator,
@@ -44,17 +42,23 @@ class CostModel:
             SemanticFilterOperator,
             VectorExclusionOperator,
         )
-        from uqa.graph.operators import (
-            TraverseOperator,
-            PatternMatchOperator,
-            RegularPathQueryOperator,
-            VertexAggregationOperator,
+        from uqa.operators.primitive import (
+            FilterOperator,
+            IndexScanOperator,
+            KNNOperator,
+            ScoreOperator,
+            TermOperator,
+            VectorSimilarityOperator,
         )
 
         match op:
             case TermOperator(term=t, field=f):
                 field_name = f or "_default"
-                return float(stats.doc_freq(field_name, t)) if stats.total_docs > 0 else 1.0
+                return (
+                    float(stats.doc_freq(field_name, t))
+                    if stats.total_docs > 0
+                    else 1.0
+                )
             case VectorSimilarityOperator():
                 return stats.dimensions * math.log2(stats.total_docs + 1)
             case KNNOperator():
@@ -84,19 +88,16 @@ class CostModel:
             case ProbNotOperator(signal=sig):
                 return self.estimate(sig, stats) + float(stats.total_docs)
             case HybridTextVectorOperator():
-                return (
-                    self.estimate(op.term_op, stats)
-                    + self.estimate(op.vector_op, stats)
+                return self.estimate(op.term_op, stats) + self.estimate(
+                    op.vector_op, stats
                 )
             case SemanticFilterOperator():
-                return (
-                    self.estimate(op.source, stats)
-                    + self.estimate(op.vector_op, stats)
+                return self.estimate(op.source, stats) + self.estimate(
+                    op.vector_op, stats
                 )
             case VectorExclusionOperator():
-                return (
-                    self.estimate(op.positive, stats)
-                    + self.estimate(op.negative_op, stats)
+                return self.estimate(op.positive, stats) + self.estimate(
+                    op.negative_op, stats
                 )
             case FacetVectorOperator():
                 cost = self.estimate(op.vector_op, stats)

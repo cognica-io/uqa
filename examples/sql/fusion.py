@@ -44,14 +44,14 @@ engine.sql("""
 rng = np.random.RandomState(42)
 
 titles = [
-    ('attention is all you need',                    2017, 'NeurIPS', 'nlp',       90000),
-    ('bert pre-training deep bidirectional',         2019, 'NAACL',   'nlp',       75000),
-    ('graph attention networks',                     2018, 'ICLR',    'graph',     15000),
-    ('vision transformer image recognition',         2021, 'ICLR',    'cv',        25000),
-    ('scaling language models methods insights',     2020, 'arXiv',   'nlp',       8000),
-    ('diffusion models beat gans',                   2021, 'NeurIPS', 'cv',        12000),
-    ('reinforcement learning human feedback',        2022, 'NeurIPS', 'alignment', 5000),
-    ('efficient attention long sequences',           2020, 'ICML',    'nlp',       3000),
+    ("attention is all you need", 2017, "NeurIPS", "nlp", 90000),
+    ("bert pre-training deep bidirectional", 2019, "NAACL", "nlp", 75000),
+    ("graph attention networks", 2018, "ICLR", "graph", 15000),
+    ("vision transformer image recognition", 2021, "ICLR", "cv", 25000),
+    ("scaling language models methods insights", 2020, "arXiv", "nlp", 8000),
+    ("diffusion models beat gans", 2021, "NeurIPS", "cv", 12000),
+    ("reinforcement learning human feedback", 2022, "NeurIPS", "alignment", 5000),
+    ("efficient attention long sequences", 2020, "ICML", "nlp", 3000),
 ]
 for title, year, venue, fld, cit in titles:
     vec = rng.randn(8).astype(np.float32)
@@ -105,33 +105,45 @@ print("=" * 70)
 # ==================================================================
 # fuse_log_odds: text + graph
 # ==================================================================
-show("1. fuse_log_odds: text + graph", engine.sql("""
+show(
+    "1. fuse_log_odds: text + graph",
+    engine.sql("""
     SELECT title, _score FROM papers
     WHERE fuse_log_odds(
         text_match(title, 'attention'),
         traverse_match(1, 'cited_by', 1)
     )
     ORDER BY _score DESC
-"""))
+"""),
+)
 
 
 # ==================================================================
 # fuse_log_odds: text + vector
 # ==================================================================
-show("2. fuse_log_odds: text + vector", engine.sql("""
+show(
+    "2. fuse_log_odds: text + vector",
+    engine.sql(
+        """
     SELECT title, _score FROM papers
     WHERE fuse_log_odds(
         text_match(title, 'transformer'),
         knn_match(embedding, $1, 5)
     )
     ORDER BY _score DESC
-""", params=[query_vec]))
+""",
+        params=[query_vec],
+    ),
+)
 
 
 # ==================================================================
 # fuse_log_odds: 3 signals (text + vector + graph)
 # ==================================================================
-show("3. fuse_log_odds: text + vector + graph", engine.sql("""
+show(
+    "3. fuse_log_odds: text + vector + graph",
+    engine.sql(
+        """
     SELECT title, _score FROM papers
     WHERE fuse_log_odds(
         text_match(title, 'attention transformer'),
@@ -139,13 +151,18 @@ show("3. fuse_log_odds: text + vector + graph", engine.sql("""
         traverse_match(1, 'cited_by', 2)
     )
     ORDER BY _score DESC
-""", params=[query_vec]))
+""",
+        params=[query_vec],
+    ),
+)
 
 
 # ==================================================================
 # fuse_log_odds with alpha parameter
 # ==================================================================
-show("4. fuse_log_odds with alpha=0.8 (high confidence)", engine.sql("""
+show(
+    "4. fuse_log_odds with alpha=0.8 (high confidence)",
+    engine.sql("""
     SELECT title, _score FROM papers
     WHERE fuse_log_odds(
         text_match(title, 'attention'),
@@ -153,58 +170,74 @@ show("4. fuse_log_odds with alpha=0.8 (high confidence)", engine.sql("""
         0.8
     )
     ORDER BY _score DESC
-"""))
+"""),
+)
 
 
 # ==================================================================
 # fuse_log_odds + relational filter
 # ==================================================================
-show("5. fusion + year >= 2019", engine.sql("""
+show(
+    "5. fusion + year >= 2019",
+    engine.sql(
+        """
     SELECT title, year, _score FROM papers
     WHERE fuse_log_odds(
         text_match(title, 'attention transformer'),
         knn_match(embedding, $1, 5)
     ) AND year >= 2019
     ORDER BY _score DESC
-""", params=[query_vec]))
+""",
+        params=[query_vec],
+    ),
+)
 
 
 # ==================================================================
 # fuse_prob_and: probabilistic AND
 # ==================================================================
-show("6. fuse_prob_and: text AND graph", engine.sql("""
+show(
+    "6. fuse_prob_and: text AND graph",
+    engine.sql("""
     SELECT title, _score FROM papers
     WHERE fuse_prob_and(
         text_match(title, 'attention'),
         traverse_match(1, 'cited_by', 1)
     )
     ORDER BY _score DESC
-"""))
+"""),
+)
 
 
 # ==================================================================
 # fuse_prob_or: probabilistic OR (broader recall)
 # ==================================================================
-show("7. fuse_prob_or: text OR graph", engine.sql("""
+show(
+    "7. fuse_prob_or: text OR graph",
+    engine.sql("""
     SELECT title, _score FROM papers
     WHERE fuse_prob_or(
         text_match(title, 'diffusion'),
         traverse_match(1, 'cited_by', 2)
     )
     ORDER BY _score DESC
-"""))
+"""),
+)
 
 
 # ==================================================================
 # fuse_prob_not: probabilistic complement
 # ==================================================================
-show("8. fuse_prob_not: NOT text_match('attention')", engine.sql("""
+show(
+    "8. fuse_prob_not: NOT text_match('attention')",
+    engine.sql("""
     SELECT title, _score FROM papers
     WHERE fuse_prob_not(
         text_match(title, 'attention')
     )
     ORDER BY _score DESC
-"""))
+"""),
+)
 
 
 # ==================================================================
@@ -228,14 +261,17 @@ for mode in ("fuse_log_odds", "fuse_prob_and", "fuse_prob_or"):
 # ==================================================================
 # EXPLAIN fusion query plan
 # ==================================================================
-result = engine.sql("""
+result = engine.sql(
+    """
     EXPLAIN SELECT * FROM papers
     WHERE fuse_log_odds(
         text_match(title, 'attention'),
         knn_match(embedding, $1, 3),
         traverse_match(1, 'cited_by', 1)
     )
-""", params=[query_vec])
+""",
+    params=[query_vec],
+)
 print("\n--- 10. EXPLAIN fusion plan ---")
 for row in result.rows:
     print(f"  {row['plan']}")

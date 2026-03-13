@@ -16,12 +16,7 @@ from uqa.engine import Engine
 @pytest.fixture
 def engine():
     e = Engine()
-    e.sql(
-        "CREATE TABLE departments ("
-        "id INTEGER PRIMARY KEY, "
-        "name TEXT NOT NULL"
-        ")"
-    )
+    e.sql("CREATE TABLE departments (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
     e.sql(
         "INSERT INTO departments (id, name) VALUES "
         "(1, 'Engineering'), "
@@ -80,8 +75,7 @@ class TestInSubquery:
     def test_in_subquery_null_excluded(self, engine):
         """NULL dept_id should not match IN subquery results."""
         r = engine.sql(
-            "SELECT name FROM employees "
-            "WHERE dept_id IN (SELECT id FROM departments)"
+            "SELECT name FROM employees WHERE dept_id IN (SELECT id FROM departments)"
         )
         # Eve has NULL dept_id, should not appear
         names = sorted(row["name"] for row in r.rows)
@@ -148,8 +142,7 @@ class TestExistsSubquery:
     def test_not_exists_with_results(self, engine):
         """NOT EXISTS with non-empty subquery returns nothing."""
         r = engine.sql(
-            "SELECT name FROM employees "
-            "WHERE NOT EXISTS (SELECT 1 FROM departments)"
+            "SELECT name FROM employees WHERE NOT EXISTS (SELECT 1 FROM departments)"
         )
         assert r.rows == []
 

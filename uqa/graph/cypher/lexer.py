@@ -26,48 +26,85 @@ class TokenType(Enum):
     IDENT = auto()
 
     # Symbols
-    LPAREN = auto()      # (
-    RPAREN = auto()      # )
-    LBRACKET = auto()    # [
-    RBRACKET = auto()    # ]
-    LBRACE = auto()      # {
-    RBRACE = auto()      # }
-    COLON = auto()       # :
-    COMMA = auto()        # ,
-    DOT = auto()          # .
-    DOTDOT = auto()       # ..
-    PIPE = auto()         # |
-    DOLLAR = auto()       # $
-    PLUS = auto()         # +
-    MINUS = auto()        # -
-    STAR = auto()         # *
-    SLASH = auto()        # /
-    PERCENT = auto()      # %
-    CARET = auto()        # ^
-    EQ = auto()           # =
-    NEQ = auto()          # <>
-    LT = auto()           # <
-    GT = auto()           # >
-    LTE = auto()          # <=
-    GTE = auto()          # >=
-    PLUS_EQ = auto()      # +=
+    LPAREN = auto()  # (
+    RPAREN = auto()  # )
+    LBRACKET = auto()  # [
+    RBRACKET = auto()  # ]
+    LBRACE = auto()  # {
+    RBRACE = auto()  # }
+    COLON = auto()  # :
+    COMMA = auto()  # ,
+    DOT = auto()  # .
+    DOTDOT = auto()  # ..
+    PIPE = auto()  # |
+    DOLLAR = auto()  # $
+    PLUS = auto()  # +
+    MINUS = auto()  # -
+    STAR = auto()  # *
+    SLASH = auto()  # /
+    PERCENT = auto()  # %
+    CARET = auto()  # ^
+    EQ = auto()  # =
+    NEQ = auto()  # <>
+    LT = auto()  # <
+    GT = auto()  # >
+    LTE = auto()  # <=
+    GTE = auto()  # >=
+    PLUS_EQ = auto()  # +=
     ARROW_RIGHT = auto()  # ->
-    ARROW_LEFT = auto()   # <-
-    DASH = auto()         # - (relationship connector, context-sensitive with MINUS)
+    ARROW_LEFT = auto()  # <-
+    DASH = auto()  # - (relationship connector, context-sensitive with MINUS)
 
     EOF = auto()
 
 
 # Keywords are case-insensitive.  They are stored upper-cased so the parser
 # can match with ``token.value.upper()``.
-_KEYWORDS = frozenset({
-    "AND", "AS", "ASC", "BY", "CASE", "CONTAINS", "CREATE", "DELETE",
-    "DESC", "DETACH", "DISTINCT", "ELSE", "END", "ENDS", "EXISTS",
-    "FALSE", "IN", "IS", "LIMIT", "MATCH", "MERGE", "NODE", "NOT",
-    "NULL", "ON", "OPTIONAL", "OR", "ORDER", "RELATIONSHIP", "REMOVE",
-    "RETURN", "SET", "SKIP", "STARTS", "THEN", "TRUE", "UNWIND",
-    "WHEN", "WHERE", "WITH", "XOR",
-})
+_KEYWORDS = frozenset(
+    {
+        "AND",
+        "AS",
+        "ASC",
+        "BY",
+        "CASE",
+        "CONTAINS",
+        "CREATE",
+        "DELETE",
+        "DESC",
+        "DETACH",
+        "DISTINCT",
+        "ELSE",
+        "END",
+        "ENDS",
+        "EXISTS",
+        "FALSE",
+        "IN",
+        "IS",
+        "LIMIT",
+        "MATCH",
+        "MERGE",
+        "NODE",
+        "NOT",
+        "NULL",
+        "ON",
+        "OPTIONAL",
+        "OR",
+        "ORDER",
+        "RELATIONSHIP",
+        "REMOVE",
+        "RETURN",
+        "SET",
+        "SKIP",
+        "STARTS",
+        "THEN",
+        "TRUE",
+        "UNWIND",
+        "WHEN",
+        "WHERE",
+        "WITH",
+        "XOR",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,7 +167,7 @@ def tokenize(source: str) -> list[Token]:
             continue
 
         # Multi-character symbols
-        two = source[i:i + 2]
+        two = source[i : i + 2]
         if two == "<>":
             tokens.append(Token(TokenType.NEQ, "<>", i))
             i += 2
@@ -201,18 +238,17 @@ def _scan_string(source: str, start: int, quote: str) -> tuple[Token, int]:
     parts: list[str] = []
     while i < n:
         ch = source[i]
-        if ch == "\\":
-            if i + 1 < n:
-                esc = source[i + 1]
-                escape_map = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\"}
-                if esc == quote:
-                    parts.append(quote)
-                elif esc in escape_map:
-                    parts.append(escape_map[esc])
-                else:
-                    parts.append(esc)
-                i += 2
-                continue
+        if ch == "\\" and i + 1 < n:
+            esc = source[i + 1]
+            escape_map = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\"}
+            if esc == quote:
+                parts.append(quote)
+            elif esc in escape_map:
+                parts.append(escape_map[esc])
+            else:
+                parts.append(esc)
+            i += 2
+            continue
         if ch == quote:
             # Check for doubled quote (Cypher's escape for quote inside same quote)
             if i + 1 < n and source[i + 1] == quote:
@@ -271,10 +307,8 @@ def _scan_backtick_ident(source: str, start: int) -> tuple[Token, int]:
     while i < n and source[i] != "`":
         i += 1
     if i >= n:
-        raise SyntaxError(
-            f"Unterminated backtick identifier at position {start}"
-        )
-    text = source[start + 1:i]
+        raise SyntaxError(f"Unterminated backtick identifier at position {start}")
+    text = source[start + 1 : i]
     return Token(TokenType.IDENT, text, start), i + 1
 
 

@@ -7,19 +7,23 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Any
-
-from numpy.typing import NDArray
+from typing import TYPE_CHECKING, Any
 
 from uqa.api.query_builder import QueryBuilder
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
+
+    from uqa.fdw.foreign_table import ForeignServer, ForeignTable
+    from uqa.fdw.handler import FDWHandler
 from uqa.core.types import DocId, Edge, Payload, PostingEntry, Vertex
 from uqa.graph.store import GraphStore
-from uqa.storage.catalog import Catalog
 from uqa.planner.parallel import ParallelExecutor
+from uqa.sql.table import _SQL_TYPE_MAP, ColumnDef, ColumnStats, Table
+from uqa.storage.catalog import Catalog
 from uqa.storage.index_manager import IndexManager
 from uqa.storage.sqlite_graph_store import SQLiteGraphStore
 from uqa.storage.transaction import Transaction
-from uqa.sql.table import ColumnDef, ColumnStats, Table, _SQL_TYPE_MAP
 
 
 class Engine:
@@ -36,9 +40,7 @@ class Engine:
         parallel_workers: int = 4,
         spill_threshold: int = 0,
     ):
-        self._parallel_executor = ParallelExecutor(
-            max_workers=parallel_workers
-        )
+        self._parallel_executor = ParallelExecutor(max_workers=parallel_workers)
         self.spill_threshold = spill_threshold
         self._tables: dict[str, Any] = {}
         self._views: dict[str, Any] = {}  # name -> SelectStmt AST
@@ -46,10 +48,6 @@ class Engine:
         self._sequences: dict[str, dict[str, int]] = {}
         self._temp_tables: set[str] = set()
         self._named_graphs: dict[str, GraphStore] = {}
-
-        # Foreign Data Wrapper state
-        from uqa.fdw.foreign_table import ForeignServer, ForeignTable
-        from uqa.fdw.handler import FDWHandler
 
         self._foreign_servers: dict[str, ForeignServer] = {}
         self._foreign_tables: dict[str, ForeignTable] = {}
@@ -61,9 +59,7 @@ class Engine:
         self._transaction: Transaction | None = None
         if db_path is not None:
             self._catalog = Catalog(db_path)
-            self._index_manager = IndexManager(
-                self._catalog.conn, self._catalog
-            )
+            self._index_manager = IndexManager(self._catalog.conn, self._catalog)
             self._load_from_catalog()
 
     # -- Catalog restore -----------------------------------------------
@@ -150,12 +146,12 @@ class Engine:
 
         for name, fdw_type, options in catalog.load_foreign_servers():
             self._foreign_servers[name] = ForeignServer(
-                name=name, fdw_type=fdw_type, options=options,
+                name=name,
+                fdw_type=fdw_type,
+                options=options,
             )
 
-        for name, server_name, col_dicts, options in (
-            catalog.load_foreign_tables()
-        ):
+        for name, server_name, col_dicts, options in catalog.load_foreign_tables():
             cols = OrderedDict()
             for cd in col_dicts:
                 type_name = cd["type_name"]
@@ -187,9 +183,7 @@ class Engine:
         # table.  The R*Tree data is already populated.
         from uqa.storage.spatial_index import SpatialIndex
 
-        for name, idx_type, tbl_name, cols, _params in (
-            catalog.load_indexes()
-        ):
+        for _name, idx_type, tbl_name, cols, _params in catalog.load_indexes():
             if idx_type != "rtree":
                 continue
             tbl = self._tables.get(tbl_name)
@@ -198,9 +192,7 @@ class Engine:
             col_name = cols[0] if cols else None
             if col_name is None:
                 continue
-            sp_idx = SpatialIndex(
-                tbl_name, col_name, conn=catalog.conn
-            )
+            sp_idx = SpatialIndex(tbl_name, col_name, conn=catalog.conn)
             tbl.spatial_indexes[col_name] = sp_idx
 
     @staticmethod
@@ -229,9 +221,7 @@ class Engine:
         # Copy postings into SQLiteInvertedIndex
         old_postings = catalog.load_postings(table_name)
         for field, term, doc_id, positions in old_postings:
-            entry = PostingEntry(
-                doc_id, Payload(positions=positions, score=0.0)
-            )
+            entry = PostingEntry(doc_id, Payload(positions=positions, score=0.0))
             table.inverted_index.add_posting(field, term, entry)
 
         # Copy doc lengths
@@ -290,8 +280,11 @@ class Engine:
             import numpy as np
 
             vec_col_for_index = next(
-                (name for name, col in tbl.columns.items()
-                 if col.vector_dimensions is not None),
+                (
+                    name
+                    for name, col in tbl.columns.items()
+                    if col.vector_dimensions is not None
+                ),
                 None,
             )
             if vec_col_for_index is not None:
@@ -300,9 +293,7 @@ class Engine:
 
         tbl.document_store.put(doc_id, stored)
 
-        text_fields = {
-            k: v for k, v in stored.items() if isinstance(v, str)
-        }
+        text_fields = {k: v for k, v in stored.items() if isinstance(v, str)}
         if text_fields:
             tbl.inverted_index.add_document(doc_id, text_fields)
 
@@ -311,9 +302,7 @@ class Engine:
             if vec_idx is not None:
                 vec_idx.add(doc_id, vec_array)
 
-    def get_document(
-        self, doc_id: DocId, table: str
-    ) -> dict[str, Any] | None:
+    def get_document(self, doc_id: DocId, table: str) -> dict[str, Any] | None:
         """Retrieve a document by its ID from the given table.
 
         Returns the stored document dict, or ``None`` if the document
@@ -397,9 +386,7 @@ class Engine:
 
     # -- Analyzer management -------------------------------------------
 
-    def create_analyzer(
-        self, name: str, config: dict[str, Any]
-    ) -> None:
+    def create_analyzer(self, name: str, config: dict[str, Any]) -> None:
         """Create a named analyzer and persist it to the catalog.
 
         ``config`` is the Analyzer serialization dict with keys:
@@ -432,9 +419,7 @@ class Engine:
         analyzer = get_analyzer(analyzer_name)
         tbl.inverted_index.set_field_analyzer(field, analyzer)
 
-    def get_table_analyzer(
-        self, table_name: str, field: str
-    ) -> Any:
+    def get_table_analyzer(self, table_name: str, field: str) -> Any:
         """Return the analyzer assigned to a table field.
 
         Returns the field-specific analyzer if one has been set via
@@ -447,9 +432,7 @@ class Engine:
 
     # -- Scoring parameters (Papers 3-4) -------------------------------
 
-    def save_scoring_params(
-        self, name: str, params: dict[str, Any]
-    ) -> None:
+    def save_scoring_params(self, name: str, params: dict[str, Any]) -> None:
         """Persist Bayesian calibration parameters for a named signal.
 
         Parameters are stored as a JSON dict with keys such as:
@@ -483,9 +466,7 @@ class Engine:
         transaction is already active.
         """
         if self._catalog is None:
-            raise ValueError(
-                "Transactions require a persistent engine (db_path)"
-            )
+            raise ValueError("Transactions require a persistent engine (db_path)")
         if self._transaction is not None and self._transaction.active:
             raise ValueError("Transaction already active")
         self._transaction = Transaction(self._catalog.conn)

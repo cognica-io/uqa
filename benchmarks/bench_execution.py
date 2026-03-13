@@ -14,14 +14,14 @@ from __future__ import annotations
 
 import pytest
 
-from uqa.engine import Engine
 from benchmarks.data.generators import BenchmarkDataGenerator
 from benchmarks.data.schemas import BENCH_TABLE_DDL
-
+from uqa.engine import Engine
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _engine_with_data(n: int) -> Engine:
     """Create an engine with *n* rows in the bench table."""
@@ -43,6 +43,7 @@ def _engine_with_data(n: int) -> Engine:
 # Sequential Scan
 # ---------------------------------------------------------------------------
 
+
 class TestSeqScan:
     @pytest.mark.parametrize("n", [100, 500, 1000])
     def test_full_scan(self, benchmark, n: int) -> None:
@@ -54,6 +55,7 @@ class TestSeqScan:
 # ---------------------------------------------------------------------------
 # Filter
 # ---------------------------------------------------------------------------
+
 
 class TestFilter:
     def test_high_selectivity(self, benchmark) -> None:
@@ -78,6 +80,7 @@ class TestFilter:
 # Project
 # ---------------------------------------------------------------------------
 
+
 class TestProject:
     def test_simple_project(self, benchmark) -> None:
         e = _engine_with_data(1000)
@@ -96,6 +99,7 @@ class TestProject:
 # Sort
 # ---------------------------------------------------------------------------
 
+
 class TestSort:
     def test_single_column(self, benchmark) -> None:
         e = _engine_with_data(1000)
@@ -113,6 +117,7 @@ class TestSort:
 # ---------------------------------------------------------------------------
 # Hash Aggregate
 # ---------------------------------------------------------------------------
+
 
 class TestHashAggregate:
     def test_count_group_by(self, benchmark) -> None:
@@ -136,6 +141,7 @@ class TestHashAggregate:
 # Distinct
 # ---------------------------------------------------------------------------
 
+
 class TestDistinct:
     def test_low_cardinality(self, benchmark) -> None:
         e = _engine_with_data(1000)
@@ -149,6 +155,7 @@ class TestDistinct:
 # ---------------------------------------------------------------------------
 # Window Functions
 # ---------------------------------------------------------------------------
+
 
 class TestWindow:
     def test_row_number(self, benchmark) -> None:
@@ -179,6 +186,7 @@ class TestWindow:
 # Limit
 # ---------------------------------------------------------------------------
 
+
 class TestLimit:
     @pytest.mark.parametrize("limit", [10, 100])
     def test_limit(self, benchmark, limit: int) -> None:
@@ -190,6 +198,7 @@ class TestLimit:
 # ---------------------------------------------------------------------------
 # Full Pipeline
 # ---------------------------------------------------------------------------
+
 
 class TestPipeline:
     def test_scan_filter_project_sort_limit(self, benchmark) -> None:

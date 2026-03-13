@@ -12,12 +12,9 @@ EXPLAIN output, persistence across engine restart, and error handling.
 
 from __future__ import annotations
 
-import tempfile
-
 import pytest
 
 from uqa.engine import Engine
-
 
 # -- Helpers ---------------------------------------------------------------
 
@@ -29,11 +26,19 @@ def _make_engine(db_path: str) -> Engine:
 
 def _setup_employees(engine: Engine) -> None:
     """Create and populate an employees table."""
-    engine.sql("CREATE TABLE employees (id SERIAL PRIMARY KEY, name TEXT NOT NULL, age INTEGER, salary REAL)")
-    engine.sql("INSERT INTO employees (name, age, salary) VALUES ('Alice', 30, 70000.0)")
+    engine.sql(
+        "CREATE TABLE employees (id SERIAL PRIMARY KEY, name TEXT NOT NULL, age INTEGER, salary REAL)"
+    )
+    engine.sql(
+        "INSERT INTO employees (name, age, salary) VALUES ('Alice', 30, 70000.0)"
+    )
     engine.sql("INSERT INTO employees (name, age, salary) VALUES ('Bob', 25, 55000.0)")
-    engine.sql("INSERT INTO employees (name, age, salary) VALUES ('Charlie', 35, 90000.0)")
-    engine.sql("INSERT INTO employees (name, age, salary) VALUES ('Diana', 28, 65000.0)")
+    engine.sql(
+        "INSERT INTO employees (name, age, salary) VALUES ('Charlie', 35, 90000.0)"
+    )
+    engine.sql(
+        "INSERT INTO employees (name, age, salary) VALUES ('Diana', 28, 65000.0)"
+    )
     engine.sql("INSERT INTO employees (name, age, salary) VALUES ('Eve', 40, 95000.0)")
 
 
@@ -50,9 +55,11 @@ class TestCreateDropIndex:
 
     def test_create_index_on_nonexistent_table(self, tmp_path):
         db = str(tmp_path / "test.db")
-        with _make_engine(db) as engine:
-            with pytest.raises(ValueError, match="does not exist"):
-                engine.sql("CREATE INDEX idx_foo ON nonexistent (col)")
+        with (
+            _make_engine(db) as engine,
+            pytest.raises(ValueError, match="does not exist"),
+        ):
+            engine.sql("CREATE INDEX idx_foo ON nonexistent (col)")
 
     def test_create_index_on_nonexistent_column(self, tmp_path):
         db = str(tmp_path / "test.db")
@@ -80,9 +87,11 @@ class TestCreateDropIndex:
 
     def test_drop_index_nonexistent(self, tmp_path):
         db = str(tmp_path / "test.db")
-        with _make_engine(db) as engine:
-            with pytest.raises(ValueError, match="does not exist"):
-                engine.sql("DROP INDEX idx_none")
+        with (
+            _make_engine(db) as engine,
+            pytest.raises(ValueError, match="does not exist"),
+        ):
+            engine.sql("DROP INDEX idx_none")
 
     def test_drop_index_if_exists(self, tmp_path):
         db = str(tmp_path / "test.db")
@@ -153,7 +162,9 @@ class TestIndexScan:
             _setup_employees(engine)
             engine.sql("CREATE INDEX idx_age ON employees (age)")
 
-            result = engine.sql("SELECT name FROM employees WHERE age BETWEEN 28 AND 35")
+            result = engine.sql(
+                "SELECT name FROM employees WHERE age BETWEEN 28 AND 35"
+            )
             names = sorted(r["name"] for r in result)
             assert names == ["Alice", "Charlie", "Diana"]
 
@@ -226,7 +237,9 @@ class TestOptimizerIntegration:
             assert "idx_age" in plan_text
 
             # Query on salary should use idx_salary
-            result = engine.sql("EXPLAIN SELECT name FROM employees WHERE salary > 80000")
+            result = engine.sql(
+                "EXPLAIN SELECT name FROM employees WHERE salary > 80000"
+            )
             plan_text = "\n".join(r["plan"] for r in result)
             assert "idx_salary" in plan_text
 
@@ -285,7 +298,9 @@ class TestIndexPersistence:
             engine.sql("CREATE INDEX idx_age ON employees (age)")
 
             # Insert after index creation
-            engine.sql("INSERT INTO employees (name, age, salary) VALUES ('Frank', 33, 72000.0)")
+            engine.sql(
+                "INSERT INTO employees (name, age, salary) VALUES ('Frank', 33, 72000.0)"
+            )
 
         with _make_engine(db) as engine:
             result = engine.sql("SELECT name FROM employees WHERE age = 33")
@@ -399,7 +414,7 @@ class TestCatalogIndexes:
 
         loaded = catalog.load_indexes()
         assert len(loaded) == 1
-        name, idx_type, tbl, cols, params = loaded[0]
+        name, idx_type, tbl, cols, _params = loaded[0]
         assert name == "idx_age"
         assert idx_type == "btree"
         assert tbl == "employees"
@@ -447,7 +462,19 @@ class TestCatalogIndexes:
         catalog = Catalog(db)
 
         # Simulate having a table schema
-        catalog.save_table_schema("emp", [{"name": "id", "type_name": "integer", "primary_key": True, "not_null": True, "auto_increment": False, "default": None}])
+        catalog.save_table_schema(
+            "emp",
+            [
+                {
+                    "name": "id",
+                    "type_name": "integer",
+                    "primary_key": True,
+                    "not_null": True,
+                    "auto_increment": False,
+                    "default": None,
+                }
+            ],
+        )
         catalog.save_index(IndexDef("idx1", IndexType.BTREE, "emp", ("id",)))
 
         catalog.drop_table_schema("emp")

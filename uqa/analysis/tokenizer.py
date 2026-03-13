@@ -21,12 +21,10 @@ class Tokenizer(ABC):
     """Base class for text tokenization."""
 
     @abstractmethod
-    def tokenize(self, text: str) -> list[str]:
-        ...
+    def tokenize(self, text: str) -> list[str]: ...
 
     @abstractmethod
-    def to_dict(self) -> dict[str, Any]:
-        ...
+    def to_dict(self) -> dict[str, Any]: ...
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Tokenizer:

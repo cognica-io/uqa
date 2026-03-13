@@ -14,9 +14,8 @@ The AST mirrors Apache AGE's supported Cypher clauses:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
-
 
 # -- Expressions -----------------------------------------------------------
 

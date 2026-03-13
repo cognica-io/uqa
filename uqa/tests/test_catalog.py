@@ -18,7 +18,6 @@ from uqa.core.types import Edge, Vertex
 from uqa.engine import Engine
 from uqa.storage.catalog import Catalog
 
-
 # ======================================================================
 # Catalog unit tests
 # ======================================================================
@@ -80,9 +79,19 @@ class TestCatalogTableSchemas:
     def test_drop_removes_schema_and_documents(self, tmp_path):
         db = str(tmp_path / "test.db")
         cat = Catalog(db)
-        cat.save_table_schema("t1", [{"name": "a", "type_name": "int",
-            "primary_key": False, "not_null": False,
-            "auto_increment": False, "default": None}])
+        cat.save_table_schema(
+            "t1",
+            [
+                {
+                    "name": "a",
+                    "type_name": "int",
+                    "primary_key": False,
+                    "not_null": False,
+                    "auto_increment": False,
+                    "default": None,
+                }
+            ],
+        )
         cat.save_document("t1", 1, {"a": 10})
         cat.save_document("t1", 2, {"a": 20})
         cat.drop_table_schema("t1")
@@ -94,9 +103,19 @@ class TestCatalogTableSchemas:
         """DROP TABLE removes postings, doc_lengths, and column_stats."""
         db = str(tmp_path / "test.db")
         cat = Catalog(db)
-        cat.save_table_schema("t1", [{"name": "x", "type_name": "text",
-            "primary_key": False, "not_null": False,
-            "auto_increment": False, "default": None}])
+        cat.save_table_schema(
+            "t1",
+            [
+                {
+                    "name": "x",
+                    "type_name": "text",
+                    "primary_key": False,
+                    "not_null": False,
+                    "auto_increment": False,
+                    "default": None,
+                }
+            ],
+        )
         cat.save_postings("t1", 1, {"x": 3}, {("x", "hello"): (0, 1, 2)})
         cat.save_column_stats("t1", "x", 5, 0, "a", "z", 10)
         cat.drop_table_schema("t1")
@@ -109,9 +128,19 @@ class TestCatalogTableSchemas:
         db = str(tmp_path / "test.db")
         cat = Catalog(db)
         for name in ("t1", "t2", "t3"):
-            cat.save_table_schema(name, [{"name": "x", "type_name": "int",
-                "primary_key": False, "not_null": False,
-                "auto_increment": False, "default": None}])
+            cat.save_table_schema(
+                name,
+                [
+                    {
+                        "name": "x",
+                        "type_name": "int",
+                        "primary_key": False,
+                        "not_null": False,
+                        "auto_increment": False,
+                        "default": None,
+                    }
+                ],
+            )
         schemas = cat.load_table_schemas()
         assert {s[0] for s in schemas} == {"t1", "t2", "t3"}
         cat.close()
@@ -125,7 +154,7 @@ class TestCatalogDocuments:
         cat.save_document("t1", 2, {"name": "bob", "age": 25})
         docs = cat.load_documents("t1")
         assert len(docs) == 2
-        docs_dict = {did: data for did, data in docs}
+        docs_dict = dict(docs)
         assert docs_dict[1] == {"name": "alice", "age": 30}
         assert docs_dict[2] == {"name": "bob", "age": 25}
         cat.close()
@@ -202,7 +231,7 @@ class TestCatalogPostings:
         cat.save_postings("t1", 2, {"title": 2}, {})
         loaded = cat.load_doc_lengths("t1")
         assert len(loaded) == 2
-        lengths_dict = {did: lens for did, lens in loaded}
+        lengths_dict = dict(loaded)
         assert lengths_dict[1] == {"title": 3, "body": 5}
         assert lengths_dict[2] == {"title": 2}
         cat.close()
@@ -241,7 +270,7 @@ class TestCatalogGraph:
         cat.save_vertex(2, {"name": "B"})
         verts = cat.load_vertices()
         assert len(verts) == 2
-        verts_dict = {vid: props for vid, props in verts}
+        verts_dict = dict(verts)
         assert verts_dict[1] == {"name": "A"}
         assert verts_dict[2] == {"name": "B"}
         cat.close()
@@ -424,9 +453,19 @@ class TestCatalogPersistence:
     def test_close_and_reopen(self, tmp_path):
         db = str(tmp_path / "test.db")
         cat = Catalog(db)
-        cat.save_table_schema("t", [{"name": "x", "type_name": "int",
-            "primary_key": False, "not_null": False,
-            "auto_increment": False, "default": None}])
+        cat.save_table_schema(
+            "t",
+            [
+                {
+                    "name": "x",
+                    "type_name": "int",
+                    "primary_key": False,
+                    "not_null": False,
+                    "auto_increment": False,
+                    "default": None,
+                }
+            ],
+        )
         cat.save_document("t", 1, {"x": 42})
         cat.save_vertex(1, {"label": "A"})
         cat.save_edge(1, 1, 2, "link", {})
@@ -642,9 +681,7 @@ class TestEnginePersistenceAPI:
                     embedding VECTOR(4)
                 )
             """)
-            engine.add_document(
-                1, {"title": "test"}, table="docs", embedding=vec
-            )
+            engine.add_document(1, {"title": "test"}, table="docs", embedding=vec)
 
             # Document and vector persist via SQLite-backed store
             store = engine._tables["docs"].document_store
@@ -679,8 +716,11 @@ class TestEnginePersistenceAPI:
             )
             engine.add_graph_edge(
                 Edge(
-                    edge_id=1, source_id=1, target_id=2,
-                    label="knows", properties={},
+                    edge_id=1,
+                    source_id=1,
+                    target_id=2,
+                    label="knows",
+                    properties={},
                 ),
                 table="graph_data",
             )
@@ -703,12 +743,8 @@ class TestEnginePersistenceAPI:
                     title TEXT NOT NULL
                 )
             """)
-            engine.add_document(
-                1, {"title": "hello world"}, table="docs"
-            )
-            engine.add_document(
-                2, {"title": "foo bar"}, table="docs"
-            )
+            engine.add_document(1, {"title": "hello world"}, table="docs")
+            engine.add_document(2, {"title": "foo bar"}, table="docs")
             engine.delete_document(1, table="docs")
             store = engine._tables["docs"].document_store
             assert store.get(1) is None
@@ -754,23 +790,15 @@ class TestEnginePersistencePostings:
                     title TEXT NOT NULL
                 )
             """)
-            engine.add_document(
-                1, {"title": "the quick brown fox"}, table="docs"
-            )
-            engine.add_document(
-                2, {"title": "lazy dog"}, table="docs"
-            )
-            engine.add_document(
-                3, {"title": "quick fox jumps high"}, table="docs"
-            )
+            engine.add_document(1, {"title": "the quick brown fox"}, table="docs")
+            engine.add_document(2, {"title": "lazy dog"}, table="docs")
+            engine.add_document(3, {"title": "quick fox jumps high"}, table="docs")
             stats_before = engine._tables["docs"].inverted_index.stats
 
         with Engine(db_path=db) as engine:
             stats_after = engine._tables["docs"].inverted_index.stats
             assert stats_after.total_docs == stats_before.total_docs
-            assert abs(
-                stats_after.avg_doc_length - stats_before.avg_doc_length
-            ) < 1e-10
+            assert abs(stats_after.avg_doc_length - stats_before.avg_doc_length) < 1e-10
 
     def test_posting_positions_preserved(self, tmp_path):
         """Token positions are correctly round-tripped through SQLite."""
@@ -782,9 +810,7 @@ class TestEnginePersistencePostings:
                     body TEXT NOT NULL
                 )
             """)
-            engine.add_document(
-                1, {"body": "cat sat near cat mat"}, table="docs"
-            )
+            engine.add_document(1, {"body": "cat sat near cat mat"}, table="docs")
             idx = engine._tables["docs"].inverted_index
             pl_before = idx.get_posting_list("body", "cat")
             positions_before = pl_before.entries[0].payload.positions
@@ -807,7 +833,8 @@ class TestEnginePersistencePostings:
                 )
             """)
             engine.add_document(
-                1, {"title": "hello world", "body": "a b c d e"},
+                1,
+                {"title": "hello world", "body": "a b c d e"},
                 table="docs",
             )
             idx = engine._tables["docs"].inverted_index
@@ -897,12 +924,8 @@ class TestEnginePersistenceBackwardCompat:
                 title TEXT NOT NULL
             )
         """)
-        engine.add_document(
-            1, {"title": "hello world"}, table="docs"
-        )
-        engine.add_document(
-            2, {"title": "foo bar"}, table="docs"
-        )
+        engine.add_document(1, {"title": "hello world"}, table="docs")
+        engine.add_document(2, {"title": "foo bar"}, table="docs")
         engine.delete_document(1, table="docs")
         store = engine._tables["docs"].document_store
         assert store.get(1) is None
@@ -925,9 +948,7 @@ def pg17_engine():
 
 @pytest.fixture
 def engine_with_table(pg17_engine):
-    pg17_engine.sql(
-        "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER, name TEXT)"
-    )
+    pg17_engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER, name TEXT)")
     pg17_engine.sql("INSERT INTO t (id, val, name) VALUES (1, 10, 'alpha')")
     pg17_engine.sql("INSERT INTO t (id, val, name) VALUES (2, 20, 'bravo')")
     pg17_engine.sql("INSERT INTO t (id, val, name) VALUES (3, 30, 'charlie')")
@@ -966,9 +987,7 @@ class TestInformationSchema:
 
     def test_columns_lists_columns(self, pg17_engine):
         pg17_engine.sql(
-            "CREATE TABLE users ("
-            "  id INTEGER PRIMARY KEY, name TEXT, age INTEGER"
-            ")"
+            "CREATE TABLE users (  id INTEGER PRIMARY KEY, name TEXT, age INTEGER)"
         )
         result = pg17_engine.sql(
             "SELECT column_name, data_type, ordinal_position "
@@ -980,9 +999,7 @@ class TestInformationSchema:
         assert cols == [("id", "integer"), ("name", "text"), ("age", "integer")]
 
     def test_columns_is_nullable(self, pg17_engine):
-        pg17_engine.sql(
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT NOT NULL)"
-        )
+        pg17_engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT NOT NULL)")
         result = pg17_engine.sql(
             "SELECT column_name, is_nullable "
             "FROM information_schema.columns "
@@ -1002,8 +1019,7 @@ class TestInformationSchema:
 class TestPGCatalog:
     def test_pg_tables(self, engine_with_table):
         result = engine_with_table.sql(
-            "SELECT tablename FROM pg_catalog.pg_tables "
-            "WHERE schemaname = 'public'"
+            "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public'"
         )
         names = {r["tablename"] for r in result.rows}
         assert "t" in names
@@ -1012,8 +1028,7 @@ class TestPGCatalog:
         pg17_engine.sql("CREATE TABLE base (id SERIAL PRIMARY KEY, val INT)")
         pg17_engine.sql("CREATE VIEW v1 AS SELECT id FROM base")
         result = pg17_engine.sql(
-            "SELECT viewname FROM pg_catalog.pg_views "
-            "WHERE schemaname = 'public'"
+            "SELECT viewname FROM pg_catalog.pg_views WHERE schemaname = 'public'"
         )
         names = {r["viewname"] for r in result.rows}
         assert "v1" in names
@@ -1039,9 +1054,7 @@ class TestPGIndexes:
             e.sql("CREATE INDEX idx_name ON items (name)")
             r = e.sql("SELECT * FROM pg_catalog.pg_indexes")
             assert len(r.rows) >= 1
-            idx_row = [
-                row for row in r.rows if row["indexname"] == "idx_name"
-            ]
+            idx_row = [row for row in r.rows if row["indexname"] == "idx_name"]
             assert len(idx_row) == 1
             assert idx_row[0]["tablename"] == "items"
             assert idx_row[0]["schemaname"] == "public"
@@ -1053,9 +1066,7 @@ class TestPGIndexes:
             e.sql("CREATE TABLE products (id INT PRIMARY KEY, price INT)")
             e.sql("CREATE INDEX idx_price ON products (price)")
             r = e.sql("SELECT * FROM pg_catalog.pg_indexes")
-            idx_row = [
-                row for row in r.rows if row["indexname"] == "idx_price"
-            ]
+            idx_row = [row for row in r.rows if row["indexname"] == "idx_price"]
             assert len(idx_row) == 1
             assert "price" in idx_row[0]["indexdef"]
 
@@ -1071,10 +1082,7 @@ class TestPGIndexes:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "test.db")
             e = Engine(db_path=db_path)
-            e.sql(
-                "CREATE TABLE employees "
-                "(id INT PRIMARY KEY, name TEXT, dept TEXT)"
-            )
+            e.sql("CREATE TABLE employees (id INT PRIMARY KEY, name TEXT, dept TEXT)")
             e.sql("CREATE INDEX idx_emp_name ON employees (name)")
             e.sql("CREATE INDEX idx_emp_dept ON employees (dept)")
             r = e.sql("SELECT * FROM pg_catalog.pg_indexes")
@@ -1091,8 +1099,7 @@ class TestPGIndexes:
             e.sql("CREATE INDEX idx_a ON t1 (a)")
             e.sql("CREATE INDEX idx_b ON t2 (b)")
             r = e.sql(
-                "SELECT indexname FROM pg_catalog.pg_indexes "
-                "WHERE tablename = 't1'"
+                "SELECT indexname FROM pg_catalog.pg_indexes WHERE tablename = 't1'"
             )
             assert len(r.rows) == 1
             assert r.rows[0]["indexname"] == "idx_a"

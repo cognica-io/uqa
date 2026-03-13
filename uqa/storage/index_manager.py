@@ -8,22 +8,22 @@
 
 from __future__ import annotations
 
-import sqlite3
 from typing import TYPE_CHECKING
 
 from uqa.storage.btree_index import BTreeIndex
-from uqa.storage.index_abc import Index
 from uqa.storage.index_types import IndexDef, IndexType
 
 if TYPE_CHECKING:
     from uqa.core.types import Predicate
     from uqa.storage.catalog import Catalog
+    from uqa.storage.index_abc import Index
+    from uqa.storage.managed_connection import SQLiteConnection
 
 
 class IndexManager:
     """Manages all indexes across all tables."""
 
-    def __init__(self, conn: sqlite3.Connection, catalog: Catalog) -> None:
+    def __init__(self, conn: SQLiteConnection, catalog: Catalog) -> None:
         self._conn = conn
         self._catalog = catalog
         self._indexes: dict[str, Index] = {}
@@ -122,6 +122,4 @@ class IndexManager:
         """Create an Index instance from a definition."""
         if index_def.index_type == IndexType.BTREE:
             return BTreeIndex(index_def, self._conn)
-        raise ValueError(
-            f"Unsupported index type: {index_def.index_type.value}"
-        )
+        raise ValueError(f"Unsupported index type: {index_def.index_type.value}")

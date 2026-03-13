@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import bisect
+from typing import Any
 
 from uqa.core.posting_list import GeneralizedPostingList
 from uqa.core.types import GeneralizedPostingEntry, Payload, PostingEntry
@@ -44,7 +45,7 @@ class IndexJoinOperator(JoinOperator):
         right_entries = self._get_entries(self.right, context)
 
         # Build sorted index on right join key: (key, entry) pairs sorted by key
-        keyed_right: list[tuple[object, JoinEntry]] = []
+        keyed_right: list[tuple[Any, JoinEntry]] = []
         for entry in right_entries:
             key = entry.payload.fields.get(self.condition.right_field)
             if key is not None:
@@ -74,9 +75,7 @@ class IndexJoinOperator(JoinOperator):
                             _entry_doc_id(left_entry),
                             _entry_doc_id(right_entry),
                         ),
-                        payload=Payload(
-                            score=merged_score, fields=merged_fields
-                        ),
+                        payload=Payload(score=merged_score, fields=merged_fields),
                     )
                 )
                 lo += 1

@@ -13,21 +13,19 @@ to identify bottlenecks in the query processing pipeline.
 from __future__ import annotations
 
 import pglast
-import pytest
 
-from uqa.engine import Engine
-from benchmarks.data.generators import BenchmarkDataGenerator
 from benchmarks.data.schemas import (
     BENCH_TABLE_DDL,
     CUSTOMERS_DDL,
     ORDERS_DDL,
     PRODUCTS_DDL,
 )
-
+from uqa.engine import Engine
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _engine_with_tables() -> Engine:
     """Create an engine with schema definitions (no data needed for compile)."""
@@ -42,6 +40,7 @@ def _engine_with_tables() -> Engine:
 # ---------------------------------------------------------------------------
 # pglast parsing
 # ---------------------------------------------------------------------------
+
 
 class TestParse:
     def test_simple_select(self, benchmark) -> None:
@@ -92,6 +91,7 @@ class TestParse:
 # Full SQL compilation (parse + compile to operator tree)
 # ---------------------------------------------------------------------------
 
+
 class TestCompileSelect:
     def test_simple_select(self, benchmark) -> None:
         e = _engine_with_tables()
@@ -119,8 +119,7 @@ class TestCompileJoin:
     def test_2way_join(self, benchmark) -> None:
         e = _engine_with_tables()
         sql = (
-            "SELECT o.id, c.name FROM orders o "
-            "JOIN customers c ON o.customer_id = c.id"
+            "SELECT o.id, c.name FROM orders o JOIN customers c ON o.customer_id = c.id"
         )
         benchmark(e.sql, sql)
 
@@ -152,10 +151,7 @@ class TestCompileAggregate:
 class TestCompileSubquery:
     def test_scalar_subquery(self, benchmark) -> None:
         e = _engine_with_tables()
-        sql = (
-            "SELECT id, name FROM bench "
-            "WHERE value > (SELECT AVG(value) FROM bench)"
-        )
+        sql = "SELECT id, name FROM bench WHERE value > (SELECT AVG(value) FROM bench)"
         benchmark(e.sql, sql)
 
     def test_exists_subquery(self, benchmark) -> None:
@@ -196,9 +192,7 @@ class TestCompileWindow:
     def test_row_number(self, benchmark) -> None:
         e = _engine_with_tables()
         sql = (
-            "SELECT id, value, "
-            "ROW_NUMBER() OVER (ORDER BY value DESC) AS rn "
-            "FROM bench"
+            "SELECT id, value, ROW_NUMBER() OVER (ORDER BY value DESC) AS rn FROM bench"
         )
         benchmark(e.sql, sql)
 

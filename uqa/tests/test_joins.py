@@ -10,10 +10,9 @@ import numpy as np
 import pytest
 
 from uqa.core.posting_list import GeneralizedPostingList, PostingList
-from uqa.core.types import GeneralizedPostingEntry, Payload, PostingEntry
+from uqa.core.types import Edge, Payload, PostingEntry, Vertex
+from uqa.graph.store import GraphStore
 from uqa.joins.base import JoinCondition
-from uqa.joins.inner import InnerJoinOperator
-from uqa.joins.outer import LeftOuterJoinOperator
 from uqa.joins.cross_paradigm import (
     CrossParadigmJoinOperator,
     GraphJoinOperator,
@@ -21,10 +20,10 @@ from uqa.joins.cross_paradigm import (
     TextSimilarityJoinOperator,
     VectorSimilarityJoinOperator,
 )
-from uqa.joins.sort_merge import SortMergeJoinOperator
 from uqa.joins.index import IndexJoinOperator
-from uqa.core.types import Edge, Vertex
-from uqa.graph.store import GraphStore
+from uqa.joins.inner import InnerJoinOperator
+from uqa.joins.outer import LeftOuterJoinOperator
+from uqa.joins.sort_merge import SortMergeJoinOperator
 
 
 class _MockContext:
@@ -41,21 +40,35 @@ def context() -> _MockContext:
 
 @pytest.fixture
 def left_entries() -> PostingList:
-    return PostingList([
-        PostingEntry(1, Payload(score=1.0, fields={"dept": "eng", "name": "Alice"})),
-        PostingEntry(2, Payload(score=0.8, fields={"dept": "eng", "name": "Bob"})),
-        PostingEntry(3, Payload(score=0.6, fields={"dept": "sales", "name": "Charlie"})),
-        PostingEntry(4, Payload(score=0.4, fields={"dept": "hr", "name": "Diana"})),
-    ])
+    return PostingList(
+        [
+            PostingEntry(
+                1, Payload(score=1.0, fields={"dept": "eng", "name": "Alice"})
+            ),
+            PostingEntry(2, Payload(score=0.8, fields={"dept": "eng", "name": "Bob"})),
+            PostingEntry(
+                3, Payload(score=0.6, fields={"dept": "sales", "name": "Charlie"})
+            ),
+            PostingEntry(4, Payload(score=0.4, fields={"dept": "hr", "name": "Diana"})),
+        ]
+    )
 
 
 @pytest.fixture
 def right_entries() -> PostingList:
-    return PostingList([
-        PostingEntry(10, Payload(score=0.9, fields={"department": "eng", "budget": 100})),
-        PostingEntry(11, Payload(score=0.7, fields={"department": "sales", "budget": 50})),
-        PostingEntry(12, Payload(score=0.5, fields={"department": "marketing", "budget": 75})),
-    ])
+    return PostingList(
+        [
+            PostingEntry(
+                10, Payload(score=0.9, fields={"department": "eng", "budget": 100})
+            ),
+            PostingEntry(
+                11, Payload(score=0.7, fields={"department": "sales", "budget": 50})
+            ),
+            PostingEntry(
+                12, Payload(score=0.5, fields={"department": "marketing", "budget": 75})
+            ),
+        ]
+    )
 
 
 # -- InnerJoinOperator tests --
@@ -82,26 +95,34 @@ class TestInnerJoinOperator:
         assert len(result) == 3
 
     def test_inner_join_no_matches(self, context: _MockContext) -> None:
-        left = PostingList([
-            PostingEntry(1, Payload(fields={"key": "a"})),
-        ])
-        right = PostingList([
-            PostingEntry(2, Payload(fields={"key": "b"})),
-        ])
+        left = PostingList(
+            [
+                PostingEntry(1, Payload(fields={"key": "a"})),
+            ]
+        )
+        right = PostingList(
+            [
+                PostingEntry(2, Payload(fields={"key": "b"})),
+            ]
+        )
         condition = JoinCondition("key", "key")
         op = InnerJoinOperator(left, right, condition)
         result = op.execute(context)
         assert len(result) == 0
 
     def test_inner_join_multiple_matches(self, context: _MockContext) -> None:
-        left = PostingList([
-            PostingEntry(1, Payload(fields={"key": "x"})),
-            PostingEntry(2, Payload(fields={"key": "x"})),
-        ])
-        right = PostingList([
-            PostingEntry(10, Payload(fields={"key": "x"})),
-            PostingEntry(11, Payload(fields={"key": "x"})),
-        ])
+        left = PostingList(
+            [
+                PostingEntry(1, Payload(fields={"key": "x"})),
+                PostingEntry(2, Payload(fields={"key": "x"})),
+            ]
+        )
+        right = PostingList(
+            [
+                PostingEntry(10, Payload(fields={"key": "x"})),
+                PostingEntry(11, Payload(fields={"key": "x"})),
+            ]
+        )
         condition = JoinCondition("key", "key")
         op = InnerJoinOperator(left, right, condition)
         result = op.execute(context)
@@ -132,18 +153,24 @@ class TestInnerJoinOperator:
 
     def test_associativity(self, context: _MockContext) -> None:
         """Three-way join associativity."""
-        a = PostingList([
-            PostingEntry(1, Payload(fields={"k1": "x", "k2": "p"})),
-            PostingEntry(2, Payload(fields={"k1": "y", "k2": "q"})),
-        ])
-        b = PostingList([
-            PostingEntry(10, Payload(fields={"k1": "x", "k3": "m"})),
-            PostingEntry(11, Payload(fields={"k1": "y", "k3": "n"})),
-        ])
-        c = PostingList([
-            PostingEntry(100, Payload(fields={"k3": "m"})),
-            PostingEntry(101, Payload(fields={"k3": "n"})),
-        ])
+        a = PostingList(
+            [
+                PostingEntry(1, Payload(fields={"k1": "x", "k2": "p"})),
+                PostingEntry(2, Payload(fields={"k1": "y", "k2": "q"})),
+            ]
+        )
+        b = PostingList(
+            [
+                PostingEntry(10, Payload(fields={"k1": "x", "k3": "m"})),
+                PostingEntry(11, Payload(fields={"k1": "y", "k3": "n"})),
+            ]
+        )
+        c = PostingList(
+            [
+                PostingEntry(100, Payload(fields={"k3": "m"})),
+                PostingEntry(101, Payload(fields={"k3": "n"})),
+            ]
+        )
 
         # (A join B) join C
         ab_cond = JoinCondition("k1", "k1")
@@ -161,20 +188,24 @@ class TestInnerJoinOperator:
         # Both should produce same number of results
         assert len(result_left) == len(result_right)
 
-    def test_distribution_over_union(
-        self, context: _MockContext
-    ) -> None:
+    def test_distribution_over_union(self, context: _MockContext) -> None:
         """Join(A, B union C) = Join(A,B) union Join(A,C)."""
-        a = PostingList([
-            PostingEntry(1, Payload(fields={"key": "x"})),
-            PostingEntry(2, Payload(fields={"key": "y"})),
-        ])
-        b = PostingList([
-            PostingEntry(10, Payload(fields={"key": "x"})),
-        ])
-        c = PostingList([
-            PostingEntry(11, Payload(fields={"key": "y"})),
-        ])
+        a = PostingList(
+            [
+                PostingEntry(1, Payload(fields={"key": "x"})),
+                PostingEntry(2, Payload(fields={"key": "y"})),
+            ]
+        )
+        b = PostingList(
+            [
+                PostingEntry(10, Payload(fields={"key": "x"})),
+            ]
+        )
+        c = PostingList(
+            [
+                PostingEntry(11, Payload(fields={"key": "y"})),
+            ]
+        )
 
         cond = JoinCondition("key", "key")
 
@@ -213,13 +244,17 @@ class TestLeftOuterJoinOperator:
         assert left_doc_ids == {1, 2, 3, 4}
 
     def test_unmatched_entries_preserved(self, context: _MockContext) -> None:
-        left = PostingList([
-            PostingEntry(1, Payload(fields={"key": "a"})),
-            PostingEntry(2, Payload(fields={"key": "b"})),
-        ])
-        right = PostingList([
-            PostingEntry(10, Payload(fields={"key": "a"})),
-        ])
+        left = PostingList(
+            [
+                PostingEntry(1, Payload(fields={"key": "a"})),
+                PostingEntry(2, Payload(fields={"key": "b"})),
+            ]
+        )
+        right = PostingList(
+            [
+                PostingEntry(10, Payload(fields={"key": "a"})),
+            ]
+        )
         condition = JoinCondition("key", "key")
         op = LeftOuterJoinOperator(left, right, condition)
         result = op.execute(context)
@@ -251,18 +286,20 @@ class TestLeftOuterJoinOperator:
 
 class TestTextSimilarityJoinOperator:
     def test_jaccard_similarity(self, context: _MockContext) -> None:
-        left = PostingList([
-            PostingEntry(1, Payload(fields={"text": "the quick brown fox"})),
-            PostingEntry(2, Payload(fields={"text": "hello world"})),
-        ])
-        right = PostingList([
-            PostingEntry(10, Payload(fields={"text": "the quick brown dog"})),
-            PostingEntry(11, Payload(fields={"text": "goodbye world"})),
-        ])
-
-        op = TextSimilarityJoinOperator(
-            left, right, "text", "text", threshold=0.5
+        left = PostingList(
+            [
+                PostingEntry(1, Payload(fields={"text": "the quick brown fox"})),
+                PostingEntry(2, Payload(fields={"text": "hello world"})),
+            ]
         )
+        right = PostingList(
+            [
+                PostingEntry(10, Payload(fields={"text": "the quick brown dog"})),
+                PostingEntry(11, Payload(fields={"text": "goodbye world"})),
+            ]
+        )
+
+        op = TextSimilarityJoinOperator(left, right, "text", "text", threshold=0.5)
         result = op.execute(context)
 
         # "the quick brown fox" vs "the quick brown dog":
@@ -272,16 +309,18 @@ class TestTextSimilarityJoinOperator:
         assert (1, 10) in pairs
 
     def test_below_threshold(self, context: _MockContext) -> None:
-        left = PostingList([
-            PostingEntry(1, Payload(fields={"text": "alpha beta gamma"})),
-        ])
-        right = PostingList([
-            PostingEntry(10, Payload(fields={"text": "delta epsilon zeta"})),
-        ])
-
-        op = TextSimilarityJoinOperator(
-            left, right, "text", "text", threshold=0.5
+        left = PostingList(
+            [
+                PostingEntry(1, Payload(fields={"text": "alpha beta gamma"})),
+            ]
         )
+        right = PostingList(
+            [
+                PostingEntry(10, Payload(fields={"text": "delta epsilon zeta"})),
+            ]
+        )
+
+        op = TextSimilarityJoinOperator(left, right, "text", "text", threshold=0.5)
         result = op.execute(context)
         assert len(result) == 0
 
@@ -295,17 +334,19 @@ class TestVectorSimilarityJoinOperator:
         v2 = np.array([1.0, 0.0, 0.0])
         v3 = np.array([0.0, 1.0, 0.0])
 
-        left = PostingList([
-            PostingEntry(1, Payload(fields={"vec": v1})),
-        ])
-        right = PostingList([
-            PostingEntry(10, Payload(fields={"vec": v2})),
-            PostingEntry(11, Payload(fields={"vec": v3})),
-        ])
-
-        op = VectorSimilarityJoinOperator(
-            left, right, "vec", "vec", threshold=0.9
+        left = PostingList(
+            [
+                PostingEntry(1, Payload(fields={"vec": v1})),
+            ]
         )
+        right = PostingList(
+            [
+                PostingEntry(10, Payload(fields={"vec": v2})),
+                PostingEntry(11, Payload(fields={"vec": v3})),
+            ]
+        )
+
+        op = VectorSimilarityJoinOperator(left, right, "vec", "vec", threshold=0.9)
         result = op.execute(context)
 
         pairs = {e.doc_ids for e in result}
@@ -318,22 +359,22 @@ class TestVectorSimilarityJoinOperator:
         v1 = np.array([1.0, 1.0])
         v2 = np.array([1.0, 0.0])
 
-        left = PostingList([
-            PostingEntry(1, Payload(fields={"vec": v1})),
-        ])
-        right = PostingList([
-            PostingEntry(10, Payload(fields={"vec": v2})),
-        ])
+        left = PostingList(
+            [
+                PostingEntry(1, Payload(fields={"vec": v1})),
+            ]
+        )
+        right = PostingList(
+            [
+                PostingEntry(10, Payload(fields={"vec": v2})),
+            ]
+        )
 
         # cos(v1, v2) = 1/sqrt(2) ~= 0.707
-        op_high = VectorSimilarityJoinOperator(
-            left, right, "vec", "vec", threshold=0.8
-        )
+        op_high = VectorSimilarityJoinOperator(left, right, "vec", "vec", threshold=0.8)
         assert len(op_high.execute(context)) == 0
 
-        op_low = VectorSimilarityJoinOperator(
-            left, right, "vec", "vec", threshold=0.7
-        )
+        op_low = VectorSimilarityJoinOperator(left, right, "vec", "vec", threshold=0.7)
         assert len(op_low.execute(context)) == 1
 
 
@@ -346,19 +387,21 @@ class TestHybridJoinOperator:
         v2 = np.array([0.9, 0.1])
         v3 = np.array([0.0, 1.0])
 
-        left = PostingList([
-            PostingEntry(1, Payload(fields={"cat": "A", "vec": v1})),
-            PostingEntry(2, Payload(fields={"cat": "B", "vec": v1})),
-        ])
-        right = PostingList([
-            PostingEntry(10, Payload(fields={"cat": "A", "vec": v2})),
-            PostingEntry(11, Payload(fields={"cat": "A", "vec": v3})),
-            PostingEntry(12, Payload(fields={"cat": "B", "vec": v3})),
-        ])
-
-        op = HybridJoinOperator(
-            left, right, "cat", "vec", threshold=0.8
+        left = PostingList(
+            [
+                PostingEntry(1, Payload(fields={"cat": "A", "vec": v1})),
+                PostingEntry(2, Payload(fields={"cat": "B", "vec": v1})),
+            ]
         )
+        right = PostingList(
+            [
+                PostingEntry(10, Payload(fields={"cat": "A", "vec": v2})),
+                PostingEntry(11, Payload(fields={"cat": "A", "vec": v3})),
+                PostingEntry(12, Payload(fields={"cat": "B", "vec": v3})),
+            ]
+        )
+
+        op = HybridJoinOperator(left, right, "cat", "vec", threshold=0.8)
         result = op.execute(context)
 
         pairs = {e.doc_ids for e in result}
@@ -378,7 +421,7 @@ def _generalized_to_posting_list(
 ) -> PostingList:
     """Convert GeneralizedPostingList back to PostingList for chained joins."""
     entries: list[PostingEntry] = []
-    for i, ge in enumerate(gpl):
+    for _i, ge in enumerate(gpl):
         entries.append(
             PostingEntry(
                 doc_id=ge.doc_ids[0],
@@ -417,34 +460,46 @@ class TestSortMergeJoinOperator:
     ) -> None:
         """Sort-merge join produces same results as hash join."""
         condition = JoinCondition("dept", "department")
-        hash_result = InnerJoinOperator(left_entries, right_entries, condition).execute(context)
-        merge_result = SortMergeJoinOperator(left_entries, right_entries, condition).execute(context)
+        hash_result = InnerJoinOperator(left_entries, right_entries, condition).execute(
+            context
+        )
+        merge_result = SortMergeJoinOperator(
+            left_entries, right_entries, condition
+        ).execute(context)
 
         hash_pairs = {e.doc_ids for e in hash_result}
         merge_pairs = {e.doc_ids for e in merge_result}
         assert hash_pairs == merge_pairs
 
     def test_no_matches(self, context: _MockContext) -> None:
-        left = PostingList([
-            PostingEntry(1, Payload(fields={"key": "a"})),
-        ])
-        right = PostingList([
-            PostingEntry(2, Payload(fields={"key": "b"})),
-        ])
+        left = PostingList(
+            [
+                PostingEntry(1, Payload(fields={"key": "a"})),
+            ]
+        )
+        right = PostingList(
+            [
+                PostingEntry(2, Payload(fields={"key": "b"})),
+            ]
+        )
         condition = JoinCondition("key", "key")
         op = SortMergeJoinOperator(left, right, condition)
         result = op.execute(context)
         assert len(result) == 0
 
     def test_multiple_matches(self, context: _MockContext) -> None:
-        left = PostingList([
-            PostingEntry(1, Payload(fields={"key": "x"})),
-            PostingEntry(2, Payload(fields={"key": "x"})),
-        ])
-        right = PostingList([
-            PostingEntry(10, Payload(fields={"key": "x"})),
-            PostingEntry(11, Payload(fields={"key": "x"})),
-        ])
+        left = PostingList(
+            [
+                PostingEntry(1, Payload(fields={"key": "x"})),
+                PostingEntry(2, Payload(fields={"key": "x"})),
+            ]
+        )
+        right = PostingList(
+            [
+                PostingEntry(10, Payload(fields={"key": "x"})),
+                PostingEntry(11, Payload(fields={"key": "x"})),
+            ]
+        )
         condition = JoinCondition("key", "key")
         op = SortMergeJoinOperator(left, right, condition)
         result = op.execute(context)
@@ -479,20 +534,28 @@ class TestIndexJoinOperator:
     ) -> None:
         """Index join produces same results as hash join."""
         condition = JoinCondition("dept", "department")
-        hash_result = InnerJoinOperator(left_entries, right_entries, condition).execute(context)
-        index_result = IndexJoinOperator(left_entries, right_entries, condition).execute(context)
+        hash_result = InnerJoinOperator(left_entries, right_entries, condition).execute(
+            context
+        )
+        index_result = IndexJoinOperator(
+            left_entries, right_entries, condition
+        ).execute(context)
 
         hash_pairs = {e.doc_ids for e in hash_result}
         index_pairs = {e.doc_ids for e in index_result}
         assert hash_pairs == index_pairs
 
     def test_no_matches(self, context: _MockContext) -> None:
-        left = PostingList([
-            PostingEntry(1, Payload(fields={"key": "a"})),
-        ])
-        right = PostingList([
-            PostingEntry(2, Payload(fields={"key": "b"})),
-        ])
+        left = PostingList(
+            [
+                PostingEntry(1, Payload(fields={"key": "a"})),
+            ]
+        )
+        right = PostingList(
+            [
+                PostingEntry(2, Payload(fields={"key": "b"})),
+            ]
+        )
         condition = JoinCondition("key", "key")
         op = IndexJoinOperator(left, right, condition)
         result = op.execute(context)
@@ -512,14 +575,18 @@ class TestGraphJoinOperator:
         store.add_edge(Edge(2, 1, 3, "knows"))
         ctx = _MockContext(graph_store=store)
 
-        left = PostingList([
-            PostingEntry(1, Payload(score=1.0, fields={"role": "author"})),
-        ])
-        right = PostingList([
-            PostingEntry(2, Payload(score=0.5, fields={"role": "reviewer"})),
-            PostingEntry(3, Payload(score=0.3, fields={"role": "editor"})),
-            PostingEntry(4, Payload(score=0.1, fields={"role": "reader"})),
-        ])
+        left = PostingList(
+            [
+                PostingEntry(1, Payload(score=1.0, fields={"role": "author"})),
+            ]
+        )
+        right = PostingList(
+            [
+                PostingEntry(2, Payload(score=0.5, fields={"role": "reviewer"})),
+                PostingEntry(3, Payload(score=0.3, fields={"role": "editor"})),
+                PostingEntry(4, Payload(score=0.1, fields={"role": "reader"})),
+            ]
+        )
 
         op = GraphJoinOperator(left, right, label="knows")
         result = op.execute(ctx)
@@ -540,10 +607,12 @@ class TestGraphJoinOperator:
         ctx = _MockContext(graph_store=store)
 
         left = PostingList([PostingEntry(1, Payload())])
-        right = PostingList([
-            PostingEntry(2, Payload()),
-            PostingEntry(3, Payload()),
-        ])
+        right = PostingList(
+            [
+                PostingEntry(2, Payload()),
+                PostingEntry(3, Payload()),
+            ]
+        )
 
         op = GraphJoinOperator(left, right, label="knows")
         result = op.execute(ctx)
@@ -561,10 +630,12 @@ class TestGraphJoinOperator:
         ctx = _MockContext(graph_store=store)
 
         left = PostingList([PostingEntry(1, Payload())])
-        right = PostingList([
-            PostingEntry(2, Payload()),
-            PostingEntry(3, Payload()),
-        ])
+        right = PostingList(
+            [
+                PostingEntry(2, Payload()),
+                PostingEntry(3, Payload()),
+            ]
+        )
 
         op = GraphJoinOperator(left, right, label=None)
         result = op.execute(ctx)
@@ -581,15 +652,19 @@ class TestCrossParadigmJoinOperator:
         store.add_vertex(Vertex(2, "", {"department": "sales"}))
         ctx = _MockContext(graph_store=store)
 
-        left = PostingList([
-            PostingEntry(1, Payload(score=0.9)),
-            PostingEntry(2, Payload(score=0.8)),
-        ])
-        right = PostingList([
-            PostingEntry(10, Payload(fields={"dept": "eng", "budget": 100})),
-            PostingEntry(11, Payload(fields={"dept": "sales", "budget": 50})),
-            PostingEntry(12, Payload(fields={"dept": "hr", "budget": 75})),
-        ])
+        left = PostingList(
+            [
+                PostingEntry(1, Payload(score=0.9)),
+                PostingEntry(2, Payload(score=0.8)),
+            ]
+        )
+        right = PostingList(
+            [
+                PostingEntry(10, Payload(fields={"dept": "eng", "budget": 100})),
+                PostingEntry(11, Payload(fields={"dept": "sales", "budget": 50})),
+                PostingEntry(12, Payload(fields={"dept": "hr", "budget": 75})),
+            ]
+        )
 
         op = CrossParadigmJoinOperator(left, right, "department", "dept")
         result = op.execute(ctx)
@@ -605,9 +680,11 @@ class TestCrossParadigmJoinOperator:
         ctx = _MockContext(graph_store=store)
 
         left = PostingList([PostingEntry(1, Payload())])
-        right = PostingList([
-            PostingEntry(10, Payload(fields={"cat": "B"})),
-        ])
+        right = PostingList(
+            [
+                PostingEntry(10, Payload(fields={"cat": "B"})),
+            ]
+        )
 
         op = CrossParadigmJoinOperator(left, right, "category", "cat")
         result = op.execute(ctx)
@@ -619,13 +696,15 @@ class TestCrossParadigmJoinOperator:
         ctx = _MockContext(graph_store=store)
 
         left = PostingList([PostingEntry(1, Payload(score=1.0))])
-        right = PostingList([
-            PostingEntry(10, Payload(fields={"dept": "eng", "title": "Manager"})),
-        ])
+        right = PostingList(
+            [
+                PostingEntry(10, Payload(fields={"dept": "eng", "title": "Manager"})),
+            ]
+        )
 
         op = CrossParadigmJoinOperator(left, right, "dept", "dept")
         result = op.execute(ctx)
         assert len(result) == 1
-        entry = list(result)[0]
+        entry = next(iter(result))
         assert entry.payload.fields["name"] == "Alice"
         assert entry.payload.fields["title"] == "Manager"

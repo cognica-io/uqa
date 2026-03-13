@@ -82,71 +82,93 @@ print("  10 rows inserted.")
 # ==================================================================
 # DQL: Basic SELECT
 # ==================================================================
-show("3. SELECT * (first 5)", engine.sql(
-    "SELECT * FROM employees ORDER BY id LIMIT 5"
-))
+show("3. SELECT * (first 5)", engine.sql("SELECT * FROM employees ORDER BY id LIMIT 5"))
 
 
 # ==================================================================
 # WHERE: comparisons, IN, BETWEEN, LIKE
 # ==================================================================
-show("4. WHERE dept = 'Engineering'", engine.sql(
-    "SELECT name, role, salary FROM employees WHERE dept = 'Engineering' ORDER BY salary DESC"
-))
+show(
+    "4. WHERE dept = 'Engineering'",
+    engine.sql(
+        "SELECT name, role, salary FROM employees WHERE dept = 'Engineering' ORDER BY salary DESC"
+    ),
+)
 
-show("5. WHERE salary BETWEEN 100000 AND 140000", engine.sql(
-    "SELECT name, dept, salary FROM employees WHERE salary BETWEEN 100000 AND 140000"
-))
+show(
+    "5. WHERE salary BETWEEN 100000 AND 140000",
+    engine.sql(
+        "SELECT name, dept, salary FROM employees WHERE salary BETWEEN 100000 AND 140000"
+    ),
+)
 
-show("6. WHERE role IN ('manager', 'senior')", engine.sql(
-    "SELECT name, dept, role FROM employees WHERE role IN ('manager', 'senior')"
-))
+show(
+    "6. WHERE role IN ('manager', 'senior')",
+    engine.sql(
+        "SELECT name, dept, role FROM employees WHERE role IN ('manager', 'senior')"
+    ),
+)
 
-show("7. WHERE name LIKE 'A%' OR name LIKE 'B%'", engine.sql(
-    "SELECT name, dept FROM employees WHERE name LIKE 'A%' OR name LIKE 'B%'"
-))
+show(
+    "7. WHERE name LIKE 'A%' OR name LIKE 'B%'",
+    engine.sql(
+        "SELECT name, dept FROM employees WHERE name LIKE 'A%' OR name LIKE 'B%'"
+    ),
+)
 
 
 # ==================================================================
 # DISTINCT
 # ==================================================================
-show("8. SELECT DISTINCT dept", engine.sql(
-    "SELECT DISTINCT dept FROM employees"
-))
+show("8. SELECT DISTINCT dept", engine.sql("SELECT DISTINCT dept FROM employees"))
 
 
 # ==================================================================
 # Aggregation: GROUP BY, HAVING
 # ==================================================================
-show("9. GROUP BY dept", engine.sql(
-    "SELECT dept, COUNT(*) AS headcount, AVG(salary) AS avg_salary "
-    "FROM employees WHERE active = TRUE GROUP BY dept"
-))
+show(
+    "9. GROUP BY dept",
+    engine.sql(
+        "SELECT dept, COUNT(*) AS headcount, AVG(salary) AS avg_salary "
+        "FROM employees WHERE active = TRUE GROUP BY dept"
+    ),
+)
 
-show("10. GROUP BY + HAVING", engine.sql(
-    "SELECT dept, SUM(salary) AS total_salary "
-    "FROM employees GROUP BY dept HAVING SUM(salary) > 300000"
-))
+show(
+    "10. GROUP BY + HAVING",
+    engine.sql(
+        "SELECT dept, SUM(salary) AS total_salary "
+        "FROM employees GROUP BY dept HAVING SUM(salary) > 300000"
+    ),
+)
 
-show("11. Aggregate-only (no GROUP BY)", engine.sql(
-    "SELECT COUNT(*) AS total, AVG(salary) AS avg, MIN(salary) AS lo, MAX(salary) AS hi "
-    "FROM employees WHERE active = TRUE"
-))
+show(
+    "11. Aggregate-only (no GROUP BY)",
+    engine.sql(
+        "SELECT COUNT(*) AS total, AVG(salary) AS avg, MIN(salary) AS lo, MAX(salary) AS hi "
+        "FROM employees WHERE active = TRUE"
+    ),
+)
 
 
 # ==================================================================
 # Computed expressions
 # ==================================================================
-show("12. Computed: salary * 1.1 raise", engine.sql(
-    "SELECT name, salary, salary * 1.1 AS new_salary FROM employees "
-    "WHERE dept = 'Engineering' AND active = TRUE ORDER BY salary DESC"
-))
+show(
+    "12. Computed: salary * 1.1 raise",
+    engine.sql(
+        "SELECT name, salary, salary * 1.1 AS new_salary FROM employees "
+        "WHERE dept = 'Engineering' AND active = TRUE ORDER BY salary DESC"
+    ),
+)
 
 
 # ==================================================================
 # CASE expression
 # ==================================================================
-show("13. CASE expression", engine.sql("""
+show(
+    "13. CASE expression",
+    engine.sql("""
     SELECT name, salary,
         CASE
             WHEN salary >= 130000 THEN 'high'
@@ -154,71 +176,88 @@ show("13. CASE expression", engine.sql("""
             ELSE 'entry'
         END AS tier
     FROM employees WHERE active = TRUE ORDER BY salary DESC LIMIT 6
-"""))
+"""),
+)
 
 
 # ==================================================================
 # Subquery: IN (SELECT ...)
 # ==================================================================
-show("14. Subquery: dept with managers", engine.sql("""
+show(
+    "14. Subquery: dept with managers",
+    engine.sql("""
     SELECT name, dept, salary FROM employees
     WHERE dept IN (SELECT dept FROM employees WHERE role = 'manager')
     ORDER BY dept, salary DESC
-"""))
+"""),
+)
 
 
 # ==================================================================
 # CTE (WITH ... AS)
 # ==================================================================
-show("15. CTE: department stats", engine.sql("""
+show(
+    "15. CTE: department stats",
+    engine.sql("""
     WITH dept_stats AS (
         SELECT dept, AVG(salary) AS avg_salary, COUNT(*) AS cnt
         FROM employees WHERE active = TRUE GROUP BY dept
     )
     SELECT dept, avg_salary, cnt FROM dept_stats ORDER BY avg_salary DESC
-"""))
+"""),
+)
 
 
 # ==================================================================
 # Window functions
 # ==================================================================
-show("16. Window: ROW_NUMBER by dept", engine.sql("""
+show(
+    "16. Window: ROW_NUMBER by dept",
+    engine.sql("""
     SELECT name, dept, salary,
         ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) AS rank
     FROM employees WHERE active = TRUE
-"""))
+"""),
+)
 
-show("17. Window: RANK + running SUM", engine.sql("""
+show(
+    "17. Window: RANK + running SUM",
+    engine.sql("""
     SELECT name, salary,
         RANK() OVER (ORDER BY salary DESC) AS salary_rank,
         SUM(salary) OVER (ORDER BY salary DESC) AS running_total
     FROM employees WHERE active = TRUE LIMIT 5
-"""))
+"""),
+)
 
 
 # ==================================================================
 # UPDATE
 # ==================================================================
 engine.sql("UPDATE employees SET salary = 100000 WHERE name = 'Charlie'")
-show("18. After UPDATE Charlie salary", engine.sql(
-    "SELECT name, salary FROM employees WHERE name = 'Charlie'"
-))
+show(
+    "18. After UPDATE Charlie salary",
+    engine.sql("SELECT name, salary FROM employees WHERE name = 'Charlie'"),
+)
 
 
 # ==================================================================
 # DELETE
 # ==================================================================
 engine.sql("DELETE FROM employees WHERE active = FALSE")
-show("19. After DELETE inactive", engine.sql(
-    "SELECT COUNT(*) AS remaining FROM employees"
-))
+show(
+    "19. After DELETE inactive",
+    engine.sql("SELECT COUNT(*) AS remaining FROM employees"),
+)
 
 
 # ==================================================================
 # Transactions (requires persistent engine)
 # ==================================================================
 print("\n--- 20. Transactions ---")
-import tempfile, os
+import os
+import tempfile
+
 txn_engine = Engine(db_path=os.path.join(tempfile.mkdtemp(), "txn_test.db"))
 txn_engine.sql("""
     CREATE TABLE txn_test (id SERIAL PRIMARY KEY, val INTEGER NOT NULL)
@@ -243,21 +282,23 @@ engine.sql("""
     SELECT name, dept, salary FROM employees
     WHERE role IN ('manager', 'senior') AND active = TRUE
 """)
-show("21. SELECT from view", engine.sql(
-    "SELECT * FROM senior_staff ORDER BY salary DESC"
-))
+show(
+    "21. SELECT from view",
+    engine.sql("SELECT * FROM senior_staff ORDER BY salary DESC"),
+)
 
 
 # ==================================================================
 # Prepared statements
 # ==================================================================
-engine.sql("PREPARE find_by_dept(text) AS SELECT name, salary FROM employees WHERE dept = $1")
-show("22. EXECUTE prepared(Engineering)", engine.sql(
-    "EXECUTE find_by_dept('Engineering')"
-))
-show("23. EXECUTE prepared(Sales)", engine.sql(
-    "EXECUTE find_by_dept('Sales')"
-))
+engine.sql(
+    "PREPARE find_by_dept(text) AS SELECT name, salary FROM employees WHERE dept = $1"
+)
+show(
+    "22. EXECUTE prepared(Engineering)",
+    engine.sql("EXECUTE find_by_dept('Engineering')"),
+)
+show("23. EXECUTE prepared(Sales)", engine.sql("EXECUTE find_by_dept('Sales')"))
 engine.sql("DEALLOCATE find_by_dept")
 print("\n  Prepared statement deallocated.")
 

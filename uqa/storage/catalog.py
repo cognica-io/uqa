@@ -26,12 +26,16 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from numpy.typing import NDArray
 
 from uqa.storage.managed_connection import ManagedConnection
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
+
+    from uqa.storage.managed_connection import SQLiteConnection
 
 
 class Catalog:
@@ -142,13 +146,11 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         self._in_transaction = False
 
     @staticmethod
-    def _migrate_column_stats(conn: sqlite3.Connection) -> None:
+    def _migrate_column_stats(conn: SQLiteConnection) -> None:
         """Add histogram/MCV columns to _column_stats if missing."""
         cols = {
             row[1]
-            for row in conn.execute(
-                "PRAGMA table_info(_column_stats)"
-            ).fetchall()
+            for row in conn.execute("PRAGMA table_info(_column_stats)").fetchall()
         }
         for col, default in [
             ("histogram", "'[]'"),
@@ -212,9 +214,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
 
     # -- Table schemas -------------------------------------------------
 
-    def save_table_schema(
-        self, name: str, columns: list[dict[str, Any]]
-    ) -> None:
+    def save_table_schema(self, name: str, columns: list[dict[str, Any]]) -> None:
         """Persist a table schema.
 
         ``columns`` is a list of dicts with keys: name, type_name,
@@ -232,9 +232,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         Drops both per-table SQLite tables (new format) and rows in
         shared catalog tables (old format) for backward compatibility.
         """
-        self._conn.execute(
-            "DELETE FROM _catalog_tables WHERE name = ?", (name,)
-        )
+        self._conn.execute("DELETE FROM _catalog_tables WHERE name = ?", (name,))
 
         # -- Drop per-table SQLite tables (new format) ---
         self._conn.execute(f'DROP TABLE IF EXISTS "_data_{name}"')
@@ -248,31 +246,20 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         # Drop all per-field inverted, skip, and block-max tables
         for prefix in (f"_inverted_{name}_", f"_skip_{name}_", f"_blockmax_{name}_"):
             rows = self._conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name LIKE ?",
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?",
                 (prefix + "%",),
             ).fetchall()
             for (tbl_name,) in rows:
                 self._conn.execute(f'DROP TABLE IF EXISTS "{tbl_name}"')
 
         # -- Drop index catalog entries for this table ---
-        self._conn.execute(
-            "DELETE FROM _catalog_indexes WHERE table_name = ?", (name,)
-        )
+        self._conn.execute("DELETE FROM _catalog_indexes WHERE table_name = ?", (name,))
 
         # -- Clean shared catalog tables (old format / backward compat) ---
-        self._conn.execute(
-            "DELETE FROM _documents WHERE table_name = ?", (name,)
-        )
-        self._conn.execute(
-            "DELETE FROM _postings WHERE table_name = ?", (name,)
-        )
-        self._conn.execute(
-            "DELETE FROM _doc_lengths WHERE table_name = ?", (name,)
-        )
-        self._conn.execute(
-            "DELETE FROM _column_stats WHERE table_name = ?", (name,)
-        )
+        self._conn.execute("DELETE FROM _documents WHERE table_name = ?", (name,))
+        self._conn.execute("DELETE FROM _postings WHERE table_name = ?", (name,))
+        self._conn.execute("DELETE FROM _doc_lengths WHERE table_name = ?", (name,))
+        self._conn.execute("DELETE FROM _column_stats WHERE table_name = ?", (name,))
         self._auto_commit()
 
     def load_table_schemas(self) -> list[tuple[str, list[dict[str, Any]]]]:
@@ -280,16 +267,11 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         rows = self._conn.execute(
             "SELECT name, columns_json FROM _catalog_tables"
         ).fetchall()
-        return [
-            (name, json.loads(columns_json))
-            for name, columns_json in rows
-        ]
+        return [(name, json.loads(columns_json)) for name, columns_json in rows]
 
     # -- Documents -----------------------------------------------------
 
-    def save_document(
-        self, table_name: str, doc_id: int, data: dict[str, Any]
-    ) -> None:
+    def save_document(self, table_name: str, doc_id: int, data: dict[str, Any]) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO _documents "
             "(table_name, doc_id, data_json) VALUES (?, ?, ?)",
@@ -313,17 +295,12 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         )
         self._auto_commit()
 
-    def load_documents(
-        self, table_name: str
-    ) -> list[tuple[int, dict[str, Any]]]:
+    def load_documents(self, table_name: str) -> list[tuple[int, dict[str, Any]]]:
         rows = self._conn.execute(
             "SELECT doc_id, data_json FROM _documents WHERE table_name = ?",
             (table_name,),
         ).fetchall()
-        return [
-            (doc_id, json.loads(data_json))
-            for doc_id, data_json in rows
-        ]
+        return [(doc_id, json.loads(data_json)) for doc_id, data_json in rows]
 
     # -- Postings (inverted index entries) -----------------------------
 
@@ -369,8 +346,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         Returns ``[(field, term, doc_id, positions), ...]``.
         """
         rows = self._conn.execute(
-            "SELECT field, term, doc_id, positions FROM _postings "
-            "WHERE table_name = ?",
+            "SELECT field, term, doc_id, positions FROM _postings WHERE table_name = ?",
             (table_name,),
         ).fetchall()
         return [
@@ -378,9 +354,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
             for field, term, doc_id, positions in rows
         ]
 
-    def load_doc_lengths(
-        self, table_name: str
-    ) -> list[tuple[int, dict[str, int]]]:
+    def load_doc_lengths(self, table_name: str) -> list[tuple[int, dict[str, int]]]:
         """Load per-document per-field token lengths.
 
         Returns ``[(doc_id, {field: length, ...}), ...]``.
@@ -389,10 +363,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
             "SELECT doc_id, lengths FROM _doc_lengths WHERE table_name = ?",
             (table_name,),
         ).fetchall()
-        return [
-            (doc_id, json.loads(lengths))
-            for doc_id, lengths in rows
-        ]
+        return [(doc_id, json.loads(lengths)) for doc_id, lengths in rows]
 
     # -- Graph vertices ------------------------------------------------
 
@@ -424,10 +395,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         rows = self._conn.execute(
             "SELECT vertex_id, properties_json FROM _graph_vertices"
         ).fetchall()
-        return [
-            (vertex_id, json.loads(props))
-            for vertex_id, props in rows
-        ]
+        return [(vertex_id, json.loads(props)) for vertex_id, props in rows]
 
     def load_edges(
         self,
@@ -453,9 +421,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         self._auto_commit()
 
     def delete_vector(self, doc_id: int) -> None:
-        self._conn.execute(
-            "DELETE FROM _vectors WHERE doc_id = ?", (doc_id,)
-        )
+        self._conn.execute("DELETE FROM _vectors WHERE doc_id = ?", (doc_id,))
         self._auto_commit()
 
     def load_vectors(self) -> list[tuple[int, NDArray]]:
@@ -463,7 +429,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
             "SELECT doc_id, dimensions, embedding FROM _vectors"
         ).fetchall()
         result: list[tuple[int, NDArray]] = []
-        for doc_id, dims, blob in rows:
+        for doc_id, _dims, blob in rows:
             vec = np.frombuffer(blob, dtype=np.float32).copy()
             result.append((doc_id, vec))
         return result
@@ -522,8 +488,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
             mcv_v = json.loads(row[7]) if len(row) > 7 else []
             mcv_f = json.loads(row[8]) if len(row) > 8 else []
             result.append(
-                (col, dc, nc, json.loads(mn), json.loads(mx), rc,
-                 hist, mcv_v, mcv_f)
+                (col, dc, nc, json.loads(mn), json.loads(mx), rc, hist, mcv_v, mcv_f)
             )
         return result
 
@@ -535,13 +500,10 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
 
     # -- Scoring / calibration parameters (Papers 3-4) -----------------
 
-    def save_scoring_params(
-        self, name: str, params: dict[str, Any]
-    ) -> None:
+    def save_scoring_params(self, name: str, params: dict[str, Any]) -> None:
         """Persist Bayesian calibration parameters for a named signal."""
         self._conn.execute(
-            "INSERT OR REPLACE INTO _scoring_params "
-            "(name, params_json) VALUES (?, ?)",
+            "INSERT OR REPLACE INTO _scoring_params (name, params_json) VALUES (?, ?)",
             (name, json.dumps(params)),
         )
         self._auto_commit()
@@ -560,9 +522,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         return [(name, json.loads(pjson)) for name, pjson in rows]
 
     def delete_scoring_params(self, name: str) -> None:
-        self._conn.execute(
-            "DELETE FROM _scoring_params WHERE name = ?", (name,)
-        )
+        self._conn.execute("DELETE FROM _scoring_params WHERE name = ?", (name,))
         self._auto_commit()
 
     # -- Indexes -------------------------------------------------------
@@ -585,9 +545,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
 
     def drop_index(self, name: str) -> None:
         """Remove an index definition from the catalog."""
-        self._conn.execute(
-            "DELETE FROM _catalog_indexes WHERE name = ?", (name,)
-        )
+        self._conn.execute("DELETE FROM _catalog_indexes WHERE name = ?", (name,))
         self._auto_commit()
 
     def load_indexes(self) -> list[tuple[str, str, str, list[str], dict]]:
@@ -630,16 +588,12 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
 
     def drop_named_graph(self, name: str) -> None:
         """Remove a named graph from the catalog."""
-        self._conn.execute(
-            "DELETE FROM _named_graphs WHERE name = ?", (name,)
-        )
+        self._conn.execute("DELETE FROM _named_graphs WHERE name = ?", (name,))
         self._auto_commit()
 
     def load_named_graphs(self) -> list[str]:
         """Return the names of all registered named graphs."""
-        rows = self._conn.execute(
-            "SELECT name FROM _named_graphs"
-        ).fetchall()
+        rows = self._conn.execute("SELECT name FROM _named_graphs").fetchall()
         return [r[0] for r in rows]
 
     # -- Analyzers -----------------------------------------------------
@@ -654,16 +608,12 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
 
     def drop_analyzer(self, name: str) -> None:
         """Remove a named analyzer from the catalog."""
-        self._conn.execute(
-            "DELETE FROM _analyzers WHERE name = ?", (name,)
-        )
+        self._conn.execute("DELETE FROM _analyzers WHERE name = ?", (name,))
         self._auto_commit()
 
     def load_analyzers(self) -> list[tuple[str, dict[str, Any]]]:
         """Return ``[(name, config_dict), ...]`` for all persisted analyzers."""
-        rows = self._conn.execute(
-            "SELECT name, config_json FROM _analyzers"
-        ).fetchall()
+        rows = self._conn.execute("SELECT name, config_json FROM _analyzers").fetchall()
         return [(name, json.loads(cfg)) for name, cfg in rows]
 
     # -- Foreign servers -----------------------------------------------
@@ -673,17 +623,14 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
     ) -> None:
         """Persist a foreign server definition."""
         self._conn.execute(
-            "INSERT INTO _foreign_servers (name, fdw_type, options) "
-            "VALUES (?, ?, ?)",
+            "INSERT INTO _foreign_servers (name, fdw_type, options) VALUES (?, ?, ?)",
             (name, fdw_type, json.dumps(options)),
         )
         self._auto_commit()
 
     def drop_foreign_server(self, name: str) -> None:
         """Remove a foreign server from the catalog."""
-        self._conn.execute(
-            "DELETE FROM _foreign_servers WHERE name = ?", (name,)
-        )
+        self._conn.execute("DELETE FROM _foreign_servers WHERE name = ?", (name,))
         self._auto_commit()
 
     def load_foreign_servers(
@@ -693,10 +640,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         rows = self._conn.execute(
             "SELECT name, fdw_type, options FROM _foreign_servers"
         ).fetchall()
-        return [
-            (name, fdw_type, json.loads(opts))
-            for name, fdw_type, opts in rows
-        ]
+        return [(name, fdw_type, json.loads(opts)) for name, fdw_type, opts in rows]
 
     # -- Foreign tables ------------------------------------------------
 
@@ -717,9 +661,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
 
     def drop_foreign_table(self, name: str) -> None:
         """Remove a foreign table from the catalog."""
-        self._conn.execute(
-            "DELETE FROM _foreign_tables WHERE name = ?", (name,)
-        )
+        self._conn.execute("DELETE FROM _foreign_tables WHERE name = ?", (name,))
         self._auto_commit()
 
     def load_foreign_tables(
@@ -727,8 +669,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
     ) -> list[tuple[str, str, list[dict[str, Any]], dict[str, str]]]:
         """Return ``[(name, server_name, columns_json, options), ...]``."""
         rows = self._conn.execute(
-            "SELECT name, server_name, columns_json, options "
-            "FROM _foreign_tables"
+            "SELECT name, server_name, columns_json, options FROM _foreign_tables"
         ).fetchall()
         return [
             (name, server_name, json.loads(cols), json.loads(opts))

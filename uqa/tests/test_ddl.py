@@ -20,9 +20,7 @@ def engine():
 
 @pytest.fixture
 def engine_with_table(engine):
-    engine.sql(
-        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)"
-    )
+    engine.sql("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")
     engine.sql("INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30)")
     engine.sql("INSERT INTO users (id, name, age) VALUES (2, 'Bob', 25)")
     engine.sql("INSERT INTO users (id, name, age) VALUES (3, 'Carol', 35)")
@@ -37,12 +35,8 @@ def engine_with_table(engine):
 class TestAlterTableAddColumn:
     def test_add_column(self, engine_with_table):
         engine_with_table.sql("ALTER TABLE users ADD COLUMN email TEXT")
-        engine_with_table.sql(
-            "UPDATE users SET email = 'alice@test.com' WHERE id = 1"
-        )
-        result = engine_with_table.sql(
-            "SELECT email FROM users WHERE id = 1"
-        )
+        engine_with_table.sql("UPDATE users SET email = 'alice@test.com' WHERE id = 1")
+        result = engine_with_table.sql("SELECT email FROM users WHERE id = 1")
         assert result.rows[0]["email"] == "alice@test.com"
 
     def test_add_column_duplicate_raises(self, engine_with_table):
@@ -57,9 +51,7 @@ class TestAlterTableAddColumn:
         engine_with_table.sql(
             "INSERT INTO users (id, name, age) VALUES (4, 'Dave', 28)"
         )
-        result = engine_with_table.sql(
-            "SELECT active FROM users WHERE id = 4"
-        )
+        result = engine_with_table.sql("SELECT active FROM users WHERE id = 4")
         assert result.rows[0]["active"] is True
 
 
@@ -79,15 +71,11 @@ class TestAlterTableDropColumn:
 
     def test_drop_column_nonexistent_raises(self, engine_with_table):
         with pytest.raises(ValueError, match="does not exist"):
-            engine_with_table.sql(
-                "ALTER TABLE users DROP COLUMN nonexistent"
-            )
+            engine_with_table.sql("ALTER TABLE users DROP COLUMN nonexistent")
 
     def test_drop_column_if_exists(self, engine_with_table):
         # Should not raise with IF EXISTS
-        engine_with_table.sql(
-            "ALTER TABLE users DROP COLUMN IF EXISTS nonexistent"
-        )
+        engine_with_table.sql("ALTER TABLE users DROP COLUMN IF EXISTS nonexistent")
 
 
 # ==================================================================
@@ -97,25 +85,17 @@ class TestAlterTableDropColumn:
 
 class TestAlterTableRenameColumn:
     def test_rename_column(self, engine_with_table):
-        engine_with_table.sql(
-            "ALTER TABLE users RENAME COLUMN name TO full_name"
-        )
-        result = engine_with_table.sql(
-            "SELECT full_name FROM users WHERE id = 1"
-        )
+        engine_with_table.sql("ALTER TABLE users RENAME COLUMN name TO full_name")
+        result = engine_with_table.sql("SELECT full_name FROM users WHERE id = 1")
         assert result.rows[0]["full_name"] == "Alice"
 
     def test_rename_column_nonexistent_raises(self, engine_with_table):
         with pytest.raises(ValueError, match="does not exist"):
-            engine_with_table.sql(
-                "ALTER TABLE users RENAME COLUMN xyz TO abc"
-            )
+            engine_with_table.sql("ALTER TABLE users RENAME COLUMN xyz TO abc")
 
     def test_rename_column_duplicate_raises(self, engine_with_table):
         with pytest.raises(ValueError, match="already exists"):
-            engine_with_table.sql(
-                "ALTER TABLE users RENAME COLUMN name TO age"
-            )
+            engine_with_table.sql("ALTER TABLE users RENAME COLUMN name TO age")
 
 
 # ==================================================================
@@ -144,30 +124,16 @@ class TestAlterTableRenameTo:
 
 class TestAlterTableDefault:
     def test_set_default(self, engine_with_table):
-        engine_with_table.sql(
-            "ALTER TABLE users ALTER COLUMN age SET DEFAULT 18"
-        )
-        engine_with_table.sql(
-            "INSERT INTO users (id, name) VALUES (4, 'Dave')"
-        )
-        result = engine_with_table.sql(
-            "SELECT age FROM users WHERE id = 4"
-        )
+        engine_with_table.sql("ALTER TABLE users ALTER COLUMN age SET DEFAULT 18")
+        engine_with_table.sql("INSERT INTO users (id, name) VALUES (4, 'Dave')")
+        result = engine_with_table.sql("SELECT age FROM users WHERE id = 4")
         assert result.rows[0]["age"] == 18
 
     def test_drop_default(self, engine_with_table):
-        engine_with_table.sql(
-            "ALTER TABLE users ALTER COLUMN age SET DEFAULT 18"
-        )
-        engine_with_table.sql(
-            "ALTER TABLE users ALTER COLUMN age DROP DEFAULT"
-        )
-        engine_with_table.sql(
-            "INSERT INTO users (id, name) VALUES (5, 'Eve')"
-        )
-        result = engine_with_table.sql(
-            "SELECT age FROM users WHERE id = 5"
-        )
+        engine_with_table.sql("ALTER TABLE users ALTER COLUMN age SET DEFAULT 18")
+        engine_with_table.sql("ALTER TABLE users ALTER COLUMN age DROP DEFAULT")
+        engine_with_table.sql("INSERT INTO users (id, name) VALUES (5, 'Eve')")
+        result = engine_with_table.sql("SELECT age FROM users WHERE id = 5")
         # No default -- age should be absent
         assert result.rows[0].get("age") is None
 
@@ -179,13 +145,9 @@ class TestAlterTableDefault:
 
 class TestAlterTableNotNull:
     def test_set_not_null(self, engine_with_table):
-        engine_with_table.sql(
-            "ALTER TABLE users ALTER COLUMN name SET NOT NULL"
-        )
+        engine_with_table.sql("ALTER TABLE users ALTER COLUMN name SET NOT NULL")
         with pytest.raises(ValueError, match="NOT NULL"):
-            engine_with_table.sql(
-                "INSERT INTO users (id, age) VALUES (4, 28)"
-            )
+            engine_with_table.sql("INSERT INTO users (id, age) VALUES (4, 28)")
 
     def test_set_not_null_with_existing_nulls_raises(self, engine):
         engine.sql("CREATE TABLE t (id INTEGER, val TEXT)")
@@ -225,9 +187,7 @@ class TestTruncateTable:
     def test_truncate_preserves_schema(self, engine_with_table):
         engine_with_table.sql("TRUNCATE TABLE users")
         # Schema should still be intact
-        engine_with_table.sql(
-            "INSERT INTO users (id, name, age) VALUES (1, 'New', 20)"
-        )
+        engine_with_table.sql("INSERT INTO users (id, name, age) VALUES (1, 'New', 20)")
         result = engine_with_table.sql("SELECT name FROM users WHERE id = 1")
         assert result.rows[0]["name"] == "New"
 
@@ -290,9 +250,7 @@ class TestCheckConstraint:
         assert result.rows[0]["cnt"] == 2
 
     def test_check_with_comparison(self, engine):
-        engine.sql(
-            "CREATE TABLE t (id INTEGER, price REAL CHECK (price >= 0.0))"
-        )
+        engine.sql("CREATE TABLE t (id INTEGER, price REAL CHECK (price >= 0.0))")
         engine.sql("INSERT INTO t (id, price) VALUES (1, 9.99)")
         with pytest.raises(ValueError, match="CHECK constraint"):
             engine.sql("INSERT INTO t (id, price) VALUES (2, -0.01)")
@@ -308,15 +266,9 @@ class TestAlterColumnType:
         engine_with_table.sql(
             "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER, name TEXT)"
         )
-        engine_with_table.sql(
-            "INSERT INTO t (id, val, name) VALUES (1, 10, 'alpha')"
-        )
-        engine_with_table.sql(
-            "INSERT INTO t (id, val, name) VALUES (2, 20, 'bravo')"
-        )
-        engine_with_table.sql(
-            "INSERT INTO t (id, val, name) VALUES (3, 30, 'charlie')"
-        )
+        engine_with_table.sql("INSERT INTO t (id, val, name) VALUES (1, 10, 'alpha')")
+        engine_with_table.sql("INSERT INTO t (id, val, name) VALUES (2, 20, 'bravo')")
+        engine_with_table.sql("INSERT INTO t (id, val, name) VALUES (3, 30, 'charlie')")
         engine_with_table.sql("ALTER TABLE t ALTER COLUMN val TYPE TEXT")
         result = engine_with_table.sql("SELECT val FROM t WHERE id = 1")
         assert isinstance(result.rows[0]["val"], str)
@@ -354,9 +306,7 @@ class TestForeignKey:
             "(id INT PRIMARY KEY, parent_id INT REFERENCES parents(id), "
             "val TEXT)"
         )
-        with pytest.raises(
-            ValueError, match="FOREIGN KEY constraint violated"
-        ):
+        with pytest.raises(ValueError, match="FOREIGN KEY constraint violated"):
             engine.sql("INSERT INTO children VALUES (1, 999, 'bad')")
 
     def test_fk_null_allowed(self, engine):
@@ -378,9 +328,7 @@ class TestForeignKey:
             "val TEXT)"
         )
         engine.sql("INSERT INTO children VALUES (1, 1, 'child1')")
-        with pytest.raises(
-            ValueError, match="FOREIGN KEY constraint violated"
-        ):
+        with pytest.raises(ValueError, match="FOREIGN KEY constraint violated"):
             engine.sql("DELETE FROM parents WHERE id = 1")
 
     def test_fk_delete_unreferenced(self, engine):
@@ -403,9 +351,7 @@ class TestForeignKey:
             "val TEXT)"
         )
         engine.sql("INSERT INTO children VALUES (1, 1, 'child1')")
-        with pytest.raises(
-            ValueError, match="FOREIGN KEY constraint violated"
-        ):
+        with pytest.raises(ValueError, match="FOREIGN KEY constraint violated"):
             engine.sql("UPDATE children SET parent_id = 999 WHERE id = 1")
 
     def test_fk_update_valid(self, engine):
@@ -427,7 +373,5 @@ class TestForeignKey:
             "val TEXT)"
         )
         engine.sql("INSERT INTO children VALUES (1, 1, 'child1')")
-        with pytest.raises(
-            ValueError, match="FOREIGN KEY constraint violated"
-        ):
+        with pytest.raises(ValueError, match="FOREIGN KEY constraint violated"):
             engine.sql("UPDATE parents SET id = 99 WHERE id = 1")

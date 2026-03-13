@@ -19,12 +19,13 @@ access with automatic null handling and Python type conversion.
 from __future__ import annotations
 
 import enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import numpy as np
 import pyarrow as pa
-import pyarrow.compute as pc
 
+if TYPE_CHECKING:
+    import numpy as np
+import pyarrow.compute as pc
 
 DEFAULT_BATCH_SIZE = 1024
 
@@ -304,17 +305,12 @@ class Batch:
                 arrays.append(pa.array(values, type=arrow_type))
                 fields.append(pa.field(name, arrow_type))
 
-        return cls(
-            pa.RecordBatch.from_arrays(arrays, schema=pa.schema(fields))
-        )
+        return cls(pa.RecordBatch.from_arrays(arrays, schema=pa.schema(fields)))
 
 
 def _has_complex_values(values: list[Any]) -> bool:
     """Check if any non-null value is a list or dict."""
-    for v in values:
-        if isinstance(v, (list, dict)):
-            return True
-    return False
+    return any(isinstance(v, (list, dict)) for v in values)
 
 
 def _normalize_complex_values(values: list[Any]) -> list[Any]:

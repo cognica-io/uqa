@@ -15,17 +15,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from uqa.engine import Engine
 from uqa.core.types import (
     Edge,
-    Equals,
-    GreaterThan,
     GreaterThanOrEqual,
-    Payload,
-    PostingEntry,
     Vertex,
 )
-from uqa.core.posting_list import PostingList
+from uqa.engine import Engine
 
 
 @pytest.fixture
@@ -44,14 +39,54 @@ def engine_with_docs() -> Engine:
     rng = np.random.RandomState(42)
 
     docs = [
-        {"title": "neural network basics", "abstract": "introduction to neural networks and deep learning", "year": 2023, "category": "ml"},
-        {"title": "transformer architecture", "abstract": "attention is all you need for transformer models", "year": 2024, "category": "dl"},
-        {"title": "graph neural networks", "abstract": "neural networks for graph structured data", "year": 2024, "category": "ml"},
-        {"title": "bayesian optimization", "abstract": "bayesian methods for optimization problems", "year": 2025, "category": "opt"},
-        {"title": "reinforcement learning", "abstract": "deep reinforcement learning agents", "year": 2025, "category": "rl"},
-        {"title": "vector search", "abstract": "efficient vector similarity search methods", "year": 2024, "category": "ir"},
-        {"title": "text retrieval", "abstract": "neural text retrieval with transformers", "year": 2023, "category": "ir"},
-        {"title": "knowledge graphs", "abstract": "knowledge graph embedding methods", "year": 2024, "category": "kg"},
+        {
+            "title": "neural network basics",
+            "abstract": "introduction to neural networks and deep learning",
+            "year": 2023,
+            "category": "ml",
+        },
+        {
+            "title": "transformer architecture",
+            "abstract": "attention is all you need for transformer models",
+            "year": 2024,
+            "category": "dl",
+        },
+        {
+            "title": "graph neural networks",
+            "abstract": "neural networks for graph structured data",
+            "year": 2024,
+            "category": "ml",
+        },
+        {
+            "title": "bayesian optimization",
+            "abstract": "bayesian methods for optimization problems",
+            "year": 2025,
+            "category": "opt",
+        },
+        {
+            "title": "reinforcement learning",
+            "abstract": "deep reinforcement learning agents",
+            "year": 2025,
+            "category": "rl",
+        },
+        {
+            "title": "vector search",
+            "abstract": "efficient vector similarity search methods",
+            "year": 2024,
+            "category": "ir",
+        },
+        {
+            "title": "text retrieval",
+            "abstract": "neural text retrieval with transformers",
+            "year": 2023,
+            "category": "ir",
+        },
+        {
+            "title": "knowledge graphs",
+            "abstract": "knowledge graph embedding methods",
+            "year": 2024,
+            "category": "kg",
+        },
     ]
 
     for i, doc in enumerate(docs, 1):
@@ -98,7 +133,11 @@ class TestFullPipeline:
         assert 3 in doc_ids
 
     def test_term_search_with_field(self, engine_with_docs: Engine):
-        results = engine_with_docs.query(table="papers").term("neural", field="title").execute()
+        results = (
+            engine_with_docs.query(table="papers")
+            .term("neural", field="title")
+            .execute()
+        )
         assert len(results) > 0
 
     def test_filter_query(self, engine_with_docs: Engine):
@@ -129,9 +168,7 @@ class TestFullPipeline:
         ids = results.doc_ids
         for doc_id in ids:
             doc = engine_with_docs._tables["papers"].document_store.get(doc_id)
-            text = " ".join(
-                v for v in doc.values() if isinstance(v, str)
-            ).lower()
+            text = " ".join(v for v in doc.values() if isinstance(v, str)).lower()
             assert "neural" in text
             assert "networks" in text
 
@@ -238,11 +275,7 @@ class TestAggregation:
         assert result.value > 0
 
     def test_facet(self, engine_with_docs: Engine):
-        result = (
-            engine_with_docs.query(table="papers")
-            .term("neural")
-            .facet("category")
-        )
+        result = engine_with_docs.query(table="papers").term("neural").facet("category")
         assert isinstance(result.counts, dict)
 
 
@@ -266,15 +299,17 @@ class TestOptimizerCorrectness:
     def test_intersect_reordering_same_results(self, engine_with_docs: Engine):
         from uqa.operators.boolean import IntersectOperator
         from uqa.operators.primitive import TermOperator
-        from uqa.planner.optimizer import QueryOptimizer
         from uqa.planner.executor import PlanExecutor
+        from uqa.planner.optimizer import QueryOptimizer
 
         ctx = engine_with_docs._context_for_table("papers")
 
-        op = IntersectOperator([
-            TermOperator("neural"),
-            TermOperator("networks"),
-        ])
+        op = IntersectOperator(
+            [
+                TermOperator("neural"),
+                TermOperator("networks"),
+            ]
+        )
 
         unoptimized = PlanExecutor(ctx).execute(op)
 

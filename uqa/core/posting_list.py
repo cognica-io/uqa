@@ -7,9 +7,12 @@
 from __future__ import annotations
 
 import heapq
-from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 from uqa.core.types import DocId, GeneralizedPostingEntry, Payload, PostingEntry
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 class PostingList:
@@ -178,9 +181,7 @@ class PostingList:
             return NotImplemented
         if len(self._entries) != len(other._entries):
             return False
-        return all(
-            a.doc_id == b.doc_id for a, b in zip(self._entries, other._entries)
-        )
+        return all(a.doc_id == b.doc_id for a, b in zip(self._entries, other._entries))
 
     def __repr__(self) -> str:
         ids = [e.doc_id for e in self._entries]

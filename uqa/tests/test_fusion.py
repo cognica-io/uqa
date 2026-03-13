@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from uqa.fusion.log_odds import LogOddsFusion
 from uqa.fusion.boolean import ProbabilisticBoolean
+from uqa.fusion.log_odds import LogOddsFusion
 
 
 @pytest.fixture
@@ -152,9 +152,7 @@ class TestProbabilisticBoolean:
     def test_de_morgan_consistency(self) -> None:
         """NOT(AND(p_i)) should equal OR(NOT(p_i)) for independent events."""
         probs = [0.6, 0.7, 0.8]
-        not_and = ProbabilisticBoolean.prob_not(
-            ProbabilisticBoolean.prob_and(probs)
-        )
+        not_and = ProbabilisticBoolean.prob_not(ProbabilisticBoolean.prob_and(probs))
         or_not = ProbabilisticBoolean.prob_or(
             [ProbabilisticBoolean.prob_not(p) for p in probs]
         )

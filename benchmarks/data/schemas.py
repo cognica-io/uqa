@@ -63,11 +63,7 @@ BENCH_TABLE_DDL = (
 )
 
 CUSTOMERS_DDL = (
-    "CREATE TABLE customers ("
-    "  id INTEGER PRIMARY KEY,"
-    "  name TEXT,"
-    "  region TEXT"
-    ")"
+    "CREATE TABLE customers (  id INTEGER PRIMARY KEY,  name TEXT,  region TEXT)"
 )
 
 PRODUCTS_DDL = (

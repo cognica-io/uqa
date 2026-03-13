@@ -6,29 +6,30 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-
-import numpy as np
-from numpy.typing import NDArray
-
-from uqa.core.types import PathExpr, Predicate
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     import pyarrow as pa
+    from numpy.typing import NDArray
 
-    from uqa.core.posting_list import GeneralizedPostingList, PostingList
+    from uqa.core.posting_list import PostingList
+    from uqa.core.types import PathExpr, Predicate
     from uqa.engine import Engine
 
 
-def _posting_list_to_arrow(pl: PostingList) -> "pa.Table":
+def _posting_list_to_arrow(pl: PostingList) -> pa.Table:
     """Convert a PostingList to a ``pyarrow.Table``."""
     import pyarrow as pa
 
     from uqa.sql.compiler import _infer_arrow_type
 
     if not pl:
-        return pa.table({"_doc_id": pa.array([], type=pa.int64()),
-                         "_score": pa.array([], type=pa.float64())})
+        return pa.table(
+            {
+                "_doc_id": pa.array([], type=pa.int64()),
+                "_score": pa.array([], type=pa.float64()),
+            }
+        )
 
     doc_ids: list[int] = []
     scores: list[float] = []
@@ -214,8 +215,8 @@ class QueryBuilder:
         return self._chain(op)
 
     def rpq(self, expr: str, start: int | None = None) -> QueryBuilder:
-        from uqa.graph.pattern import parse_rpq
         from uqa.graph.operators import RegularPathQueryOperator
+        from uqa.graph.pattern import parse_rpq
 
         path_expr = parse_rpq(expr)
         op = RegularPathQueryOperator(path_expr, start_vertex=start)
@@ -232,9 +233,7 @@ class QueryBuilder:
         from uqa.graph.operators import VertexAggregationOperator
 
         if self._root is None:
-            raise ValueError(
-                "vertex_aggregate requires a graph traversal source"
-            )
+            raise ValueError("vertex_aggregate requires a graph traversal source")
 
         op = VertexAggregationOperator(self._root, property_name, agg_fn)
         ctx = self._engine._context_for_table(self._table)
@@ -242,9 +241,7 @@ class QueryBuilder:
 
         if result_gpl and len(result_gpl) > 0:
             entry = next(iter(result_gpl))
-            return AggregateResult(
-                entry.payload.fields.get("_vertex_agg_result")
-            )
+            return AggregateResult(entry.payload.fields.get("_vertex_agg_result"))
         return AggregateResult(0.0)
 
     # -- Vector exclusion (Definition 3.3.3, Paper 1) --
@@ -258,9 +255,7 @@ class QueryBuilder:
         if self._root is None:
             raise ValueError("vector_exclude requires a source query")
 
-        op = VectorExclusionOperator(
-            self._root, negative_vector, threshold
-        )
+        op = VectorExclusionOperator(self._root, negative_vector, threshold)
         qb = QueryBuilder(self._engine, self._table)
         qb._root = op
         return qb
@@ -319,9 +314,7 @@ class QueryBuilder:
         """Facet counts conditioned on vector similarity (Definition 3.3.4)."""
         from uqa.operators.hybrid import FacetVectorOperator
 
-        op = FacetVectorOperator(
-            field, query_vector, threshold, self._root
-        )
+        op = FacetVectorOperator(field, query_vector, threshold, self._root)
         ctx = self._engine._context_for_table(self._table)
         result_pl = op.execute(ctx)
 
@@ -359,9 +352,7 @@ class QueryBuilder:
         qb._root = op
         return qb
 
-    def path_aggregate(
-        self, path: str | PathExpr, agg: str
-    ) -> QueryBuilder:
+    def path_aggregate(self, path: str | PathExpr, agg: str) -> QueryBuilder:
         """Per-document aggregation over nested array values (Definition 5.3.3).
 
         Applies an aggregation function to the array at ``path`` within each
@@ -410,7 +401,11 @@ class QueryBuilder:
         from uqa.scoring.bm25 import BM25Params, BM25Scorer
 
         ctx = self._engine._context_for_table(self._table)
-        analyzer = ctx.inverted_index.get_field_analyzer(field) if field else ctx.inverted_index.analyzer
+        analyzer = (
+            ctx.inverted_index.get_field_analyzer(field)
+            if field
+            else ctx.inverted_index.analyzer
+        )
         terms = analyzer.analyze(query)
         scorer = BM25Scorer(BM25Params(), ctx.inverted_index.stats)
         op = ScoreOperator(scorer, self._root, terms)
@@ -423,7 +418,11 @@ class QueryBuilder:
         from uqa.scoring.bayesian_bm25 import BayesianBM25Params, BayesianBM25Scorer
 
         ctx = self._engine._context_for_table(self._table)
-        analyzer = ctx.inverted_index.get_field_analyzer(field) if field else ctx.inverted_index.analyzer
+        analyzer = (
+            ctx.inverted_index.get_field_analyzer(field)
+            if field
+            else ctx.inverted_index.analyzer
+        )
         terms = analyzer.analyze(query)
         scorer = BayesianBM25Scorer(BayesianBM25Params(), ctx.inverted_index.stats)
         op = ScoreOperator(scorer, self._root, terms)
@@ -465,9 +464,9 @@ class QueryBuilder:
     # -- Execution --
 
     def execute(self) -> PostingList:
+        from uqa.core.posting_list import PostingList
         from uqa.planner.executor import PlanExecutor
         from uqa.planner.optimizer import QueryOptimizer
-        from uqa.core.posting_list import PostingList
 
         if self._root is None:
             return PostingList()
@@ -479,7 +478,7 @@ class QueryBuilder:
         executor = PlanExecutor(ctx)
         return executor.execute(optimized)
 
-    def execute_arrow(self) -> "pa.Table":
+    def execute_arrow(self) -> pa.Table:
         """Execute and return results as a ``pyarrow.Table``."""
         return _posting_list_to_arrow(self.execute())
 
@@ -523,8 +522,8 @@ class _FusionOperator:
         self.sources = sources
 
     def execute(self, context: Any) -> Any:
-        from uqa.core.types import Payload, PostingEntry
         from uqa.core.posting_list import PostingList
+        from uqa.core.types import Payload, PostingEntry
 
         results = [src.execute(context) for src in self.sources]
 
@@ -545,13 +544,13 @@ class _FusionOperator:
         return PostingList(entries)
 
     def compose(self, other: Any) -> Any:
-        from uqa.operators.base import ComposedOperator
-        return ComposedOperator([self, other])
+        from uqa.operators.base import ComposedOperator, Operator
+
+        return ComposedOperator(cast("list[Operator]", [self, other]))
 
     def cost_estimate(self, stats: Any) -> float:
         return sum(
-            getattr(s, "cost_estimate", lambda _: 100.0)(stats)
-            for s in self.sources
+            getattr(s, "cost_estimate", lambda _: 100.0)(stats) for s in self.sources
         )
 
 
@@ -563,8 +562,8 @@ class _ProbBooleanOperator:
         self.sources = sources
 
     def execute(self, context: Any) -> Any:
-        from uqa.core.types import Payload, PostingEntry
         from uqa.core.posting_list import PostingList
+        from uqa.core.types import Payload, PostingEntry
         from uqa.fusion.boolean import ProbabilisticBoolean
 
         results = [src.execute(context) for src in self.sources]
@@ -589,11 +588,11 @@ class _ProbBooleanOperator:
         return PostingList(entries)
 
     def compose(self, other: Any) -> Any:
-        from uqa.operators.base import ComposedOperator
-        return ComposedOperator([self, other])
+        from uqa.operators.base import ComposedOperator, Operator
+
+        return ComposedOperator(cast("list[Operator]", [self, other]))
 
     def cost_estimate(self, stats: Any) -> float:
         return sum(
-            getattr(s, "cost_estimate", lambda _: 100.0)(stats)
-            for s in self.sources
+            getattr(s, "cost_estimate", lambda _: 100.0)(stats) for s in self.sources
         )

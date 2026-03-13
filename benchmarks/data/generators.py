@@ -12,12 +12,10 @@ parameter controls data volume without changing distribution characteristics.
 
 from __future__ import annotations
 
-import string
-
 import numpy as np
 
-from uqa.core.types import DocId, Edge, Payload, PostingEntry, Vertex
 from uqa.core.posting_list import PostingList
+from uqa.core.types import Edge, Payload, PostingEntry, Vertex
 
 
 class BenchmarkDataGenerator:
@@ -53,7 +51,9 @@ class BenchmarkDataGenerator:
 
     # -- Posting Lists -----------------------------------------------------
 
-    def posting_list(self, size: int, score_range: tuple[float, float] = (0.0, 1.0)) -> PostingList:
+    def posting_list(
+        self, size: int, score_range: tuple[float, float] = (0.0, 1.0)
+    ) -> PostingList:
         """Generate a PostingList with *size* entries and random scores."""
         doc_ids = sorted(self.rng.choice(size * 10, size=size, replace=False))
         entries = [
@@ -86,10 +86,12 @@ class BenchmarkDataGenerator:
         unique_count = size - shared_count
         total_pool = size * 10
 
-        all_ids = self.rng.choice(total_pool, size=shared_count + unique_count * 2, replace=False)
+        all_ids = self.rng.choice(
+            total_pool, size=shared_count + unique_count * 2, replace=False
+        )
         shared_ids = all_ids[:shared_count]
-        unique_a = all_ids[shared_count:shared_count + unique_count]
-        unique_b = all_ids[shared_count + unique_count:]
+        unique_a = all_ids[shared_count : shared_count + unique_count]
+        unique_b = all_ids[shared_count + unique_count :]
 
         def make_pl(ids: np.ndarray) -> PostingList:
             sorted_ids = sorted(int(x) for x in ids)
@@ -122,7 +124,7 @@ class BenchmarkDataGenerator:
                 total_pool, size=size - shared_count, replace=False
             )
             all_ids = np.concatenate([shared_ids, unique_ids])
-            sorted_ids = sorted(set(int(x) for x in all_ids))[:size]
+            sorted_ids = sorted({int(x) for x in all_ids})[:size]
             entries = [
                 PostingEntry(
                     doc_id=did,
@@ -153,14 +155,16 @@ class BenchmarkDataGenerator:
                 10, int(self.rng.lognormal(mean=np.log(terms_per_doc), sigma=0.5))
             )
             terms = self._zipf_terms(vocab_size, length)
-            docs.append({
-                "id": i + 1,
-                "title": f"Document {i + 1}",
-                "body": " ".join(terms),
-                "category": f"cat_{int(self.rng.integers(0, 10))}",
-                "price": round(float(self.rng.uniform(1.0, 1000.0)), 2),
-                "rating": round(float(self.rng.uniform(1.0, 5.0)), 1),
-            })
+            docs.append(
+                {
+                    "id": i + 1,
+                    "title": f"Document {i + 1}",
+                    "body": " ".join(terms),
+                    "category": f"cat_{int(self.rng.integers(0, 10))}",
+                    "price": round(float(self.rng.uniform(1.0, 1000.0)), 2),
+                    "rating": round(float(self.rng.uniform(1.0, 5.0)), 1),
+                }
+            )
         return docs
 
     # -- Vectors -----------------------------------------------------------
@@ -244,14 +248,16 @@ class BenchmarkDataGenerator:
         categories = [f"cat_{i}" for i in range(num_categories)]
         rows: list[dict] = []
         for i in range(1, n + 1):
-            rows.append({
-                "id": i,
-                "name": f"item_{i}",
-                "value": round(float(self.rng.uniform(0.01, 10000.0)), 2),
-                "category": categories[int(self.rng.integers(0, num_categories))],
-                "quantity": int(self.rng.integers(0, 1000)),
-                "active": bool(self.rng.random() > 0.2),
-            })
+            rows.append(
+                {
+                    "id": i,
+                    "name": f"item_{i}",
+                    "value": round(float(self.rng.uniform(0.01, 10000.0)), 2),
+                    "category": categories[int(self.rng.integers(0, num_categories))],
+                    "quantity": int(self.rng.integers(0, 1000)),
+                    "active": bool(self.rng.random() > 0.2),
+                }
+            )
         return rows
 
     def join_tables(
@@ -266,7 +272,11 @@ class BenchmarkDataGenerator:
         n_orders = num_orders or self.num_documents
 
         customers = [
-            {"id": i, "name": f"customer_{i}", "region": f"region_{int(self.rng.integers(0, 10))}"}
+            {
+                "id": i,
+                "name": f"customer_{i}",
+                "region": f"region_{int(self.rng.integers(0, 10))}",
+            }
             for i in range(1, n_customers + 1)
         ]
         products = [
@@ -284,7 +294,9 @@ class BenchmarkDataGenerator:
                 "customer_id": int(self.rng.integers(1, n_customers + 1)),
                 "product_id": int(self.rng.integers(1, n_products + 1)),
                 "amount": round(float(self.rng.uniform(1.0, 1000.0)), 2),
-                "status": ["pending", "shipped", "delivered"][int(self.rng.integers(0, 3))],
+                "status": ["pending", "shipped", "delivered"][
+                    int(self.rng.integers(0, 3))
+                ],
             }
             for i in range(1, n_orders + 1)
         ]

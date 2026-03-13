@@ -35,17 +35,21 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import Completer, Completion
-from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.lexers import PygmentsLexer
 from prompt_toolkit.styles import Style
 from pygments.lexers.sql import SqlLexer
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from prompt_toolkit.document import Document
 
 from uqa.engine import Engine
 from uqa.sql.compiler import SQLResult
@@ -56,55 +60,170 @@ from uqa.sql.compiler import SQLResult
 
 _SQL_KEYWORDS = [
     # DDL
-    "CREATE", "TABLE", "DROP", "IF", "EXISTS", "PRIMARY", "KEY",
-    "NOT", "NULL", "DEFAULT", "SERIAL", "BIGSERIAL",
-    "ALTER", "ADD", "COLUMN", "RENAME", "TO", "SET",
-    "TRUNCATE", "UNIQUE", "CHECK", "CONSTRAINT",
+    "CREATE",
+    "TABLE",
+    "DROP",
+    "IF",
+    "EXISTS",
+    "PRIMARY",
+    "KEY",
+    "NOT",
+    "NULL",
+    "DEFAULT",
+    "SERIAL",
+    "BIGSERIAL",
+    "ALTER",
+    "ADD",
+    "COLUMN",
+    "RENAME",
+    "TO",
+    "SET",
+    "TRUNCATE",
+    "UNIQUE",
+    "CHECK",
+    "CONSTRAINT",
     # Types
-    "INTEGER", "INT", "BIGINT", "SMALLINT", "TEXT", "VARCHAR",
-    "REAL", "FLOAT", "DOUBLE", "PRECISION", "NUMERIC", "DECIMAL",
-    "BOOLEAN", "BOOL", "CHAR", "CHARACTER", "JSON", "JSONB",
+    "INTEGER",
+    "INT",
+    "BIGINT",
+    "SMALLINT",
+    "TEXT",
+    "VARCHAR",
+    "REAL",
+    "FLOAT",
+    "DOUBLE",
+    "PRECISION",
+    "NUMERIC",
+    "DECIMAL",
+    "BOOLEAN",
+    "BOOL",
+    "CHAR",
+    "CHARACTER",
+    "JSON",
+    "JSONB",
     # DML
-    "INSERT", "INTO", "VALUES", "UPDATE", "DELETE",
-    "RETURNING", "ON", "CONFLICT", "DO", "NOTHING", "EXCLUDED",
+    "INSERT",
+    "INTO",
+    "VALUES",
+    "UPDATE",
+    "DELETE",
+    "RETURNING",
+    "ON",
+    "CONFLICT",
+    "DO",
+    "NOTHING",
+    "EXCLUDED",
     # DQL
-    "SELECT", "FROM", "WHERE", "AND", "OR", "IN", "BETWEEN",
-    "ORDER", "BY", "ASC", "DESC", "LIMIT", "OFFSET", "AS", "DISTINCT",
-    "GROUP", "HAVING", "LIKE", "ILIKE", "IS",
-    "CASE", "WHEN", "THEN", "ELSE", "END",
-    "CAST", "COALESCE", "NULLIF",
-    "UNION", "ALL", "EXCEPT", "INTERSECT",
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "AND",
+    "OR",
+    "IN",
+    "BETWEEN",
+    "ORDER",
+    "BY",
+    "ASC",
+    "DESC",
+    "LIMIT",
+    "OFFSET",
+    "AS",
+    "DISTINCT",
+    "GROUP",
+    "HAVING",
+    "LIKE",
+    "ILIKE",
+    "IS",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "CAST",
+    "COALESCE",
+    "NULLIF",
+    "UNION",
+    "ALL",
+    "EXCEPT",
+    "INTERSECT",
     # Joins
-    "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "OUTER",
+    "JOIN",
+    "INNER",
+    "LEFT",
+    "RIGHT",
+    "FULL",
+    "CROSS",
+    "OUTER",
     # Subqueries / CTE
-    "WITH", "RECURSIVE",
+    "WITH",
+    "RECURSIVE",
     # Aggregates
-    "COUNT", "SUM", "AVG", "MIN", "MAX",
-    "ARRAY_AGG", "BOOL_AND", "BOOL_OR", "FILTER",
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "ARRAY_AGG",
+    "BOOL_AND",
+    "BOOL_OR",
+    "FILTER",
     # Window functions
-    "OVER", "PARTITION", "WINDOW",
-    "ROWS", "RANGE", "UNBOUNDED", "PRECEDING", "FOLLOWING",
-    "CURRENT", "ROW",
-    "ROW_NUMBER", "RANK", "DENSE_RANK", "NTILE",
-    "LAG", "LEAD", "FIRST_VALUE", "LAST_VALUE", "NTH_VALUE",
-    "PERCENT_RANK", "CUME_DIST",
+    "OVER",
+    "PARTITION",
+    "WINDOW",
+    "ROWS",
+    "RANGE",
+    "UNBOUNDED",
+    "PRECEDING",
+    "FOLLOWING",
+    "CURRENT",
+    "ROW",
+    "ROW_NUMBER",
+    "RANK",
+    "DENSE_RANK",
+    "NTILE",
+    "LAG",
+    "LEAD",
+    "FIRST_VALUE",
+    "LAST_VALUE",
+    "NTH_VALUE",
+    "PERCENT_RANK",
+    "CUME_DIST",
     # FDW
-    "SERVER", "FOREIGN", "DATA", "WRAPPER", "OPTIONS", "IMPORT",
+    "SERVER",
+    "FOREIGN",
+    "DATA",
+    "WRAPPER",
+    "OPTIONS",
+    "IMPORT",
     # Utility
-    "EXPLAIN", "ANALYZE", "GENERATE_SERIES",
+    "EXPLAIN",
+    "ANALYZE",
+    "GENERATE_SERIES",
     # UQA extensions
-    "text_match", "bayesian_match", "knn_match",
-    "traverse", "rpq", "text_search",
+    "text_match",
+    "bayesian_match",
+    "knn_match",
+    "traverse",
+    "rpq",
+    "text_search",
     "traverse_match",
-    "fuse_log_odds", "fuse_prob_and", "fuse_prob_or", "fuse_prob_not",
+    "fuse_log_odds",
+    "fuse_prob_and",
+    "fuse_prob_or",
+    "fuse_prob_not",
     # Cypher integration
-    "cypher", "create_graph", "drop_graph",
+    "cypher",
+    "create_graph",
+    "drop_graph",
 ]
 
-_STYLE = Style.from_dict({
-    "prompt": "ansicyan bold",
-    "bottom-toolbar": "bg:ansibrightblack ansiwhite",
-})
+_STYLE = Style.from_dict(
+    {
+        "prompt": "ansicyan bold",
+        "bottom-toolbar": "bg:ansibrightblack ansiwhite",
+    }
+)
 
 
 # ------------------------------------------------------------------
@@ -199,13 +318,17 @@ class SQLCompleter(Completer):
             text, kind = item
             if after_table_kw:
                 order = {
-                    "table": 0, "foreign table": 1,
-                    "keyword": 2, "column": 3,
+                    "table": 0,
+                    "foreign table": 1,
+                    "keyword": 2,
+                    "column": 3,
                 }
             else:
                 order = {
-                    "keyword": 0, "column": 1,
-                    "table": 2, "foreign table": 3,
+                    "keyword": 0,
+                    "column": 1,
+                    "table": 2,
+                    "foreign table": 3,
                 }
             return (order.get(kind, 9), text.lower())
 
@@ -213,14 +336,13 @@ class SQLCompleter(Completer):
 
         for text, kind in candidates:
             display_meta = kind
-            yield Completion(
-                text, start_position=-len(word), display_meta=display_meta
-            )
+            yield Completion(text, start_position=-len(word), display_meta=display_meta)
 
 
 # ------------------------------------------------------------------
 # Shell
 # ------------------------------------------------------------------
+
 
 class UQAShell:
     """Interactive SQL shell backed by a UQA Engine."""
@@ -421,19 +543,23 @@ class UQAShell:
             return
         rows = []
         for name, table in sorted(tables.items()):
-            rows.append({
-                "table_name": name,
-                "type": "table",
-                "columns": len(table.columns),
-                "rows": table.row_count,
-            })
+            rows.append(
+                {
+                    "table_name": name,
+                    "type": "table",
+                    "columns": len(table.columns),
+                    "rows": table.row_count,
+                }
+            )
         for name, ft in sorted(ftables.items()):
-            rows.append({
-                "table_name": name,
-                "type": "foreign",
-                "columns": len(ft.columns),
-                "rows": "",
-            })
+            rows.append(
+                {
+                    "table_name": name,
+                    "type": "foreign",
+                    "columns": len(ft.columns),
+                    "rows": "",
+                }
+            )
         print(SQLResult(["table_name", "type", "columns", "rows"], rows))
 
     def _cmd_describe_table(self, name: str) -> None:
@@ -457,19 +583,23 @@ class UQAShell:
                     flags.append("AUTO")
                 if col.default is not None:
                     flags.append(f"DEFAULT {col.default}")
-                rows.append({
-                    "column": col.name,
-                    "type": col.type_name,
-                    "constraints": " ".join(flags) if flags else "",
-                })
+                rows.append(
+                    {
+                        "column": col.name,
+                        "type": col.type_name,
+                        "constraints": " ".join(flags) if flags else "",
+                    }
+                )
             print(f'Table "{name}"')
         else:
             for col in ftable.columns.values():
-                rows.append({
-                    "column": col.name,
-                    "type": col.type_name,
-                    "constraints": "",
-                })
+                rows.append(
+                    {
+                        "column": col.name,
+                        "type": col.type_name,
+                        "constraints": "",
+                    }
+                )
             print(f'Foreign table "{name}" (server: {ftable.server_name})')
         print(SQLResult(["column", "type", "constraints"], rows))
 
@@ -486,19 +616,23 @@ class UQAShell:
             return
         rows = []
         for col_name, cs in table._stats.items():
-            rows.append({
-                "column": col_name,
-                "distinct": cs.distinct_count,
-                "nulls": cs.null_count,
-                "min": cs.min_value if cs.min_value is not None else "",
-                "max": cs.max_value if cs.max_value is not None else "",
-                "selectivity": cs.selectivity,
-            })
+            rows.append(
+                {
+                    "column": col_name,
+                    "distinct": cs.distinct_count,
+                    "nulls": cs.null_count,
+                    "min": cs.min_value if cs.min_value is not None else "",
+                    "max": cs.max_value if cs.max_value is not None else "",
+                    "selectivity": cs.selectivity,
+                }
+            )
         print(f'Statistics for "{name}" ({table.row_count} rows)')
-        print(SQLResult(
-            ["column", "distinct", "nulls", "min", "max", "selectivity"],
-            rows,
-        ))
+        print(
+            SQLResult(
+                ["column", "distinct", "nulls", "min", "max", "selectivity"],
+                rows,
+            )
+        )
 
     def _cmd_list_indexes(self) -> None:
         tables = self._engine._tables
@@ -513,10 +647,12 @@ class UQAShell:
             else:
                 fields = sorted({f for (f, _) in idx._index})
             if fields:
-                rows.append({
-                    "table_name": name,
-                    "indexed_fields": ", ".join(fields),
-                })
+                rows.append(
+                    {
+                        "table_name": name,
+                        "indexed_fields": ", ".join(fields),
+                    }
+                )
         if not rows:
             print("No indexed fields.")
             return
@@ -533,16 +669,16 @@ class UQAShell:
             if ft.options.get("hive_partitioning", "").lower() == "true":
                 opts.append("hive")
             source = ft.options.get("source", "")
-            rows.append({
-                "table_name": name,
-                "server": ft.server_name,
-                "columns": len(ft.columns),
-                "source": source,
-                "options": ", ".join(opts) if opts else "",
-            })
-        print(SQLResult(
-            ["table_name", "server", "columns", "source", "options"], rows
-        ))
+            rows.append(
+                {
+                    "table_name": name,
+                    "server": ft.server_name,
+                    "columns": len(ft.columns),
+                    "source": source,
+                    "options": ", ".join(opts) if opts else "",
+                }
+            )
+        print(SQLResult(["table_name", "server", "columns", "source", "options"], rows))
 
     def _cmd_list_foreign_servers(self) -> None:
         servers = self._engine._foreign_servers
@@ -552,11 +688,13 @@ class UQAShell:
         rows = []
         for name, srv in sorted(servers.items()):
             opts = " ".join(f"{k}={v}" for k, v in srv.options.items())
-            rows.append({
-                "server_name": name,
-                "fdw_type": srv.fdw_type,
-                "options": opts,
-            })
+            rows.append(
+                {
+                    "server_name": name,
+                    "fdw_type": srv.fdw_type,
+                    "options": opts,
+                }
+            )
         print(SQLResult(["server_name", "fdw_type", "options"], rows))
 
     def _cmd_list_graphs(self) -> None:
@@ -566,11 +704,13 @@ class UQAShell:
             return
         rows = []
         for name, store in sorted(graphs.items()):
-            rows.append({
-                "graph_name": name,
-                "vertices": len(store._vertices),
-                "edges": len(store._edges),
-            })
+            rows.append(
+                {
+                    "graph_name": name,
+                    "vertices": len(store._vertices),
+                    "edges": len(store._edges),
+                }
+            )
         print(SQLResult(["graph_name", "vertices", "edges"], rows))
 
     def _cmd_output(self, arg: str) -> None:
@@ -618,6 +758,7 @@ class UQAShell:
     def _print_banner(self) -> None:
         db = self._db_path or ":memory:"
         from uqa import __version__
+
         print(f"usql {__version__} -- UQA interactive SQL shell")
         print(f"Database: {db}")
         print("Type SQL statements terminated by ';'")
@@ -629,10 +770,9 @@ class UQAShell:
 # Entry point
 # ------------------------------------------------------------------
 
+
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="usql -- UQA interactive SQL shell"
-    )
+    parser = argparse.ArgumentParser(description="usql -- UQA interactive SQL shell")
     parser.add_argument(
         "--db",
         metavar="PATH",

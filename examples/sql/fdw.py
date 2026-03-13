@@ -54,26 +54,51 @@ tmp_dir = tempfile.mkdtemp()
 
 # Parquet: product catalog
 products_path = os.path.join(tmp_dir, "products.parquet")
-pq.write_table(pa.table({
-    "product_id": [101, 102, 103, 104, 105],
-    "name": ["Widget", "Gadget", "Gizmo", "Doohickey", "Thingamajig"],
-    "category": ["Tools", "Electronics", "Tools", "Electronics", "Tools"],
-    "price": [29.99, 49.99, 19.99, 99.99, 14.99],
-    "stock": [500, 200, 1000, 50, 800],
-}), products_path)
+pq.write_table(
+    pa.table(
+        {
+            "product_id": [101, 102, 103, 104, 105],
+            "name": ["Widget", "Gadget", "Gizmo", "Doohickey", "Thingamajig"],
+            "category": ["Tools", "Electronics", "Tools", "Electronics", "Tools"],
+            "price": [29.99, 49.99, 19.99, 99.99, 14.99],
+            "stock": [500, 200, 1000, 50, 800],
+        }
+    ),
+    products_path,
+)
 
 # Parquet: order history
 orders_path = os.path.join(tmp_dir, "orders.parquet")
-pq.write_table(pa.table({
-    "order_id": [1, 2, 3, 4, 5, 6, 7, 8],
-    "product_id": [101, 103, 102, 101, 105, 104, 103, 102],
-    "customer": ["Alice", "Bob", "Alice", "Carol", "Bob", "Diana", "Alice", "Carol"],
-    "quantity": [2, 5, 1, 3, 10, 1, 4, 2],
-    "order_date": [
-        "2024-01-15", "2024-01-20", "2024-02-01", "2024-02-10",
-        "2024-03-01", "2024-03-05", "2024-03-10", "2024-04-01",
-    ],
-}), orders_path)
+pq.write_table(
+    pa.table(
+        {
+            "order_id": [1, 2, 3, 4, 5, 6, 7, 8],
+            "product_id": [101, 103, 102, 101, 105, 104, 103, 102],
+            "customer": [
+                "Alice",
+                "Bob",
+                "Alice",
+                "Carol",
+                "Bob",
+                "Diana",
+                "Alice",
+                "Carol",
+            ],
+            "quantity": [2, 5, 1, 3, 10, 1, 4, 2],
+            "order_date": [
+                "2024-01-15",
+                "2024-01-20",
+                "2024-02-01",
+                "2024-02-10",
+                "2024-03-01",
+                "2024-03-05",
+                "2024-03-10",
+                "2024-04-01",
+            ],
+        }
+    ),
+    orders_path,
+)
 
 # CSV: customer info
 customers_path = os.path.join(tmp_dir, "customers.csv")
@@ -110,28 +135,37 @@ print("  Foreign table created (backed by Parquet).")
 # ==================================================================
 # 2. Basic SELECT from foreign table
 # ==================================================================
-show("3. SELECT * FROM products", engine.sql(
-    "SELECT * FROM products ORDER BY product_id"
-))
+show(
+    "3. SELECT * FROM products",
+    engine.sql("SELECT * FROM products ORDER BY product_id"),
+)
 
 
 # ==================================================================
 # 3. WHERE + ORDER BY + LIMIT on foreign table
 # ==================================================================
-show("4. WHERE category = 'Tools' ORDER BY price", engine.sql(
-    "SELECT name, price, stock FROM products "
-    "WHERE category = 'Tools' ORDER BY price"
-))
+show(
+    "4. WHERE category = 'Tools' ORDER BY price",
+    engine.sql(
+        "SELECT name, price, stock FROM products "
+        "WHERE category = 'Tools' ORDER BY price"
+    ),
+)
 
-show("5. WHERE price > 20 LIMIT 3", engine.sql(
-    "SELECT name, price FROM products WHERE price > 20 ORDER BY price DESC LIMIT 3"
-))
+show(
+    "5. WHERE price > 20 LIMIT 3",
+    engine.sql(
+        "SELECT name, price FROM products WHERE price > 20 ORDER BY price DESC LIMIT 3"
+    ),
+)
 
 
 # ==================================================================
 # 4. Aggregation on foreign data
 # ==================================================================
-show("6. Aggregate: category stats", engine.sql("""
+show(
+    "6. Aggregate: category stats",
+    engine.sql("""
     SELECT category,
            COUNT(*) AS num_products,
            AVG(price) AS avg_price,
@@ -139,7 +173,8 @@ show("6. Aggregate: category stats", engine.sql("""
     FROM products
     GROUP BY category
     ORDER BY category
-"""))
+"""),
+)
 
 
 # ==================================================================
@@ -157,27 +192,33 @@ engine.sql(f"""
 print("\n--- 7. CREATE FOREIGN TABLE orders ---")
 print("  Second foreign table created (same server).")
 
-show("8. SELECT from orders", engine.sql(
-    "SELECT * FROM orders ORDER BY order_id LIMIT 5"
-))
+show(
+    "8. SELECT from orders",
+    engine.sql("SELECT * FROM orders ORDER BY order_id LIMIT 5"),
+)
 
 
 # ==================================================================
 # 6. JOIN between two foreign tables
 # ==================================================================
-show("9. JOIN: orders with product details", engine.sql("""
+show(
+    "9. JOIN: orders with product details",
+    engine.sql("""
     SELECT o.order_id, o.customer, p.name AS product, o.quantity,
            p.price * o.quantity AS total
     FROM orders o
     INNER JOIN products p ON o.product_id = p.product_id
     ORDER BY o.order_id
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 7. Aggregation across joined foreign tables
 # ==================================================================
-show("10. Revenue by customer (foreign JOIN + GROUP BY)", engine.sql("""
+show(
+    "10. Revenue by customer (foreign JOIN + GROUP BY)",
+    engine.sql("""
     SELECT o.customer,
            COUNT(*) AS num_orders,
            SUM(p.price * o.quantity) AS total_spent
@@ -185,7 +226,8 @@ show("10. Revenue by customer (foreign JOIN + GROUP BY)", engine.sql("""
     INNER JOIN products p ON o.product_id = p.product_id
     GROUP BY o.customer
     ORDER BY total_spent DESC
-"""))
+"""),
+)
 
 
 # ==================================================================
@@ -203,14 +245,17 @@ engine.sql("""INSERT INTO customer_notes (customer, note) VALUES
     ('Carol', 'New customer, watch for retention')
 """)
 
-show("11. Local + foreign JOIN", engine.sql("""
+show(
+    "11. Local + foreign JOIN",
+    engine.sql("""
     SELECT o.customer, p.name AS product, o.quantity, n.note
     FROM orders o
     INNER JOIN products p ON o.product_id = p.product_id
     INNER JOIN customer_notes n ON o.customer = n.customer
     ORDER BY o.order_id
     LIMIT 5
-"""))
+"""),
+)
 
 
 # ==================================================================
@@ -225,15 +270,18 @@ engine.sql(f"""
     ) SERVER local OPTIONS (source '{customers_path}')
 """)
 
-show("12. SELECT from CSV foreign table", engine.sql(
-    "SELECT * FROM customers ORDER BY customer_id"
-))
+show(
+    "12. SELECT from CSV foreign table",
+    engine.sql("SELECT * FROM customers ORDER BY customer_id"),
+)
 
 
 # ==================================================================
 # 10. Three-way join: local + Parquet + CSV
 # ==================================================================
-show("13. Three-way JOIN: orders + products + customers", engine.sql("""
+show(
+    "13. Three-way JOIN: orders + products + customers",
+    engine.sql("""
     SELECT c.name AS customer, c.tier, c.region,
            p.name AS product, o.quantity,
            p.price * o.quantity AS total
@@ -242,7 +290,8 @@ show("13. Three-way JOIN: orders + products + customers", engine.sql("""
     INNER JOIN customers c ON o.customer = c.name
     ORDER BY total DESC
     LIMIT 5
-"""))
+"""),
+)
 
 
 # ==================================================================
@@ -258,19 +307,23 @@ engine.sql(f"""
     ) SERVER local OPTIONS (source 'read_parquet(''{products_path}'')')
 """)
 
-show("14. Explicit read_parquet() source", engine.sql(
-    "SELECT name, price FROM products_v2 ORDER BY price DESC LIMIT 3"
-))
+show(
+    "14. Explicit read_parquet() source",
+    engine.sql("SELECT name, price FROM products_v2 ORDER BY price DESC LIMIT 3"),
+)
 
 
 # ==================================================================
 # 12. information_schema: foreign tables visible
 # ==================================================================
-show("15. information_schema.tables", engine.sql("""
+show(
+    "15. information_schema.tables",
+    engine.sql("""
     SELECT table_name, table_type
     FROM information_schema.tables
     ORDER BY table_type, table_name
-"""))
+"""),
+)
 
 
 # ==================================================================
@@ -333,6 +386,7 @@ engine2.close()
 # ==================================================================
 engine.close()
 import shutil
+
 shutil.rmtree(tmp_dir)
 
 

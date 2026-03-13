@@ -40,11 +40,7 @@ class TestExecuteArrow:
     def test_basic(self, engine: Engine) -> None:
         import pyarrow as pa
 
-        table = (
-            engine.query(table="docs")
-            .term("graph", field="title")
-            .execute_arrow()
-        )
+        table = engine.query(table="docs").term("graph", field="title").execute_arrow()
         assert isinstance(table, pa.Table)
         assert "_doc_id" in table.column_names
         assert "_score" in table.column_names
@@ -76,11 +72,7 @@ class TestExecuteArrow:
     def test_column_types(self, engine: Engine) -> None:
         import pyarrow as pa
 
-        table = (
-            engine.query(table="docs")
-            .term("graph", field="title")
-            .execute_arrow()
-        )
+        table = engine.query(table="docs").term("graph", field="title").execute_arrow()
         assert table.column("_doc_id").type == pa.int64()
         assert table.column("_score").type == pa.float64()
 
@@ -90,11 +82,7 @@ class TestExecuteParquet:
         import pyarrow.parquet as pq
 
         path = str(tmp_path / "fluent.parquet")
-        (
-            engine.query(table="docs")
-            .term("graph", field="title")
-            .execute_parquet(path)
-        )
+        (engine.query(table="docs").term("graph", field="title").execute_parquet(path))
         table = pq.read_table(path)
         assert table.num_rows >= 1
         assert "_doc_id" in table.column_names
@@ -111,7 +99,10 @@ class TestExecuteParquet:
         parquet_table = pq.read_table(path)
 
         assert arrow_table.num_rows == parquet_table.num_rows
-        assert arrow_table.column("_doc_id").to_pylist() == parquet_table.column("_doc_id").to_pylist()
+        assert (
+            arrow_table.column("_doc_id").to_pylist()
+            == parquet_table.column("_doc_id").to_pylist()
+        )
 
     def test_empty(self, engine: Engine, tmp_path) -> None:
         import pyarrow.parquet as pq

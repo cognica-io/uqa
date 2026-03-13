@@ -15,7 +15,7 @@ Section 6.4, Paper 2: Specialized indexes for graph query processing.
 
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -136,9 +136,7 @@ class PathIndex:
         return idx
 
     @staticmethod
-    def _follow_path(
-        graph: GraphStore, start: int, labels: list[str]
-    ) -> set[int]:
+    def _follow_path(graph: GraphStore, start: int, labels: list[str]) -> set[int]:
         current: set[int] = {start}
         for label in labels:
             next_set: set[int] = set()

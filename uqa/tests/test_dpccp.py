@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import pytest
 
-from uqa.planner.join_graph import JoinGraph, JoinEdge, JoinNode
-from uqa.planner.join_enumerator import DPccp, JoinPlan
-
+from uqa.planner.join_enumerator import DPccp
+from uqa.planner.join_graph import JoinGraph
 
 # ── JoinGraph unit tests ─────────────────────────────────────────────
+
 
 class TestJoinGraph:
     def test_add_node(self) -> None:
@@ -74,6 +74,7 @@ class TestJoinGraph:
 
 # ── DPccp unit tests ─────────────────────────────────────────────────
 
+
 class _FakeOp:
     """Minimal operator stub for testing."""
 
@@ -111,8 +112,8 @@ class TestDPccp:
         g.add_node("a", _FakeOp("a"), None, 1000.0)
         g.add_node("b", _FakeOp("b"), None, 10.0)
         g.add_node("c", _FakeOp("c"), None, 500.0)
-        g.add_edge(0, 1, "id", "a_id", 0.01)   # a-b
-        g.add_edge(1, 2, "id", "b_id", 0.01)   # b-c
+        g.add_edge(0, 1, "id", "a_id", 0.01)  # a-b
+        g.add_edge(1, 2, "id", "b_id", 0.01)  # b-c
 
         plan = DPccp(g).optimize()
         assert plan.relations == frozenset({0, 1, 2})
@@ -194,25 +195,49 @@ class TestDPccp:
 
 # ── JoinOrderOptimizer unit tests ────────────────────────────────────
 
+
 class TestJoinOrderOptimizer:
     def test_three_way_join_produces_operator(self) -> None:
-        from uqa.planner.join_order import JoinOrderOptimizer
-        from uqa.joins.inner import InnerJoinOperator
         from uqa.joins.index import IndexJoinOperator
+        from uqa.joins.inner import InnerJoinOperator
+        from uqa.planner.join_order import JoinOrderOptimizer
 
         relations = [
-            {"alias": "a", "operator": _FakeOp("a"), "table": None,
-             "cardinality": 1000.0, "column_stats": {}},
-            {"alias": "b", "operator": _FakeOp("b"), "table": None,
-             "cardinality": 10.0, "column_stats": {}},
-            {"alias": "c", "operator": _FakeOp("c"), "table": None,
-             "cardinality": 500.0, "column_stats": {}},
+            {
+                "alias": "a",
+                "operator": _FakeOp("a"),
+                "table": None,
+                "cardinality": 1000.0,
+                "column_stats": {},
+            },
+            {
+                "alias": "b",
+                "operator": _FakeOp("b"),
+                "table": None,
+                "cardinality": 10.0,
+                "column_stats": {},
+            },
+            {
+                "alias": "c",
+                "operator": _FakeOp("c"),
+                "table": None,
+                "cardinality": 500.0,
+                "column_stats": {},
+            },
         ]
         predicates = [
-            {"left_alias": "a", "right_alias": "b",
-             "left_field": "id", "right_field": "a_id"},
-            {"left_alias": "b", "right_alias": "c",
-             "left_field": "id", "right_field": "b_id"},
+            {
+                "left_alias": "a",
+                "right_alias": "b",
+                "left_field": "id",
+                "right_field": "a_id",
+            },
+            {
+                "left_alias": "b",
+                "right_alias": "c",
+                "left_field": "id",
+                "right_field": "b_id",
+            },
         ]
 
         optimizer = JoinOrderOptimizer()
@@ -224,22 +249,28 @@ class TestJoinOrderOptimizer:
 
 # ── SQL integration tests ────────────────────────────────────────────
 
+
 class TestDPccpSQLIntegration:
     def _make_engine(self):
         from uqa.engine import Engine
+
         engine = Engine()
 
         # Create tables with varying sizes to make join order matter
         engine.sql("CREATE TABLE departments (id INT PRIMARY KEY, name TEXT)")
-        engine.sql("CREATE TABLE employees (id INT PRIMARY KEY, name TEXT, dept_id INT)")
-        engine.sql("CREATE TABLE projects (id INT PRIMARY KEY, title TEXT, lead_id INT)")
-        engine.sql("CREATE TABLE assignments (id INT PRIMARY KEY, emp_id INT, proj_id INT)")
+        engine.sql(
+            "CREATE TABLE employees (id INT PRIMARY KEY, name TEXT, dept_id INT)"
+        )
+        engine.sql(
+            "CREATE TABLE projects (id INT PRIMARY KEY, title TEXT, lead_id INT)"
+        )
+        engine.sql(
+            "CREATE TABLE assignments (id INT PRIMARY KEY, emp_id INT, proj_id INT)"
+        )
 
         # Populate with different cardinalities
         for i in range(1, 4):
-            engine.sql(
-                f"INSERT INTO departments (id, name) VALUES ({i}, 'dept_{i}')"
-            )
+            engine.sql(f"INSERT INTO departments (id, name) VALUES ({i}, 'dept_{i}')")
         for i in range(1, 21):
             engine.sql(
                 f"INSERT INTO employees (id, name, dept_id) "

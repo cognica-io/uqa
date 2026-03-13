@@ -20,10 +20,9 @@ Performance structures (Phase 2, Section 3.2.2):
 from __future__ import annotations
 
 import json
-import sqlite3
 import struct
 from collections import defaultdict
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from uqa.core.posting_list import PostingList
 from uqa.core.types import Payload, PostingEntry
@@ -31,6 +30,7 @@ from uqa.storage.inverted_index import IndexedTerms
 
 if TYPE_CHECKING:
     from uqa.core.types import DocId, FieldName, IndexStats
+    from uqa.storage.managed_connection import SQLiteConnection
 
 
 class SQLiteInvertedIndex:
@@ -44,7 +44,7 @@ class SQLiteInvertedIndex:
 
     def __init__(
         self,
-        conn: sqlite3.Connection,
+        conn: SQLiteConnection,
         table_name: str,
         analyzer: Any | None = None,
         field_analyzers: dict[str, Any] | None = None,
@@ -54,7 +54,9 @@ class SQLiteInvertedIndex:
         self._conn = conn
         self._table_name = table_name
         self._analyzer = analyzer or DEFAULT_ANALYZER
-        self._field_analyzers: dict[str, Any] = dict(field_analyzers) if field_analyzers else {}
+        self._field_analyzers: dict[str, Any] = (
+            dict(field_analyzers) if field_analyzers else {}
+        )
         self._known_fields: set[str] = set()
         self._has_atomic_fetch = hasattr(conn, "execute_fetchall")
         self._cached_stats: IndexStats | None = None
@@ -81,13 +83,12 @@ class SQLiteInvertedIndex:
         # Discover fields that already have inverted tables from a
         # previous session so we do not attempt to re-create them.
         rows = self._fetchall(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name LIKE ?",
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?",
             (f"_inverted_{table_name}_%",),
         )
         prefix = f"_inverted_{table_name}_"
         for (name,) in rows:
-            field = name[len(prefix):]
+            field = name[len(prefix) :]
             self._known_fields.add(field)
 
     # -- Thread-safe query helpers -------------------------------------
@@ -177,7 +178,11 @@ class SQLiteInvertedIndex:
 
     def _tokenize(self, text: str, field: str | None = None) -> list[str]:
         """Tokenize text using the appropriate field analyzer."""
-        analyzer = self._field_analyzers.get(field, self._analyzer) if field else self._analyzer
+        analyzer = (
+            self._field_analyzers.get(field, self._analyzer)
+            if field
+            else self._analyzer
+        )
         return analyzer.analyze(text)
 
     # -- Positions encoding helpers ------------------------------------
@@ -208,9 +213,7 @@ class SQLiteInvertedIndex:
 
     # -- Indexing -------------------------------------------------------
 
-    def add_document(
-        self, doc_id: DocId, fields: dict[FieldName, str]
-    ) -> IndexedTerms:
+    def add_document(self, doc_id: DocId, fields: dict[FieldName, str]) -> IndexedTerms:
         """Index a document by tokenizing each field.
 
         Returns an ``IndexedTerms`` with per-field lengths and posting
@@ -237,9 +240,7 @@ class SQLiteInvertedIndex:
             for term, positions in term_positions.items():
                 pos_tuple = tuple(positions)
                 tf = len(positions)
-                batch_rows.append(
-                    (term, doc_id, tf, self._encode_positions(pos_tuple))
-                )
+                batch_rows.append((term, doc_id, tf, self._encode_positions(pos_tuple)))
                 result_postings[(field_name, term)] = pos_tuple
 
             self._conn.executemany(
@@ -276,9 +277,7 @@ class SQLiteInvertedIndex:
 
     # -- Restore methods (backward compatibility during migration) ------
 
-    def add_posting(
-        self, field: str, term: str, entry: PostingEntry
-    ) -> None:
+    def add_posting(self, field: str, term: str, entry: PostingEntry) -> None:
         """Add a single posting entry directly (for catalog restore)."""
         self._ensure_field_table(field)
         tbl = self._inverted_table_name(field)
@@ -291,9 +290,7 @@ class SQLiteInvertedIndex:
         )
         self._conn.commit()
 
-    def set_doc_length(
-        self, doc_id: DocId, lengths: dict[FieldName, int]
-    ) -> None:
+    def set_doc_length(self, doc_id: DocId, lengths: dict[FieldName, int]) -> None:
         """Set per-field token lengths for a document (for catalog restore)."""
         for field, length in lengths.items():
             self._conn.execute(
@@ -311,8 +308,7 @@ class SQLiteInvertedIndex:
         call ``add_total_length`` first to create the rows).
         """
         self._conn.execute(
-            f'UPDATE "_field_stats_{self._table_name}" '
-            "SET doc_count = ?",
+            f'UPDATE "_field_stats_{self._table_name}" SET doc_count = ?',
             (count,),
         )
         self._conn.commit()
@@ -365,8 +361,7 @@ class SQLiteInvertedIndex:
                     (length, field),
                 )
             self._conn.execute(
-                f'DELETE FROM "_doc_lengths_{self._table_name}" '
-                "WHERE doc_id = ?",
+                f'DELETE FROM "_doc_lengths_{self._table_name}" WHERE doc_id = ?',
                 (doc_id,),
             )
 
@@ -388,12 +383,8 @@ class SQLiteInvertedIndex:
                 f"WHERE EXISTS (SELECT 1 FROM sqlite_master "
                 f"WHERE type='table' AND name='{skip_tbl}')"
             )
-        self._conn.execute(
-            f'DELETE FROM "_field_stats_{self._table_name}"'
-        )
-        self._conn.execute(
-            f'DELETE FROM "_doc_lengths_{self._table_name}"'
-        )
+        self._conn.execute(f'DELETE FROM "_field_stats_{self._table_name}"')
+        self._conn.execute(f'DELETE FROM "_doc_lengths_{self._table_name}"')
         self._conn.commit()
         self._cached_stats = None
         self._dirty_terms.clear()
@@ -406,8 +397,7 @@ class SQLiteInvertedIndex:
             return PostingList()
         tbl = self._inverted_table_name(field)
         rows = self._fetchall(
-            f'SELECT doc_id, tf, positions FROM "{tbl}" '
-            "WHERE term = ? ORDER BY doc_id",
+            f'SELECT doc_id, tf, positions FROM "{tbl}" WHERE term = ? ORDER BY doc_id',
             (term,),
         )
         entries = [
@@ -525,7 +515,7 @@ class SQLiteInvertedIndex:
         from uqa.core.types import IndexStats
 
         rows = self._fetchall(
-            f'SELECT field, doc_count, total_length '
+            f"SELECT field, doc_count, total_length "
             f'FROM "_field_stats_{self._table_name}"',
         )
 
@@ -568,14 +558,11 @@ class SQLiteInvertedIndex:
         inv_tbl = self._inverted_table_name(field)
 
         # Clear old skips for this term.
-        self._conn.execute(
-            f'DELETE FROM "{skip_tbl}" WHERE term = ?', (term,)
-        )
+        self._conn.execute(f'DELETE FROM "{skip_tbl}" WHERE term = ?', (term,))
 
         # Fetch sorted doc_ids for this term.
         rows = self._fetchall(
-            f'SELECT doc_id FROM "{inv_tbl}" '
-            "WHERE term = ? ORDER BY doc_id",
+            f'SELECT doc_id FROM "{inv_tbl}" WHERE term = ? ORDER BY doc_id',
             (term,),
         )
 
@@ -590,9 +577,7 @@ class SQLiteInvertedIndex:
 
         self._conn.commit()
 
-    def skip_to(
-        self, field: str, term: str, target_doc_id: int
-    ) -> tuple[int, int]:
+    def skip_to(self, field: str, term: str, target_doc_id: int) -> tuple[int, int]:
         """Find the nearest skip entry at or before *target_doc_id*.
 
         Returns ``(skip_doc_id, skip_offset)`` -- the doc_id and its
@@ -615,9 +600,7 @@ class SQLiteInvertedIndex:
 
     # -- Block-max scores ----------------------------------------------
 
-    def build_block_max_scores(
-        self, field: str, term: str, scorer: object
-    ) -> None:
+    def build_block_max_scores(self, field: str, term: str, scorer: object) -> None:
         """Compute and persist per-block maximum scores for a term.
 
         ``scorer`` must have a ``score(tf, dl, df)`` method (e.g. BM25Scorer).
@@ -632,17 +615,14 @@ class SQLiteInvertedIndex:
 
         # Fetch all entries for this term, sorted by doc_id.
         rows = self._fetchall(
-            f'SELECT doc_id, tf FROM "{inv_tbl}" '
-            "WHERE term = ? ORDER BY doc_id",
+            f'SELECT doc_id, tf FROM "{inv_tbl}" WHERE term = ? ORDER BY doc_id',
             (term,),
         )
 
         doc_freq = len(rows)
 
         # Clear old block-max entries for this term.
-        self._conn.execute(
-            f'DELETE FROM "{bm_tbl}" WHERE term = ?', (term,)
-        )
+        self._conn.execute(f'DELETE FROM "{bm_tbl}" WHERE term = ?', (term,))
 
         # Compute per-block maximums.
         for block_start in range(0, len(rows), self.BLOCK_SIZE):
@@ -654,8 +634,7 @@ class SQLiteInvertedIndex:
                 max_score = max(max_score, score)
             block_idx = block_start // self.BLOCK_SIZE
             self._conn.execute(
-                f'INSERT INTO "{bm_tbl}" '
-                "(term, block_idx, max_score) VALUES (?, ?, ?)",
+                f'INSERT INTO "{bm_tbl}" (term, block_idx, max_score) VALUES (?, ?, ?)',
                 (term, block_idx, max_score),
             )
 
@@ -672,30 +651,24 @@ class SQLiteInvertedIndex:
         for (term,) in terms:
             self.build_block_max_scores(field, term, scorer)
 
-    def get_block_max_score(
-        self, field: str, term: str, block_idx: int
-    ) -> float:
+    def get_block_max_score(self, field: str, term: str, block_idx: int) -> float:
         """Return the persisted max score for a given block."""
         if field not in self._known_fields:
             return 0.0
         bm_tbl = self._blockmax_table_name(field)
         row = self._fetchone(
-            f'SELECT max_score FROM "{bm_tbl}" '
-            "WHERE term = ? AND block_idx = ?",
+            f'SELECT max_score FROM "{bm_tbl}" WHERE term = ? AND block_idx = ?',
             (term, block_idx),
         )
         return row[0] if row else 0.0
 
-    def get_all_block_max_scores(
-        self, field: str, term: str
-    ) -> list[float]:
+    def get_all_block_max_scores(self, field: str, term: str) -> list[float]:
         """Return all block-max scores for a (field, term) pair."""
         if field not in self._known_fields:
             return []
         bm_tbl = self._blockmax_table_name(field)
         rows = self._fetchall(
-            f'SELECT max_score FROM "{bm_tbl}" '
-            "WHERE term = ? ORDER BY block_idx",
+            f'SELECT max_score FROM "{bm_tbl}" WHERE term = ? ORDER BY block_idx',
             (term,),
         )
         return [r[0] for r in rows]
@@ -712,12 +685,16 @@ class SQLiteInvertedIndex:
             # Group by term.
             current_term: str | None = None
             scores: list[float] = []
-            for term, block_idx, max_score in rows:
+            for term, _block_idx, max_score in rows:
                 if term != current_term:
                     if current_term is not None:
-                        block_max_index._block_maxes[(self._table_name, field, current_term)] = scores  # type: ignore[union-attr]
+                        block_max_index._block_maxes[
+                            (self._table_name, field, current_term)
+                        ] = scores  # type: ignore[union-attr]
                     current_term = term
                     scores = []
                 scores.append(max_score)
             if current_term is not None:
-                block_max_index._block_maxes[(self._table_name, field, current_term)] = scores  # type: ignore[union-attr]
+                block_max_index._block_maxes[
+                    (self._table_name, field, current_term)
+                ] = scores  # type: ignore[union-attr]

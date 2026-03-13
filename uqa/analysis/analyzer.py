@@ -98,6 +98,7 @@ class Analyzer:
 
 # -- Built-in presets -------------------------------------------------------
 
+
 def whitespace_analyzer() -> Analyzer:
     """WhitespaceTokenizer + LowerCaseFilter.
 

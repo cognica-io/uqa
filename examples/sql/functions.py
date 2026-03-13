@@ -42,24 +42,42 @@ engine.sql("""
 rng = np.random.RandomState(42)
 
 articles = [
-    ('transformer architecture for nlp',
-     'the transformer model uses self attention for sequence processing',
-     'nlp', 2017),
-    ('bert pre-training deep transformers',
-     'bert applies masked language modeling for bidirectional representations',
-     'nlp', 2019),
-    ('graph neural networks survey',
-     'graph neural networks aggregate neighbor features for node classification',
-     'graph', 2020),
-    ('vision transformer for images',
-     'vision transformer processes image patches with transformer encoder',
-     'cv', 2021),
-    ('diffusion models for generation',
-     'diffusion models generate images through iterative denoising steps',
-     'cv', 2021),
-    ('reinforcement learning from feedback',
-     'rlhf trains language models using human preference reward signals',
-     'alignment', 2022),
+    (
+        "transformer architecture for nlp",
+        "the transformer model uses self attention for sequence processing",
+        "nlp",
+        2017,
+    ),
+    (
+        "bert pre-training deep transformers",
+        "bert applies masked language modeling for bidirectional representations",
+        "nlp",
+        2019,
+    ),
+    (
+        "graph neural networks survey",
+        "graph neural networks aggregate neighbor features for node classification",
+        "graph",
+        2020,
+    ),
+    (
+        "vision transformer for images",
+        "vision transformer processes image patches with transformer encoder",
+        "cv",
+        2021,
+    ),
+    (
+        "diffusion models for generation",
+        "diffusion models generate images through iterative denoising steps",
+        "cv",
+        2021,
+    ),
+    (
+        "reinforcement learning from feedback",
+        "rlhf trains language models using human preference reward signals",
+        "alignment",
+        2022,
+    ),
 ]
 for title, body, cat, year in articles:
     vec = rng.randn(8).astype(np.float32)
@@ -81,30 +99,45 @@ engine.sql("""
     )
 """)
 
-engine.add_document(101, {
-    "order_id": "ORD-001", "customer": "Alice",
-    "items": [
-        {"name": "Widget A", "price": 29.99, "qty": 2},
-        {"name": "Widget B", "price": 49.99, "qty": 1},
-    ],
-    "shipping": {"city": "Seoul", "method": "express", "cost": 15.0},
-}, table="orders")
-engine.add_document(102, {
-    "order_id": "ORD-002", "customer": "Bob",
-    "items": [
-        {"name": "Gadget X", "price": 99.99, "qty": 1},
-    ],
-    "shipping": {"city": "Busan", "method": "standard", "cost": 5.0},
-}, table="orders")
-engine.add_document(103, {
-    "order_id": "ORD-003", "customer": "Charlie",
-    "items": [
-        {"name": "Widget A", "price": 29.99, "qty": 3},
-        {"name": "Gadget X", "price": 99.99, "qty": 2},
-        {"name": "Part Z", "price": 9.99, "qty": 10},
-    ],
-    "shipping": {"city": "Seoul", "method": "express", "cost": 20.0},
-}, table="orders")
+engine.add_document(
+    101,
+    {
+        "order_id": "ORD-001",
+        "customer": "Alice",
+        "items": [
+            {"name": "Widget A", "price": 29.99, "qty": 2},
+            {"name": "Widget B", "price": 49.99, "qty": 1},
+        ],
+        "shipping": {"city": "Seoul", "method": "express", "cost": 15.0},
+    },
+    table="orders",
+)
+engine.add_document(
+    102,
+    {
+        "order_id": "ORD-002",
+        "customer": "Bob",
+        "items": [
+            {"name": "Gadget X", "price": 99.99, "qty": 1},
+        ],
+        "shipping": {"city": "Busan", "method": "standard", "cost": 5.0},
+    },
+    table="orders",
+)
+engine.add_document(
+    103,
+    {
+        "order_id": "ORD-003",
+        "customer": "Charlie",
+        "items": [
+            {"name": "Widget A", "price": 29.99, "qty": 3},
+            {"name": "Gadget X", "price": 99.99, "qty": 2},
+            {"name": "Part Z", "price": 9.99, "qty": 10},
+        ],
+        "shipping": {"city": "Seoul", "method": "express", "cost": 20.0},
+    },
+    table="orders",
+)
 
 
 def show(label, result):
@@ -134,34 +167,46 @@ print("=" * 70)
 # ==================================================================
 # text_match: BM25 full-text search
 # ==================================================================
-show("1. text_match: 'transformer'", engine.sql(
-    "SELECT title, text_match(title, 'transformer') AS score "
-    "FROM articles WHERE text_match(title, 'transformer') ORDER BY score DESC"
-))
+show(
+    "1. text_match: 'transformer'",
+    engine.sql(
+        "SELECT title, text_match(title, 'transformer') AS score "
+        "FROM articles WHERE text_match(title, 'transformer') ORDER BY score DESC"
+    ),
+)
 
-show("2. text_match: multi-term 'graph neural'", engine.sql(
-    "SELECT title, text_match(body, 'graph neural') AS score "
-    "FROM articles WHERE text_match(body, 'graph neural')"
-))
+show(
+    "2. text_match: multi-term 'graph neural'",
+    engine.sql(
+        "SELECT title, text_match(body, 'graph neural') AS score "
+        "FROM articles WHERE text_match(body, 'graph neural')"
+    ),
+)
 
 
 # ==================================================================
 # text_match + relational filter
 # ==================================================================
-show("3. text_match + year filter", engine.sql(
-    "SELECT title, year FROM articles "
-    "WHERE text_match(title, 'transformer') AND year >= 2019 "
-    "ORDER BY year"
-))
+show(
+    "3. text_match + year filter",
+    engine.sql(
+        "SELECT title, year FROM articles "
+        "WHERE text_match(title, 'transformer') AND year >= 2019 "
+        "ORDER BY year"
+    ),
+)
 
 
 # ==================================================================
 # bayesian_match: calibrated probability
 # ==================================================================
-show("4. bayesian_match: P(relevant|'attention')", engine.sql(
-    "SELECT title, bayesian_match(body, 'attention') AS prob "
-    "FROM articles WHERE bayesian_match(body, 'attention') ORDER BY prob DESC"
-))
+show(
+    "4. bayesian_match: P(relevant|'attention')",
+    engine.sql(
+        "SELECT title, bayesian_match(body, 'attention') AS prob "
+        "FROM articles WHERE bayesian_match(body, 'attention') ORDER BY prob DESC"
+    ),
+)
 
 
 # ==================================================================
@@ -170,86 +215,110 @@ show("4. bayesian_match: P(relevant|'attention')", engine.sql(
 query_vec = rng.randn(8).astype(np.float32)
 query_vec = query_vec / np.linalg.norm(query_vec)
 
-show("5. knn_match(embedding, $1, 3): top-3 nearest", engine.sql(
-    "SELECT title, _score FROM articles "
-    "WHERE knn_match(embedding, $1, 3) ORDER BY _score DESC",
-    params=[query_vec],
-))
+show(
+    "5. knn_match(embedding, $1, 3): top-3 nearest",
+    engine.sql(
+        "SELECT title, _score FROM articles "
+        "WHERE knn_match(embedding, $1, 3) ORDER BY _score DESC",
+        params=[query_vec],
+    ),
+)
 
 
 # ==================================================================
 # knn_match + relational filter
 # ==================================================================
-show("6. knn_match + category filter", engine.sql(
-    "SELECT title, category, _score FROM articles "
-    "WHERE knn_match(embedding, $1, 5) AND category = 'nlp' "
-    "ORDER BY _score DESC",
-    params=[query_vec],
-))
+show(
+    "6. knn_match + category filter",
+    engine.sql(
+        "SELECT title, category, _score FROM articles "
+        "WHERE knn_match(embedding, $1, 5) AND category = 'nlp' "
+        "ORDER BY _score DESC",
+        params=[query_vec],
+    ),
+)
 
 
 # ==================================================================
 # FROM text_search: text search as table function
 # ==================================================================
-show("7. FROM text_search()", engine.sql(
-    "SELECT title, _score FROM text_search('transformer model', 'title', 'articles') "
-    "ORDER BY _score DESC"
-))
+show(
+    "7. FROM text_search()",
+    engine.sql(
+        "SELECT title, _score FROM text_search('transformer model', 'title', 'articles') "
+        "ORDER BY _score DESC"
+    ),
+)
 
 
 # ==================================================================
 # path_agg: per-row nested array aggregation
 # ==================================================================
-show("8. path_agg: SUM(items.price)", engine.sql(
-    "SELECT path_agg('items.price', 'sum') AS total FROM orders"
-))
+show(
+    "8. path_agg: SUM(items.price)",
+    engine.sql("SELECT path_agg('items.price', 'sum') AS total FROM orders"),
+)
 
-show("9. path_agg: COUNT(items.name)", engine.sql(
-    "SELECT path_agg('items.name', 'count') AS item_count FROM orders"
-))
+show(
+    "9. path_agg: COUNT(items.name)",
+    engine.sql("SELECT path_agg('items.name', 'count') AS item_count FROM orders"),
+)
 
-show("10. path_agg: AVG(items.price)", engine.sql(
-    "SELECT path_agg('items.price', 'avg') AS avg_price FROM orders"
-))
+show(
+    "10. path_agg: AVG(items.price)",
+    engine.sql("SELECT path_agg('items.price', 'avg') AS avg_price FROM orders"),
+)
 
-show("11. path_agg: MIN + MAX", engine.sql(
-    "SELECT path_agg('items.price', 'min') AS lo, "
-    "path_agg('items.price', 'max') AS hi FROM orders"
-))
+show(
+    "11. path_agg: MIN + MAX",
+    engine.sql(
+        "SELECT path_agg('items.price', 'min') AS lo, "
+        "path_agg('items.price', 'max') AS hi FROM orders"
+    ),
+)
 
 
 # ==================================================================
 # path_value: access nested field
 # ==================================================================
-show("12. path_value: shipping.city", engine.sql(
-    "SELECT path_value('shipping.city') AS city, "
-    "path_value('shipping.cost') AS cost FROM orders"
-))
+show(
+    "12. path_value: shipping.city",
+    engine.sql(
+        "SELECT path_value('shipping.city') AS city, "
+        "path_value('shipping.cost') AS cost FROM orders"
+    ),
+)
 
 
 # ==================================================================
 # path_filter: hierarchical WHERE clause
 # ==================================================================
-show("13. path_filter: shipping.city = 'Seoul'", engine.sql(
-    "SELECT * FROM orders WHERE path_filter('shipping.city', 'Seoul')"
-))
+show(
+    "13. path_filter: shipping.city = 'Seoul'",
+    engine.sql("SELECT * FROM orders WHERE path_filter('shipping.city', 'Seoul')"),
+)
 
-show("14. path_filter: shipping.cost > 10", engine.sql(
-    "SELECT * FROM orders WHERE path_filter('shipping.cost', '>', 10)"
-))
+show(
+    "14. path_filter: shipping.cost > 10",
+    engine.sql("SELECT * FROM orders WHERE path_filter('shipping.cost', '>', 10)"),
+)
 
-show("15. path_filter: items.name = 'Widget A' (any-match)", engine.sql(
-    "SELECT * FROM orders WHERE path_filter('items.name', 'Widget A')"
-))
+show(
+    "15. path_filter: items.name = 'Widget A' (any-match)",
+    engine.sql("SELECT * FROM orders WHERE path_filter('items.name', 'Widget A')"),
+)
 
 
 # ==================================================================
 # Combined: path_filter + path_agg
 # ==================================================================
-show("16. Seoul orders total", engine.sql(
-    "SELECT path_agg('items.price', 'sum') AS total "
-    "FROM orders WHERE path_filter('shipping.city', 'Seoul')"
-))
+show(
+    "16. Seoul orders total",
+    engine.sql(
+        "SELECT path_agg('items.price', 'sum') AS total "
+        "FROM orders WHERE path_filter('shipping.city', 'Seoul')"
+    ),
+)
 
 
 print("\n" + "=" * 70)

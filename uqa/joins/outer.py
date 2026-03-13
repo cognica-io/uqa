@@ -58,18 +58,14 @@ class LeftOuterJoinOperator(JoinOperator):
                         **left_entry.payload.fields,
                         **right_entry.payload.fields,
                     }
-                    merged_score = (
-                        left_entry.payload.score + right_entry.payload.score
-                    )
+                    merged_score = left_entry.payload.score + right_entry.payload.score
                     result.append(
                         GeneralizedPostingEntry(
                             doc_ids=(
                                 _entry_doc_id(left_entry),
                                 _entry_doc_id(right_entry),
                             ),
-                            payload=Payload(
-                                score=merged_score, fields=merged_fields
-                            ),
+                            payload=Payload(score=merged_score, fields=merged_fields),
                         )
                     )
             else:
@@ -113,9 +109,7 @@ class RightOuterJoinOperator(JoinOperator):
             right_field=condition.left_field,
         )
         super().__init__(left, right, swapped_condition)
-        self._inner = LeftOuterJoinOperator(
-            right, left, swapped_condition
-        )
+        self._inner = LeftOuterJoinOperator(right, left, swapped_condition)
 
     def execute(self, context: object) -> GeneralizedPostingList:
         return self._inner.execute(context)
@@ -151,14 +145,8 @@ class FullOuterJoinOperator(JoinOperator):
         result: list[GeneralizedPostingEntry] = []
 
         for left_entry in left_entries:
-            left_key = left_entry.payload.fields.get(
-                self.condition.left_field
-            )
-            matches = (
-                right_index.get(left_key, [])
-                if left_key is not None
-                else []
-            )
+            left_key = left_entry.payload.fields.get(self.condition.left_field)
+            matches = right_index.get(left_key, []) if left_key is not None else []
 
             if matches:
                 for right_entry in matches:
@@ -167,9 +155,7 @@ class FullOuterJoinOperator(JoinOperator):
                         **left_entry.payload.fields,
                         **right_entry.payload.fields,
                     }
-                    merged_score = (
-                        left_entry.payload.score + right_entry.payload.score
-                    )
+                    merged_score = left_entry.payload.score + right_entry.payload.score
                     result.append(
                         GeneralizedPostingEntry(
                             doc_ids=(

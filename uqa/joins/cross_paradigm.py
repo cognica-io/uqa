@@ -13,7 +13,6 @@ import numpy as np
 
 from uqa.core.posting_list import GeneralizedPostingList
 from uqa.core.types import GeneralizedPostingEntry, Payload, PostingEntry
-from uqa.joins.base import JoinCondition, JoinOperator
 
 if TYPE_CHECKING:
     from uqa.graph.store import GraphStore
@@ -48,6 +47,7 @@ class TextSimilarityJoinOperator:
         for left_entry in left_entries:
             left_text = left_entry.payload.fields.get(self.left_field, "")
             from uqa.analysis.analyzer import DEFAULT_ANALYZER
+
             left_tokens = set(DEFAULT_ANALYZER.analyze(str(left_text)))
             if not left_tokens:
                 continue
@@ -140,9 +140,7 @@ class VectorSimilarityJoinOperator:
                     result.append(
                         GeneralizedPostingEntry(
                             doc_ids=(left_entry.doc_id, right_entry.doc_id),
-                            payload=Payload(
-                                score=cosine_sim, fields=merged_fields
-                            ),
+                            payload=Payload(score=cosine_sim, fields=merged_fields),
                         )
                     )
 
@@ -221,9 +219,7 @@ class HybridJoinOperator:
                     result.append(
                         GeneralizedPostingEntry(
                             doc_ids=(left_entry.doc_id, right_entry.doc_id),
-                            payload=Payload(
-                                score=cosine_sim, fields=merged_fields
-                            ),
+                            payload=Payload(score=cosine_sim, fields=merged_fields),
                         )
                     )
 
@@ -256,7 +252,6 @@ class GraphJoinOperator:
         self.label = label
 
     def execute(self, context: object) -> GeneralizedPostingList:
-        from uqa.graph.store import GraphStore
 
         graph: GraphStore = context.graph_store  # type: ignore[attr-defined]
         left_entries = self._get_entries(self.left, context)
@@ -317,7 +312,6 @@ class CrossParadigmJoinOperator:
         self.doc_field = doc_field
 
     def execute(self, context: object) -> GeneralizedPostingList:
-        from uqa.graph.store import GraphStore
 
         graph: GraphStore = context.graph_store  # type: ignore[attr-defined]
         left_entries = self._get_entries(self.left, context)

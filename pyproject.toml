@@ -5,10 +5,41 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "uqa"
 version = "0.12.0"
-description = "Unified Query Algebra database prototype"
+description = "Unified Query Algebra — a multi-paradigm database engine unifying relational, text, vector, graph, and geospatial queries"
 license = "AGPL-3.0-only"
 requires-python = ">=3.12"
 readme = "README.md"
+authors = [
+    { name = "Jaepil Jeong", email = "jaepil@cognica.io" },
+]
+keywords = [
+    "database",
+    "sql",
+    "query-algebra",
+    "information-retrieval",
+    "vector-search",
+    "graph-database",
+    "geospatial",
+    "multi-paradigm",
+    "postgresql",
+    "bm25",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Topic :: Database :: Database Engines/Servers",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Text Processing :: Indexing",
+    "Typing :: Typed",
+]
 dependencies = [
     "numpy>=1.26",
     "pyarrow>=20.0",
@@ -20,10 +51,18 @@ dependencies = [
     "pygments>=2.17",
 ]
 
+[project.urls]
+Homepage = "https://github.com/cognica-io/uqa"
+Repository = "https://github.com/cognica-io/uqa"
+Issues = "https://github.com/cognica-io/uqa/issues"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "hypothesis>=6.0",
+    "ruff>=0.11",
+    "pyright>=1.1",
+    "pre-commit>=4.0",
 ]
 benchmark = [
     "pytest>=8.0",
@@ -37,3 +76,69 @@ usql = "uqa.cli:main"
 testpaths = ["uqa/tests"]
 python_files = ["test_*.py", "bench_*.py"]
 markers = ["benchmark: performance benchmark tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "W",      # pycodestyle warnings
+    "I",      # isort
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "SIM",    # flake8-simplify
+    "TCH",    # flake8-type-checking
+    "RUF",    # ruff-specific rules
+    "PIE",    # flake8-pie
+    "PT",     # flake8-pytest-style
+    "C4",     # flake8-comprehensions
+    "PGH",    # pygrep-hooks
+]
+ignore = [
+    "E501",    # line too long (formatter handles this)
+    "E741",    # ambiguous variable name (common in math-heavy code)
+    "UP007",   # use X | Y for union types (not always clearer)
+    "SIM108",  # use ternary operator (sometimes less readable)
+    "SIM105",  # use contextlib.suppress (try/except pass is fine)
+    "SIM114",  # combine if branches (sometimes less readable)
+    "SIM116",  # use dict instead of if/elif (not always better)
+    "B008",    # function call in default argument (pydantic pattern)
+    "B905",    # zip without strict= (too noisy for existing code)
+    "PT011",   # pytest.raises too broad (existing tests)
+    "PT012",   # pytest.raises with multiple statements (existing tests)
+    "RUF012",  # mutable class variables (ClassVar annotation)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["uqa"]
+
+[tool.ruff.lint.per-file-ignores]
+"uqa/sql/compiler.py" = ["C416"]
+"uqa/tests/*" = ["B011", "B017", "PT"]
+"benchmarks/*" = ["PT"]
+"examples/*" = ["B", "E402", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+include = ["uqa"]
+exclude = ["uqa/tests", "benchmarks", "examples"]
+reportMissingImports = true
+reportMissingTypeStubs = false
+reportUnusedImport = false
+# pglast AST nodes type fields as Optional even when guaranteed present
+# in specific statement contexts. pyarrow.compute functions are not
+# fully typed in pyarrow's stubs. These rules produce false positives
+# at scale in AST-processing and Arrow-based execution code.
+reportOptionalSubscript = false
+reportOptionalMemberAccess = false
+reportOptionalIterable = false
+reportAttributeAccessIssue = false

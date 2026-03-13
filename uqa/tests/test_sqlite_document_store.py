@@ -14,7 +14,6 @@ import pytest
 
 from uqa.storage.sqlite_document_store import SQLiteDocumentStore
 
-
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
@@ -85,33 +84,25 @@ class TestCRUD:
 
 class TestTypes:
     def test_integer_column(self, tmp_path):
-        conn, store = _make_store(
-            tmp_path, columns=[("val", "int")]
-        )
+        conn, store = _make_store(tmp_path, columns=[("val", "int")])
         store.put(1, {"val": 42})
         assert store.get_field(1, "val") == 42
         conn.close()
 
     def test_text_column(self, tmp_path):
-        conn, store = _make_store(
-            tmp_path, columns=[("val", "text")]
-        )
+        conn, store = _make_store(tmp_path, columns=[("val", "text")])
         store.put(1, {"val": "hello"})
         assert store.get_field(1, "val") == "hello"
         conn.close()
 
     def test_real_column(self, tmp_path):
-        conn, store = _make_store(
-            tmp_path, columns=[("val", "float")]
-        )
+        conn, store = _make_store(tmp_path, columns=[("val", "float")])
         store.put(1, {"val": 3.14})
         assert store.get_field(1, "val") == pytest.approx(3.14)
         conn.close()
 
     def test_boolean_stored_as_integer(self, tmp_path):
-        conn, store = _make_store(
-            tmp_path, columns=[("val", "boolean")]
-        )
+        conn, store = _make_store(tmp_path, columns=[("val", "boolean")])
         store.put(1, {"val": 1})
         store.put(2, {"val": 0})
         assert store.get_field(1, "val") == 1
@@ -119,9 +110,7 @@ class TestTypes:
         conn.close()
 
     def test_blob_column(self, tmp_path):
-        conn, store = _make_store(
-            tmp_path, columns=[("val", "blob")]
-        )
+        conn, store = _make_store(tmp_path, columns=[("val", "blob")])
         data = b"\x00\x01\x02\x03"
         store.put(1, {"val": data})
         assert store.get_field(1, "val") == data
@@ -301,9 +290,7 @@ class TestEvalPath:
 
     def test_nested_path_falls_back_to_dict_traversal(self, tmp_path):
         """SQLite stores flat rows, so nested paths go through get() + HierarchicalDocument."""
-        conn, store = _make_store(
-            tmp_path, columns=[("name", "text")]
-        )
+        conn, store = _make_store(tmp_path, columns=[("name", "text")])
         # Nested data cannot be directly stored in a flat SQLite column,
         # but if get() returns a dict we can still traverse it.
         # Since the store only has flat columns, a multi-level path on
@@ -328,12 +315,8 @@ class TestEvalPath:
 class TestTableIsolation:
     def test_two_tables_independent(self, tmp_path):
         conn = sqlite3.connect(str(tmp_path / "shared.db"))
-        store_a = SQLiteDocumentStore(
-            conn, "alpha", [("x", "integer"), ("y", "text")]
-        )
-        store_b = SQLiteDocumentStore(
-            conn, "beta", [("p", "real"), ("q", "text")]
-        )
+        store_a = SQLiteDocumentStore(conn, "alpha", [("x", "integer"), ("y", "text")])
+        store_b = SQLiteDocumentStore(conn, "beta", [("p", "real"), ("q", "text")])
 
         store_a.put(1, {"x": 10, "y": "a"})
         store_b.put(1, {"p": 3.14, "q": "pi"})
@@ -353,11 +336,10 @@ class TestTableIsolation:
 
     def test_different_schemas(self, tmp_path):
         conn = sqlite3.connect(str(tmp_path / "schemas.db"))
-        store_1 = SQLiteDocumentStore(
-            conn, "narrow", [("val", "integer")]
-        )
+        store_1 = SQLiteDocumentStore(conn, "narrow", [("val", "integer")])
         store_2 = SQLiteDocumentStore(
-            conn, "wide",
+            conn,
+            "wide",
             [("a", "text"), ("b", "text"), ("c", "real"), ("d", "boolean")],
         )
 

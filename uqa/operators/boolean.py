@@ -65,10 +65,9 @@ class ComplementOperator(Operator):
         doc_store = context.document_store
         if doc_store is None:
             return PostingList()
-        universal = PostingList([
-            PostingEntry(doc_id, Payload(score=0.0))
-            for doc_id in doc_store.doc_ids
-        ])
+        universal = PostingList(
+            [PostingEntry(doc_id, Payload(score=0.0)) for doc_id in doc_store.doc_ids]
+        )
         return result.complement(universal)
 
     def cost_estimate(self, stats: IndexStats) -> float:

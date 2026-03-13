@@ -20,7 +20,7 @@ from uqa.core.types import Edge, Vertex
 from uqa.engine import Engine
 from uqa.graph.index import LabelIndex, NeighborhoodIndex, PathIndex
 from uqa.graph.pattern import EdgePattern, GraphPattern, VertexPattern
-from uqa.planner.cardinality import CardinalityEstimator, GraphStats
+from uqa.planner.cardinality import GraphStats
 
 # ======================================================================
 # Data setup: company org chart
@@ -66,23 +66,34 @@ for v in employees + departments + projects + skills:
 # -- Edges --
 edges = [
     # Management hierarchy
-    Edge(1, 1, 2, "manages"), Edge(2, 1, 3, "manages"),
-    Edge(3, 2, 4, "manages"), Edge(4, 2, 5, "manages"),
-    Edge(5, 2, 6, "manages"), Edge(6, 3, 7, "manages"),
+    Edge(1, 1, 2, "manages"),
+    Edge(2, 1, 3, "manages"),
+    Edge(3, 2, 4, "manages"),
+    Edge(4, 2, 5, "manages"),
+    Edge(5, 2, 6, "manages"),
+    Edge(6, 3, 7, "manages"),
     Edge(7, 3, 8, "manages"),
     # Department membership
-    Edge(10, 2, 101, "belongs_to"), Edge(11, 4, 101, "belongs_to"),
-    Edge(12, 5, 101, "belongs_to"), Edge(13, 6, 101, "belongs_to"),
-    Edge(14, 3, 102, "belongs_to"), Edge(15, 7, 102, "belongs_to"),
+    Edge(10, 2, 101, "belongs_to"),
+    Edge(11, 4, 101, "belongs_to"),
+    Edge(12, 5, 101, "belongs_to"),
+    Edge(13, 6, 101, "belongs_to"),
+    Edge(14, 3, 102, "belongs_to"),
+    Edge(15, 7, 102, "belongs_to"),
     Edge(16, 8, 102, "belongs_to"),
     # Project assignments
-    Edge(20, 4, 201, "works_on"), Edge(21, 5, 201, "works_on"),
-    Edge(22, 5, 202, "works_on"), Edge(23, 6, 202, "works_on"),
+    Edge(20, 4, 201, "works_on"),
+    Edge(21, 5, 201, "works_on"),
+    Edge(22, 5, 202, "works_on"),
+    Edge(23, 6, 202, "works_on"),
     Edge(24, 6, 203, "works_on"),
     # Skills
-    Edge(30, 4, 301, "has_skill"), Edge(31, 4, 303, "has_skill"),
-    Edge(32, 5, 301, "has_skill"), Edge(33, 5, 302, "has_skill"),
-    Edge(34, 6, 302, "has_skill"), Edge(35, 6, 303, "has_skill"),
+    Edge(30, 4, 301, "has_skill"),
+    Edge(31, 4, 303, "has_skill"),
+    Edge(32, 5, 301, "has_skill"),
+    Edge(33, 5, 302, "has_skill"),
+    Edge(34, 6, 302, "has_skill"),
+    Edge(35, 6, 303, "has_skill"),
 ]
 for e in edges:
     gs.add_edge(e)
@@ -112,8 +123,10 @@ for entry in sorted(results, key=lambda e: e.doc_id):
     v = gs.get_vertex(entry.doc_id)
     if v:
         props = v.properties
-        salary = f"${props['salary']:,}" if 'salary' in props else "N/A"
-        print(f"  [{entry.doc_id:>3}] {props['name']:<10} {props.get('role', 'N/A'):<12} {salary}")
+        salary = f"${props['salary']:,}" if "salary" in props else "N/A"
+        print(
+            f"  [{entry.doc_id:>3}] {props['name']:<10} {props.get('role', 'N/A'):<12} {salary}"
+        )
 
 
 # ------------------------------------------------------------------
@@ -158,7 +171,9 @@ for entry in sorted(results, key=lambda e: e.doc_id):
 print("\n--- 6. Pattern: manager -manages-> engineer -works_on-> project ---")
 pattern = GraphPattern(
     vertex_patterns=[
-        VertexPattern("mgr"), VertexPattern("eng"), VertexPattern("proj"),
+        VertexPattern("mgr"),
+        VertexPattern("eng"),
+        VertexPattern("proj"),
     ],
     edge_patterns=[
         EdgePattern("mgr", "eng", "manages"),
@@ -173,17 +188,23 @@ for entry in results:
     eng = gs.get_vertex(bindings.get("eng", 0))
     proj = gs.get_vertex(bindings.get("proj", 0))
     if mgr and eng and proj:
-        print(f"  {mgr.properties['name']} -> {eng.properties['name']} "
-              f"-> {proj.properties['name']}")
+        print(
+            f"  {mgr.properties['name']} -> {eng.properties['name']} "
+            f"-> {proj.properties['name']}"
+        )
 
 
 # ------------------------------------------------------------------
 # 7. Pattern matching: engineer with specific skill on active project
 # ------------------------------------------------------------------
-print("\n--- 7. Pattern: engineer -has_skill-> Python, engineer -works_on-> project ---")
+print(
+    "\n--- 7. Pattern: engineer -has_skill-> Python, engineer -works_on-> project ---"
+)
 pattern = GraphPattern(
     vertex_patterns=[
-        VertexPattern("eng"), VertexPattern("skill"), VertexPattern("proj"),
+        VertexPattern("eng"),
+        VertexPattern("skill"),
+        VertexPattern("proj"),
     ],
     edge_patterns=[
         EdgePattern("eng", "skill", "has_skill"),
@@ -197,8 +218,10 @@ for entry in results:
     skill = gs.get_vertex(bindings.get("skill", 0))
     proj = gs.get_vertex(bindings.get("proj", 0))
     if eng and skill and proj:
-        print(f"  {eng.properties['name']} [{skill.properties['name']}] "
-              f"-> {proj.properties['name']} ({proj.properties.get('status', '?')})")
+        print(
+            f"  {eng.properties['name']} [{skill.properties['name']}] "
+            f"-> {proj.properties['name']} ({proj.properties.get('status', '?')})"
+        )
 
 
 # ------------------------------------------------------------------

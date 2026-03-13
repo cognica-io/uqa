@@ -14,7 +14,7 @@ CrossJoinOperator instances.
 
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from uqa.planner.join_enumerator import DPccp, JoinPlan
 from uqa.planner.join_graph import JoinGraph
@@ -111,8 +111,10 @@ class JoinOrderOptimizer:
                 continue
 
             selectivity = graph.estimate_join_selectivity(
-                left_idx, right_idx,
-                pred["left_field"], pred["right_field"],
+                left_idx,
+                right_idx,
+                pred["left_field"],
+                pred["right_field"],
             )
             graph.add_edge(
                 left_node=left_idx,
@@ -130,7 +132,8 @@ class JoinOrderOptimizer:
             # Base relation: return its scan operator
             return plan.operator
 
-        assert plan.left is not None and plan.right is not None
+        assert plan.left is not None
+        assert plan.right is not None
 
         left_op = self._materialize(plan.left, graph)
         right_op = self._materialize(plan.right, graph)
@@ -138,6 +141,7 @@ class JoinOrderOptimizer:
         if plan.join_edge is None:
             # Cross join (no predicate between components)
             from uqa.joins.cross import CrossJoinOperator
+
             return CrossJoinOperator(left_op, right_op)
 
         from uqa.joins.base import JoinCondition
@@ -162,7 +166,9 @@ class JoinOrderOptimizer:
         min_card = min(plan.left.cardinality, plan.right.cardinality)
         if min_card <= INDEX_JOIN_THRESHOLD:
             from uqa.joins.index import IndexJoinOperator
+
             return IndexJoinOperator(left_op, right_op, condition)
 
         from uqa.joins.inner import InnerJoinOperator
+
         return InnerJoinOperator(left_op, right_op, condition)

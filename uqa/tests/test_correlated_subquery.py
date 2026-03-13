@@ -16,12 +16,7 @@ from uqa.engine import Engine
 @pytest.fixture
 def engine():
     e = Engine()
-    e.sql(
-        "CREATE TABLE departments ("
-        "id INTEGER PRIMARY KEY, "
-        "name TEXT NOT NULL"
-        ")"
-    )
+    e.sql("CREATE TABLE departments (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
     e.sql(
         "INSERT INTO departments (id, name) VALUES "
         "(1, 'Engineering'), "
@@ -92,7 +87,11 @@ class TestCorrelatedScalar:
         )
         # eng has 3, mkt has 2, sales has 1
         assert [row["name"] for row in r.rows] == [
-            "Alice", "Bob", "Carol", "Eve", "Frank"
+            "Alice",
+            "Bob",
+            "Carol",
+            "Eve",
+            "Frank",
         ]
 
 
@@ -110,15 +109,11 @@ class TestCorrelatedExists:
             "  SELECT 1 FROM employees e WHERE e.dept_id = d.id"
             ") ORDER BY d.name"
         )
-        assert [row["name"] for row in r.rows] == [
-            "Engineering", "Marketing", "Sales"
-        ]
+        assert [row["name"] for row in r.rows] == ["Engineering", "Marketing", "Sales"]
 
     def test_not_exists(self, engine):
         """Departments with no employees."""
-        engine.sql(
-            "INSERT INTO departments (id, name) VALUES (4, 'HR')"
-        )
+        engine.sql("INSERT INTO departments (id, name) VALUES (4, 'HR')")
         r = engine.sql(
             "SELECT d.name FROM departments d "
             "WHERE NOT EXISTS ("
@@ -157,9 +152,7 @@ class TestCorrelatedIn:
             ")"
         )
         engine.sql(
-            "INSERT INTO managers (id, dept_id, level) VALUES "
-            "(1, 1, 5), "
-            "(2, 2, 3)"
+            "INSERT INTO managers (id, dept_id, level) VALUES (1, 1, 5), (2, 2, 3)"
         )
         r = engine.sql(
             "SELECT e.name FROM employees e "
@@ -170,7 +163,11 @@ class TestCorrelatedIn:
         )
         # Non-correlated IN -- managers with level > 2 -> dept_id 1, 2
         assert [row["name"] for row in r.rows] == [
-            "Alice", "Bob", "Carol", "Eve", "Frank"
+            "Alice",
+            "Bob",
+            "Carol",
+            "Eve",
+            "Frank",
         ]
 
 
@@ -190,9 +187,7 @@ class TestCorrelatedEdgeCases:
             ") ORDER BY e.name"
         )
         # eng min = 85k (Carol), mkt min = 75k (Bob), sales min = 70k (Dave)
-        assert [row["name"] for row in r.rows] == [
-            "Bob", "Carol", "Dave"
-        ]
+        assert [row["name"] for row in r.rows] == ["Bob", "Carol", "Dave"]
 
     def test_correlated_subquery_in_and(self, engine):
         """Correlated subquery combined with regular WHERE condition."""
@@ -214,9 +209,7 @@ class TestCorrelatedEdgeCases:
             "  SELECT id FROM departments WHERE name = 'Engineering'"
             ") ORDER BY name"
         )
-        assert [row["name"] for row in r.rows] == [
-            "Alice", "Carol", "Eve"
-        ]
+        assert [row["name"] for row in r.rows] == ["Alice", "Carol", "Eve"]
 
     def test_exists_non_correlated_still_works(self, engine):
         """Non-correlated EXISTS still works."""

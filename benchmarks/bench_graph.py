@@ -17,18 +17,18 @@ from collections import deque
 import pytest
 
 from benchmarks.data.generators import BenchmarkDataGenerator
-from uqa.graph.store import GraphStore
 from uqa.graph.pattern import (
     EdgePattern,
     GraphPattern,
     VertexPattern,
     parse_rpq,
 )
-
+from uqa.graph.store import GraphStore
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _build_graph(sf: int = 1) -> GraphStore:
     gen = BenchmarkDataGenerator(scale_factor=sf, seed=42)
@@ -41,7 +41,9 @@ def _build_graph(sf: int = 1) -> GraphStore:
     return gs
 
 
-def _bfs(gs: GraphStore, start: int, max_depth: int, label: str | None = None) -> set[int]:
+def _bfs(
+    gs: GraphStore, start: int, max_depth: int, label: str | None = None
+) -> set[int]:
     """BFS traversal returning visited vertex IDs."""
     visited: set[int] = {start}
     frontier = deque([start])
@@ -63,6 +65,7 @@ def _bfs(gs: GraphStore, start: int, max_depth: int, label: str | None = None) -
 # BFS Traversal
 # ---------------------------------------------------------------------------
 
+
 class TestBFSTraversal:
     @pytest.mark.parametrize("depth", [1, 2, 3])
     def test_bfs_depth(self, benchmark, depth: int) -> None:
@@ -80,6 +83,7 @@ class TestBFSTraversal:
 # ---------------------------------------------------------------------------
 # Neighbors Lookup
 # ---------------------------------------------------------------------------
+
 
 class TestNeighbors:
     def test_out_neighbors(self, benchmark) -> None:
@@ -99,6 +103,7 @@ class TestNeighbors:
 # Vertices by Label
 # ---------------------------------------------------------------------------
 
+
 class TestVertexLookup:
     def test_vertices_by_label(self, benchmark) -> None:
         gs = _build_graph(sf=1)
@@ -110,6 +115,7 @@ class TestVertexLookup:
 # Pattern Matching
 # ---------------------------------------------------------------------------
 
+
 class TestPatternMatch:
     def _match_pattern(self, gs: GraphStore, pattern: GraphPattern) -> list[dict]:
         """Brute-force pattern match for benchmarking."""
@@ -119,7 +125,7 @@ class TestPatternMatch:
             return results
 
         ep = pattern.edge_patterns[0]
-        for eid, edge in gs._edges.items():
+        for _eid, edge in gs._edges.items():
             if ep.label is not None and edge.label != ep.label:
                 continue
             src = gs.get_vertex(edge.source_id)
@@ -127,8 +133,16 @@ class TestPatternMatch:
             if src is None or tgt is None:
                 continue
             # Check vertex constraints
-            src_ok = all(c(src) for c in pattern.vertex_patterns[0].constraints) if pattern.vertex_patterns else True
-            tgt_ok = all(c(tgt) for c in pattern.vertex_patterns[1].constraints) if len(pattern.vertex_patterns) > 1 else True
+            src_ok = (
+                all(c(src) for c in pattern.vertex_patterns[0].constraints)
+                if pattern.vertex_patterns
+                else True
+            )
+            tgt_ok = (
+                all(c(tgt) for c in pattern.vertex_patterns[1].constraints)
+                if len(pattern.vertex_patterns) > 1
+                else True
+            )
             if src_ok and tgt_ok:
                 results.append({ep.source_var: src, ep.target_var: tgt})
         return results
@@ -156,6 +170,7 @@ class TestPatternMatch:
 # RPQ Compilation
 # ---------------------------------------------------------------------------
 
+
 class TestRPQ:
     def test_parse_simple(self, benchmark) -> None:
         benchmark(parse_rpq, "knows")
@@ -177,13 +192,16 @@ class TestRPQ:
 # Cypher Compilation
 # ---------------------------------------------------------------------------
 
+
 class TestCypherCompile:
     def test_simple_match(self, benchmark) -> None:
         from uqa.graph.cypher.parser import parse_cypher
+
         benchmark(parse_cypher, "MATCH (a)-[:knows]->(b) RETURN a, b")
 
     def test_multi_hop(self, benchmark) -> None:
         from uqa.graph.cypher.parser import parse_cypher
+
         benchmark(
             parse_cypher,
             "MATCH (a)-[:knows]->(b)-[:works_at]->(c) RETURN a, b, c",
@@ -191,6 +209,7 @@ class TestCypherCompile:
 
     def test_filtered(self, benchmark) -> None:
         from uqa.graph.cypher.parser import parse_cypher
+
         benchmark(
             parse_cypher,
             "MATCH (a:Person)-[:knows]->(b) WHERE a.name = 'Person_1' RETURN b",

@@ -21,9 +21,13 @@ from __future__ import annotations
 
 import math
 import sqlite3
+from typing import TYPE_CHECKING
 
 from uqa.core.posting_list import PostingList
 from uqa.core.types import DocId, Payload, PostingEntry
+
+if TYPE_CHECKING:
+    from uqa.storage.managed_connection import SQLiteConnection
 
 # Earth radius in meters (WGS-84 mean radius).
 _EARTH_RADIUS_M = 6_371_000.0
@@ -32,9 +36,7 @@ _EARTH_RADIUS_M = 6_371_000.0
 _METERS_PER_DEG_LAT = 111_320.0
 
 
-def haversine_distance(
-    lat1: float, lon1: float, lat2: float, lon2: float
-) -> float:
+def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance between two (lat, lon) points in meters.
 
     Uses the Haversine formula.  Inputs are in decimal degrees.
@@ -67,13 +69,14 @@ class SpatialIndex:
         self,
         table_name: str,
         field_name: str,
-        conn: sqlite3.Connection | None = None,
+        conn: SQLiteConnection | None = None,
     ) -> None:
         self._table_name = table_name
         self._field_name = field_name
         self._owns_conn = conn is None
         self._conn = (
-            conn if conn is not None
+            conn
+            if conn is not None
             else sqlite3.connect(":memory:", check_same_thread=False)
         )
         self._rtree_name = f"_rtree_{table_name}_{field_name}"
@@ -99,9 +102,7 @@ class SpatialIndex:
 
     def delete(self, doc_id: DocId) -> None:
         """Remove a point from the R*Tree."""
-        self._conn.execute(
-            f'DELETE FROM "{self._rtree_name}" WHERE id = ?', (doc_id,)
-        )
+        self._conn.execute(f'DELETE FROM "{self._rtree_name}" WHERE id = ?', (doc_id,))
         self._conn.commit()
 
     def clear(self) -> None:
@@ -111,9 +112,7 @@ class SpatialIndex:
 
     # -- Search ------------------------------------------------------------
 
-    def search_within(
-        self, cx: float, cy: float, distance_m: float
-    ) -> PostingList:
+    def search_within(self, cx: float, cy: float, distance_m: float) -> PostingList:
         """Return all points within *distance_m* meters of (*cx*, *cy*).
 
         *cx* is longitude, *cy* is latitude (decimal degrees).
@@ -162,9 +161,7 @@ class SpatialIndex:
             dist = haversine_distance(cy, cx, py, px)
             if dist <= distance_m:
                 score = 1.0 - (dist / distance_m)
-                entries.append(
-                    PostingEntry(doc_id, Payload(score=score))
-                )
+                entries.append(PostingEntry(doc_id, Payload(score=score)))
 
         entries.sort(key=lambda e: e.doc_id)
         return PostingList.from_sorted(entries)

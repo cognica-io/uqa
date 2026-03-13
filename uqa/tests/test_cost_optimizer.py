@@ -14,7 +14,6 @@ from uqa.engine import Engine
 from uqa.planner.cardinality import CardinalityEstimator
 from uqa.sql.table import ColumnStats
 
-
 # ==================================================================
 # Histogram construction
 # ==================================================================
@@ -83,7 +82,7 @@ class TestMCV:
     def test_mcv_empty(self):
         from uqa.sql.table import Table
 
-        mcv_values, mcv_frequencies = Table._build_mcv([], 0)
+        mcv_values, _mcv_frequencies = Table._build_mcv([], 0)
         assert mcv_values == []
 
 
@@ -95,12 +94,7 @@ class TestMCV:
 class TestAnalyzeHistogramMCV:
     def test_analyze_creates_histogram(self):
         e = Engine()
-        e.sql(
-            "CREATE TABLE t ("
-            "id INTEGER PRIMARY KEY, "
-            "val INTEGER"
-            ")"
-        )
+        e.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
         for i in range(1, 101):
             e.sql(f"INSERT INTO t (id, val) VALUES ({i}, {i})")
         e.sql("ANALYZE t")
@@ -112,12 +106,7 @@ class TestAnalyzeHistogramMCV:
 
     def test_analyze_creates_mcv(self):
         e = Engine()
-        e.sql(
-            "CREATE TABLE t ("
-            "id INTEGER PRIMARY KEY, "
-            "cat TEXT"
-            ")"
-        )
+        e.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, cat TEXT)")
         # Insert skewed data: 'A' appears 50 times, 'B' 30, 'C' 20
         for i in range(1, 101):
             if i <= 50:
@@ -202,7 +191,7 @@ class TestSelectivityEstimation:
 
     def test_lt_histogram(self, estimator_with_stats):
         """Less-than uses histogram."""
-        from uqa.core.types import LessThan, IndexStats
+        from uqa.core.types import IndexStats, LessThan
         from uqa.operators.primitive import FilterOperator
 
         stats = IndexStats(total_docs=1000)
@@ -232,12 +221,7 @@ class TestOptimizerEndToEnd:
     def test_analyze_improves_explain(self):
         """EXPLAIN after ANALYZE should show estimated cost."""
         e = Engine()
-        e.sql(
-            "CREATE TABLE t ("
-            "id INTEGER PRIMARY KEY, "
-            "val INTEGER"
-            ")"
-        )
+        e.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
         for i in range(1, 51):
             e.sql(f"INSERT INTO t (id, val) VALUES ({i}, {i})")
         e.sql("ANALYZE t")
@@ -250,12 +234,7 @@ class TestOptimizerEndToEnd:
         db = str(tmp_path / "test.db")
 
         with Engine(db_path=db) as e:
-            e.sql(
-                "CREATE TABLE t ("
-                "id INTEGER PRIMARY KEY, "
-                "val INTEGER"
-                ")"
-            )
+            e.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
             for i in range(1, 101):
                 e.sql(f"INSERT INTO t (id, val) VALUES ({i}, {i})")
             e.sql("ANALYZE t")
@@ -270,12 +249,7 @@ class TestOptimizerEndToEnd:
         db = str(tmp_path / "test.db")
 
         with Engine(db_path=db) as e:
-            e.sql(
-                "CREATE TABLE t ("
-                "id INTEGER PRIMARY KEY, "
-                "cat TEXT"
-                ")"
-            )
+            e.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, cat TEXT)")
             for i in range(1, 101):
                 cat = "A" if i <= 60 else "B"
                 e.sql(f"INSERT INTO t (id, cat) VALUES ({i}, '{cat}')")

@@ -13,7 +13,7 @@ index-backed scans on the underlying ``_data_{table}`` SQLite table.
 from __future__ import annotations
 
 import math
-import sqlite3
+from typing import TYPE_CHECKING
 
 from uqa.core.posting_list import PostingList
 from uqa.core.types import (
@@ -30,20 +30,21 @@ from uqa.core.types import (
     Predicate,
 )
 from uqa.storage.index_abc import Index
-from uqa.storage.index_types import IndexDef
+
+if TYPE_CHECKING:
+    from uqa.storage.index_types import IndexDef
+    from uqa.storage.managed_connection import SQLiteConnection
 
 
 class BTreeIndex(Index):
     """B-tree index backed by a SQLite CREATE INDEX."""
 
-    def __init__(self, index_def: IndexDef, conn: sqlite3.Connection) -> None:
+    def __init__(self, index_def: IndexDef, conn: SQLiteConnection) -> None:
         super().__init__(index_def, conn)
         self._data_table = f"_data_{index_def.table_name}"
 
     def build(self) -> None:
-        cols = ", ".join(
-            f'"{c}"' for c in self._index_def.columns
-        )
+        cols = ", ".join(f'"{c}"' for c in self._index_def.columns)
         self._conn.execute(
             f'CREATE INDEX IF NOT EXISTS "{self._index_def.name}" '
             f'ON "{self._data_table}" ({cols})'
@@ -51,9 +52,7 @@ class BTreeIndex(Index):
         self._conn.commit()
 
     def drop(self) -> None:
-        self._conn.execute(
-            f'DROP INDEX IF EXISTS "{self._index_def.name}"'
-        )
+        self._conn.execute(f'DROP INDEX IF EXISTS "{self._index_def.name}"')
         self._conn.commit()
 
     def scan(self, predicate: Predicate) -> PostingList:
@@ -63,18 +62,12 @@ class BTreeIndex(Index):
             f"WHERE {where_clause} ORDER BY _rowid"
         )
         rows = self._conn.execute(sql, params).fetchall()
-        entries = [
-            PostingEntry(row[0], Payload(score=0.0))
-            for row in rows
-        ]
+        entries = [PostingEntry(row[0], Payload(score=0.0)) for row in rows]
         return PostingList.from_sorted(entries)
 
     def estimate_cardinality(self, predicate: Predicate) -> int:
         where_clause, params = self._predicate_to_sql(predicate)
-        sql = (
-            f'SELECT COUNT(*) FROM "{self._data_table}" '
-            f"WHERE {where_clause}"
-        )
+        sql = f'SELECT COUNT(*) FROM "{self._data_table}" WHERE {where_clause}'
         row = self._conn.execute(sql, params).fetchone()
         return row[0] if row else 0
 
@@ -91,9 +84,7 @@ class BTreeIndex(Index):
         ).fetchone()
         return row[0] if row else 0
 
-    def _predicate_to_sql(
-        self, predicate: Predicate
-    ) -> tuple[str, list]:
+    def _predicate_to_sql(self, predicate: Predicate) -> tuple[str, list]:
         col = f'"{self._index_def.columns[0]}"'
 
         if isinstance(predicate, Equals):
@@ -115,6 +106,5 @@ class BTreeIndex(Index):
             return f"{col} IN ({placeholders})", list(predicate.values)
 
         raise ValueError(
-            f"BTreeIndex cannot handle predicate type: "
-            f"{type(predicate).__name__}"
+            f"BTreeIndex cannot handle predicate type: {type(predicate).__name__}"
         )

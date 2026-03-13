@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from uqa.core.types import IndexStats
@@ -34,8 +34,6 @@ class GraphStats:
         """Compute statistics from a GraphStore instance."""
         vertices = getattr(graph_store, "_vertices", {})
         edges = getattr(graph_store, "_edges", {})
-        adj_out = getattr(graph_store, "_adj_out", {})
-
         num_v = len(vertices)
         num_e = len(edges)
 
@@ -63,7 +61,7 @@ class GraphStats:
         """Edge density: |E| / |V|^2."""
         if self.num_vertices <= 1:
             return 0.0
-        return self.num_edges / (self.num_vertices ** 2)
+        return self.num_edges / (self.num_vertices**2)
 
 
 class CardinalityEstimator:
@@ -88,9 +86,9 @@ class CardinalityEstimator:
 
     def estimate(self, op: Operator, stats: IndexStats) -> float:
         from uqa.operators.boolean import (
+            ComplementOperator,
             IntersectOperator,
             UnionOperator,
-            ComplementOperator,
         )
         from uqa.operators.primitive import (
             FilterOperator,
@@ -98,18 +96,6 @@ class CardinalityEstimator:
             ScoreOperator,
             TermOperator,
             VectorSimilarityOperator,
-        )
-        from uqa.operators.hybrid import (
-            HybridTextVectorOperator,
-            LogOddsFusionOperator,
-            ProbBoolFusionOperator,
-            ProbNotOperator,
-            SemanticFilterOperator,
-        )
-        from uqa.graph.operators import (
-            TraverseOperator,
-            PatternMatchOperator,
-            RegularPathQueryOperator,
         )
 
         n = float(stats.total_docs) if stats.total_docs > 0 else 1.0
@@ -133,7 +119,7 @@ class CardinalityEstimator:
                 result = child_cards[0]
                 for card in child_cards[1:]:
                     sel = card / n if n > 0 else 1.0
-                    result *= sel ** 0.5  # sqrt damping for correlated predicates
+                    result *= sel**0.5  # sqrt damping for correlated predicates
                 return max(1.0, result)
             case UnionOperator(operands=ops):
                 child_cards = [self.estimate(o, stats) for o in ops]
@@ -152,6 +138,12 @@ class CardinalityEstimator:
         Handles fusion, hybrid, graph, and other multi-paradigm operators
         that combine signals from different query paradigms.
         """
+        from uqa.graph.operators import (
+            PatternMatchOperator,
+            RegularPathQueryOperator,
+            TraverseOperator,
+            VertexAggregationOperator,
+        )
         from uqa.operators.hybrid import (
             FacetVectorOperator,
             HybridTextVectorOperator,
@@ -160,12 +152,6 @@ class CardinalityEstimator:
             ProbNotOperator,
             SemanticFilterOperator,
             VectorExclusionOperator,
-        )
-        from uqa.graph.operators import (
-            TraverseOperator,
-            PatternMatchOperator,
-            RegularPathQueryOperator,
-            VertexAggregationOperator,
         )
 
         # VectorExclusion: positive minus negative overlap
@@ -229,9 +215,7 @@ class CardinalityEstimator:
 
         return n
 
-    def _estimate_traverse(
-        self, op: object, n: float
-    ) -> float:
+    def _estimate_traverse(self, op: object, n: float) -> float:
         """Traverse cardinality using graph statistics (Theorem 6.3.2, Paper 2).
 
         With statistics: branching = avg_out_degree * label_selectivity.
@@ -247,11 +231,9 @@ class CardinalityEstimator:
         else:
             branching = min(n * 0.1, 10.0)
 
-        return min(n, branching ** hops)
+        return min(n, branching**hops)
 
-    def _estimate_pattern_match(
-        self, op: object, n: float
-    ) -> float:
+    def _estimate_pattern_match(self, op: object, n: float) -> float:
         """Pattern match cardinality using graph statistics (Theorem 6.3.2, Paper 2).
 
         With statistics: |V|^k * density^e * prod(label_selectivity)
@@ -261,7 +243,7 @@ class CardinalityEstimator:
         from uqa.graph.operators import PatternMatchOperator
 
         if not isinstance(op, PatternMatchOperator):
-            return min(n, n ** 1.5)
+            return min(n, n**1.5)
 
         pattern = op.pattern
         k = len(pattern.vertex_patterns)
@@ -277,17 +259,15 @@ class CardinalityEstimator:
                 label_sel *= gs.label_selectivity(ep.label)
 
             # |V|^k * density^e * label_selectivity
-            estimate = (nv ** k) * (density ** e) * label_sel
+            estimate = (nv**k) * (density**e) * label_sel
             return max(1.0, min(nv, estimate))
 
         # Heuristic fallback: n^1.5 captures the super-linear growth of
         # pattern match results (more than linear scan but less than the
         # full n^k cross-product) when no graph statistics are available.
-        return min(n, n ** 1.5)
+        return min(n, n**1.5)
 
-    def _estimate_rpq(
-        self, op: object, n: float
-    ) -> float:
+    def _estimate_rpq(self, op: object, n: float) -> float:
         """RPQ cardinality using graph statistics (Theorem 6.3.2, Paper 2).
 
         With statistics: |V|^2 * density * label_selectivity.
@@ -298,13 +278,13 @@ class CardinalityEstimator:
             nv = float(gs.num_vertices) if gs.num_vertices > 0 else n
             density = gs.edge_density()
             # RPQ can reach any (start, end) pair; estimate fraction
-            estimate = (nv ** 2) * density
+            estimate = (nv**2) * density
             return max(1.0, min(nv, estimate))
 
         # Heuristic fallback: n^1.5 approximates RPQ result size when no
         # graph stats are available.  RPQs can reach any (start, end) pair
         # so result size is between n (single hop) and n^2 (all pairs).
-        return min(n, n ** 1.5)
+        return min(n, n**1.5)
 
     def estimate_join(
         self,
@@ -317,9 +297,7 @@ class CardinalityEstimator:
             return 0.0
         return (left_card * right_card) / domain_size
 
-    def _filter_selectivity(
-        self, field: str, predicate: Any, n: float
-    ) -> float:
+    def _filter_selectivity(self, field: str, predicate: Any, n: float) -> float:
         """Estimate filter selectivity using column statistics.
 
         Uses a hierarchy of estimation methods:
@@ -349,21 +327,14 @@ class CardinalityEstimator:
             return self._equality_selectivity(cs, predicate.target, ndv)
 
         if isinstance(predicate, NotEquals):
-            return 1.0 - self._equality_selectivity(
-                cs, predicate.target, ndv
-            )
+            return 1.0 - self._equality_selectivity(cs, predicate.target, ndv)
 
         if isinstance(predicate, InSet):
-            sel = sum(
-                self._equality_selectivity(cs, v, ndv)
-                for v in predicate.values
-            )
+            sel = sum(self._equality_selectivity(cs, v, ndv) for v in predicate.values)
             return min(1.0, sel)
 
         if isinstance(predicate, Between):
-            return self._range_selectivity(
-                cs, predicate.low, predicate.high
-            )
+            return self._range_selectivity(cs, predicate.low, predicate.high)
 
         if isinstance(predicate, (GreaterThan, GreaterThanOrEqual)):
             return self._gt_selectivity(cs, predicate.target)
@@ -374,9 +345,7 @@ class CardinalityEstimator:
         return 0.5
 
     @staticmethod
-    def _equality_selectivity(
-        cs: ColumnStats, target: Any, ndv: int
-    ) -> float:
+    def _equality_selectivity(cs: ColumnStats, target: Any, ndv: int) -> float:
         """Estimate selectivity for equality predicate.
 
         Checks MCV list first for exact frequency, otherwise uses
@@ -389,9 +358,7 @@ class CardinalityEstimator:
         return 1.0 / ndv if ndv > 0 else 1.0
 
     @staticmethod
-    def _histogram_fraction(
-        boundaries: list[Any], low: Any, high: Any
-    ) -> float:
+    def _histogram_fraction(boundaries: list[Any], low: Any, high: Any) -> float:
         """Estimate fraction of values in [low, high] using histogram.
 
         Counts the fraction of histogram buckets that overlap [low, high].
@@ -425,9 +392,7 @@ class CardinalityEstimator:
 
         return max(0.0, min(1.0, overlapping / n_buckets))
 
-    def _range_selectivity(
-        self, cs: ColumnStats, low: Any, high: Any
-    ) -> float:
+    def _range_selectivity(self, cs: ColumnStats, low: Any, high: Any) -> float:
         """Estimate selectivity for BETWEEN predicate."""
         if cs.histogram:
             return self._histogram_fraction(cs.histogram, low, high)
@@ -449,9 +414,7 @@ class CardinalityEstimator:
     def _gt_selectivity(self, cs: ColumnStats, target: Any) -> float:
         """Estimate selectivity for > or >= predicate."""
         if cs.histogram:
-            return self._histogram_fraction(
-                cs.histogram, target, cs.histogram[-1]
-            )
+            return self._histogram_fraction(cs.histogram, target, cs.histogram[-1])
         if cs.min_value is not None and cs.max_value is not None:
             try:
                 span = float(cs.max_value) - float(cs.min_value)
@@ -467,9 +430,7 @@ class CardinalityEstimator:
     def _lt_selectivity(self, cs: ColumnStats, target: Any) -> float:
         """Estimate selectivity for < or <= predicate."""
         if cs.histogram:
-            return self._histogram_fraction(
-                cs.histogram, cs.histogram[0], target
-            )
+            return self._histogram_fraction(cs.histogram, cs.histogram[0], target)
         if cs.min_value is not None and cs.max_value is not None:
             try:
                 span = float(cs.max_value) - float(cs.min_value)

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from uqa.core.posting_list import PostingList
@@ -39,14 +39,18 @@ class PlanExecutor:
         return result
 
     def _execute_with_stats(self, op: Operator) -> tuple[PostingList, ExecutionStats]:
-        from uqa.operators.boolean import IntersectOperator, UnionOperator, ComplementOperator
-        from uqa.operators.primitive import FilterOperator, ScoreOperator
         from uqa.operators.base import ComposedOperator
+        from uqa.operators.boolean import (
+            ComplementOperator,
+            IntersectOperator,
+            UnionOperator,
+        )
         from uqa.operators.hybrid import (
             LogOddsFusionOperator,
             ProbBoolFusionOperator,
             ProbNotOperator,
         )
+        from uqa.operators.primitive import FilterOperator, ScoreOperator
 
         stats = ExecutionStats(operator_name=type(op).__name__)
         child_stats: list[ExecutionStats] = []
@@ -93,29 +97,30 @@ class PlanExecutor:
         return "\n".join(lines)
 
     def _explain_recursive(self, op: Operator, lines: list[str], indent: int) -> None:
-        from uqa.operators.boolean import IntersectOperator, UnionOperator, ComplementOperator
-        from uqa.operators.primitive import (
-            TermOperator,
-            VectorSimilarityOperator,
-            KNNOperator,
-            FilterOperator,
-            FacetOperator,
-            IndexScanOperator,
-            ScoreOperator,
+        from uqa.graph.operators import (
+            CypherQueryOperator,
+            PatternMatchOperator,
+            RegularPathQueryOperator,
+            TraverseOperator,
         )
         from uqa.operators.base import ComposedOperator
+        from uqa.operators.boolean import (
+            ComplementOperator,
+            IntersectOperator,
+            UnionOperator,
+        )
         from uqa.operators.hybrid import (
-            HybridTextVectorOperator,
             LogOddsFusionOperator,
             ProbBoolFusionOperator,
             ProbNotOperator,
-            SemanticFilterOperator,
         )
-        from uqa.graph.operators import (
-            CypherQueryOperator,
-            TraverseOperator,
-            PatternMatchOperator,
-            RegularPathQueryOperator,
+        from uqa.operators.primitive import (
+            FilterOperator,
+            IndexScanOperator,
+            KNNOperator,
+            ScoreOperator,
+            TermOperator,
+            VectorSimilarityOperator,
         )
 
         prefix = "  " * indent
@@ -127,7 +132,7 @@ class PlanExecutor:
                 lines.append(f"{prefix}VectorSimOp(threshold={th}, field={f!r})")
             case KNNOperator(k=k, field=f):
                 lines.append(f"{prefix}KNNOp(k={k}, field={f!r})")
-            case IndexScanOperator(field=f, predicate=p):
+            case IndexScanOperator(field=f, predicate=_p):
                 lines.append(
                     f"{prefix}IndexScanOp(field={f!r}, "
                     f"index={op.index.index_def.name!r})"
@@ -135,8 +140,7 @@ class PlanExecutor:
             case ScoreOperator(query_terms=qt, field=f):
                 scorer_name = type(op.scorer).__name__
                 lines.append(
-                    f"{prefix}ScoreOp(scorer={scorer_name}, "
-                    f"terms={qt!r}, field={f!r})"
+                    f"{prefix}ScoreOp(scorer={scorer_name}, terms={qt!r}, field={f!r})"
                 )
                 self._explain_recursive(op.source, lines, indent + 1)
             case FilterOperator(field=f):
@@ -145,15 +149,13 @@ class PlanExecutor:
                     self._explain_recursive(op.source, lines, indent + 1)
             case LogOddsFusionOperator(signals=sigs):
                 lines.append(
-                    f"{prefix}LogOddsFusion(alpha={op.alpha}, "
-                    f"signals={len(sigs)})"
+                    f"{prefix}LogOddsFusion(alpha={op.alpha}, signals={len(sigs)})"
                 )
                 for sig in sigs:
                     self._explain_recursive(sig, lines, indent + 1)
             case ProbBoolFusionOperator(signals=sigs):
                 lines.append(
-                    f"{prefix}ProbBoolFusion(mode={op.mode!r}, "
-                    f"signals={len(sigs)})"
+                    f"{prefix}ProbBoolFusion(mode={op.mode!r}, signals={len(sigs)})"
                 )
                 for sig in sigs:
                     self._explain_recursive(sig, lines, indent + 1)
@@ -168,19 +170,12 @@ class PlanExecutor:
             case PatternMatchOperator():
                 n_vp = len(op.pattern.vertex_patterns)
                 n_ep = len(op.pattern.edge_patterns)
-                lines.append(
-                    f"{prefix}PatternMatchOp(vertices={n_vp}, "
-                    f"edges={n_ep})"
-                )
+                lines.append(f"{prefix}PatternMatchOp(vertices={n_vp}, edges={n_ep})")
             case RegularPathQueryOperator():
-                lines.append(
-                    f"{prefix}RPQOp(start={op.start_vertex})"
-                )
+                lines.append(f"{prefix}RPQOp(start={op.start_vertex})")
             case CypherQueryOperator():
                 n_clauses = len(op.query.clauses)
-                lines.append(
-                    f"{prefix}CypherOp(clauses={n_clauses})"
-                )
+                lines.append(f"{prefix}CypherOp(clauses={n_clauses})")
             case IntersectOperator(operands=ops):
                 lines.append(f"{prefix}Intersect")
                 for child in ops:

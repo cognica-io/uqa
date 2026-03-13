@@ -10,8 +10,16 @@ import numpy as np
 import pytest
 
 from uqa.core.types import Edge, Payload, PostingEntry, Vertex
-from uqa.graph.store import GraphStore
-from uqa.graph.posting_list import GraphPayload, GraphPostingList
+from uqa.graph.cross_paradigm import (
+    TextToGraphOperator,
+    VectorEnhancedMatchOperator,
+    VertexEmbeddingOperator,
+)
+from uqa.graph.operators import (
+    PatternMatchOperator,
+    RegularPathQueryOperator,
+    TraverseOperator,
+)
 from uqa.graph.pattern import (
     Alternation,
     Concat,
@@ -22,16 +30,8 @@ from uqa.graph.pattern import (
     VertexPattern,
     parse_rpq,
 )
-from uqa.graph.operators import (
-    PatternMatchOperator,
-    RegularPathQueryOperator,
-    TraverseOperator,
-)
-from uqa.graph.cross_paradigm import (
-    TextToGraphOperator,
-    VertexEmbeddingOperator,
-    VectorEnhancedMatchOperator,
-)
+from uqa.graph.posting_list import GraphPayload, GraphPostingList
+from uqa.graph.store import GraphStore
 
 
 class _ExecutionContext:
@@ -126,9 +126,7 @@ class TestTraverseOperator:
         # Zero hops: only the start vertex
         assert {1} == doc_ids
 
-    def test_bfs_correctness_at_each_depth(
-        self, ctx: _ExecutionContext
-    ) -> None:
+    def test_bfs_correctness_at_each_depth(self, ctx: _ExecutionContext) -> None:
         """Verify BFS visits correct vertices at each depth."""
         # depth 1
         op1 = TraverseOperator(start_vertex=1, max_hops=1)
@@ -336,12 +334,8 @@ class TestGraphPostingListIsomorphism:
             PostingEntry(2, Payload(score=0.8)),
         ]
         gpl = GraphPostingList(entries)
-        gpl.set_graph_payload(
-            1, GraphPayload(frozenset({1, 2}), frozenset({10}), 0.5)
-        )
-        gpl.set_graph_payload(
-            2, GraphPayload(frozenset({2, 3}), frozenset({20}), 0.8)
-        )
+        gpl.set_graph_payload(1, GraphPayload(frozenset({1, 2}), frozenset({10}), 0.5))
+        gpl.set_graph_payload(2, GraphPayload(frozenset({2, 3}), frozenset({20}), 0.8))
 
         # Convert to standard posting list and back
         pl = gpl.to_posting_list()
@@ -373,20 +367,12 @@ class TestGraphPostingListIsomorphism:
         ]
 
         gpl_a = GraphPostingList(entries_a)
-        gpl_a.set_graph_payload(
-            1, GraphPayload(frozenset({1}), frozenset(), 0.5)
-        )
-        gpl_a.set_graph_payload(
-            3, GraphPayload(frozenset({3}), frozenset(), 0.3)
-        )
+        gpl_a.set_graph_payload(1, GraphPayload(frozenset({1}), frozenset(), 0.5))
+        gpl_a.set_graph_payload(3, GraphPayload(frozenset({3}), frozenset(), 0.3))
 
         gpl_b = GraphPostingList(entries_b)
-        gpl_b.set_graph_payload(
-            2, GraphPayload(frozenset({2}), frozenset(), 0.8)
-        )
-        gpl_b.set_graph_payload(
-            3, GraphPayload(frozenset({3}), frozenset(), 0.4)
-        )
+        gpl_b.set_graph_payload(2, GraphPayload(frozenset({2}), frozenset(), 0.8))
+        gpl_b.set_graph_payload(3, GraphPayload(frozenset({3}), frozenset(), 0.4))
 
         # Phi(A union B) -- compute union at graph level, then convert
         gpl_union = gpl_a.union(gpl_b)

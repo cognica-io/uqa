@@ -7,7 +7,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from typing import Any
 
 from uqa.core.posting_list import PostingList
 from uqa.core.types import DocId, FieldName, IndexStats, Payload, PostingEntry
@@ -46,7 +47,9 @@ class InvertedIndex:
         from uqa.analysis.analyzer import DEFAULT_ANALYZER
 
         self._analyzer = analyzer or DEFAULT_ANALYZER
-        self._field_analyzers: dict[str, Any] = dict(field_analyzers) if field_analyzers else {}
+        self._field_analyzers: dict[str, Any] = (
+            dict(field_analyzers) if field_analyzers else {}
+        )
         self._index: dict[tuple[str, str], dict[DocId, PostingEntry]] = {}
         self._doc_terms: dict[DocId, set[tuple[str, str]]] = {}
         self._doc_lengths: dict[DocId, dict[FieldName, int]] = {}
@@ -69,9 +72,7 @@ class InvertedIndex:
         """Get the analyzer for a specific field."""
         return self._field_analyzers.get(field, self._analyzer)
 
-    def add_document(
-        self, doc_id: DocId, fields: dict[FieldName, str]
-    ) -> IndexedTerms:
+    def add_document(self, doc_id: DocId, fields: dict[FieldName, str]) -> IndexedTerms:
         """Index a document by tokenizing each field.
 
         Returns an IndexedTerms with per-field lengths and posting data
@@ -118,9 +119,7 @@ class InvertedIndex:
 
     # -- Restore methods (used by catalog persistence) -----------------
 
-    def add_posting(
-        self, field: str, term: str, entry: PostingEntry
-    ) -> None:
+    def add_posting(self, field: str, term: str, entry: PostingEntry) -> None:
         """Add a single posting entry directly (for catalog restore)."""
         key = (field, term)
         if key not in self._index:
@@ -133,9 +132,7 @@ class InvertedIndex:
             self._doc_terms[entry.doc_id] = doc_term_set
         doc_term_set.add(key)
 
-    def set_doc_length(
-        self, doc_id: DocId, lengths: dict[FieldName, int]
-    ) -> None:
+    def set_doc_length(self, doc_id: DocId, lengths: dict[FieldName, int]) -> None:
         """Set per-field token lengths for a document (for catalog restore)."""
         self._doc_lengths[doc_id] = lengths
 
@@ -190,7 +187,7 @@ class InvertedIndex:
         """Get posting list matching term across any field."""
         seen_docs: set[DocId] = set()
         all_entries: list[PostingEntry] = []
-        for (field, t), inner in self._index.items():
+        for (_field, t), inner in self._index.items():
             if t == term:
                 for doc_id, e in inner.items():
                     if doc_id not in seen_docs:
@@ -229,7 +226,7 @@ class InvertedIndex:
     def get_total_term_freq(self, doc_id: DocId, term: str) -> int:
         """Get total term frequency for a doc across all fields."""
         total = 0
-        for (f, t), inner in self._index.items():
+        for (_f, t), inner in self._index.items():
             if t == term:
                 e = inner.get(doc_id)
                 if e is not None:
@@ -239,7 +236,7 @@ class InvertedIndex:
     def doc_freq_any_field(self, term: str) -> int:
         """Get document frequency across all fields."""
         doc_ids: set[DocId] = set()
-        for (f, t), inner in self._index.items():
+        for (_f, t), inner in self._index.items():
             if t == term:
                 doc_ids.update(inner.keys())
         return len(doc_ids)

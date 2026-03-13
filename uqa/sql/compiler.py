@@ -83,10 +83,12 @@ FROM-clause table functions:
   regexp_split_to_table(str, pattern [, flags]) -- split string by regex
 """
 
+# pyright: reportArgumentType=false, reportAssignmentType=false, reportCallIssue=false, reportGeneralTypeIssues=false, reportOperatorIssue=false, reportReturnType=false
+
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pglast import parse_sql
 from pglast.ast import (
@@ -97,34 +99,31 @@ from pglast.ast import (
     AlterSeqStmt,
     AlterTableStmt,
     BoolExpr,
-    Boolean as PgBoolean,
     CaseExpr,
     CoalesceExpr,
-    ColumnDef as PgColumnDef,
     ColumnRef,
-    Constraint as PgConstraint,
     CreateForeignServerStmt,
     CreateForeignTableStmt,
     CreateSeqStmt,
     CreateStmt,
     CreateTableAsStmt,
+    DeallocateStmt,
     DeleteStmt,
     DropStmt,
+    ExecuteStmt,
     ExplainStmt,
-    Float as PgFloat,
     FuncCall,
     IndexStmt,
     InsertStmt,
-    Integer as PgInteger,
     JoinExpr,
     NullTest,
+    ParamRef,
+    PrepareStmt,
     RangeFunction,
     RangeSubselect,
     RangeVar,
     RenameStmt,
     SelectStmt,
-    SortBy,
-    String as PgString,
     SubLink,
     TransactionStmt,
     TruncateStmt,
@@ -132,11 +131,23 @@ from pglast.ast import (
     UpdateStmt,
     VacuumStmt,
     ViewStmt,
-    PrepareStmt,
-    ExecuteStmt,
-    DeallocateStmt,
-    ParamRef,
 )
+from pglast.ast import (
+    Boolean as PgBoolean,
+)
+from pglast.ast import (
+    Constraint as PgConstraint,
+)
+from pglast.ast import (
+    Float as PgFloat,
+)
+from pglast.ast import (
+    Integer as PgInteger,
+)
+from pglast.ast import (
+    String as PgString,
+)
+from pglast.enums.nodes import JoinType, OnConflictAction
 from pglast.enums.parsenodes import (
     A_Expr_Kind,
     AlterTableType,
@@ -147,7 +158,6 @@ from pglast.enums.parsenodes import (
     SortByNulls,
 )
 from pglast.enums.primnodes import BoolExprType, NullTestType, SubLinkType
-from pglast.enums.nodes import JoinType, OnConflictAction
 
 from uqa.core.posting_list import PostingList
 from uqa.core.types import (
@@ -164,21 +174,25 @@ from uqa.core.types import (
     Predicate,
 )
 from uqa.sql.table import (
+    _AUTO_INCREMENT_TYPES,
     ColumnDef,
     ForeignKeyDef,
     Table,
     resolve_type,
-    _AUTO_INCREMENT_TYPES,
 )
 
 if TYPE_CHECKING:
+    import pyarrow as pa
+
     from uqa.engine import Engine
+    from uqa.execution.relational import WindowSpec
     from uqa.operators.base import ExecutionContext
 
 
 # ======================================================================
 # Result type
 # ======================================================================
+
 
 class SQLResult:
     """Result of a SQL query: columns + rows.
@@ -188,7 +202,7 @@ class SQLResult:
     zero-copy ``pyarrow.Table`` without an intermediate dict round-trip.
     """
 
-    __slots__ = ("columns", "_rows", "_batches")
+    __slots__ = ("_batches", "_rows", "columns")
 
     def __init__(
         self,
@@ -255,7 +269,7 @@ class SQLResult:
         parts.append(f"({len(rows)} rows)")
         return "\n".join(parts)
 
-    def to_arrow(self) -> "pa.Table":
+    def to_arrow(self) -> pa.Table:
         """Convert this result to a ``pyarrow.Table``.
 
         When the result was produced by the physical execution engine,
@@ -273,9 +287,7 @@ class SQLResult:
         rows = self.rows
         if not rows:
             arrays = [pa.array([], type=pa.string()) for _ in self.columns]
-            return pa.table(
-                {col: arr for col, arr in zip(self.columns, arrays)}
-            )
+            return pa.table({col: arr for col, arr in zip(self.columns, arrays)})
 
         col_values: dict[str, list[Any]] = {col: [] for col in self.columns}
         for row in rows:
@@ -322,7 +334,7 @@ def _format_value(val: Any) -> str:
     return str(val)
 
 
-def _infer_arrow_type(values: list[Any]) -> "pa.DataType":
+def _infer_arrow_type(values: list[Any]) -> pa.DataType:
     """Infer a pyarrow type from a list of Python values."""
     import datetime
 
@@ -357,26 +369,60 @@ def _infer_arrow_type(values: list[Any]) -> "pa.DataType":
 # Compiler
 # ======================================================================
 
-_AGG_FUNC_NAMES = frozenset({
-    "count", "sum", "avg", "min", "max", "string_agg",
-    "array_agg", "bool_and", "bool_or",
-    "stddev", "stddev_pop", "stddev_samp",
-    "variance", "var_pop", "var_samp",
-    "percentile_cont", "percentile_disc", "mode",
-    "json_object_agg", "jsonb_object_agg",
-    "corr", "covar_pop", "covar_samp",
-    "regr_count", "regr_avgx", "regr_avgy",
-    "regr_sxx", "regr_syy", "regr_sxy",
-    "regr_slope", "regr_intercept", "regr_r2",
-})
+_AGG_FUNC_NAMES = frozenset(
+    {
+        "count",
+        "sum",
+        "avg",
+        "min",
+        "max",
+        "string_agg",
+        "array_agg",
+        "bool_and",
+        "bool_or",
+        "stddev",
+        "stddev_pop",
+        "stddev_samp",
+        "variance",
+        "var_pop",
+        "var_samp",
+        "percentile_cont",
+        "percentile_disc",
+        "mode",
+        "json_object_agg",
+        "jsonb_object_agg",
+        "corr",
+        "covar_pop",
+        "covar_samp",
+        "regr_count",
+        "regr_avgx",
+        "regr_avgy",
+        "regr_sxx",
+        "regr_syy",
+        "regr_sxy",
+        "regr_slope",
+        "regr_intercept",
+        "regr_r2",
+    }
+)
 
 # Two-argument statistical aggregates where extra carries the x column.
-_TWO_ARG_STAT_AGGS = frozenset({
-    "corr", "covar_pop", "covar_samp",
-    "regr_count", "regr_avgx", "regr_avgy",
-    "regr_sxx", "regr_syy", "regr_sxy",
-    "regr_slope", "regr_intercept", "regr_r2",
-})
+_TWO_ARG_STAT_AGGS = frozenset(
+    {
+        "corr",
+        "covar_pop",
+        "covar_samp",
+        "regr_count",
+        "regr_avgx",
+        "regr_avgy",
+        "regr_sxx",
+        "regr_syy",
+        "regr_sxy",
+        "regr_slope",
+        "regr_intercept",
+        "regr_r2",
+    }
+)
 
 
 class SQLCompiler:
@@ -474,19 +520,19 @@ class SQLCompiler:
                 if ct == ConstrType.CONSTR_FOREIGN:
                     ref_table = elt.pktable.relname
                     fk_cols = (
-                        [attr.sval for attr in elt.fk_attrs]
-                        if elt.fk_attrs else []
+                        [attr.sval for attr in elt.fk_attrs] if elt.fk_attrs else []
                     )
                     pk_cols = (
-                        [attr.sval for attr in elt.pk_attrs]
-                        if elt.pk_attrs else []
+                        [attr.sval for attr in elt.pk_attrs] if elt.pk_attrs else []
                     )
                     for fk_col, pk_col in zip(fk_cols, pk_cols):
-                        fk_defs.append(ForeignKeyDef(
-                            column=fk_col,
-                            ref_table=ref_table,
-                            ref_column=pk_col,
-                        ))
+                        fk_defs.append(
+                            ForeignKeyDef(
+                                column=fk_col,
+                                ref_table=ref_table,
+                                ref_column=pk_col,
+                            )
+                        )
                 continue
 
             col, check_expr, fk_def = self._parse_column_def(elt)
@@ -498,7 +544,7 @@ class SQLCompiler:
 
         # Temporary tables always use in-memory storage, even when
         # the engine has a persistent catalog.
-        is_temp = stmt.relation.relpersistence == 't'
+        is_temp = stmt.relation.relpersistence == "t"
         if is_temp:
             conn = None
         else:
@@ -510,6 +556,7 @@ class SQLCompiler:
         # Register CHECK constraints with ExprEvaluator closures
         if check_exprs:
             from uqa.sql.expr_evaluator import ExprEvaluator
+
             evaluator = ExprEvaluator()
             for name, expr in check_exprs:
                 table.check_constraints.append(
@@ -576,14 +623,16 @@ class SQLCompiler:
                 elif isinstance(sample, dict):
                     py_type = object
                     type_name = "jsonb"
-            columns.append(ColumnDef(
-                name=col_name,
-                type_name=type_name,
-                python_type=py_type,
-            ))
+            columns.append(
+                ColumnDef(
+                    name=col_name,
+                    type_name=type_name,
+                    python_type=py_type,
+                )
+            )
 
         # Temporary tables always use in-memory storage
-        is_temp = stmt.into.rel.relpersistence == 't'
+        is_temp = stmt.into.rel.relpersistence == "t"
         if is_temp:
             conn = None
         else:
@@ -669,7 +718,8 @@ class SQLCompiler:
         return SQLResult([], [])
 
     def _parse_column_def(
-        self, node: Any,
+        self,
+        node: Any,
     ) -> tuple[ColumnDef, Any, ForeignKeyDef | None]:
         """Parse a ColumnDef node into (ColumnDef, check_expr, fk_def).
 
@@ -678,9 +728,7 @@ class SQLCompiler:
         """
         col_name: str = node.colname
         type_names = node.typeName.names
-        raw_type, python_type = resolve_type(
-            type_names, node.typeName.arrayBounds
-        )
+        raw_type, python_type = resolve_type(type_names, node.typeName.arrayBounds)
 
         # VECTOR(N) -- extract dimensions from type modifier
         vector_dimensions: int | None = None
@@ -690,8 +738,7 @@ class SQLCompiler:
                 vector_dimensions = self._extract_int_value(typmods[0])
             else:
                 raise ValueError(
-                    f"VECTOR column '{col_name}' requires dimensions, "
-                    f"e.g. VECTOR(128)"
+                    f"VECTOR column '{col_name}' requires dimensions, e.g. VECTOR(128)"
                 )
 
         primary_key = False
@@ -718,9 +765,7 @@ class SQLCompiler:
                 elif ct == ConstrType.CONSTR_FOREIGN:
                     ref_table = constraint.pktable.relname
                     ref_col = (
-                        constraint.pk_attrs[0].sval
-                        if constraint.pk_attrs
-                        else None
+                        constraint.pk_attrs[0].sval if constraint.pk_attrs else None
                     )
                     if ref_col is not None:
                         fk_def = ForeignKeyDef(
@@ -743,22 +788,28 @@ class SQLCompiler:
                 numeric_precision = self._extract_int_value(typmods[0])
                 numeric_scale = 0
 
-        return ColumnDef(
-            name=col_name,
-            type_name=raw_type,
-            python_type=python_type,
-            primary_key=primary_key,
-            not_null=not_null,
-            auto_increment=auto_increment,
-            default=default,
-            vector_dimensions=vector_dimensions,
-            unique=unique,
-            numeric_precision=numeric_precision,
-            numeric_scale=numeric_scale,
-        ), check_expr, fk_def
+        return (
+            ColumnDef(
+                name=col_name,
+                type_name=raw_type,
+                python_type=python_type,
+                primary_key=primary_key,
+                not_null=not_null,
+                auto_increment=auto_increment,
+                default=default,
+                vector_dimensions=vector_dimensions,
+                unique=unique,
+                numeric_precision=numeric_precision,
+                numeric_scale=numeric_scale,
+            ),
+            check_expr,
+            fk_def,
+        )
 
     def _register_fk_validators(
-        self, table: Table, fk_defs: list[ForeignKeyDef],
+        self,
+        table: Table,
+        fk_defs: list[ForeignKeyDef],
     ) -> None:
         """Install insert/delete/update validator closures for FK constraints.
 
@@ -919,9 +970,7 @@ class SQLCompiler:
                     )
 
             if parent_table is not None:
-                parent_table.fk_update_validators.append(
-                    _validate_parent_update
-                )
+                parent_table.fk_update_validators.append(_validate_parent_update)
             table._pending_parent_update_validators = getattr(
                 table, "_pending_parent_update_validators", []
             )
@@ -944,9 +993,7 @@ class SQLCompiler:
         """
         engine = self._engine
         for table in engine._tables.values():
-            pending_del = getattr(
-                table, "_pending_parent_delete_validators", []
-            )
+            pending_del = getattr(table, "_pending_parent_delete_validators", [])
             remaining_del: list[tuple[str, Any]] = []
             for ref_table_name, validator in pending_del:
                 parent = engine._tables.get(ref_table_name)
@@ -957,9 +1004,7 @@ class SQLCompiler:
                     remaining_del.append((ref_table_name, validator))
             table._pending_parent_delete_validators = remaining_del
 
-            pending_upd = getattr(
-                table, "_pending_parent_update_validators", []
-            )
+            pending_upd = getattr(table, "_pending_parent_update_validators", [])
             remaining_upd: list[tuple[str, Any]] = []
             for ref_table_name, validator in pending_upd:
                 parent = engine._tables.get(ref_table_name)
@@ -1002,9 +1047,7 @@ class SQLCompiler:
     def _compile_drop_index(self, stmt: DropStmt) -> SQLResult:
         index_manager = getattr(self._engine, "_index_manager", None)
         if index_manager is None:
-            raise ValueError(
-                "Index operations require a persistent engine (db_path)"
-            )
+            raise ValueError("Index operations require a persistent engine (db_path)")
         for obj in stmt.objects:
             index_name = obj[-1].sval
             if stmt.missing_ok:
@@ -1018,7 +1061,8 @@ class SQLCompiler:
     # ==================================================================
 
     def _compile_create_foreign_server(
-        self, stmt: CreateForeignServerStmt,
+        self,
+        stmt: CreateForeignServerStmt,
     ) -> SQLResult:
         from uqa.fdw.foreign_table import ForeignServer
 
@@ -1042,13 +1086,16 @@ class SQLCompiler:
 
         if self._engine._catalog is not None:
             self._engine._catalog.save_foreign_server(
-                name, fdw_type, options,
+                name,
+                fdw_type,
+                options,
             )
 
         return SQLResult([], [])
 
     def _compile_create_foreign_table(
-        self, stmt: CreateForeignTableStmt,
+        self,
+        stmt: CreateForeignTableStmt,
     ) -> SQLResult:
         from uqa.fdw.foreign_table import ForeignTable
 
@@ -1056,19 +1103,13 @@ class SQLCompiler:
         if table_name in self._engine._foreign_tables:
             if stmt.base.if_not_exists:
                 return SQLResult([], [])
-            raise ValueError(
-                f"Foreign table '{table_name}' already exists"
-            )
+            raise ValueError(f"Foreign table '{table_name}' already exists")
         if table_name in self._engine._tables:
-            raise ValueError(
-                f"Table '{table_name}' already exists"
-            )
+            raise ValueError(f"Table '{table_name}' already exists")
 
         server_name = stmt.servername
         if server_name not in self._engine._foreign_servers:
-            raise ValueError(
-                f"Foreign server '{server_name}' does not exist"
-            )
+            raise ValueError(f"Foreign server '{server_name}' does not exist")
 
         columns = OrderedDict()
         for elt in stmt.base.tableElts:
@@ -1126,9 +1167,7 @@ class SQLCompiler:
                 if self._engine._catalog is not None:
                     self._engine._catalog.drop_foreign_server(name)
             elif not stmt.missing_ok:
-                raise ValueError(
-                    f"Foreign server '{name}' does not exist"
-                )
+                raise ValueError(f"Foreign server '{name}' does not exist")
         return SQLResult([], [])
 
     def _compile_drop_foreign_table(self, stmt: DropStmt) -> SQLResult:
@@ -1140,9 +1179,7 @@ class SQLCompiler:
                 if self._engine._catalog is not None:
                     self._engine._catalog.drop_foreign_table(table_name)
             elif not stmt.missing_ok:
-                raise ValueError(
-                    f"Foreign table '{table_name}' does not exist"
-                )
+                raise ValueError(f"Foreign table '{table_name}' does not exist")
         return SQLResult([], [])
 
     # ==================================================================
@@ -1157,9 +1194,7 @@ class SQLCompiler:
             at = AlterTableType(cmd.subtype)
 
             if at == AlterTableType.AT_AddColumn:
-                col_def, check_expr, fk_def = self._parse_column_def(
-                    cmd.def_
-                )
+                col_def, check_expr, fk_def = self._parse_column_def(cmd.def_)
                 if col_def.name in table.columns:
                     raise ValueError(
                         f"Column '{col_def.name}' already exists "
@@ -1168,10 +1203,13 @@ class SQLCompiler:
                 table.columns[col_def.name] = col_def
                 if check_expr is not None:
                     from uqa.sql.expr_evaluator import ExprEvaluator
+
                     ev = ExprEvaluator()
                     table.check_constraints.append(
-                        (col_def.name,
-                         lambda row, e=check_expr, v=ev: v.evaluate(e, row))
+                        (
+                            col_def.name,
+                            lambda row, e=check_expr, v=ev: v.evaluate(e, row),
+                        )
                     )
                 if fk_def is not None:
                     table.foreign_keys.append(fk_def)
@@ -1183,8 +1221,7 @@ class SQLCompiler:
                     if cmd.missing_ok:
                         continue
                     raise ValueError(
-                        f"Column '{col_name}' does not exist "
-                        f"in table '{table_name}'"
+                        f"Column '{col_name}' does not exist in table '{table_name}'"
                     )
                 del table.columns[col_name]
                 if table.primary_key == col_name:
@@ -1200,12 +1237,11 @@ class SQLCompiler:
                 col_name = cmd.name
                 if col_name not in table.columns:
                     raise ValueError(
-                        f"Column '{col_name}' does not exist "
-                        f"in table '{table_name}'"
+                        f"Column '{col_name}' does not exist in table '{table_name}'"
                     )
                 if cmd.def_ is not None:
-                    table.columns[col_name].default = (
-                        self._extract_const_value(cmd.def_)
+                    table.columns[col_name].default = self._extract_const_value(
+                        cmd.def_
                     )
                 else:
                     table.columns[col_name].default = None
@@ -1214,8 +1250,7 @@ class SQLCompiler:
                 col_name = cmd.name
                 if col_name not in table.columns:
                     raise ValueError(
-                        f"Column '{col_name}' does not exist "
-                        f"in table '{table_name}'"
+                        f"Column '{col_name}' does not exist in table '{table_name}'"
                     )
                 # Validate existing data
                 for doc_id in table.document_store.doc_ids:
@@ -1231,8 +1266,7 @@ class SQLCompiler:
                 col_name = cmd.name
                 if col_name not in table.columns:
                     raise ValueError(
-                        f"Column '{col_name}' does not exist "
-                        f"in table '{table_name}'"
+                        f"Column '{col_name}' does not exist in table '{table_name}'"
                     )
                 table.columns[col_name].not_null = False
 
@@ -1240,8 +1274,7 @@ class SQLCompiler:
                 col_name = cmd.name
                 if col_name not in table.columns:
                     raise ValueError(
-                        f"Column '{col_name}' does not exist "
-                        f"in table '{table_name}'"
+                        f"Column '{col_name}' does not exist in table '{table_name}'"
                     )
                 new_type_names = cmd.def_.typeName.names
                 new_type, new_python_type = resolve_type(
@@ -1264,9 +1297,7 @@ class SQLCompiler:
                             table.document_store.put(doc_id, doc)
 
             else:
-                raise ValueError(
-                    f"Unsupported ALTER TABLE subcommand: {at.name}"
-                )
+                raise ValueError(f"Unsupported ALTER TABLE subcommand: {at.name}")
 
         return SQLResult([], [])
 
@@ -1278,9 +1309,7 @@ class SQLCompiler:
             new_name = stmt.newname
             table = self._get_table(old_name)
             if new_name in self._engine._tables:
-                raise ValueError(
-                    f"Table '{new_name}' already exists"
-                )
+                raise ValueError(f"Table '{new_name}' already exists")
             del self._engine._tables[old_name]
             table.name = new_name
             self._engine._tables[new_name] = table
@@ -1293,13 +1322,11 @@ class SQLCompiler:
             new_col = stmt.newname
             if old_col not in table.columns:
                 raise ValueError(
-                    f"Column '{old_col}' does not exist "
-                    f"in table '{table_name}'"
+                    f"Column '{old_col}' does not exist in table '{table_name}'"
                 )
             if new_col in table.columns:
                 raise ValueError(
-                    f"Column '{new_col}' already exists "
-                    f"in table '{table_name}'"
+                    f"Column '{new_col}' already exists in table '{table_name}'"
                 )
             # Rebuild OrderedDict preserving order
             new_columns: OrderedDict[str, ColumnDef] = OrderedDict()
@@ -1345,9 +1372,7 @@ class SQLCompiler:
         if view_name in self._engine._views:
             raise ValueError(f"View '{view_name}' already exists")
         if view_name in self._engine._tables:
-            raise ValueError(
-                f"'{view_name}' already exists as a table"
-            )
+            raise ValueError(f"'{view_name}' already exists as a table")
         self._engine._views[view_name] = stmt.query
         return SQLResult([], [])
 
@@ -1379,8 +1404,7 @@ class SQLCompiler:
             col_name = param.name
             if col_name not in table.columns:
                 raise ValueError(
-                    f"Column '{col_name}' does not exist "
-                    f"in table '{table_name}'"
+                    f"Column '{col_name}' does not exist in table '{table_name}'"
                 )
             columns.append(col_name)
 
@@ -1389,20 +1413,17 @@ class SQLCompiler:
         if access_method == "hnsw":
             # HNSW vector index: CREATE INDEX ... USING hnsw
             if len(columns) != 1:
-                raise ValueError(
-                    "HNSW index must be created on exactly one column"
-                )
+                raise ValueError("HNSW index must be created on exactly one column")
             col_name = columns[0]
             col_def = table.columns[col_name]
             if col_def.vector_dimensions is None:
-                raise ValueError(
-                    f"Column '{col_name}' is not a VECTOR column"
-                )
+                raise ValueError(f"Column '{col_name}' is not a VECTOR column")
 
             # Parse WITH parameters: ef_construction, m
             params: dict[str, int] = {}
             if stmt.options:
                 from pglast.ast import DefElem
+
                 for opt in stmt.options:
                     if isinstance(opt, DefElem):
                         key = opt.defname.lower()
@@ -1431,6 +1452,7 @@ class SQLCompiler:
                 doc = table.document_store.get(doc_id)
                 if doc is not None and col_name in doc:
                     import numpy as np
+
                     vec = np.asarray(doc[col_name], dtype=np.float32)
                     hnsw.add(doc_id, vec)
 
@@ -1453,24 +1475,18 @@ class SQLCompiler:
         if access_method == "rtree":
             # R*Tree spatial index: CREATE INDEX ... USING rtree
             if len(columns) != 1:
-                raise ValueError(
-                    "R*Tree index must be created on exactly one column"
-                )
+                raise ValueError("R*Tree index must be created on exactly one column")
             col_name = columns[0]
             col_def = table.columns[col_name]
             if col_def.type_name != "point":
-                raise ValueError(
-                    f"Column '{col_name}' is not a POINT column"
-                )
+                raise ValueError(f"Column '{col_name}' is not a POINT column")
 
             from uqa.storage.spatial_index import SpatialIndex
 
             catalog_conn = getattr(
                 getattr(self._engine, "_catalog", None), "conn", None
             )
-            sp_idx = SpatialIndex(
-                table_name, col_name, conn=catalog_conn
-            )
+            sp_idx = SpatialIndex(table_name, col_name, conn=catalog_conn)
 
             # Re-index existing points from the document store
             for doc_id in table.document_store.doc_ids:
@@ -1498,9 +1514,7 @@ class SQLCompiler:
         # BTREE index (default)
         index_manager = getattr(self._engine, "_index_manager", None)
         if index_manager is None:
-            raise ValueError(
-                "Index operations require a persistent engine (db_path)"
-            )
+            raise ValueError("Index operations require a persistent engine (db_path)")
 
         index_def = IndexDef(
             name=index_name,
@@ -1518,9 +1532,7 @@ class SQLCompiler:
     def _compile_insert(self, stmt: InsertStmt) -> SQLResult:
         table_name = stmt.relation.relname
         if table_name in self._engine._foreign_tables:
-            raise ValueError(
-                f"Cannot INSERT into foreign table '{table_name}'"
-            )
+            raise ValueError(f"Cannot INSERT into foreign table '{table_name}'")
         table = self._engine._tables.get(table_name)
         if table is None:
             raise ValueError(f"Table '{table_name}' does not exist")
@@ -1565,9 +1577,7 @@ class SQLCompiler:
         on_conflict = stmt.onConflictClause
         conflict_cols: list[str] = []
         if on_conflict is not None and on_conflict.infer is not None:
-            conflict_cols = [
-                elem.name for elem in on_conflict.infer.indexElems
-            ]
+            conflict_cols = [elem.name for elem in on_conflict.infer.indexElems]
 
         # Build hash index for O(1) conflict lookups
         conflict_index: dict[tuple, int] = {}
@@ -1591,7 +1601,9 @@ class SQLCompiler:
                         continue
                     # DO UPDATE SET ...
                     self._do_conflict_update(
-                        table, existing_id, src_row,
+                        table,
+                        existing_id,
+                        src_row,
                         on_conflict.targetList,
                     )
                     # Update index if conflict columns changed
@@ -1605,9 +1617,7 @@ class SQLCompiler:
                         doc = updated_doc
                         if doc:
                             returning_rows.append(
-                                self._project_returning(
-                                    doc, stmt.returningList, table
-                                )
+                                self._project_returning(doc, stmt.returningList, table)
                             )
                     inserted += 1
                     continue
@@ -1622,15 +1632,11 @@ class SQLCompiler:
                 doc = table.document_store.get(doc_id)
                 if doc:
                     returning_rows.append(
-                        self._project_returning(
-                            doc, stmt.returningList, table
-                        )
+                        self._project_returning(doc, stmt.returningList, table)
                     )
 
         if stmt.returningList:
-            cols = self._returning_columns(
-                stmt.returningList, table
-            )
+            cols = self._returning_columns(stmt.returningList, table)
             return SQLResult(cols, returning_rows)
 
         return SQLResult(["inserted"], [{"inserted": inserted}])
@@ -1659,6 +1665,7 @@ class SQLCompiler:
     ) -> None:
         """Execute DO UPDATE SET assignments for an ON CONFLICT clause."""
         from uqa.sql.expr_evaluator import ExprEvaluator
+
         evaluator = ExprEvaluator(subquery_executor=self._compile_select)
 
         old_doc = table.document_store.get(doc_id)
@@ -1682,9 +1689,7 @@ class SQLCompiler:
 
         table.inverted_index.remove_document(doc_id)
         table.document_store.put(doc_id, new_doc)
-        text_fields = {
-            k: v for k, v in new_doc.items() if isinstance(v, str)
-        }
+        text_fields = {k: v for k, v in new_doc.items() if isinstance(v, str)}
         if text_fields:
             table.inverted_index.add_document(doc_id, text_fields)
 
@@ -1696,6 +1701,7 @@ class SQLCompiler:
     ) -> dict[str, Any]:
         """Project a document through a RETURNING clause."""
         from uqa.sql.expr_evaluator import ExprEvaluator
+
         evaluator = ExprEvaluator(subquery_executor=self._compile_select)
         result: dict[str, Any] = {}
         for target in returning_list:
@@ -1713,9 +1719,7 @@ class SQLCompiler:
                 result[alias] = evaluator.evaluate(target.val, doc)
         return result
 
-    def _returning_columns(
-        self, returning_list: tuple, table: Table
-    ) -> list[str]:
+    def _returning_columns(self, returning_list: tuple, table: Table) -> list[str]:
         """Extract column names from a RETURNING clause."""
         cols: list[str] = []
         for target in returning_list:
@@ -1736,9 +1740,7 @@ class SQLCompiler:
     def _compile_update(self, stmt: UpdateStmt) -> SQLResult:
         table_name = stmt.relation.relname
         if table_name in self._engine._foreign_tables:
-            raise ValueError(
-                f"Cannot UPDATE foreign table '{table_name}'"
-            )
+            raise ValueError(f"Cannot UPDATE foreign table '{table_name}'")
         table = self._engine._tables.get(table_name)
         if table is None:
             raise ValueError(f"Table '{table_name}' does not exist")
@@ -1769,12 +1771,12 @@ class SQLCompiler:
             col_name = target.name
             if col_name not in table.columns:
                 raise ValueError(
-                    f"Unknown column '{col_name}' "
-                    f"for table '{table_name}'"
+                    f"Unknown column '{col_name}' for table '{table_name}'"
                 )
             set_targets.append((col_name, target.val))
 
         from uqa.sql.expr_evaluator import ExprEvaluator
+
         evaluator = ExprEvaluator(subquery_executor=self._compile_select)
 
         returning_rows: list[dict[str, Any]] = []
@@ -1810,10 +1812,7 @@ class SQLCompiler:
             table.document_store.put(doc_id, new_doc)
 
             # Re-index text fields
-            text_fields = {
-                k: v for k, v in new_doc.items()
-                if isinstance(v, str)
-            }
+            text_fields = {k: v for k, v in new_doc.items() if isinstance(v, str)}
             if text_fields:
                 table.inverted_index.add_document(doc_id, text_fields)
 
@@ -1827,9 +1826,7 @@ class SQLCompiler:
 
             if stmt.returningList:
                 returning_rows.append(
-                    self._project_returning(
-                        new_doc, stmt.returningList, table
-                    )
+                    self._project_returning(new_doc, stmt.returningList, table)
                 )
             updated += 1
 
@@ -1838,11 +1835,10 @@ class SQLCompiler:
             return SQLResult(cols, returning_rows)
         return SQLResult(["updated"], [{"updated": updated}])
 
-    def _compile_update_from(
-        self, stmt: UpdateStmt, table: Table
-    ) -> SQLResult:
+    def _compile_update_from(self, stmt: UpdateStmt, table: Table) -> SQLResult:
         """UPDATE t1 SET col = expr FROM t2 [, t3, ...] WHERE condition."""
         import itertools
+
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         table_name = stmt.relation.relname
@@ -1901,9 +1897,7 @@ class SQLCompiler:
 
             # Cartesian product of FROM rows (usually just 1 FROM table)
             from_combos = (
-                list(itertools.product(*from_row_lists))
-                if from_row_lists
-                else [()]
+                list(itertools.product(*from_row_lists)) if from_row_lists else [()]
             )
 
             for combo in from_combos:
@@ -1911,9 +1905,10 @@ class SQLCompiler:
                 for from_row in combo:
                     merged.update(from_row)
 
-                if stmt.whereClause is not None:
-                    if not evaluator.evaluate(stmt.whereClause, merged):
-                        continue
+                if stmt.whereClause is not None and not evaluator.evaluate(
+                    stmt.whereClause, merged
+                ):
+                    continue
 
                 # Apply SET expressions
                 new_doc = dict(target_doc)
@@ -1932,18 +1927,13 @@ class SQLCompiler:
 
                 table.inverted_index.remove_document(doc_id)
                 table.document_store.put(doc_id, new_doc)
-                text_fields = {
-                    k: v for k, v in new_doc.items()
-                    if isinstance(v, str)
-                }
+                text_fields = {k: v for k, v in new_doc.items() if isinstance(v, str)}
                 if text_fields:
                     table.inverted_index.add_document(doc_id, text_fields)
 
                 if stmt.returningList:
                     returning_rows.append(
-                        self._project_returning(
-                            new_doc, stmt.returningList, table
-                        )
+                        self._project_returning(new_doc, stmt.returningList, table)
                     )
                 updated += 1
                 break  # Only update once per target row
@@ -1951,9 +1941,7 @@ class SQLCompiler:
         # Clean up expanded FROM tables
         for name in list(self._expanded_views):
             if name in self._shadowed_tables:
-                self._engine._tables[name] = (
-                    self._shadowed_tables.pop(name)
-                )
+                self._engine._tables[name] = self._shadowed_tables.pop(name)
             else:
                 self._engine._tables.pop(name, None)
         self._expanded_views.clear()
@@ -1970,9 +1958,7 @@ class SQLCompiler:
     def _compile_delete(self, stmt: DeleteStmt) -> SQLResult:
         table_name = stmt.relation.relname
         if table_name in self._engine._foreign_tables:
-            raise ValueError(
-                f"Cannot DELETE from foreign table '{table_name}'"
-            )
+            raise ValueError(f"Cannot DELETE from foreign table '{table_name}'")
         table = self._engine._tables.get(table_name)
         if table is None:
             raise ValueError(f"Table '{table_name}' does not exist")
@@ -2010,9 +1996,7 @@ class SQLCompiler:
                 doc = table.document_store.get(doc_id)
                 if doc:
                     returning_rows.append(
-                        self._project_returning(
-                            doc, stmt.returningList, table
-                        )
+                        self._project_returning(doc, stmt.returningList, table)
                     )
             table.inverted_index.remove_document(doc_id)
             for si in table.spatial_indexes.values():
@@ -2025,11 +2009,10 @@ class SQLCompiler:
             return SQLResult(cols, returning_rows)
         return SQLResult(["deleted"], [{"deleted": deleted}])
 
-    def _compile_delete_using(
-        self, stmt: DeleteStmt, table: Table
-    ) -> SQLResult:
+    def _compile_delete_using(self, stmt: DeleteStmt, table: Table) -> SQLResult:
         """DELETE FROM t1 USING t2 [, t3, ...] WHERE condition."""
         import itertools
+
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         table_name = stmt.relation.relname
@@ -2074,9 +2057,7 @@ class SQLCompiler:
                 using_row_lists.append(ut_rows)
 
             using_combos = (
-                list(itertools.product(*using_row_lists))
-                if using_row_lists
-                else [()]
+                list(itertools.product(*using_row_lists)) if using_row_lists else [()]
             )
 
             for combo in using_combos:
@@ -2084,15 +2065,14 @@ class SQLCompiler:
                 for using_row in combo:
                     merged.update(using_row)
 
-                if stmt.whereClause is not None:
-                    if not evaluator.evaluate(stmt.whereClause, merged):
-                        continue
+                if stmt.whereClause is not None and not evaluator.evaluate(
+                    stmt.whereClause, merged
+                ):
+                    continue
 
                 if stmt.returningList:
                     returning_rows.append(
-                        self._project_returning(
-                            target_doc, stmt.returningList, table
-                        )
+                        self._project_returning(target_doc, stmt.returningList, table)
                     )
                 to_delete.append(doc_id)
                 break  # Only delete once per row
@@ -2108,9 +2088,7 @@ class SQLCompiler:
         # Clean up expanded USING tables
         for name in list(self._expanded_views):
             if name in self._shadowed_tables:
-                self._engine._tables[name] = (
-                    self._shadowed_tables.pop(name)
-                )
+                self._engine._tables[name] = self._shadowed_tables.pop(name)
             else:
                 self._engine._tables.pop(name, None)
         self._expanded_views.clear()
@@ -2148,25 +2126,19 @@ class SQLCompiler:
         if kind == 4:
             txn = self._engine._transaction
             if txn is None or not txn.active:
-                raise ValueError(
-                    "SAVEPOINT requires an active transaction"
-                )
+                raise ValueError("SAVEPOINT requires an active transaction")
             txn.savepoint(stmt.savepoint_name)
             return SQLResult([], [])
         if kind == 5:
             txn = self._engine._transaction
             if txn is None or not txn.active:
-                raise ValueError(
-                    "RELEASE SAVEPOINT requires an active transaction"
-                )
+                raise ValueError("RELEASE SAVEPOINT requires an active transaction")
             txn.release_savepoint(stmt.savepoint_name)
             return SQLResult([], [])
         if kind == 6:
             txn = self._engine._transaction
             if txn is None or not txn.active:
-                raise ValueError(
-                    "ROLLBACK TO SAVEPOINT requires an active transaction"
-                )
+                raise ValueError("ROLLBACK TO SAVEPOINT requires an active transaction")
             txn.rollback_to(stmt.savepoint_name)
             return SQLResult([], [])
         raise ValueError(f"Unsupported transaction statement kind: {kind}")
@@ -2178,9 +2150,7 @@ class SQLCompiler:
     def _compile_prepare(self, stmt: PrepareStmt) -> SQLResult:
         name = stmt.name
         if name in self._engine._prepared:
-            raise ValueError(
-                f"Prepared statement '{name}' already exists"
-            )
+            raise ValueError(f"Prepared statement '{name}' already exists")
         self._engine._prepared[name] = stmt
         return SQLResult([], [])
 
@@ -2188,9 +2158,7 @@ class SQLCompiler:
         name = stmt.name
         prep = self._engine._prepared.get(name)
         if prep is None:
-            raise ValueError(
-                f"Prepared statement '{name}' does not exist"
-            )
+            raise ValueError(f"Prepared statement '{name}' does not exist")
 
         # Collect parameter values from EXECUTE
         params: dict[int, A_Const] = {}
@@ -2210,9 +2178,7 @@ class SQLCompiler:
             return self._compile_update(query)
         if isinstance(query, DeleteStmt):
             return self._compile_delete(query)
-        raise ValueError(
-            f"Unsupported prepared query type: {type(query).__name__}"
-        )
+        raise ValueError(f"Unsupported prepared query type: {type(query).__name__}")
 
     def _compile_deallocate(self, stmt: DeallocateStmt) -> SQLResult:
         if stmt.name is None:
@@ -2220,35 +2186,25 @@ class SQLCompiler:
             self._engine._prepared.clear()
         else:
             if stmt.name not in self._engine._prepared:
-                raise ValueError(
-                    f"Prepared statement '{stmt.name}' does not exist"
-                )
+                raise ValueError(f"Prepared statement '{stmt.name}' does not exist")
             del self._engine._prepared[stmt.name]
         return SQLResult([], [])
 
-    def _substitute_params(
-        self, node: Any, params: dict[int, A_Const]
-    ) -> Any:
+    def _substitute_params(self, node: Any, params: dict[int, A_Const]) -> Any:
         """Recursively replace ParamRef nodes with A_Const values."""
         if isinstance(node, ParamRef):
             if node.number not in params:
-                raise ValueError(
-                    f"No value supplied for parameter ${node.number}"
-                )
+                raise ValueError(f"No value supplied for parameter ${node.number}")
             return params[node.number]
 
         # Recurse into plain tuples/lists (e.g. valuesLists rows)
         if isinstance(node, tuple):
-            return tuple(
-                self._substitute_params(item, params) for item in node
-            )
+            return tuple(self._substitute_params(item, params) for item in node)
         if isinstance(node, list):
-            return [
-                self._substitute_params(item, params) for item in node
-            ]
+            return [self._substitute_params(item, params) for item in node]
 
         # pglast AST nodes use __slots__; clone with substituted children
-        if hasattr(node, '__slots__') and isinstance(node.__slots__, dict):
+        if hasattr(node, "__slots__") and isinstance(node.__slots__, dict):
             kwargs = {}
             for slot in node.__slots__:
                 val = getattr(node, slot, None)
@@ -2256,10 +2212,9 @@ class SQLCompiler:
                     kwargs[slot] = None
                 elif isinstance(val, (tuple, list)):
                     kwargs[slot] = type(val)(
-                        self._substitute_params(item, params)
-                        for item in val
+                        self._substitute_params(item, params) for item in val
                     )
-                elif hasattr(val, '__slots__'):
+                elif hasattr(val, "__slots__"):
                     kwargs[slot] = self._substitute_params(val, params)
                 else:
                     kwargs[slot] = val
@@ -2300,10 +2255,16 @@ class SQLCompiler:
             if catalog is not None:
                 for col_name, cs in stats.items():
                     catalog.save_column_stats(
-                        table.name, col_name,
-                        cs.distinct_count, cs.null_count,
-                        cs.min_value, cs.max_value, cs.row_count,
-                        cs.histogram, cs.mcv_values, cs.mcv_frequencies,
+                        table.name,
+                        col_name,
+                        cs.distinct_count,
+                        cs.null_count,
+                        cs.min_value,
+                        cs.max_value,
+                        cs.row_count,
+                        cs.histogram,
+                        cs.mcv_values,
+                        cs.mcv_frequencies,
                     )
         return SQLResult([], [])
 
@@ -2339,8 +2300,8 @@ class SQLCompiler:
 
     def _explain_plan(self, op: Any, ctx: ExecutionContext) -> SQLResult:
         """Format the optimized query plan as an EXPLAIN result."""
-        from uqa.planner.executor import PlanExecutor
         from uqa.planner.cost_model import CostModel
+        from uqa.planner.executor import PlanExecutor
 
         executor = PlanExecutor(ctx)
         plan_text = executor.explain(op)
@@ -2378,26 +2339,23 @@ class SQLCompiler:
         ``e.name``) are available in the row data, and projection is
         routed through ExprProjectOp for correct qualified lookup.
         """
-        from uqa.execution.batch import DataType, _SQL_TO_DTYPE
-        from uqa.execution.scan import PostingListScanOp
+        from uqa.execution.batch import _SQL_TO_DTYPE, DataType
         from uqa.execution.relational import (
             DistinctOp,
             ExprProjectOp,
-            FilterOp as PhysFilterOp,
             HashAggOp,
             LimitOp,
             ProjectOp,
             SortOp,
             WindowOp,
         )
+        from uqa.execution.scan import PostingListScanOp
 
         # Build table schema for typed ColumnVectors
         schema: dict[str, DataType] = {}
         if table is not None:
             for name, col in table.columns.items():
-                schema[name] = _SQL_TO_DTYPE.get(
-                    col.type_name, DataType.TEXT
-                )
+                schema[name] = _SQL_TO_DTYPE.get(col.type_name, DataType.TEXT)
 
         physical: Any = PostingListScanOp(
             pl,
@@ -2411,20 +2369,17 @@ class SQLCompiler:
             physical = self._apply_deferred_where(physical, deferred_where)
 
         is_grouped = stmt.groupClause is not None
-        is_agg_only = not is_grouped and self._has_aggregates(
-            stmt.targetList
-        )
+        is_agg_only = not is_grouped and self._has_aggregates(stmt.targetList)
         has_window = self._has_window_functions(stmt.targetList)
         expected_cols: list[str] | None = None
         defer_proj = False
 
         if has_window:
             # Window functions: compute window values, then project
-            win_specs = self._extract_window_specs(
-                stmt.targetList, stmt.windowClause
-            )
+            win_specs = self._extract_window_specs(stmt.targetList, stmt.windowClause)
             physical = WindowOp(
-                physical, win_specs,
+                physical,
+                win_specs,
                 spill_threshold=self._engine.spill_threshold,
             )
 
@@ -2436,21 +2391,15 @@ class SQLCompiler:
                     alias = target.name or val.funcname[-1].sval.lower()
                     expected_cols.append(alias)
                 elif isinstance(val, ColumnRef):
-                    expected_cols.append(
-                        target.name or self._extract_column_name(val)
-                    )
+                    expected_cols.append(target.name or self._extract_column_name(val))
                 else:
-                    expected_cols.append(
-                        target.name or self._infer_target_name(target)
-                    )
+                    expected_cols.append(target.name or self._infer_target_name(target))
 
             # Project to expected columns
             physical = ProjectOp(physical, expected_cols)
 
         elif is_grouped:
-            group_cols = self._resolve_group_by_cols(
-                stmt.groupClause, stmt.targetList
-            )
+            group_cols = self._resolve_group_by_cols(stmt.groupClause, stmt.targetList)
             agg_specs = self._extract_agg_specs(stmt.targetList)
 
             # Ensure aggregates referenced in HAVING are also computed
@@ -2466,23 +2415,26 @@ class SQLCompiler:
             )
             if pre_targets:
                 physical = ExprProjectOp(
-                    physical, pre_targets,
+                    physical,
+                    pre_targets,
                     subquery_executor=self._compile_select,
                 )
 
-            group_aliases = self._build_group_aliases(
-                group_cols, stmt.targetList
-            )
+            group_aliases = self._build_group_aliases(group_cols, stmt.targetList)
             physical = HashAggOp(
-                physical, group_cols, agg_specs,
+                physical,
+                group_cols,
+                agg_specs,
                 spill_threshold=self._engine.spill_threshold,
                 group_aliases=group_aliases,
             )
 
             if stmt.havingClause is not None:
                 from uqa.execution.relational import ExprFilterOp
+
                 physical = ExprFilterOp(
-                    physical, stmt.havingClause,
+                    physical,
+                    stmt.havingClause,
                     subquery_executor=self._compile_select,
                 )
 
@@ -2495,7 +2447,8 @@ class SQLCompiler:
             )
             if post_group_targets:
                 physical = ExprProjectOp(
-                    physical, post_group_targets,
+                    physical,
+                    post_group_targets,
                     subquery_executor=self._compile_select,
                 )
                 expected_cols = [name for name, _ in post_group_targets]
@@ -2508,7 +2461,9 @@ class SQLCompiler:
         elif is_agg_only:
             agg_specs = self._extract_agg_specs(stmt.targetList)
             physical = HashAggOp(
-                physical, [], agg_specs,
+                physical,
+                [],
+                agg_specs,
                 spill_threshold=self._engine.spill_threshold,
             )
             # Check if SELECT list has wrapper expressions around aggregates
@@ -2524,7 +2479,8 @@ class SQLCompiler:
             if has_wrappers:
                 targets = self._build_expr_targets(stmt.targetList)
                 physical = ExprProjectOp(
-                    physical, targets,
+                    physical,
+                    targets,
                     subquery_executor=self._compile_select,
                 )
                 expected_cols = [name for name, _ in targets]
@@ -2542,16 +2498,21 @@ class SQLCompiler:
                 star_targets: list[tuple[str, Any]] = []
                 for alias, cols in join_tables:
                     for col in cols:
-                        star_targets.append((
-                            col,
-                            ColumnRef(fields=(
-                                PgString(sval=alias),
-                                PgString(sval=col),
-                            )),
-                        ))
+                        star_targets.append(
+                            (
+                                col,
+                                ColumnRef(
+                                    fields=(
+                                        PgString(sval=alias),
+                                        PgString(sval=col),
+                                    )
+                                ),
+                            )
+                        )
                 if star_targets:
                     physical = ExprProjectOp(
-                        physical, star_targets,
+                        physical,
+                        star_targets,
                         subquery_executor=self._compile_select,
                         sequences=self._engine._sequences,
                     )
@@ -2563,57 +2524,51 @@ class SQLCompiler:
                 defer_proj = False
                 if stmt.sortClause is not None:
                     sort_keys_pre = self._build_sort_keys(
-                        stmt.sortClause, stmt.targetList,
+                        stmt.sortClause,
+                        stmt.targetList,
                     )
                     defer_proj = self._sort_needs_extra_cols(
-                        sort_keys_pre, stmt.targetList,
+                        sort_keys_pre,
+                        stmt.targetList,
                     )
 
-                use_expr = (
-                    join_source
-                    or self._has_computed_expressions(stmt.targetList)
+                use_expr = join_source or self._has_computed_expressions(
+                    stmt.targetList
                 )
                 if not defer_proj:
                     if use_expr:
                         targets = self._build_expr_targets(stmt.targetList)
                         physical = ExprProjectOp(
-                            physical, targets,
+                            physical,
+                            targets,
                             subquery_executor=self._compile_select,
                             sequences=self._engine._sequences,
                         )
                         expected_cols = [name for name, _ in targets]
                     else:
-                        proj_cols, proj_aliases = (
-                            self._resolve_projection_cols(stmt.targetList)
+                        proj_cols, proj_aliases = self._resolve_projection_cols(
+                            stmt.targetList
                         )
-                        physical = ProjectOp(
-                            physical, proj_cols, proj_aliases
-                        )
-                        expected_cols = [
-                            proj_aliases.get(c, c) for c in proj_cols
-                        ]
+                        physical = ProjectOp(physical, proj_cols, proj_aliases)
+                        expected_cols = [proj_aliases.get(c, c) for c in proj_cols]
 
         # DISTINCT
         if stmt.distinctClause is not None:
             distinct_cols = expected_cols
             if distinct_cols is None:
-                distinct_cols = (
-                    list(table.columns.keys())
-                    if table is not None
-                    else []
-                )
+                distinct_cols = list(table.columns.keys()) if table is not None else []
             physical = DistinctOp(
-                physical, distinct_cols,
+                physical,
+                distinct_cols,
                 spill_threshold=self._engine.spill_threshold,
             )
 
         # ORDER BY
         if stmt.sortClause is not None:
-            sort_keys = self._build_sort_keys(
-                stmt.sortClause, stmt.targetList
-            )
+            sort_keys = self._build_sort_keys(stmt.sortClause, stmt.targetList)
             physical = SortOp(
-                physical, sort_keys,
+                physical,
+                sort_keys,
                 spill_threshold=self._engine.spill_threshold,
             )
 
@@ -2623,21 +2578,16 @@ class SQLCompiler:
             if use_expr:
                 targets = self._build_expr_targets(stmt.targetList)
                 physical = ExprProjectOp(
-                    physical, targets,
+                    physical,
+                    targets,
                     subquery_executor=self._compile_select,
                     sequences=self._engine._sequences,
                 )
                 expected_cols = [name for name, _ in targets]
             else:
-                proj_cols, proj_aliases = (
-                    self._resolve_projection_cols(stmt.targetList)
-                )
-                physical = ProjectOp(
-                    physical, proj_cols, proj_aliases
-                )
-                expected_cols = [
-                    proj_aliases.get(c, c) for c in proj_cols
-                ]
+                proj_cols, proj_aliases = self._resolve_projection_cols(stmt.targetList)
+                physical = ProjectOp(physical, proj_cols, proj_aliases)
+                expected_cols = [proj_aliases.get(c, c) for c in proj_cols]
 
         # LIMIT / OFFSET
         if stmt.limitCount is not None:
@@ -2655,7 +2605,11 @@ class SQLCompiler:
             batch = physical.next()
             if batch is None:
                 break
-            rb = batch.compact().record_batch if batch.selection is not None else batch.record_batch
+            rb = (
+                batch.compact().record_batch
+                if batch.selection is not None
+                else batch.record_batch
+            )
             batches.append(rb)
         physical.close()
 
@@ -2724,19 +2678,34 @@ class SQLCompiler:
                 if fn in _AGG_FUNC_NAMES:
                     continue
                 # Non-aggregate functions like UPPER(), LOWER() are computed
-                if fn in ("text_match", "bayesian_match", "knn_match",
-                          "traverse_match", "spatial_within"):
+                if fn in (
+                    "text_match",
+                    "bayesian_match",
+                    "knn_match",
+                    "traverse_match",
+                    "spatial_within",
+                ):
                     continue
                 return True
-            if isinstance(val, (A_Const, A_ArrayExpr, A_Expr, CaseExpr,
-                                TypeCast, CoalesceExpr, NullTest, SubLink,
-                                MinMaxExpr, SQLValueFunction)):
+            if isinstance(
+                val,
+                (
+                    A_Const,
+                    A_ArrayExpr,
+                    A_Expr,
+                    CaseExpr,
+                    TypeCast,
+                    CoalesceExpr,
+                    NullTest,
+                    SubLink,
+                    MinMaxExpr,
+                    SQLValueFunction,
+                ),
+            ):
                 return True
         return False
 
-    def _build_expr_targets(
-        self, target_list: tuple
-    ) -> list[tuple[str, Any]]:
+    def _build_expr_targets(self, target_list: tuple) -> list[tuple[str, Any]]:
         """Build (output_name, ast_node) pairs for ExprProjectOp.
 
         For text_match/bayesian_match function calls, wraps the node
@@ -2769,8 +2738,8 @@ class SQLCompiler:
         if isinstance(val, FuncCall):
             fn = val.funcname[-1].sval.lower()
             if fn in _AGG_FUNC_NAMES:
-                arg_col = None if val.agg_star else (
-                    self._extract_column_name(val.args[0])
+                arg_col = (
+                    None if val.agg_star else (self._extract_column_name(val.args[0]))
                 )
                 return fn if arg_col is None else f"{fn}_{arg_col}"
             if fn in ("text_match", "bayesian_match"):
@@ -2811,9 +2780,8 @@ class SQLCompiler:
                 # does not contribute to ordinal/alias mappings.
                 if isinstance(target.val, A_Star):
                     continue
-                if (
-                    isinstance(target.val, ColumnRef)
-                    and isinstance(target.val.fields[-1], A_Star)
+                if isinstance(target.val, ColumnRef) and isinstance(
+                    target.val.fields[-1], A_Star
                 ):
                     continue
                 col_name = self._infer_target_name(target)
@@ -2836,9 +2804,7 @@ class SQLCompiler:
                 nulls_first = is_desc
 
             # Ordinal reference: ORDER BY 1, 2, ...
-            if isinstance(s.node, A_Const) and isinstance(
-                s.node.val, PgInteger
-            ):
+            if isinstance(s.node, A_Const) and isinstance(s.node.val, PgInteger):
                 ordinal = s.node.val.ival
                 col = ordinal_map.get(ordinal)
                 if col is None:
@@ -2871,16 +2837,15 @@ class SQLCompiler:
                 fields = target.val.fields
                 if isinstance(fields[-1], A_Star):
                     return False
-                col = fields[-1].sval if hasattr(fields[-1], "sval") else str(fields[-1])
+                col = (
+                    fields[-1].sval if hasattr(fields[-1], "sval") else str(fields[-1])
+                )
                 projected.add(col)
                 if target.name:
                     projected.add(target.name)
             elif target.name:
                 projected.add(target.name)
-        for col_name, _, _ in sort_keys:
-            if col_name not in projected:
-                return True
-        return False
+        return any(col_name not in projected for col_name, _, _ in sort_keys)
 
     def _build_group_aliases(
         self,
@@ -2978,16 +2943,12 @@ class SQLCompiler:
                         for a in func.args:
                             if isinstance(a, ColumnRef):
                                 col_arg = self._extract_column_name(a)
-                        natural = (
-                            f"{fn}_{col_arg}" if col_arg else fn
-                        )
+                        natural = f"{fn}_{col_arg}" if col_arg else fn
                     else:
                         natural = fn
                     cols.append(target.name or natural)
                 else:
-                    cols.append(
-                        target.name or self._infer_target_name(target)
-                    )
+                    cols.append(target.name or self._infer_target_name(target))
         if not cols:
             cols = group_cols + [a for a, *_ in agg_specs]
         return cols
@@ -3035,7 +2996,9 @@ class SQLCompiler:
         return targets
 
     def _resolve_group_by_cols(
-        self, group_clause: tuple, target_list: tuple | None,
+        self,
+        group_clause: tuple,
+        target_list: tuple | None,
     ) -> list[str]:
         """Resolve GROUP BY items: column names, aliases, or ordinals."""
         # Build alias map from SELECT list
@@ -3135,9 +3098,7 @@ class SQLCompiler:
                 )
                 alias_map[natural] = target.name or natural
 
-        if isinstance(having_node, A_Expr) and isinstance(
-            having_node.lexpr, FuncCall
-        ):
+        if isinstance(having_node, A_Expr) and isinstance(having_node.lexpr, FuncCall):
             func = having_node.lexpr
             fn = func.funcname[-1].sval.lower()
             natural = (
@@ -3152,17 +3113,13 @@ class SQLCompiler:
             )
             return col_name, pred
 
-        raise ValueError(
-            f"Unsupported HAVING clause: {type(having_node).__name__}"
-        )
+        raise ValueError(f"Unsupported HAVING clause: {type(having_node).__name__}")
 
     # ==================================================================
     # DQL: SELECT
     # ==================================================================
 
-    def _compile_select(
-        self, stmt: SelectStmt, *, explain: bool = False
-    ) -> SQLResult:
+    def _compile_select(self, stmt: SelectStmt, *, explain: bool = False) -> SQLResult:
         # 0. Materialize CTEs as temporary in-memory tables
         cte_names: list[str] = []
         if stmt.withClause is not None:
@@ -3172,9 +3129,7 @@ class SQLCompiler:
             )
 
         try:
-            return self._compile_select_body(
-                stmt, explain=explain
-            )
+            return self._compile_select_body(stmt, explain=explain)
         finally:
             # Clean up CTE temporary tables
             for name in cte_names:
@@ -3182,15 +3137,14 @@ class SQLCompiler:
             # Clean up materialized view / derived tables
             for name in self._expanded_views:
                 if name in self._shadowed_tables:
-                    self._engine._tables[name] = (
-                        self._shadowed_tables.pop(name)
-                    )
+                    self._engine._tables[name] = self._shadowed_tables.pop(name)
                 else:
                     self._engine._tables.pop(name, None)
             self._expanded_views.clear()
 
     def _extract_pushdown_predicates(
-        self, where_node: Any,
+        self,
+        where_node: Any,
     ) -> tuple[list, Any | None]:
         """Split a WHERE clause into pushable and non-pushable parts.
 
@@ -3210,9 +3164,7 @@ class SQLCompiler:
                 pushable: list[FDWPredicate] = []
                 remaining: list = []
                 for arg in where_node.args:
-                    sub_push, sub_remain = (
-                        self._extract_pushdown_predicates(arg)
-                    )
+                    sub_push, sub_remain = self._extract_pushdown_predicates(arg)
                     pushable.extend(sub_push)
                     if sub_remain is not None:
                         remaining.append(sub_remain)
@@ -3236,9 +3188,7 @@ class SQLCompiler:
                 op_name = where_node.name[-1].sval
                 if op_name in ("=", "!=", "<>", "<", "<=", ">", ">="):
                     try:
-                        col_name = self._extract_column_name(
-                            where_node.lexpr
-                        )
+                        col_name = self._extract_column_name(where_node.lexpr)
                     except ValueError:
                         return [], where_node
                     value = self._extract_const_value(where_node.rexpr)
@@ -3247,9 +3197,7 @@ class SQLCompiler:
             # BETWEEN: split into >= and <= predicates
             if kind == A_Expr_Kind.AEXPR_BETWEEN:
                 try:
-                    col_name = self._extract_column_name(
-                        where_node.lexpr
-                    )
+                    col_name = self._extract_column_name(where_node.lexpr)
                 except ValueError:
                     return [], where_node
                 bounds = where_node.rexpr
@@ -3268,26 +3216,20 @@ class SQLCompiler:
             # IN: pushable when all RHS elements are constants
             if kind == A_Expr_Kind.AEXPR_IN:
                 try:
-                    col_name = self._extract_column_name(
-                        where_node.lexpr
-                    )
+                    col_name = self._extract_column_name(where_node.lexpr)
                 except ValueError:
                     return [], where_node
                 elements = where_node.rexpr
                 if isinstance(elements, (list, tuple)) and all(
                     isinstance(e, A_Const) for e in elements
                 ):
-                    values = tuple(
-                        self._extract_const_value(e) for e in elements
-                    )
+                    values = tuple(self._extract_const_value(e) for e in elements)
                     return [FDWPredicate(col_name, "IN", values)], None
 
             # LIKE / NOT LIKE
             if kind == A_Expr_Kind.AEXPR_LIKE:
                 try:
-                    col_name = self._extract_column_name(
-                        where_node.lexpr
-                    )
+                    col_name = self._extract_column_name(where_node.lexpr)
                 except ValueError:
                     return [], where_node
                 if isinstance(where_node.rexpr, A_Const):
@@ -3304,9 +3246,7 @@ class SQLCompiler:
             # ILIKE / NOT ILIKE
             if kind == A_Expr_Kind.AEXPR_ILIKE:
                 try:
-                    col_name = self._extract_column_name(
-                        where_node.lexpr
-                    )
+                    col_name = self._extract_column_name(where_node.lexpr)
                 except ValueError:
                     return [], where_node
                 if isinstance(where_node.rexpr, A_Const):
@@ -3361,9 +3301,7 @@ class SQLCompiler:
         if isinstance(node, BoolExpr) and node.boolop == BoolExprType.AND_EXPR:
             result: list = []
             for arg in node.args:
-                result.extend(
-                    SQLCompiler._extract_and_conjuncts(arg)
-                )
+                result.extend(SQLCompiler._extract_and_conjuncts(arg))
             return result
         return [node]
 
@@ -3404,16 +3342,14 @@ class SQLCompiler:
         pushdown.  Scans behind outer joins are excluded to preserve
         correct NULL-extension semantics.
         """
-        from uqa.joins.inner import InnerJoinOperator
-        from uqa.joins.index import IndexJoinOperator
         from uqa.joins.cross import CrossJoinOperator
+        from uqa.joins.index import IndexJoinOperator
+        from uqa.joins.inner import InnerJoinOperator
 
         aliases: set[str] = set()
         if isinstance(op, _TableScanOperator) and op._alias:
             aliases.add(op._alias)
-        elif isinstance(
-            op, (InnerJoinOperator, IndexJoinOperator, CrossJoinOperator)
-        ):
+        elif isinstance(op, (InnerJoinOperator, IndexJoinOperator, CrossJoinOperator)):
             aliases |= SQLCompiler._collect_inner_join_scan_aliases(op.left)
             aliases |= SQLCompiler._collect_inner_join_scan_aliases(op.right)
         return aliases
@@ -3425,17 +3361,13 @@ class SQLCompiler:
             return None
         if len(conjuncts) == 1:
             return conjuncts[0]
-        return BoolExpr(
-            boolop=BoolExprType.AND_EXPR, args=tuple(conjuncts)
-        )
+        return BoolExpr(boolop=BoolExprType.AND_EXPR, args=tuple(conjuncts))
 
-    def _inject_join_filters(
-        self, join_op: Any, pushable: dict[str, list]
-    ) -> Any:
+    def _inject_join_filters(self, join_op: Any, pushable: dict[str, list]) -> Any:
         """Walk join operator tree and wrap matching table scans with filters."""
-        from uqa.joins.inner import InnerJoinOperator
-        from uqa.joins.index import IndexJoinOperator
         from uqa.joins.cross import CrossJoinOperator
+        from uqa.joins.index import IndexJoinOperator
+        from uqa.joins.inner import InnerJoinOperator
 
         if isinstance(
             join_op, (InnerJoinOperator, IndexJoinOperator, CrossJoinOperator)
@@ -3445,31 +3377,23 @@ class SQLCompiler:
             if new_left is not join_op.left or new_right is not join_op.right:
                 if isinstance(join_op, CrossJoinOperator):
                     return CrossJoinOperator(new_left, new_right)
-                return type(join_op)(
-                    new_left, new_right, join_op.condition
-                )
+                return type(join_op)(new_left, new_right, join_op.condition)
         return join_op
 
-    def _inject_scan_filter(
-        self, scan: Any, pushable: dict[str, list]
-    ) -> Any:
+    def _inject_scan_filter(self, scan: Any, pushable: dict[str, list]) -> Any:
         """Wrap a scan with a filter if pushable predicates match its alias."""
-        from uqa.joins.inner import InnerJoinOperator
-        from uqa.joins.index import IndexJoinOperator
         from uqa.joins.cross import CrossJoinOperator
+        from uqa.joins.index import IndexJoinOperator
+        from uqa.joins.inner import InnerJoinOperator
 
-        if isinstance(
-            scan, (InnerJoinOperator, IndexJoinOperator, CrossJoinOperator)
-        ):
+        if isinstance(scan, (InnerJoinOperator, IndexJoinOperator, CrossJoinOperator)):
             return self._inject_join_filters(scan, pushable)
 
         if isinstance(scan, _TableScanOperator):
             alias = scan._alias
             if alias and alias in pushable:
                 where_node = self._reconstruct_and(pushable[alias])
-                return _FilteredScanOperator(
-                    scan, where_node, self._compile_select
-                )
+                return _FilteredScanOperator(scan, where_node, self._compile_select)
         return scan
 
     def _apply_deferred_where(self, physical: Any, where_node: Any) -> Any:
@@ -3479,24 +3403,28 @@ class SQLCompiler:
         For cross-table or complex expressions (e.g., a.id = b.user_id),
         falls back to ExprFilterOp using ExprEvaluator.
         """
-        from uqa.execution.relational import (
-            ExprFilterOp,
-            FilterOp as PhysFilterOp,
-        )
         from uqa.core.types import (
             Equals,
-            NotEquals,
             GreaterThan,
             GreaterThanOrEqual,
             LessThan,
             LessThanOrEqual,
+            NotEquals,
+        )
+        from uqa.execution.relational import (
+            ExprFilterOp,
+        )
+        from uqa.execution.relational import (
+            FilterOp as PhysFilterOp,
         )
 
-        if isinstance(where_node, BoolExpr):
-            if where_node.boolop == BoolExprType.AND_EXPR:
-                for arg in where_node.args:
-                    physical = self._apply_deferred_where(physical, arg)
-                return physical
+        if (
+            isinstance(where_node, BoolExpr)
+            and where_node.boolop == BoolExprType.AND_EXPR
+        ):
+            for arg in where_node.args:
+                physical = self._apply_deferred_where(physical, arg)
+            return physical
 
         if isinstance(where_node, A_Expr):
             kind = where_node.kind
@@ -3527,17 +3455,14 @@ class SQLCompiler:
                 col_name = self._extract_column_name(where_node.lexpr)
                 lo = self._extract_const_value(where_node.rexpr[0])
                 hi = self._extract_const_value(where_node.rexpr[1])
-                physical = PhysFilterOp(
-                    physical, col_name, GreaterThanOrEqual(lo)
-                )
-                return PhysFilterOp(
-                    physical, col_name, LessThanOrEqual(hi)
-                )
+                physical = PhysFilterOp(physical, col_name, GreaterThanOrEqual(lo))
+                return PhysFilterOp(physical, col_name, LessThanOrEqual(hi))
 
         # Fallback: use ExprEvaluator for complex expressions
         # (e.g., cross-table column comparisons like a.id = b.user_id)
         return ExprFilterOp(
-            physical, where_node,
+            physical,
+            where_node,
             subquery_executor=self._compile_select,
         )
 
@@ -3589,9 +3514,7 @@ class SQLCompiler:
                     stmt.whereClause, source_op
                 )
                 if pushable:
-                    source_op = self._inject_join_filters(
-                        source_op, pushable
-                    )
+                    source_op = self._inject_join_filters(source_op, pushable)
                 deferred_where = remaining
             elif graph_source:
                 # Defer WHERE to physical ExprFilterOp layer
@@ -3615,7 +3538,10 @@ class SQLCompiler:
 
         # 6-12. Execute relational operations via physical operators
         return self._execute_relational(
-            stmt, pl, ctx, table,
+            stmt,
+            pl,
+            ctx,
+            table,
             deferred_where=deferred_where,
             join_source=join_source or foreign_source,
         )
@@ -3635,6 +3561,7 @@ class SQLCompiler:
         # Apply ORDER BY if present
         if stmt.sortClause is not None:
             from uqa.execution.relational import SortOp
+
             sort_keys: list[tuple[str, bool, bool]] = []
             for s in stmt.sortClause:
                 is_desc = s.sortby_dir == SortByDir.SORTBY_DESC
@@ -3644,15 +3571,13 @@ class SQLCompiler:
                     nulls_first = False
                 else:
                     nulls_first = is_desc
-                if (isinstance(s.node, A_Const)
-                        and isinstance(s.node.val, PgInteger)):
+                if isinstance(s.node, A_Const) and isinstance(s.node.val, PgInteger):
                     ordinal = s.node.val.ival
                     if 1 <= ordinal <= num_cols:
                         col = columns[ordinal - 1]
                     else:
                         raise ValueError(
-                            f"ORDER BY position {ordinal} is not in "
-                            f"select list"
+                            f"ORDER BY position {ordinal} is not in select list"
                         )
                 else:
                     col = self._extract_column_name(s.node)
@@ -3665,7 +3590,7 @@ class SQLCompiler:
             if stmt.limitOffset is not None:
                 offset = self._extract_int_value(stmt.limitOffset)
             limit = self._extract_int_value(stmt.limitCount)
-            rows = rows[offset:offset + limit]
+            rows = rows[offset : offset + limit]
 
         return SQLResult(columns, rows)
 
@@ -3697,25 +3622,17 @@ class SQLCompiler:
         op = SetOperation(stmt.op)
 
         if op == SetOperation.SETOP_UNION:
-            rows = self._set_union(
-                left.rows, right_rows, columns, is_all
-            )
+            rows = self._set_union(left.rows, right_rows, columns, is_all)
         elif op == SetOperation.SETOP_INTERSECT:
-            rows = self._set_intersect(
-                left.rows, right_rows, columns, is_all
-            )
+            rows = self._set_intersect(left.rows, right_rows, columns, is_all)
         elif op == SetOperation.SETOP_EXCEPT:
-            rows = self._set_except(
-                left.rows, right_rows, columns, is_all
-            )
+            rows = self._set_except(left.rows, right_rows, columns, is_all)
         else:
             raise ValueError(f"Unsupported set operation: {op}")
 
         # Apply ORDER BY / LIMIT on the combined result
         if stmt.sortClause is not None:
-            sort_keys = self._build_sort_keys(
-                stmt.sortClause, stmt.larg.targetList
-            )
+            sort_keys = self._build_sort_keys(stmt.sortClause, stmt.larg.targetList)
             SortOp._sort_rows(rows, sort_keys)
 
         if stmt.limitCount is not None:
@@ -3766,9 +3683,7 @@ class SQLCompiler:
                     right_counter[key] -= 1
             return rows
 
-        right_keys = {
-            tuple(r.get(c) for c in columns) for r in right_rows
-        }
+        right_keys = {tuple(r.get(c) for c in columns) for r in right_rows}
         seen: set[tuple] = set()
         rows = []
         for row in left_rows:
@@ -3800,9 +3715,7 @@ class SQLCompiler:
                     rows.append(row)
             return rows
 
-        right_keys = {
-            tuple(r.get(c) for c in columns) for r in right_rows
-        }
+        right_keys = {tuple(r.get(c) for c in columns) for r in right_rows}
         seen: set[tuple] = set()
         rows = []
         for row in left_rows:
@@ -3816,9 +3729,7 @@ class SQLCompiler:
 
     _MAX_RECURSIVE_DEPTH = 1000
 
-    def _materialize_ctes(
-        self, ctes: tuple, *, recursive: bool = False
-    ) -> list[str]:
+    def _materialize_ctes(self, ctes: tuple, *, recursive: bool = False) -> list[str]:
         """Execute CTE queries and register results as temporary tables.
 
         When *recursive* is True (WITH RECURSIVE), CTEs whose query
@@ -3861,11 +3772,7 @@ class SQLCompiler:
         is_union_all = bool(query.all)
 
         # Column name mapping from alias
-        alias_cols = (
-            [s.sval for s in cte.aliascolnames]
-            if cte.aliascolnames
-            else None
-        )
+        alias_cols = [s.sval for s in cte.aliascolnames] if cte.aliascolnames else None
 
         # 1. Execute base case
         base_result = self._compile_select(query.larg)
@@ -3900,7 +3807,7 @@ class SQLCompiler:
         # Register working table
         working_rows = list(all_rows)
 
-        for depth in range(self._MAX_RECURSIVE_DEPTH):
+        for _depth in range(self._MAX_RECURSIVE_DEPTH):
             # Build temporary table from working rows
             result = SQLResult(columns, working_rows)
             table = self._result_to_table(name, result)
@@ -3947,9 +3854,7 @@ class SQLCompiler:
 
     # -- View expansion ------------------------------------------------
 
-    def _expand_view(
-        self, view_name: str, query: SelectStmt
-    ) -> tuple[Table, None]:
+    def _expand_view(self, view_name: str, query: SelectStmt) -> tuple[Table, None]:
         """Materialize a view's stored query into a temporary table.
 
         The temporary table is registered in ``_engine._tables`` and
@@ -3964,9 +3869,7 @@ class SQLCompiler:
 
     # -- Derived table (subquery in FROM) ------------------------------
 
-    def _materialize_derived_table(
-        self, node: RangeSubselect
-    ) -> tuple[Table, None]:
+    def _materialize_derived_table(self, node: RangeSubselect) -> tuple[Table, None]:
         """Materialize a subquery in FROM as a temporary table."""
         alias = node.alias.aliasname if node.alias else "_derived"
         result = self._compile_select(node.subquery)
@@ -4000,11 +3903,13 @@ class SQLCompiler:
                     elif isinstance(sample, float):
                         py_type = float
                     break
-            col_defs.append(ColumnDef(
-                name=col_name,
-                type_name=_type_map.get(py_type, "text"),
-                python_type=py_type,
-            ))
+            col_defs.append(
+                ColumnDef(
+                    name=col_name,
+                    type_name=_type_map.get(py_type, "text"),
+                    python_type=py_type,
+                )
+            )
 
         table = Table(name=name, columns=col_defs)
         for i, row in enumerate(result.rows):
@@ -4018,44 +3923,52 @@ class SQLCompiler:
     # -- information_schema virtual tables -----------------------------
 
     def _build_information_schema_table(
-        self, view_name: str,
+        self,
+        view_name: str,
     ) -> tuple[Table, None]:
         """Build virtual information_schema tables from engine metadata."""
         if view_name == "tables":
             return self._build_info_schema_tables()
         if view_name == "columns":
             return self._build_info_schema_columns()
-        raise ValueError(
-            f"Unknown information_schema view: '{view_name}'"
-        )
+        raise ValueError(f"Unknown information_schema view: '{view_name}'")
 
     def _build_info_schema_tables(self) -> tuple[Table, None]:
         """Build information_schema.tables from engine state."""
         columns = [
-            "table_catalog", "table_schema", "table_name", "table_type",
+            "table_catalog",
+            "table_schema",
+            "table_name",
+            "table_type",
         ]
         rows: list[dict[str, Any]] = []
         for tname in sorted(self._engine._tables):
-            rows.append({
-                "table_catalog": "",
-                "table_schema": "public",
-                "table_name": tname,
-                "table_type": "BASE TABLE",
-            })
+            rows.append(
+                {
+                    "table_catalog": "",
+                    "table_schema": "public",
+                    "table_name": tname,
+                    "table_type": "BASE TABLE",
+                }
+            )
         for ftname in sorted(self._engine._foreign_tables):
-            rows.append({
-                "table_catalog": "",
-                "table_schema": "public",
-                "table_name": ftname,
-                "table_type": "FOREIGN TABLE",
-            })
+            rows.append(
+                {
+                    "table_catalog": "",
+                    "table_schema": "public",
+                    "table_name": ftname,
+                    "table_type": "FOREIGN TABLE",
+                }
+            )
         for vname in sorted(self._engine._views):
-            rows.append({
-                "table_catalog": "",
-                "table_schema": "public",
-                "table_name": vname,
-                "table_type": "VIEW",
-            })
+            rows.append(
+                {
+                    "table_catalog": "",
+                    "table_schema": "public",
+                    "table_name": vname,
+                    "table_type": "VIEW",
+                }
+            )
         result = SQLResult(columns, rows)
         name = "_info_schema_tables"
         table = self._result_to_table(name, result)
@@ -4064,36 +3977,43 @@ class SQLCompiler:
         return table, None
 
     _INFO_TYPE_DISPLAY: dict[str, str] = {
-        "int2": "smallint", "int4": "integer", "int8": "bigint",
-        "float4": "real", "float8": "double precision",
+        "int2": "smallint",
+        "int4": "integer",
+        "int8": "bigint",
+        "float4": "real",
+        "float8": "double precision",
         "bool": "boolean",
     }
 
     def _build_info_schema_columns(self) -> tuple[Table, None]:
         """Build information_schema.columns from engine state."""
         columns = [
-            "table_catalog", "table_schema", "table_name",
-            "column_name", "ordinal_position", "data_type",
+            "table_catalog",
+            "table_schema",
+            "table_name",
+            "column_name",
+            "ordinal_position",
+            "data_type",
             "is_nullable",
         ]
         rows: list[dict[str, Any]] = []
         for tname in sorted(self._engine._tables):
             tbl = self._engine._tables[tname]
-            for pos, (cname, cdef) in enumerate(
-                tbl.columns.items(), start=1
-            ):
+            for pos, (cname, cdef) in enumerate(tbl.columns.items(), start=1):
                 display_type = self._INFO_TYPE_DISPLAY.get(
                     cdef.type_name, cdef.type_name
                 )
-                rows.append({
-                    "table_catalog": "",
-                    "table_schema": "public",
-                    "table_name": tname,
-                    "column_name": cname,
-                    "ordinal_position": pos,
-                    "data_type": display_type,
-                    "is_nullable": "NO" if cdef.not_null else "YES",
-                })
+                rows.append(
+                    {
+                        "table_catalog": "",
+                        "table_schema": "public",
+                        "table_name": tname,
+                        "column_name": cname,
+                        "ordinal_position": pos,
+                        "data_type": display_type,
+                        "is_nullable": "NO" if cdef.not_null else "YES",
+                    }
+                )
         result = SQLResult(columns, rows)
         name = "_info_schema_columns"
         table = self._result_to_table(name, result)
@@ -4104,7 +4024,8 @@ class SQLCompiler:
     # -- pg_catalog virtual tables --------------------------------------
 
     def _build_pg_catalog_table(
-        self, view_name: str,
+        self,
+        view_name: str,
     ) -> tuple[Table, None]:
         """Build virtual pg_catalog tables from engine metadata."""
         if view_name == "pg_tables":
@@ -4122,12 +4043,14 @@ class SQLCompiler:
         columns = ["schemaname", "tablename", "tableowner", "tablespace"]
         rows: list[dict[str, Any]] = []
         for tname in sorted(self._engine._tables):
-            rows.append({
-                "schemaname": "public",
-                "tablename": tname,
-                "tableowner": "",
-                "tablespace": "",
-            })
+            rows.append(
+                {
+                    "schemaname": "public",
+                    "tablename": tname,
+                    "tableowner": "",
+                    "tablespace": "",
+                }
+            )
         result = SQLResult(columns, rows)
         name = "_pg_tables"
         table = self._result_to_table(name, result)
@@ -4140,12 +4063,14 @@ class SQLCompiler:
         columns = ["schemaname", "viewname", "viewowner", "definition"]
         rows: list[dict[str, Any]] = []
         for vname in sorted(self._engine._views):
-            rows.append({
-                "schemaname": "public",
-                "viewname": vname,
-                "viewowner": "",
-                "definition": "",
-            })
+            rows.append(
+                {
+                    "schemaname": "public",
+                    "viewname": vname,
+                    "viewowner": "",
+                    "definition": "",
+                }
+            )
         result = SQLResult(columns, rows)
         name = "_pg_views"
         table = self._result_to_table(name, result)
@@ -4161,17 +4086,19 @@ class SQLCompiler:
         if index_manager is not None:
             for idx in index_manager._indexes.values():
                 idx_def = idx.index_def
-                rows.append({
-                    "schemaname": "public",
-                    "tablename": idx_def.table_name,
-                    "indexname": idx_def.name,
-                    "tablespace": "",
-                    "indexdef": (
-                        f"CREATE INDEX {idx_def.name} ON "
-                        f"{idx_def.table_name} "
-                        f"({', '.join(idx_def.columns)})"
-                    ),
-                })
+                rows.append(
+                    {
+                        "schemaname": "public",
+                        "tablename": idx_def.table_name,
+                        "indexname": idx_def.name,
+                        "tablespace": "",
+                        "indexdef": (
+                            f"CREATE INDEX {idx_def.name} ON "
+                            f"{idx_def.table_name} "
+                            f"({', '.join(idx_def.columns)})"
+                        ),
+                    }
+                )
         result = SQLResult(columns, rows)
         name = "_pg_indexes"
         table = self._result_to_table(name, result)
@@ -4182,8 +4109,12 @@ class SQLCompiler:
     def _build_pg_type(self) -> tuple[Table, None]:
         """Build pg_catalog.pg_type with UQA-supported types."""
         columns = [
-            "oid", "typname", "typnamespace", "typlen",
-            "typtype", "typcategory",
+            "oid",
+            "typname",
+            "typnamespace",
+            "typlen",
+            "typtype",
+            "typcategory",
         ]
         # PostgreSQL-compatible OIDs for supported types
         type_entries = [
@@ -4210,14 +4141,16 @@ class SQLCompiler:
         ]
         rows: list[dict[str, Any]] = []
         for oid, typname, ns, typlen, typtype, typcat in type_entries:
-            rows.append({
-                "oid": oid,
-                "typname": typname,
-                "typnamespace": ns,
-                "typlen": typlen,
-                "typtype": typtype,
-                "typcategory": typcat,
-            })
+            rows.append(
+                {
+                    "oid": oid,
+                    "typname": typname,
+                    "typnamespace": ns,
+                    "typlen": typlen,
+                    "typtype": typtype,
+                    "typcategory": typcat,
+                }
+            )
         result = SQLResult(columns, rows)
         name = "_pg_type"
         table = self._result_to_table(name, result)
@@ -4227,9 +4160,7 @@ class SQLCompiler:
 
     # -- FROM clause ---------------------------------------------------
 
-    def _resolve_from(
-        self, from_clause: tuple | None
-    ) -> tuple[Table | None, Any]:
+    def _resolve_from(self, from_clause: tuple | None) -> tuple[Table | None, Any]:
         """Resolve FROM clause to (table, source_operator).
 
         Returns (table, None) for ``FROM table_name`` and
@@ -4255,21 +4186,13 @@ class SQLCompiler:
         for node in from_clause[1:]:
             # LATERAL subquery: re-evaluate per left row
             if isinstance(node, RangeSubselect) and node.lateral:
-                lateral_alias = (
-                    node.alias.aliasname if node.alias else "_lateral"
-                )
-                op = _LateralJoinOperator(
-                    op, node.subquery, lateral_alias, self
-                )
+                lateral_alias = node.alias.aliasname if node.alias else "_lateral"
+                op = _LateralJoinOperator(op, node.subquery, lateral_alias, self)
                 continue
 
-            right_table, right_op, right_alias = (
-                self._resolve_from_single(node)
-            )
+            right_table, right_op, right_alias = self._resolve_from_single(node)
             if right_op is None:
-                right_op = _TableScanOperator(
-                    right_table, alias=right_alias
-                )
+                right_op = _TableScanOperator(right_table, alias=right_alias)
             op = CrossJoinOperator(op, right_op)
             # Keep first resolved table as context source
             if table is None:
@@ -4277,9 +4200,7 @@ class SQLCompiler:
 
         return table, op
 
-    def _resolve_from_single(
-        self, node: Any
-    ) -> tuple[Table | None, Any, str | None]:
+    def _resolve_from_single(self, node: Any) -> tuple[Table | None, Any, str | None]:
         """Resolve a single FROM clause item.
 
         Returns ``(table, operator, alias)`` where *alias* is the
@@ -4287,16 +4208,10 @@ class SQLCompiler:
         name itself when no alias is specified.
         """
         if isinstance(node, RangeVar):
-            alias = (
-                node.alias.aliasname
-                if node.alias is not None
-                else node.relname
-            )
+            alias = node.alias.aliasname if node.alias is not None else node.relname
             # Virtual schema tables
             if node.schemaname == "information_schema":
-                tbl, op = self._build_information_schema_table(
-                    node.relname
-                )
+                tbl, op = self._build_information_schema_table(node.relname)
                 return tbl, op, alias
             if node.schemaname == "pg_catalog":
                 tbl, op = self._build_pg_catalog_table(node.relname)
@@ -4308,10 +4223,13 @@ class SQLCompiler:
                 ft = self._engine._foreign_tables.get(table_name)
                 if ft is not None:
                     op = _ForeignTableScanOperator(
-                        ft, self._engine, alias=alias,
+                        ft,
+                        self._engine,
+                        alias=alias,
                     )
                     proxy_table = Table(
-                        table_name, list(ft.columns.values()),
+                        table_name,
+                        list(ft.columns.values()),
                     )
                     return proxy_table, op, alias
                 view_query = self._engine._views.get(table_name)
@@ -4331,9 +4249,7 @@ class SQLCompiler:
 
         if isinstance(node, RangeSubselect):
             tbl, op = self._materialize_derived_table(node)
-            alias = (
-                node.alias.aliasname if node.alias else None
-            )
+            alias = node.alias.aliasname if node.alias else None
             return tbl, op, alias
 
         raise ValueError(f"Unsupported FROM clause: {type(node).__name__}")
@@ -4347,9 +4263,7 @@ class SQLCompiler:
         from uqa.operators.base import ExecutionContext
 
         index_manager = getattr(self._engine, "_index_manager", None)
-        parallel_executor = getattr(
-            self._engine, "_parallel_executor", None
-        )
+        parallel_executor = getattr(self._engine, "_parallel_executor", None)
 
         if table is None:
             return ExecutionContext(
@@ -4368,9 +4282,7 @@ class SQLCompiler:
             parallel_executor=parallel_executor,
         )
 
-    def _compile_from_function(
-        self, node: RangeFunction
-    ) -> tuple[Table | None, Any]:
+    def _compile_from_function(self, node: RangeFunction) -> tuple[Table | None, Any]:
         """Return (table_or_none, operator) for a FROM-clause function."""
         func_call = node.functions[0][0]
         if not isinstance(func_call, FuncCall):
@@ -4396,9 +4308,15 @@ class SQLCompiler:
             return self._build_unnest(node, args)
         if name in ("json_each", "jsonb_each", "json_each_text", "jsonb_each_text"):
             return self._build_json_each(node, args, as_text=name.endswith("_text"))
-        if name in ("json_array_elements", "jsonb_array_elements",
-                     "json_array_elements_text", "jsonb_array_elements_text"):
-            return self._build_json_array_elements(node, args, as_text=name.endswith("_text"))
+        if name in (
+            "json_array_elements",
+            "jsonb_array_elements",
+            "json_array_elements_text",
+            "jsonb_array_elements_text",
+        ):
+            return self._build_json_array_elements(
+                node, args, as_text=name.endswith("_text")
+            )
         if name == "regexp_split_to_table":
             return self._build_regexp_split_to_table(node, args)
         if name == "create_analyzer":
@@ -4416,9 +4334,10 @@ class SQLCompiler:
             return False
         from uqa.graph.operators import (
             CypherQueryOperator,
-            TraverseOperator,
             RegularPathQueryOperator,
+            TraverseOperator,
         )
+
         return isinstance(
             op, (TraverseOperator, RegularPathQueryOperator, CypherQueryOperator)
         )
@@ -4430,11 +4349,15 @@ class SQLCompiler:
             return False
         from uqa.joins.base import JoinOperator
         from uqa.joins.cross import CrossJoinOperator
+
         return isinstance(
-            op, (
-                JoinOperator, CrossJoinOperator,
-                _ExprJoinOperator, _LateralJoinOperator,
-            )
+            op,
+            (
+                JoinOperator,
+                CrossJoinOperator,
+                _ExprJoinOperator,
+                _LateralJoinOperator,
+            ),
         )
 
     def _collect_join_tables(
@@ -4457,11 +4380,7 @@ class SQLCompiler:
     ) -> None:
         """Recursively collect tables from a FROM clause node."""
         if isinstance(node, RangeVar):
-            alias = (
-                node.alias.aliasname
-                if node.alias is not None
-                else node.relname
-            )
+            alias = node.alias.aliasname if node.alias is not None else node.relname
             table = self._engine._tables.get(node.relname)
             if table is not None and table.columns:
                 cols = list(table.columns.keys())
@@ -4472,14 +4391,10 @@ class SQLCompiler:
             self._walk_from_for_tables(node.larg, out)
             self._walk_from_for_tables(node.rarg, out)
         elif isinstance(node, RangeSubselect):
-            alias = (
-                node.alias.aliasname if node.alias else "_subquery"
-            )
+            alias = node.alias.aliasname if node.alias else "_subquery"
             out.append((alias, []))
 
-    def _build_traverse_from(
-        self, args: tuple
-    ) -> tuple[Table | None, Any]:
+    def _build_traverse_from(self, args: tuple) -> tuple[Table | None, Any]:
         """Build traverse() FROM-clause.
 
         traverse(start, 'label', hops, 'table')   -- per-table graph
@@ -4505,9 +4420,7 @@ class SQLCompiler:
             raise ValueError(f"Table '{table_name}' does not exist")
         return table, TraverseOperator(start, label, max_hops)
 
-    def _build_rpq_from(
-        self, args: tuple
-    ) -> tuple[Table | None, Any]:
+    def _build_rpq_from(self, args: tuple) -> tuple[Table | None, Any]:
         """Build rpq() FROM-clause.
 
         rpq('expr', start, 'table')     -- per-table graph
@@ -4523,8 +4436,7 @@ class SQLCompiler:
         else:
             if not self._engine._tables:
                 raise ValueError(
-                    "rpq() requires a table argument or "
-                    "at least one table to exist"
+                    "rpq() requires a table argument or at least one table to exist"
                 )
             table_name = next(iter(self._engine._tables))
         table = self._engine._tables.get(table_name)
@@ -4532,9 +4444,7 @@ class SQLCompiler:
             raise ValueError(f"Table '{table_name}' does not exist")
         return table, RegularPathQueryOperator(parse_rpq(expr), start_vertex=start)
 
-    def _build_create_graph(
-        self, args: tuple
-    ) -> tuple[Table | None, Any]:
+    def _build_create_graph(self, args: tuple) -> tuple[Table | None, Any]:
         """Handle ``SELECT * FROM create_graph('name')``."""
         from uqa.sql.table import ColumnDef as SQLColumnDef
 
@@ -4543,17 +4453,18 @@ class SQLCompiler:
         name = self._extract_string_value(args[0])
         self._engine.create_graph(name)
         # Return a single-row result like AGE
-        table = Table("_create_graph", [
-            SQLColumnDef(name="create_graph", type_name="text", python_type=str),
-        ])
+        table = Table(
+            "_create_graph",
+            [
+                SQLColumnDef(name="create_graph", type_name="text", python_type=str),
+            ],
+        )
         table.insert({"create_graph": f"graph '{name}' created"})
         self._engine._tables["_create_graph"] = table
         self._expanded_views.append("_create_graph")
         return table, None
 
-    def _build_drop_graph(
-        self, args: tuple
-    ) -> tuple[Table | None, Any]:
+    def _build_drop_graph(self, args: tuple) -> tuple[Table | None, Any]:
         """Handle ``SELECT * FROM drop_graph('name')`` or ``drop_graph('name', true)``."""
         from uqa.sql.table import ColumnDef as SQLColumnDef
 
@@ -4561,44 +4472,45 @@ class SQLCompiler:
             raise ValueError("drop_graph() requires a graph name argument")
         name = self._extract_string_value(args[0])
         self._engine.drop_graph(name)
-        table = Table("_drop_graph", [
-            SQLColumnDef(name="drop_graph", type_name="text", python_type=str),
-        ])
+        table = Table(
+            "_drop_graph",
+            [
+                SQLColumnDef(name="drop_graph", type_name="text", python_type=str),
+            ],
+        )
         table.insert({"drop_graph": f"graph '{name}' dropped"})
         self._engine._tables["_drop_graph"] = table
         self._expanded_views.append("_drop_graph")
         return table, None
 
-    def _build_create_analyzer(
-        self, args: tuple
-    ) -> tuple[Table | None, Any]:
+    def _build_create_analyzer(self, args: tuple) -> tuple[Table | None, Any]:
         """Handle ``SELECT * FROM create_analyzer('name', 'config_json')``.
 
         ``config_json`` is a JSON string with keys: tokenizer,
         token_filters, char_filters -- matching ``Analyzer.to_dict()``.
         """
         import json as json_mod
+
         from uqa.sql.table import ColumnDef as SQLColumnDef
 
         if len(args) < 2:
-            raise ValueError(
-                "create_analyzer() requires (name, config_json)"
-            )
+            raise ValueError("create_analyzer() requires (name, config_json)")
         name = self._extract_string_value(args[0])
         config_str = self._extract_string_value(args[1])
         config = json_mod.loads(config_str)
         self._engine.create_analyzer(name, config)
-        table = Table("_create_analyzer", [
-            SQLColumnDef(name="create_analyzer", type_name="text", python_type=str),
-        ])
+        table = Table(
+            "_create_analyzer",
+            [
+                SQLColumnDef(name="create_analyzer", type_name="text", python_type=str),
+            ],
+        )
         table.insert({"create_analyzer": f"analyzer '{name}' created"})
         self._engine._tables["_create_analyzer"] = table
         self._expanded_views.append("_create_analyzer")
         return table, None
 
-    def _build_drop_analyzer(
-        self, args: tuple
-    ) -> tuple[Table | None, Any]:
+    def _build_drop_analyzer(self, args: tuple) -> tuple[Table | None, Any]:
         """Handle ``SELECT * FROM drop_analyzer('name')``."""
         from uqa.sql.table import ColumnDef as SQLColumnDef
 
@@ -4606,9 +4518,12 @@ class SQLCompiler:
             raise ValueError("drop_analyzer() requires a name argument")
         name = self._extract_string_value(args[0])
         self._engine.drop_analyzer(name)
-        table = Table("_drop_analyzer", [
-            SQLColumnDef(name="drop_analyzer", type_name="text", python_type=str),
-        ])
+        table = Table(
+            "_drop_analyzer",
+            [
+                SQLColumnDef(name="drop_analyzer", type_name="text", python_type=str),
+            ],
+        )
         table.insert({"drop_analyzer": f"analyzer '{name}' dropped"})
         self._engine._tables["_drop_analyzer"] = table
         self._expanded_views.append("_drop_analyzer")
@@ -4620,9 +4535,12 @@ class SQLCompiler:
         from uqa.sql.table import ColumnDef as SQLColumnDef
 
         names = list_analyzers()
-        table = Table("_list_analyzers", [
-            SQLColumnDef(name="analyzer_name", type_name="text", python_type=str),
-        ])
+        table = Table(
+            "_list_analyzers",
+            [
+                SQLColumnDef(name="analyzer_name", type_name="text", python_type=str),
+            ],
+        )
         for n in names:
             table.insert({"analyzer_name": n})
         self._engine._tables["_list_analyzers"] = table
@@ -4649,8 +4567,7 @@ class SQLCompiler:
 
         if len(args) < 2:
             raise ValueError(
-                "cypher() requires 2 arguments: "
-                "cypher('graph_name', $$ query $$)"
+                "cypher() requires 2 arguments: cypher('graph_name', $$ query $$)"
             )
         graph_name = self._extract_string_value(args[0])
         cypher_source = self._extract_string_value(args[1])
@@ -4668,7 +4585,8 @@ class SQLCompiler:
             col_names = [c.sval for c in node.alias.colnames]
 
         op = CypherQueryOperator(
-            graph, ast,
+            graph,
+            ast,
             params=self._cypher_params(),
             col_names=col_names,
         )
@@ -4681,12 +4599,10 @@ class SQLCompiler:
             result[str(i)] = val
         return result
 
-    def _build_text_search_from(
-        self, args: tuple
-    ) -> tuple[Table | None, Any]:
+    def _build_text_search_from(self, args: tuple) -> tuple[Table | None, Any]:
         """Build a text_search FROM-clause: text_search('query', 'field'[, 'table'])."""
-        from uqa.operators.primitive import ScoreOperator, TermOperator
         from uqa.operators.boolean import UnionOperator
+        from uqa.operators.primitive import ScoreOperator, TermOperator
         from uqa.scoring.bm25 import BM25Params, BM25Scorer
 
         query = self._extract_string_value(args[0])
@@ -4698,7 +4614,11 @@ class SQLCompiler:
             if table is None:
                 raise ValueError(f"Table '{table_name}' does not exist")
         ctx = self._context_for_table(table)
-        analyzer = ctx.inverted_index.get_field_analyzer(field_name) if field_name else ctx.inverted_index.analyzer
+        analyzer = (
+            ctx.inverted_index.get_field_analyzer(field_name)
+            if field_name
+            else ctx.inverted_index.analyzer
+        )
         terms = analyzer.analyze(query)
         term_ops = [TermOperator(t, field_name) for t in terms]
         retrieval = term_ops[0] if len(term_ops) == 1 else UnionOperator(term_ops)
@@ -4711,9 +4631,7 @@ class SQLCompiler:
     ) -> tuple[Table | None, Any]:
         """Build generate_series(start, stop [, step]) as a table function."""
         if len(args) < 2:
-            raise ValueError(
-                "generate_series requires at least 2 arguments"
-            )
+            raise ValueError("generate_series requires at least 2 arguments")
         start = self._extract_const_value(args[0])
         stop = self._extract_const_value(args[1])
         step = self._extract_const_value(args[2]) if len(args) > 2 else 1
@@ -4744,6 +4662,7 @@ class SQLCompiler:
             alias_name = "generate_series"
 
         from uqa.sql.table import ColumnDef as SQLColumnDef
+
         col_type = "integer" if all(isinstance(v, int) for v in values) else "real"
         python_type = int if col_type == "integer" else float
         col = SQLColumnDef(
@@ -4752,7 +4671,7 @@ class SQLCompiler:
             python_type=python_type,
         )
         table = Table(alias_name, [col])
-        for i, val in enumerate(values, 1):
+        for _i, val in enumerate(values, 1):
             table.insert({col_name: val})
 
         self._engine._tables[alias_name] = table
@@ -4810,12 +4729,11 @@ class SQLCompiler:
     ) -> tuple[Table | None, Any]:
         """Build regexp_split_to_table(string, pattern [, flags]) as a table function."""
         import re as re_mod
+
         from uqa.sql.table import ColumnDef as SQLColumnDef
 
         if len(args) < 2:
-            raise ValueError(
-                "regexp_split_to_table requires at least 2 arguments"
-            )
+            raise ValueError("regexp_split_to_table requires at least 2 arguments")
 
         string_val = self._extract_const_value(args[0])
         pattern_val = self._extract_const_value(args[1])
@@ -4878,6 +4796,7 @@ class SQLCompiler:
         obj = evaluator.evaluate(args[0], {})
         if isinstance(obj, str):
             import json as json_mod
+
             obj = json_mod.loads(obj)
         if not isinstance(obj, dict):
             raise ValueError("json_each argument must be a JSON object")
@@ -4896,12 +4815,8 @@ class SQLCompiler:
         import json as json_mod_inner
 
         cols = [
-            SQLColumnDef(
-                name=key_col, type_name="text", python_type=str
-            ),
-            SQLColumnDef(
-                name=val_col, type_name="text", python_type=str
-            ),
+            SQLColumnDef(name=key_col, type_name="text", python_type=str),
+            SQLColumnDef(name=val_col, type_name="text", python_type=str),
         ]
         table = Table(alias_name, cols)
         for k, v in obj.items():
@@ -4931,11 +4846,10 @@ class SQLCompiler:
         arr = evaluator.evaluate(args[0], {})
         if isinstance(arr, str):
             import json as json_mod
+
             arr = json_mod.loads(arr)
         if not isinstance(arr, list):
-            raise ValueError(
-                "json_array_elements argument must be a JSON array"
-            )
+            raise ValueError("json_array_elements argument must be a JSON array")
 
         col_name = "value"
         if node.alias is not None:
@@ -4947,9 +4861,7 @@ class SQLCompiler:
 
         import json as json_mod_inner
 
-        col = SQLColumnDef(
-            name=col_name, type_name="text", python_type=str
-        )
+        col = SQLColumnDef(name=col_name, type_name="text", python_type=str)
         table = Table(alias_name, [col])
         for val in arr:
             if as_text:
@@ -4966,9 +4878,7 @@ class SQLCompiler:
 
     # -- JOIN ----------------------------------------------------------
 
-    def _resolve_join(
-        self, node: JoinExpr
-    ) -> tuple[Table | None, Any]:
+    def _resolve_join(self, node: JoinExpr) -> tuple[Table | None, Any]:
         # Try DPccp optimization for chains of 3+ INNER JOINs
         result = self._try_dpccp_optimize(node)
         if result is not None:
@@ -4976,9 +4886,7 @@ class SQLCompiler:
 
         return self._resolve_join_pair(node)
 
-    def _resolve_join_pair(
-        self, node: JoinExpr
-    ) -> tuple[Table | None, Any]:
+    def _resolve_join_pair(self, node: JoinExpr) -> tuple[Table | None, Any]:
         """Resolve a single two-way JOIN expression."""
         from uqa.joins.base import JoinCondition
         from uqa.joins.cross import CrossJoinOperator
@@ -4989,9 +4897,7 @@ class SQLCompiler:
             RightOuterJoinOperator,
         )
 
-        left_table, left_op, left_alias = self._resolve_from_single(
-            node.larg
-        )
+        left_table, left_op, left_alias = self._resolve_from_single(node.larg)
 
         # LATERAL subquery on the right side of a JOIN
         if isinstance(node.rarg, RangeSubselect) and node.rarg.lateral:
@@ -4999,18 +4905,13 @@ class SQLCompiler:
                 left_op = _TableScanOperator(left_table, alias=left_alias)
             elif left_op is None:
                 left_op = _ScanOperator()
-            lateral_alias = (
-                node.rarg.alias.aliasname
-                if node.rarg.alias else "_lateral"
-            )
+            lateral_alias = node.rarg.alias.aliasname if node.rarg.alias else "_lateral"
             lateral_op = _LateralJoinOperator(
                 left_op, node.rarg.subquery, lateral_alias, self
             )
             return left_table, lateral_op
 
-        right_table, right_op, right_alias = self._resolve_from_single(
-            node.rarg
-        )
+        right_table, right_op, right_alias = self._resolve_from_single(node.rarg)
 
         table = left_table or right_table
 
@@ -5035,27 +4936,21 @@ class SQLCompiler:
             op_name = quals.name[-1].sval if quals.name else None
             if op_name == "=":
                 left_field, right_field = self._resolve_join_on_fields(
-                    quals.lexpr, quals.rexpr,
-                    left_alias, right_alias,
+                    quals.lexpr,
+                    quals.rexpr,
+                    left_alias,
+                    right_alias,
                 )
                 condition = JoinCondition(left_field, right_field)
 
                 if jt == JoinType.JOIN_INNER:
-                    return table, InnerJoinOperator(
-                        left_op, right_op, condition
-                    )
+                    return table, InnerJoinOperator(left_op, right_op, condition)
                 if jt == JoinType.JOIN_LEFT:
-                    return table, LeftOuterJoinOperator(
-                        left_op, right_op, condition
-                    )
+                    return table, LeftOuterJoinOperator(left_op, right_op, condition)
                 if jt == JoinType.JOIN_RIGHT:
-                    return table, RightOuterJoinOperator(
-                        left_op, right_op, condition
-                    )
+                    return table, RightOuterJoinOperator(left_op, right_op, condition)
                 if jt == JoinType.JOIN_FULL:
-                    return table, FullOuterJoinOperator(
-                        left_op, right_op, condition
-                    )
+                    return table, FullOuterJoinOperator(left_op, right_op, condition)
 
         # Complex ON (compound conditions, non-equality):
         # use nested-loop join with expression evaluation
@@ -5065,9 +4960,7 @@ class SQLCompiler:
 
     # -- DPccp join order optimization ------------------------------------
 
-    def _try_dpccp_optimize(
-        self, node: JoinExpr
-    ) -> tuple[Table | None, Any] | None:
+    def _try_dpccp_optimize(self, node: JoinExpr) -> tuple[Table | None, Any] | None:
         """Attempt DPccp optimization on a chain of INNER JOINs.
 
         Returns None if the join tree is not eligible for DPccp
@@ -5113,18 +5006,18 @@ class SQLCompiler:
             cardinality = 1000.0  # default
             column_stats: dict[str, Any] = {}
             if table is not None:
-                cardinality = float(
-                    len(table.document_store.doc_ids)
-                ) or 1.0
+                cardinality = float(len(table.document_store.doc_ids)) or 1.0
                 column_stats = dict(table._stats)
 
-            relations.append({
-                "alias": alias,
-                "operator": op,
-                "table": table,
-                "cardinality": cardinality,
-                "column_stats": column_stats,
-            })
+            relations.append(
+                {
+                    "alias": alias,
+                    "operator": op,
+                    "table": table,
+                    "cardinality": cardinality,
+                    "column_stats": column_stats,
+                }
+            )
             return True
 
         # Only INNER JOINs can be freely reordered
@@ -5140,22 +5033,20 @@ class SQLCompiler:
 
         # Recursively flatten left and right subtrees
         left_start = len(relations)
-        if not self._flatten_inner_joins(
-            node.larg, relations, predicates
-        ):
+        if not self._flatten_inner_joins(node.larg, relations, predicates):
             return False
 
         right_start = len(relations)
-        if not self._flatten_inner_joins(
-            node.rarg, relations, predicates
-        ):
+        if not self._flatten_inner_joins(node.rarg, relations, predicates):
             return False
 
         # Extract equijoin predicate if present
         if quals is not None:
             pred = self._extract_equijoin_predicate(
                 quals,
-                relations, left_start, right_start,
+                relations,
+                left_start,
+                right_start,
             )
             if pred is None:
                 # Non-equality or compound predicate; bail out
@@ -5295,9 +5186,11 @@ class SQLCompiler:
             return self._compile_and(node.args, ctx)
         if node.boolop == BoolExprType.OR_EXPR:
             from uqa.operators.boolean import UnionOperator
+
             return UnionOperator([self._compile_where(a, ctx) for a in node.args])
         if node.boolop == BoolExprType.NOT_EXPR:
             from uqa.operators.boolean import ComplementOperator
+
             return ComplementOperator(self._compile_where(node.args[0], ctx))
         raise ValueError(f"Unsupported BoolExpr type: {node.boolop}")
 
@@ -5316,9 +5209,14 @@ class SQLCompiler:
                 scored.append(compiled)
 
         if scored:
-            base = scored[0] if len(scored) == 1 else (
-                __import__("uqa.operators.boolean", fromlist=["IntersectOperator"])
-                .IntersectOperator(scored)
+            base = (
+                scored[0]
+                if len(scored) == 1
+                else (
+                    __import__(
+                        "uqa.operators.boolean", fromlist=["IntersectOperator"]
+                    ).IntersectOperator(scored)
+                )
             )
         elif filters:
             base = filters.pop(0)
@@ -5349,9 +5247,7 @@ class SQLCompiler:
                     _op_to_predicate(op_name, value),
                 )
             # Expression-based comparison (JSON ops, complex expressions, etc.)
-            return _ExprFilterOperator(
-                node, subquery_executor=self._compile_select
-            )
+            return _ExprFilterOperator(node, subquery_executor=self._compile_select)
 
         if kind == A_Expr_Kind.AEXPR_IN:
             field_name = self._extract_column_name(node.lexpr)
@@ -5367,6 +5263,7 @@ class SQLCompiler:
         if kind == A_Expr_Kind.AEXPR_NOT_BETWEEN:
             from uqa.operators.boolean import ComplementOperator
             from uqa.operators.primitive import FilterOperator as FO
+
             field_name = self._extract_column_name(node.lexpr)
             low = self._extract_const_value(node.rexpr[0])
             high = self._extract_const_value(node.rexpr[1])
@@ -5374,6 +5271,7 @@ class SQLCompiler:
 
         if kind == A_Expr_Kind.AEXPR_LIKE:
             from uqa.core.types import Like, NotLike
+
             field_name = self._extract_column_name(node.lexpr)
             pattern = self._extract_string_value(node.rexpr)
             op_name = node.name[0].sval
@@ -5383,6 +5281,7 @@ class SQLCompiler:
 
         if kind == A_Expr_Kind.AEXPR_ILIKE:
             from uqa.core.types import ILike, NotILike
+
             field_name = self._extract_column_name(node.lexpr)
             pattern = self._extract_string_value(node.rexpr)
             op_name = node.name[0].sval
@@ -5393,7 +5292,7 @@ class SQLCompiler:
         raise ValueError(f"Unsupported expression kind: {kind}")
 
     def _compile_null_test(self, node: NullTest) -> Any:
-        from uqa.core.types import IsNull, IsNotNull
+        from uqa.core.types import IsNotNull, IsNull
         from uqa.operators.primitive import FilterOperator
 
         field_name = self._extract_column_name(node.arg)
@@ -5401,9 +5300,7 @@ class SQLCompiler:
             return FilterOperator(field_name, IsNull())
         return FilterOperator(field_name, IsNotNull())
 
-    def _compile_sublink_in_where(
-        self, node: SubLink, ctx: ExecutionContext
-    ) -> Any:
+    def _compile_sublink_in_where(self, node: SubLink, ctx: ExecutionContext) -> Any:
         """Compile a SubLink (subquery) in WHERE position.
 
         Supports:
@@ -5415,9 +5312,7 @@ class SQLCompiler:
         """
         # Detect correlated subqueries -- route to per-row evaluation
         if self._is_correlated(node.subselect):
-            return _ExprFilterOperator(
-                node, subquery_executor=self._compile_select
-            )
+            return _ExprFilterOperator(node, subquery_executor=self._compile_select)
 
         from uqa.operators.primitive import FilterOperator
 
@@ -5430,7 +5325,8 @@ class SQLCompiler:
                 raise ValueError("Subquery must return at least one column")
             sub_col = inner_result.columns[0]
             values = frozenset(
-                row[sub_col] for row in inner_result.rows
+                row[sub_col]
+                for row in inner_result.rows
                 if row.get(sub_col) is not None
             )
             field_name = self._extract_column_name(node.testexpr)
@@ -5443,12 +5339,11 @@ class SQLCompiler:
                 return _ScanOperator()
             # No rows => empty result -- return an operator that yields nothing
             from uqa.operators.boolean import ComplementOperator
+
             scan = _ScanOperator()
             return ComplementOperator(scan)
 
-        raise ValueError(
-            f"Unsupported subquery type: {link_type.name}"
-        )
+        raise ValueError(f"Unsupported subquery type: {link_type.name}")
 
     def _is_correlated(self, subselect: Any) -> bool:
         """Check if a subquery contains correlated column references.
@@ -5475,17 +5370,12 @@ class SQLCompiler:
             return False
 
         if isinstance(node, (tuple, list)):
-            return any(
-                self._has_outer_refs(item, inner_tables)
-                for item in node
-            )
+            return any(self._has_outer_refs(item, inner_tables) for item in node)
 
-        if hasattr(node, '__slots__') and isinstance(node.__slots__, dict):
+        if hasattr(node, "__slots__") and isinstance(node.__slots__, dict):
             for slot in node.__slots__:
                 val = getattr(node, slot, None)
-                if val is not None and self._has_outer_refs(
-                    val, inner_tables
-                ):
+                if val is not None and self._has_outer_refs(val, inner_tables):
                     return True
 
         return False
@@ -5522,15 +5412,13 @@ class SQLCompiler:
             return self._make_prob_not_op(args, ctx)
         # Fall back to expression-based filter for scalar functions
         # used in WHERE (e.g., ST_DWithin, ST_Within).
-        return _ExprFilterOperator(
-            node, subquery_executor=self._compile_select
-        )
+        return _ExprFilterOperator(node, subquery_executor=self._compile_select)
 
     def _make_text_search_op(
         self, field_name: str, query: str, ctx: ExecutionContext, *, bayesian: bool
     ) -> Any:
-        from uqa.operators.primitive import ScoreOperator, TermOperator
         from uqa.operators.boolean import UnionOperator
+        from uqa.operators.primitive import ScoreOperator, TermOperator
 
         analyzer = ctx.inverted_index.get_field_analyzer(field_name)
         terms = analyzer.analyze(query)
@@ -5539,9 +5427,11 @@ class SQLCompiler:
 
         if bayesian:
             from uqa.scoring.bayesian_bm25 import BayesianBM25Params, BayesianBM25Scorer
+
             scorer = BayesianBM25Scorer(BayesianBM25Params(), ctx.inverted_index.stats)
         else:
             from uqa.scoring.bm25 import BM25Params, BM25Scorer
+
             scorer = BM25Scorer(BM25Params(), ctx.inverted_index.stats)
         return ScoreOperator(scorer, retrieval, terms, field=field_name)
 
@@ -5556,8 +5446,7 @@ class SQLCompiler:
 
         if len(args) != 3:
             raise ValueError(
-                "knn_match() requires 3 arguments: "
-                "knn_match(field, vector, k)"
+                "knn_match() requires 3 arguments: knn_match(field, vector, k)"
             )
         field_name = self._extract_column_name(args[0])
         query_vector = self._extract_vector_arg(args[1])
@@ -5588,9 +5477,7 @@ class SQLCompiler:
         if isinstance(node, FuncCall):
             name = node.funcname[-1].sval.lower()
             if name != "point":
-                raise ValueError(
-                    f"Expected POINT(x, y), got {name}()"
-                )
+                raise ValueError(f"Expected POINT(x, y), got {name}()")
             pt_args = node.args or ()
             if len(pt_args) != 2:
                 raise ValueError("POINT() requires exactly 2 arguments")
@@ -5600,9 +5487,7 @@ class SQLCompiler:
         if isinstance(node, ParamRef):
             idx = node.number - 1
             if idx < 0 or idx >= len(self._params):
-                raise ValueError(
-                    f"No value supplied for parameter ${node.number}"
-                )
+                raise ValueError(f"No value supplied for parameter ${node.number}")
             val = self._params[idx]
             if isinstance(val, (list, tuple)) and len(val) == 2:
                 return (float(val[0]), float(val[1]))
@@ -5610,8 +5495,7 @@ class SQLCompiler:
                 f"Parameter ${node.number} must be a [x, y] list for POINT"
             )
         raise ValueError(
-            f"Expected POINT(x, y) or $N parameter, "
-            f"got {type(node).__name__}"
+            f"Expected POINT(x, y) or $N parameter, got {type(node).__name__}"
         )
 
     def _extract_numeric_value(self, node: Any) -> float:
@@ -5625,13 +5509,10 @@ class SQLCompiler:
         if isinstance(node, ParamRef):
             idx = node.number - 1
             if idx < 0 or idx >= len(self._params):
-                raise ValueError(
-                    f"No value supplied for parameter ${node.number}"
-                )
+                raise ValueError(f"No value supplied for parameter ${node.number}")
             return float(self._params[idx])
         raise ValueError(
-            f"Expected numeric constant or $N parameter, "
-            f"got {type(node).__name__}"
+            f"Expected numeric constant or $N parameter, got {type(node).__name__}"
         )
 
     def _make_traverse_match_op(self, args: tuple) -> Any:
@@ -5706,9 +5587,7 @@ class SQLCompiler:
             positive, negative_vector, threshold, field=field_name
         )
 
-    def _compile_calibrated_signal(
-        self, node: FuncCall, ctx: ExecutionContext
-    ) -> Any:
+    def _compile_calibrated_signal(self, node: FuncCall, ctx: ExecutionContext) -> Any:
         """Compile a signal function into an operator that produces
         calibrated probabilities in (0, 1).
 
@@ -5748,8 +5627,7 @@ class SQLCompiler:
         """
         if len(args) != 3:
             raise ValueError(
-                "knn_match() requires 3 arguments: "
-                "knn_match(field, vector, k)"
+                "knn_match() requires 3 arguments: knn_match(field, vector, k)"
             )
         field_name = self._extract_column_name(args[0])
         query_vector = self._extract_vector_arg(args[1])
@@ -5767,9 +5645,7 @@ class SQLCompiler:
         signal = self._compile_calibrated_signal(args[0], ctx)
         return ProbNotOperator(signal)
 
-    def _make_fusion_op(
-        self, args: tuple, ctx: ExecutionContext, *, mode: str
-    ) -> Any:
+    def _make_fusion_op(self, args: tuple, ctx: ExecutionContext, *, mode: str) -> Any:
         """Build a fusion operator from nested function calls.
 
         fuse_log_odds(signal1, signal2, ...[, alpha])
@@ -5823,9 +5699,7 @@ class SQLCompiler:
                     return True
         return False
 
-    def _extract_agg_specs(
-        self, target_list: tuple
-    ) -> list[tuple]:
+    def _extract_agg_specs(self, target_list: tuple) -> list[tuple]:
         """Extract aggregate specifications as 8-tuples.
 
         Returns (alias, func_name, arg_col, distinct, extra, filter_node,
@@ -5853,9 +5727,9 @@ class SQLCompiler:
                 # (e.g., ROUND(STDDEV(salary), 2))
                 nested = self._collect_agg_funcs(target.val)
                 nested = [
-                    f for f in nested
-                    if f.funcname[-1].sval.lower() in _AGG_FUNC_NAMES
-                    and f.over is None
+                    f
+                    for f in nested
+                    if f.funcname[-1].sval.lower() in _AGG_FUNC_NAMES and f.over is None
                 ]
                 existing = {(s[1], s[2]) for s in specs}
                 for nf in nested:
@@ -5867,15 +5741,26 @@ class SQLCompiler:
                     else:
                         ac = None
                     extra = None
-                    if nfn in _TWO_ARG_STAT_AGGS and len(nf.args or ()) >= 2:
-                        if isinstance(nf.args[1], ColumnRef):
-                            extra = self._extract_column_name(nf.args[1])
+                    if (
+                        nfn in _TWO_ARG_STAT_AGGS
+                        and len(nf.args or ()) >= 2
+                        and isinstance(nf.args[1], ColumnRef)
+                    ):
+                        extra = self._extract_column_name(nf.args[1])
                     if (nfn, ac) not in existing:
                         alias = nfn if ac is None else f"{nfn}_{ac}"
-                        specs.append((
-                            alias, nfn, ac, False, extra,
-                            None, None, None,
-                        ))
+                        specs.append(
+                            (
+                                alias,
+                                nfn,
+                                ac,
+                                False,
+                                extra,
+                                None,
+                                None,
+                                None,
+                            )
+                        )
                         existing.add((nfn, ac))
                 continue
             func_name = func.funcname[-1].sval.lower()
@@ -5925,15 +5810,21 @@ class SQLCompiler:
                     for sb in func.agg_order
                 ]
 
-            specs.append((
-                alias, func_name, arg_col, distinct, extra,
-                filter_node, order_keys, agg_expr_node,
-            ))
+            specs.append(
+                (
+                    alias,
+                    func_name,
+                    arg_col,
+                    distinct,
+                    extra,
+                    filter_node,
+                    order_keys,
+                    agg_expr_node,
+                )
+            )
         return specs
 
-    def _ensure_having_aggs(
-        self, having_node: Any, agg_specs: list[tuple]
-    ) -> None:
+    def _ensure_having_aggs(self, having_node: Any, agg_specs: list[tuple]) -> None:
         """Walk the HAVING AST and add any aggregate calls missing from *agg_specs*.
 
         This ensures that aggregates referenced only in HAVING (not in SELECT)
@@ -5953,9 +5844,18 @@ class SQLCompiler:
             if (func_name, arg_col) in existing:
                 continue
             alias = func_name if arg_col is None else f"{func_name}_{arg_col}"
-            agg_specs.append((
-                alias, func_name, arg_col, False, None, None, None, None,
-            ))
+            agg_specs.append(
+                (
+                    alias,
+                    func_name,
+                    arg_col,
+                    False,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            )
             existing.add((func_name, arg_col))
 
     @staticmethod
@@ -5982,8 +5882,7 @@ class SQLCompiler:
         if target_list is None:
             return False
         return any(
-            isinstance(t.val, FuncCall) and t.val.over is not None
-            for t in target_list
+            isinstance(t.val, FuncCall) and t.val.over is not None for t in target_list
         )
 
     def _extract_window_specs(
@@ -6017,7 +5916,9 @@ class SQLCompiler:
                     win = win.__class__(
                         partitionClause=base.partitionClause,
                         orderClause=win.orderClause or base.orderClause,
-                        frameOptions=win.frameOptions if (win.frameOptions or 0) & 1 else base.frameOptions,
+                        frameOptions=win.frameOptions
+                        if (win.frameOptions or 0) & 1
+                        else base.frameOptions,
                         startOffset=win.startOffset or base.startOffset,
                         endOffset=win.endOffset or base.endOffset,
                     )
@@ -6025,11 +5926,18 @@ class SQLCompiler:
                     win = win.__class__(
                         partitionClause=win.partitionClause or base.partitionClause,
                         orderClause=base.orderClause,
-                        frameOptions=win.frameOptions if (win.frameOptions or 0) & 1 else base.frameOptions,
+                        frameOptions=win.frameOptions
+                        if (win.frameOptions or 0) & 1
+                        else base.frameOptions,
                         startOffset=win.startOffset or base.startOffset,
                         endOffset=win.endOffset or base.endOffset,
                     )
-            elif win.name and win.name in named_windows and not win.partitionClause and not win.orderClause:
+            elif (
+                win.name
+                and win.name in named_windows
+                and not win.partitionClause
+                and not win.orderClause
+            ):
                 # OVER w (bare name, already resolved by pglast in some cases)
                 base = named_windows[win.name]
                 win = base
@@ -6061,26 +5969,23 @@ class SQLCompiler:
                     if len(val.args) > 1:
                         offset = int(evaluator.evaluate(val.args[1], {}))
                     if len(val.args) > 2:
-                        default_value = evaluator.evaluate(
-                            val.args[2], {}
-                        )
+                        default_value = evaluator.evaluate(val.args[2], {})
             elif func_name == "ntile":
                 evaluator = ExprEvaluator()
                 if val.args:
-                    ntile_buckets = int(
-                        evaluator.evaluate(val.args[0], {})
-                    )
+                    ntile_buckets = int(evaluator.evaluate(val.args[0], {}))
             elif func_name == "nth_value":
                 evaluator = ExprEvaluator()
                 if val.args:
                     arg_col = self._extract_column_name(val.args[0])
                     if len(val.args) > 1:
-                        ntile_buckets = int(
-                            evaluator.evaluate(val.args[1], {})
-                        )
+                        ntile_buckets = int(evaluator.evaluate(val.args[1], {}))
             elif func_name not in (
-                "row_number", "rank", "dense_rank",
-                "percent_rank", "cume_dist",
+                "row_number",
+                "rank",
+                "dense_rank",
+                "percent_rank",
+                "cume_dist",
             ):
                 # Aggregate window functions (SUM, COUNT, AVG, MIN, MAX)
                 if not val.agg_star and val.args:
@@ -6094,29 +5999,31 @@ class SQLCompiler:
             if fo & 1:  # NONDEFAULT
                 if fo & 2:  # RANGE
                     frame_type = "range"
-                frame_start, frame_start_offset = (
-                    self._parse_frame_bound(fo, "start", win.startOffset)
+                frame_start, frame_start_offset = self._parse_frame_bound(
+                    fo, "start", win.startOffset
                 )
-                frame_end, frame_end_offset = (
-                    self._parse_frame_bound(fo, "end", win.endOffset)
+                frame_end, frame_end_offset = self._parse_frame_bound(
+                    fo, "end", win.endOffset
                 )
 
-            specs.append(WindowSpec(
-                alias=alias,
-                func_name=func_name,
-                partition_cols=part_cols,
-                order_keys=order_keys,
-                arg_col=arg_col,
-                offset=offset,
-                default_value=default_value,
-                ntile_buckets=ntile_buckets,
-                frame_start=frame_start,
-                frame_end=frame_end,
-                frame_start_offset=frame_start_offset,
-                frame_end_offset=frame_end_offset,
-                frame_type=frame_type,
-                filter_node=val.agg_filter,
-            ))
+            specs.append(
+                WindowSpec(
+                    alias=alias,
+                    func_name=func_name,
+                    partition_cols=part_cols,
+                    order_keys=order_keys,
+                    arg_col=arg_col,
+                    offset=offset,
+                    default_value=default_value,
+                    ntile_buckets=ntile_buckets,
+                    frame_start=frame_start,
+                    frame_end=frame_end,
+                    frame_start_offset=frame_start_offset,
+                    frame_end_offset=frame_end_offset,
+                    frame_type=frame_type,
+                    filter_node=val.agg_filter,
+                )
+            )
 
         return specs
 
@@ -6130,7 +6037,7 @@ class SQLCompiler:
         """
         # Constants from pglast.enums.parsenodes
         if side == "start":
-            if frame_options & 32:   # START_UNBOUNDED_PRECEDING
+            if frame_options & 32:  # START_UNBOUNDED_PRECEDING
                 return "unbounded_preceding", 0
             if frame_options & 512:  # START_CURRENT_ROW
                 return "current_row", 0
@@ -6145,7 +6052,7 @@ class SQLCompiler:
                     off = offset_node.val.ival
                 return "offset_following", off
         else:
-            if frame_options & 256:   # END_UNBOUNDED_FOLLOWING
+            if frame_options & 256:  # END_UNBOUNDED_FOLLOWING
                 return "unbounded_following", 0
             if frame_options & 1024:  # END_CURRENT_ROW
                 return "current_row", 0
@@ -6159,7 +6066,7 @@ class SQLCompiler:
                 if offset_node is not None:
                     off = offset_node.val.ival
                 return "offset_following", off
-        return None, 0
+        return "current_row", 0
 
     # -- Result conversion ---------------------------------------------
 
@@ -6175,19 +6082,28 @@ class SQLCompiler:
 
     def _chain_on_source(self, where_op: Any, source_op: Any) -> Any:
         from uqa.operators.primitive import FilterOperator
+
         if isinstance(where_op, FilterOperator) and where_op.source is None:
             return FilterOperator(where_op.field, where_op.predicate, source=source_op)
         from uqa.operators.boolean import IntersectOperator
+
         return IntersectOperator([source_op, where_op])
 
     # -- Constant folding --------------------------------------------------
 
     # Side-effecting functions that must not be folded at compile time.
-    _NO_FOLD_FUNCS = frozenset({
-        "random", "nextval", "currval", "now",
-        "current_timestamp", "clock_timestamp",
-        "statement_timestamp", "timeofday",
-    })
+    _NO_FOLD_FUNCS = frozenset(
+        {
+            "random",
+            "nextval",
+            "currval",
+            "now",
+            "current_timestamp",
+            "clock_timestamp",
+            "statement_timestamp",
+            "timeofday",
+        }
+    )
 
     def _fold_stmt_where(self, stmt: SelectStmt) -> SelectStmt:
         """Return a new SelectStmt with the WHERE clause constant-folded."""
@@ -6196,6 +6112,7 @@ class SQLCompiler:
             return stmt
         # pglast AST nodes are dataclass-like; shallow-copy with new where
         import copy
+
         new_stmt = copy.copy(stmt)
         new_stmt.whereClause = folded
         return new_stmt
@@ -6237,10 +6154,13 @@ class SQLCompiler:
         if isinstance(new_lexpr, A_Const) and isinstance(new_rexpr, A_Const):
             try:
                 from uqa.sql.expr_evaluator import ExprEvaluator
+
                 evaluator = ExprEvaluator()
                 folded = A_Expr(
-                    kind=node.kind, name=node.name,
-                    lexpr=new_lexpr, rexpr=new_rexpr,
+                    kind=node.kind,
+                    name=node.name,
+                    lexpr=new_lexpr,
+                    rexpr=new_rexpr,
                 )
                 result = evaluator.evaluate(folded, {})
                 return self._value_to_a_const(result)
@@ -6249,8 +6169,10 @@ class SQLCompiler:
 
         if new_lexpr is not node.lexpr or new_rexpr is not node.rexpr:
             return A_Expr(
-                kind=node.kind, name=node.name,
-                lexpr=new_lexpr, rexpr=new_rexpr,
+                kind=node.kind,
+                name=node.name,
+                lexpr=new_lexpr,
+                rexpr=new_rexpr,
             )
         return node
 
@@ -6267,6 +6189,7 @@ class SQLCompiler:
         if all(isinstance(a, A_Const) for a in new_args):
             try:
                 from uqa.sql.expr_evaluator import ExprEvaluator
+
                 evaluator = ExprEvaluator()
                 folded = BoolExpr(boolop=node.boolop, args=new_args)
                 result = evaluator.evaluate(folded, {})
@@ -6289,9 +6212,7 @@ class SQLCompiler:
                 return A_Const(val=PgBoolean(boolval=True))
             if len(surviving) == 1:
                 return surviving[0]
-            return BoolExpr(
-                boolop=BoolExprType.AND_EXPR, args=tuple(surviving)
-            )
+            return BoolExpr(boolop=BoolExprType.AND_EXPR, args=tuple(surviving))
 
         if node.boolop == BoolExprType.OR_EXPR:
             surviving = []
@@ -6307,9 +6228,7 @@ class SQLCompiler:
                 return A_Const(val=PgBoolean(boolval=False))
             if len(surviving) == 1:
                 return surviving[0]
-            return BoolExpr(
-                boolop=BoolExprType.OR_EXPR, args=tuple(surviving)
-            )
+            return BoolExpr(boolop=BoolExprType.OR_EXPR, args=tuple(surviving))
 
         if new_args != tuple(node.args):
             return BoolExpr(boolop=node.boolop, args=new_args)
@@ -6343,9 +6262,12 @@ class SQLCompiler:
         new_args = tuple(self._fold_constants(arg) for arg in node.args)
         if new_args != tuple(node.args):
             return FuncCall(
-                funcname=node.funcname, args=new_args,
-                agg_star=node.agg_star, agg_distinct=node.agg_distinct,
-                func_variadic=node.func_variadic, funcformat=node.funcformat,
+                funcname=node.funcname,
+                args=new_args,
+                agg_star=node.agg_star,
+                agg_distinct=node.agg_distinct,
+                func_variadic=node.func_variadic,
+                funcformat=node.funcformat,
                 over=node.over,
             )
         return node
@@ -6363,9 +6285,7 @@ class SQLCompiler:
             return A_Const(val=PgFloat(fval=str(value)))
         if isinstance(value, str):
             return A_Const(val=PgString(sval=value))
-        raise ValueError(
-            f"Cannot convert {type(value).__name__} to A_Const"
-        )
+        raise ValueError(f"Cannot convert {type(value).__name__} to A_Const")
 
     @staticmethod
     def _extract_column_name(node: Any) -> str:
@@ -6411,16 +6331,12 @@ class SQLCompiler:
         import numpy as np
 
         if isinstance(node, A_ArrayExpr):
-            values = [
-                self._extract_const_value(elem) for elem in node.elements
-            ]
+            values = [self._extract_const_value(elem) for elem in node.elements]
             return np.array(values, dtype=np.float32)
         if isinstance(node, ParamRef):
             idx = node.number - 1  # $1 -> index 0
             if idx < 0 or idx >= len(self._params):
-                raise ValueError(
-                    f"No value supplied for parameter ${node.number}"
-                )
+                raise ValueError(f"No value supplied for parameter ${node.number}")
             return np.asarray(self._params[idx], dtype=np.float32)
         raise ValueError(
             f"Expected ARRAY literal or $N parameter for vector, "
@@ -6449,7 +6365,8 @@ class SQLCompiler:
                 return []
             return [self._extract_const_value(elem) for elem in node.elements]
         if isinstance(node, TypeCast):
-            from uqa.sql.expr_evaluator import ExprEvaluator, _cast_value
+            from uqa.sql.expr_evaluator import _cast_value
+
             value = self._extract_insert_value(node.arg)
             type_name = node.typeName.names[-1].sval.lower()
             if node.typeName.arrayBounds is not None:
@@ -6463,7 +6380,9 @@ class _ScanOperator:
 
     def execute(self, context: Any) -> PostingList:
         all_ids = sorted(context.document_store.doc_ids)
-        return PostingList.from_sorted([PostingEntry(d, Payload(score=0.0)) for d in all_ids])
+        return PostingList.from_sorted(
+            [PostingEntry(d, Payload(score=0.0)) for d in all_ids]
+        )
 
     def cost_estimate(self, stats: Any) -> float:
         return float(stats.total_docs)
@@ -6483,9 +6402,7 @@ class _TableScanOperator:
     ExprEvaluator resolves ``e.name`` via qualified lookup.
     """
 
-    def __init__(
-        self, table: Table, alias: str | None = None
-    ) -> None:
+    def __init__(self, table: Table, alias: str | None = None) -> None:
         self._table = table
         self._alias = alias
 
@@ -6495,11 +6412,7 @@ class _TableScanOperator:
         # Pre-fetch column names so NULL columns are explicitly present.
         # The document store may omit NULL values; for JOIN semantics
         # we need them to prevent unqualified fallback to the wrong table.
-        col_names = (
-            list(self._table.columns.keys())
-            if self._table.columns
-            else []
-        )
+        col_names = list(self._table.columns.keys()) if self._table.columns else []
         for doc_id in sorted(self._table.document_store.doc_ids):
             doc = self._table.document_store.get(doc_id)
             fields = dict(doc) if doc else {}
@@ -6507,13 +6420,9 @@ class _TableScanOperator:
                 if col_name not in fields:
                     fields[col_name] = None
             if alias:
-                qualified = {
-                    f"{alias}.{k}": v for k, v in fields.items()
-                }
+                qualified = {f"{alias}.{k}": v for k, v in fields.items()}
                 fields = {**qualified, **fields}
-            entries.append(
-                PostingEntry(doc_id, Payload(score=0.0, fields=fields))
-            )
+            entries.append(PostingEntry(doc_id, Payload(score=0.0, fields=fields)))
         return PostingList.from_sorted(entries)
 
     def cost_estimate(self, stats: Any) -> float:
@@ -6542,9 +6451,7 @@ class _FilteredScanOperator:
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         pl = self._scan.execute(context)
-        evaluator = ExprEvaluator(
-            subquery_executor=self._subquery_executor
-        )
+        evaluator = ExprEvaluator(subquery_executor=self._subquery_executor)
         filtered: list[PostingEntry] = []
         for entry in pl:
             if evaluator.evaluate(self._where_node, entry.payload.fields):
@@ -6595,9 +6502,7 @@ class _ForeignTableScanOperator:
         elif server.fdw_type == "arrow_fdw":
             handler = ArrowFlightSQLFDWHandler(server)
         else:
-            raise ValueError(
-                f"Unsupported FDW type: '{server.fdw_type}'"
-            )
+            raise ValueError(f"Unsupported FDW type: '{server.fdw_type}'")
         self._engine._fdw_handlers[server_name] = handler
         return handler
 
@@ -6618,13 +6523,9 @@ class _ForeignTableScanOperator:
             for col in col_names:
                 fields[col] = arrow_table.column(col)[i].as_py()
             if alias:
-                qualified = {
-                    f"{alias}.{k}": v for k, v in fields.items()
-                }
+                qualified = {f"{alias}.{k}": v for k, v in fields.items()}
                 fields = {**qualified, **fields}
-            entries.append(
-                PostingEntry(doc_id, Payload(score=0.0, fields=fields))
-            )
+            entries.append(PostingEntry(doc_id, Payload(score=0.0, fields=fields)))
         return PostingList.from_sorted(entries)
 
     def cost_estimate(self, stats: Any) -> float:
@@ -6667,8 +6568,6 @@ class _ExprJoinOperator:
         self._join_type = join_type
 
     def execute(self, context: object) -> Any:
-        from uqa.core.posting_list import GeneralizedPostingList
-        from uqa.core.types import GeneralizedPostingEntry, Payload
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         evaluator = ExprEvaluator()
@@ -6679,21 +6578,13 @@ class _ExprJoinOperator:
         quals = self._quals
 
         if jt == JoinType.JOIN_INNER:
-            return self._inner(
-                evaluator, quals, left_entries, right_entries
-            )
+            return self._inner(evaluator, quals, left_entries, right_entries)
         if jt == JoinType.JOIN_LEFT:
-            return self._left_outer(
-                evaluator, quals, left_entries, right_entries
-            )
+            return self._left_outer(evaluator, quals, left_entries, right_entries)
         if jt == JoinType.JOIN_RIGHT:
-            return self._right_outer(
-                evaluator, quals, left_entries, right_entries
-            )
+            return self._right_outer(evaluator, quals, left_entries, right_entries)
         if jt == JoinType.JOIN_FULL:
-            return self._full_outer(
-                evaluator, quals, left_entries, right_entries
-            )
+            return self._full_outer(evaluator, quals, left_entries, right_entries)
         raise ValueError(f"Unsupported join type for expression join: {jt}")
 
     @staticmethod
@@ -6721,10 +6612,7 @@ class _ExprJoinOperator:
                                 _entry_doc_id(right),
                             ),
                             payload=Payload(
-                                score=(
-                                    left.payload.score
-                                    + right.payload.score
-                                ),
+                                score=(left.payload.score + right.payload.score),
                                 fields=merged,
                             ),
                         )
@@ -6758,10 +6646,7 @@ class _ExprJoinOperator:
                                 _entry_doc_id(right),
                             ),
                             payload=Payload(
-                                score=(
-                                    left.payload.score
-                                    + right.payload.score
-                                ),
+                                score=(left.payload.score + right.payload.score),
                                 fields=merged,
                             ),
                         )
@@ -6805,10 +6690,7 @@ class _ExprJoinOperator:
                                 _entry_doc_id(right),
                             ),
                             payload=Payload(
-                                score=(
-                                    left.payload.score
-                                    + right.payload.score
-                                ),
+                                score=(left.payload.score + right.payload.score),
                                 fields=merged,
                             ),
                         )
@@ -6855,10 +6737,7 @@ class _ExprJoinOperator:
                                 _entry_doc_id(right),
                             ),
                             payload=Payload(
-                                score=(
-                                    left.payload.score
-                                    + right.payload.score
-                                ),
+                                score=(left.payload.score + right.payload.score),
                                 fields=merged,
                             ),
                         )
@@ -6885,7 +6764,6 @@ class _ExprJoinOperator:
                     )
                 )
         return GeneralizedPostingList(result)
-
 
 
 class _LateralJoinOperator:
@@ -6946,9 +6824,7 @@ class _LateralJoinOperator:
 
         return GeneralizedPostingList(result)
 
-    def _execute_lateral_subquery(
-        self, left_fields: dict[str, Any]
-    ) -> SQLResult:
+    def _execute_lateral_subquery(self, left_fields: dict[str, Any]) -> SQLResult:
         """Execute the lateral subquery with left-row columns injected.
 
         Rewrites the subquery AST by replacing outer ColumnRef nodes
@@ -6958,6 +6834,7 @@ class _LateralJoinOperator:
         subqueries.
         """
         import copy
+
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         evaluator = ExprEvaluator()
@@ -6970,9 +6847,7 @@ class _LateralJoinOperator:
 
         # Deep-copy the subquery AST and substitute outer references
         subquery_copy = copy.deepcopy(self._subquery)
-        rewritten = evaluator._substitute_correlated_refs(
-            subquery_copy, outer_row
-        )
+        rewritten = evaluator._substitute_correlated_refs(subquery_copy, outer_row)
 
         return self._compiler._compile_select(rewritten)
 
@@ -7003,9 +6878,7 @@ class _CalibratedKNNOperator:
         if vec_idx is not None:
             raw_pl = vec_idx.search_knn(self.query_vector, self.k)
         else:
-            raw_pl = _brute_force_knn(
-                context, self.field, self.query_vector, self.k
-            )
+            raw_pl = _brute_force_knn(context, self.field, self.query_vector, self.k)
         entries = [
             PostingEntry(
                 e.doc_id,
@@ -7017,6 +6890,7 @@ class _CalibratedKNNOperator:
 
     def cost_estimate(self, stats: Any) -> float:
         import math
+
         return float(stats.dimensions) * math.log2(stats.total_docs + 1)
 
 
@@ -7027,18 +6901,14 @@ class _ExprFilterOperator:
     ``FilterOperator(field, predicate)`` -- e.g. ``WHERE price * 2 > 100``.
     """
 
-    def __init__(
-        self, expr_node: Any, subquery_executor: Any = None
-    ) -> None:
+    def __init__(self, expr_node: Any, subquery_executor: Any = None) -> None:
         self.expr_node = expr_node
         self._subquery_executor = subquery_executor
 
     def execute(self, context: Any) -> PostingList:
         from uqa.sql.expr_evaluator import ExprEvaluator
 
-        evaluator = ExprEvaluator(
-            subquery_executor=self._subquery_executor
-        )
+        evaluator = ExprEvaluator(subquery_executor=self._subquery_executor)
         doc_store = context.document_store
         if doc_store is None:
             return PostingList()
@@ -7059,9 +6929,13 @@ class _ExprFilterOperator:
 
 def _op_to_predicate(op_name: str, value: Any) -> Predicate:
     mapping: dict[str, type[Predicate]] = {
-        "=": Equals, "!=": NotEquals, "<>": NotEquals,
-        ">": GreaterThan, ">=": GreaterThanOrEqual,
-        "<": LessThan, "<=": LessThanOrEqual,
+        "=": Equals,
+        "!=": NotEquals,
+        "<>": NotEquals,
+        ">": GreaterThan,
+        ">=": GreaterThanOrEqual,
+        "<": LessThan,
+        "<=": LessThanOrEqual,
     }
     cls = mapping.get(op_name)
     if cls is None:

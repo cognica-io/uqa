@@ -21,28 +21,29 @@ Covers:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pyarrow as pa
 import pytest
 
 from uqa.core.posting_list import PostingList
 from uqa.core.types import (
+    Between,
     Equals,
     GreaterThan,
-    LessThan,
-    Between,
     InSet,
+    LessThan,
     Payload,
     PostingEntry,
 )
 from uqa.execution.batch import (
+    DEFAULT_BATCH_SIZE,
     Batch,
     ColumnVector,
     DataType,
-    DEFAULT_BATCH_SIZE,
     _infer_dtype,
 )
-from uqa.execution.physical import PhysicalOperator
 from uqa.execution.relational import (
     DistinctOp,
     FilterOp,
@@ -52,9 +53,11 @@ from uqa.execution.relational import (
     SortOp,
 )
 from uqa.execution.scan import PostingListScanOp, SeqScanOp
-from uqa.storage.document_store import DocumentStore
 from uqa.sql.table import ColumnDef, Table
+from uqa.storage.document_store import DocumentStore
 
+if TYPE_CHECKING:
+    from uqa.execution.physical import PhysicalOperator
 
 # ======================================================================
 # Helpers
@@ -246,11 +249,13 @@ class TestSeqScanOp:
         assert rows == []
 
     def test_scan_all_rows(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Bob", "age": 25, "score": 8.0},
-            {"name": "Carol", "age": 35, "score": 9.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Bob", "age": 25, "score": 8.0},
+                {"name": "Carol", "age": 35, "score": 9.0},
+            ]
+        )
         rows = _collect_rows(SeqScanOp(table))
         assert len(rows) == 3
         assert rows[0]["name"] == "Alice"
@@ -264,10 +269,9 @@ class TestSeqScanOp:
         assert rows[0]["_doc_id"] == rows[0]["id"]
 
     def test_batch_size_respected(self):
-        table = _make_table([
-            {"name": f"user{i}", "age": 20 + i, "score": float(i)}
-            for i in range(5)
-        ])
+        table = _make_table(
+            [{"name": f"user{i}", "age": 20 + i, "score": float(i)} for i in range(5)]
+        )
         op = SeqScanOp(table, batch_size=2)
         op.open()
 
@@ -306,10 +310,12 @@ class TestPostingListScanOp:
         store.put(1, {"name": "Alice", "age": 30})
         store.put(2, {"name": "Bob", "age": 25})
 
-        pl = PostingList([
-            PostingEntry(1, Payload(score=0.9)),
-            PostingEntry(2, Payload(score=0.8)),
-        ])
+        pl = PostingList(
+            [
+                PostingEntry(1, Payload(score=0.9)),
+                PostingEntry(2, Payload(score=0.8)),
+            ]
+        )
 
         rows = _collect_rows(PostingListScanOp(pl, store))
         assert len(rows) == 2
@@ -323,12 +329,14 @@ class TestPostingListScanOp:
         store = DocumentStore()
         store.put(1, {"name": "Alice"})
 
-        pl = PostingList([
-            PostingEntry(
-                1,
-                Payload(score=0.5, fields={"_extra": "data"}),
-            ),
-        ])
+        pl = PostingList(
+            [
+                PostingEntry(
+                    1,
+                    Payload(score=0.5, fields={"_extra": "data"}),
+                ),
+            ]
+        )
 
         rows = _collect_rows(PostingListScanOp(pl, store))
         assert rows[0]["_extra"] == "data"
@@ -367,62 +375,72 @@ class TestPostingListScanOp:
 
 class TestFilterOp:
     def test_equals_filter(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Bob", "age": 25, "score": 8.0},
-            {"name": "Carol", "age": 30, "score": 9.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Bob", "age": 25, "score": 8.0},
+                {"name": "Carol", "age": 30, "score": 9.0},
+            ]
+        )
         op = FilterOp(SeqScanOp(table), "age", Equals(30))
         rows = _collect_rows(op)
         assert len(rows) == 2
         assert all(r["age"] == 30 for r in rows)
 
     def test_greater_than_filter(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Bob", "age": 25, "score": 8.0},
-            {"name": "Carol", "age": 35, "score": 9.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Bob", "age": 25, "score": 8.0},
+                {"name": "Carol", "age": 35, "score": 9.0},
+            ]
+        )
         op = FilterOp(SeqScanOp(table), "age", GreaterThan(28))
         rows = _collect_rows(op)
         assert len(rows) == 2
         assert {r["name"] for r in rows} == {"Alice", "Carol"}
 
     def test_between_filter(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Bob", "age": 25, "score": 8.0},
-            {"name": "Carol", "age": 35, "score": 9.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Bob", "age": 25, "score": 8.0},
+                {"name": "Carol", "age": 35, "score": 9.0},
+            ]
+        )
         op = FilterOp(SeqScanOp(table), "age", Between(26, 34))
         rows = _collect_rows(op)
         assert len(rows) == 1
         assert rows[0]["name"] == "Alice"
 
     def test_in_set_filter(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Bob", "age": 25, "score": 8.0},
-            {"name": "Carol", "age": 35, "score": 9.0},
-        ])
-        op = FilterOp(
-            SeqScanOp(table), "name", InSet(frozenset({"Alice", "Carol"}))
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Bob", "age": 25, "score": 8.0},
+                {"name": "Carol", "age": 35, "score": 9.0},
+            ]
         )
+        op = FilterOp(SeqScanOp(table), "name", InSet(frozenset({"Alice", "Carol"})))
         rows = _collect_rows(op)
         assert len(rows) == 2
 
     def test_filter_no_match(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+            ]
+        )
         op = FilterOp(SeqScanOp(table), "age", Equals(99))
         rows = _collect_rows(op)
         assert rows == []
 
     def test_filter_missing_column(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+            ]
+        )
         op = FilterOp(SeqScanOp(table), "nonexistent", Equals(1))
         rows = _collect_rows(op)
         assert rows == []
@@ -435,9 +453,11 @@ class TestFilterOp:
 
 class TestProjectOp:
     def test_basic_projection(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+            ]
+        )
         op = ProjectOp(SeqScanOp(table), ["name", "age"])
         rows = _collect_rows(op)
         assert list(rows[0].keys()) == ["name", "age"]
@@ -445,21 +465,23 @@ class TestProjectOp:
         assert rows[0]["age"] == 30
 
     def test_projection_with_alias(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-        ])
-        op = ProjectOp(
-            SeqScanOp(table), ["name"], aliases={"name": "user_name"}
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+            ]
         )
+        op = ProjectOp(SeqScanOp(table), ["name"], aliases={"name": "user_name"})
         rows = _collect_rows(op)
         assert "user_name" in rows[0]
         assert rows[0]["user_name"] == "Alice"
 
     def test_single_column(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Bob", "age": 25, "score": 8.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Bob", "age": 25, "score": 8.0},
+            ]
+        )
         op = ProjectOp(SeqScanOp(table), ["name"])
         rows = _collect_rows(op)
         assert len(rows) == 2
@@ -473,45 +495,51 @@ class TestProjectOp:
 
 class TestSortOp:
     def test_sort_ascending(self):
-        table = _make_table([
-            {"name": "Carol", "age": 35, "score": 9.0},
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Bob", "age": 25, "score": 8.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Carol", "age": 35, "score": 9.0},
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Bob", "age": 25, "score": 8.0},
+            ]
+        )
         op = SortOp(SeqScanOp(table), [("age", False)])
         rows = _collect_rows(op)
         assert [r["age"] for r in rows] == [25, 30, 35]
 
     def test_sort_descending(self):
-        table = _make_table([
-            {"name": "Carol", "age": 35, "score": 9.0},
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Bob", "age": 25, "score": 8.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Carol", "age": 35, "score": 9.0},
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Bob", "age": 25, "score": 8.0},
+            ]
+        )
         op = SortOp(SeqScanOp(table), [("age", True)])
         rows = _collect_rows(op)
         assert [r["age"] for r in rows] == [35, 30, 25]
 
     def test_sort_multiple_keys(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Bob", "age": 30, "score": 8.0},
-            {"name": "Carol", "age": 25, "score": 9.0},
-        ])
-        op = SortOp(
-            SeqScanOp(table), [("age", False), ("score", True)]
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Bob", "age": 30, "score": 8.0},
+                {"name": "Carol", "age": 25, "score": 9.0},
+            ]
         )
+        op = SortOp(SeqScanOp(table), [("age", False), ("score", True)])
         rows = _collect_rows(op)
         assert rows[0]["name"] == "Carol"
         assert rows[1]["name"] == "Alice"
         assert rows[2]["name"] == "Bob"
 
     def test_sort_with_nulls(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Bob", "score": 8.0},
-            {"name": "Carol", "age": 25, "score": 9.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Bob", "score": 8.0},
+                {"name": "Carol", "age": 25, "score": 9.0},
+            ]
+        )
         op = SortOp(SeqScanOp(table), [("age", False)])
         rows = _collect_rows(op)
         # Nulls sort last
@@ -520,10 +548,9 @@ class TestSortOp:
         assert rows[2]["age"] is None
 
     def test_sort_batch_output(self):
-        table = _make_table([
-            {"name": f"user{i}", "age": 100 - i, "score": float(i)}
-            for i in range(5)
-        ])
+        table = _make_table(
+            [{"name": f"user{i}", "age": 100 - i, "score": float(i)} for i in range(5)]
+        )
         op = SortOp(SeqScanOp(table), [("age", False)], batch_size=2)
         op.open()
 
@@ -544,35 +571,37 @@ class TestSortOp:
 
 class TestLimitOp:
     def test_basic_limit(self):
-        table = _make_table([
-            {"name": f"user{i}", "age": 20 + i, "score": float(i)}
-            for i in range(10)
-        ])
+        table = _make_table(
+            [{"name": f"user{i}", "age": 20 + i, "score": float(i)} for i in range(10)]
+        )
         op = LimitOp(SeqScanOp(table), 3)
         rows = _collect_rows(op)
         assert len(rows) == 3
 
     def test_limit_larger_than_data(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+            ]
+        )
         op = LimitOp(SeqScanOp(table), 100)
         rows = _collect_rows(op)
         assert len(rows) == 1
 
     def test_limit_zero(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+            ]
+        )
         op = LimitOp(SeqScanOp(table), 0)
         rows = _collect_rows(op)
         assert rows == []
 
     def test_limit_truncates_batch(self):
-        table = _make_table([
-            {"name": f"user{i}", "age": 20 + i, "score": float(i)}
-            for i in range(10)
-        ])
+        table = _make_table(
+            [{"name": f"user{i}", "age": 20 + i, "score": float(i)} for i in range(10)]
+        )
         op = LimitOp(SeqScanOp(table, batch_size=5), 3)
         op.open()
         batch = op.next()
@@ -589,11 +618,13 @@ class TestLimitOp:
 
 class TestHashAggOp:
     def test_group_by_count(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Bob", "age": 25, "score": 8.0},
-            {"name": "Carol", "age": 30, "score": 9.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Bob", "age": 25, "score": 8.0},
+                {"name": "Carol", "age": 30, "score": 9.0},
+            ]
+        )
         op = HashAggOp(
             SeqScanOp(table),
             group_columns=["age"],
@@ -605,11 +636,13 @@ class TestHashAggOp:
         assert result[25] == 1
 
     def test_group_by_sum(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Bob", "age": 25, "score": 8.0},
-            {"name": "Carol", "age": 30, "score": 9.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Bob", "age": 25, "score": 8.0},
+                {"name": "Carol", "age": 30, "score": 9.0},
+            ]
+        )
         op = HashAggOp(
             SeqScanOp(table),
             group_columns=["age"],
@@ -621,10 +654,12 @@ class TestHashAggOp:
         assert result[25] == pytest.approx(8.0)
 
     def test_group_by_avg(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 10.0},
-            {"name": "Bob", "age": 30, "score": 8.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 10.0},
+                {"name": "Bob", "age": 30, "score": 8.0},
+            ]
+        )
         op = HashAggOp(
             SeqScanOp(table),
             group_columns=["age"],
@@ -634,11 +669,13 @@ class TestHashAggOp:
         assert rows[0]["avg_score"] == pytest.approx(9.0)
 
     def test_group_by_min_max(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 10.0},
-            {"name": "Bob", "age": 30, "score": 8.0},
-            {"name": "Carol", "age": 30, "score": 9.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 10.0},
+                {"name": "Bob", "age": 30, "score": 8.0},
+                {"name": "Carol", "age": 30, "score": 9.0},
+            ]
+        )
         op = HashAggOp(
             SeqScanOp(table),
             group_columns=["age"],
@@ -652,10 +689,12 @@ class TestHashAggOp:
         assert rows[0]["max_s"] == pytest.approx(10.0)
 
     def test_aggregate_only(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Bob", "age": 25, "score": 8.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Bob", "age": 25, "score": 8.0},
+            ]
+        )
         op = HashAggOp(
             SeqScanOp(table),
             group_columns=[],
@@ -677,10 +716,12 @@ class TestHashAggOp:
         assert rows[0]["cnt"] == 0
 
     def test_count_column(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Bob", "score": 8.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Bob", "score": 8.0},
+            ]
+        )
         op = HashAggOp(
             SeqScanOp(table),
             group_columns=[],
@@ -697,11 +738,13 @@ class TestHashAggOp:
 
 class TestDistinctOp:
     def test_basic_distinct(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Bob", "age": 25, "score": 8.0},
-            {"name": "Alice", "age": 30, "score": 7.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Bob", "age": 25, "score": 8.0},
+                {"name": "Alice", "age": 30, "score": 7.0},
+            ]
+        )
         op = DistinctOp(
             ProjectOp(SeqScanOp(table), ["name", "age"]),
             columns=["name", "age"],
@@ -710,10 +753,12 @@ class TestDistinctOp:
         assert len(rows) == 2
 
     def test_all_unique(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Bob", "age": 25, "score": 8.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Bob", "age": 25, "score": 8.0},
+            ]
+        )
         op = DistinctOp(
             ProjectOp(SeqScanOp(table), ["name"]),
             columns=["name"],
@@ -722,11 +767,13 @@ class TestDistinctOp:
         assert len(rows) == 2
 
     def test_all_same(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Alice", "age": 30, "score": 8.0},
-            {"name": "Alice", "age": 30, "score": 7.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Alice", "age": 30, "score": 8.0},
+                {"name": "Alice", "age": 30, "score": 7.0},
+            ]
+        )
         op = DistinctOp(
             ProjectOp(SeqScanOp(table), ["name"]),
             columns=["name"],
@@ -742,11 +789,13 @@ class TestDistinctOp:
 
 class TestComposition:
     def test_scan_filter_project(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Bob", "age": 25, "score": 8.0},
-            {"name": "Carol", "age": 35, "score": 9.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Bob", "age": 25, "score": 8.0},
+                {"name": "Carol", "age": 35, "score": 9.0},
+            ]
+        )
         op = ProjectOp(
             FilterOp(SeqScanOp(table), "age", GreaterThan(28)),
             ["name", "age"],
@@ -757,10 +806,9 @@ class TestComposition:
         assert {r["name"] for r in rows} == {"Alice", "Carol"}
 
     def test_scan_filter_sort_limit(self):
-        table = _make_table([
-            {"name": f"user{i}", "age": 20 + i, "score": float(i)}
-            for i in range(20)
-        ])
+        table = _make_table(
+            [{"name": f"user{i}", "age": 20 + i, "score": float(i)} for i in range(20)]
+        )
         op = LimitOp(
             SortOp(
                 FilterOp(SeqScanOp(table), "age", GreaterThan(30)),
@@ -775,12 +823,14 @@ class TestComposition:
         assert rows[2]["age"] == 37
 
     def test_scan_group_sort(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 10.0},
-            {"name": "Bob", "age": 25, "score": 8.0},
-            {"name": "Carol", "age": 30, "score": 6.0},
-            {"name": "Dave", "age": 25, "score": 9.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 10.0},
+                {"name": "Bob", "age": 25, "score": 8.0},
+                {"name": "Carol", "age": 30, "score": 6.0},
+                {"name": "Dave", "age": 25, "score": 9.0},
+            ]
+        )
         op = SortOp(
             HashAggOp(
                 SeqScanOp(table),
@@ -804,10 +854,7 @@ class TestComposition:
         for i in range(10):
             store.put(i, {"x": i, "label": "even" if i % 2 == 0 else "odd"})
 
-        entries = [
-            PostingEntry(i, Payload(score=float(i) / 10))
-            for i in range(10)
-        ]
+        entries = [PostingEntry(i, Payload(score=float(i) / 10)) for i in range(10)]
         pl = PostingList(entries)
 
         op = LimitOp(
@@ -827,13 +874,15 @@ class TestComposition:
 
     def test_full_pipeline(self):
         """Full pipeline: scan -> filter -> group -> sort -> limit."""
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 10.0},
-            {"name": "Bob", "age": 25, "score": 8.0},
-            {"name": "Carol", "age": 30, "score": 6.0},
-            {"name": "Dave", "age": 25, "score": 9.0},
-            {"name": "Eve", "age": 35, "score": 7.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 10.0},
+                {"name": "Bob", "age": 25, "score": 8.0},
+                {"name": "Carol", "age": 30, "score": 6.0},
+                {"name": "Dave", "age": 25, "score": 9.0},
+                {"name": "Eve", "age": 35, "score": 7.0},
+            ]
+        )
         op = LimitOp(
             SortOp(
                 HashAggOp(
@@ -850,13 +899,15 @@ class TestComposition:
         assert rows[0]["total"] == pytest.approx(17.0)
 
     def test_distinct_sort_limit(self):
-        table = _make_table([
-            {"name": "Alice", "age": 30, "score": 9.5},
-            {"name": "Bob", "age": 25, "score": 8.0},
-            {"name": "Alice", "age": 30, "score": 7.0},
-            {"name": "Carol", "age": 35, "score": 9.0},
-            {"name": "Bob", "age": 25, "score": 6.0},
-        ])
+        table = _make_table(
+            [
+                {"name": "Alice", "age": 30, "score": 9.5},
+                {"name": "Bob", "age": 25, "score": 8.0},
+                {"name": "Alice", "age": 30, "score": 7.0},
+                {"name": "Carol", "age": 35, "score": 9.0},
+                {"name": "Bob", "age": 25, "score": 6.0},
+            ]
+        )
         op = LimitOp(
             SortOp(
                 DistinctOp(

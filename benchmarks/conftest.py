@@ -45,10 +45,14 @@ def engine_with_bench_table(gen: BenchmarkDataGenerator) -> Engine:
     e.sql(BENCH_TABLE_DDL)
     rows = gen.table_rows()
     for row in rows:
-        cols = ", ".join(str(v) if not isinstance(v, (str, bool)) else
-                        f"'{v}'" if isinstance(v, str) else
-                        ("TRUE" if v else "FALSE")
-                        for v in row.values())
+        cols = ", ".join(
+            str(v)
+            if not isinstance(v, (str, bool))
+            else f"'{v}'"
+            if isinstance(v, str)
+            else ("TRUE" if v else "FALSE")
+            for v in row.values()
+        )
         e.sql(f"INSERT INTO bench VALUES ({cols})")
     return e
 
@@ -63,9 +67,13 @@ def engine_with_join_tables(gen: BenchmarkDataGenerator) -> Engine:
 
     customers, products, orders = gen.join_tables()
     for c in customers:
-        e.sql(f"INSERT INTO customers VALUES ({c['id']}, '{c['name']}', '{c['region']}')")
+        e.sql(
+            f"INSERT INTO customers VALUES ({c['id']}, '{c['name']}', '{c['region']}')"
+        )
     for p in products:
-        e.sql(f"INSERT INTO products VALUES ({p['id']}, '{p['name']}', {p['price']}, '{p['category']}')")
+        e.sql(
+            f"INSERT INTO products VALUES ({p['id']}, '{p['name']}', {p['price']}, '{p['category']}')"
+        )
     for o in orders:
         e.sql(
             f"INSERT INTO orders VALUES ({o['id']}, {o['customer_id']}, "

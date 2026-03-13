@@ -20,9 +20,10 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from uqa.sql.table import ColumnDef
+if TYPE_CHECKING:
+    from uqa.sql.table import ColumnDef
 
 
 @dataclass(frozen=True, slots=True)

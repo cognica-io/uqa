@@ -13,23 +13,21 @@ and SQLiteGraphStore throughput.
 from __future__ import annotations
 
 import sqlite3
-import tempfile
 
 import numpy as np
 import pytest
 
 from benchmarks.data.generators import BenchmarkDataGenerator
 from benchmarks.data.schemas import BENCH_TABLE_COLUMNS
-from uqa.core.types import Edge, Vertex
+from uqa.graph.store import GraphStore
 from uqa.storage.sqlite_document_store import SQLiteDocumentStore
 from uqa.storage.sqlite_inverted_index import SQLiteInvertedIndex
 from uqa.storage.sqlite_vector_index import SQLiteVectorIndex
-from uqa.graph.store import GraphStore
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_doc_store(conn: sqlite3.Connection) -> SQLiteDocumentStore:
     return SQLiteDocumentStore(conn, "bench", BENCH_TABLE_COLUMNS)
@@ -42,6 +40,7 @@ def _make_inverted_index(conn: sqlite3.Connection) -> SQLiteInvertedIndex:
 # ---------------------------------------------------------------------------
 # Document Store
 # ---------------------------------------------------------------------------
+
 
 class TestDocumentStore:
     def test_put_single(self, benchmark) -> None:
@@ -113,6 +112,7 @@ class TestDocumentStore:
 # Inverted Index
 # ---------------------------------------------------------------------------
 
+
 class TestInvertedIndex:
     def test_add_document(self, benchmark) -> None:
         gen = BenchmarkDataGenerator(scale_factor=1, seed=42)
@@ -123,7 +123,7 @@ class TestInvertedIndex:
 
         def add_one() -> None:
             i = counter[0] % len(term_docs)
-            doc_id, fields = term_docs[i]
+            _doc_id, fields = term_docs[i]
             # Use a unique doc_id each time to avoid replace overhead
             idx.add_document(counter[0] + 10000, fields)
             counter[0] += 1
@@ -172,6 +172,7 @@ class TestInvertedIndex:
 # ---------------------------------------------------------------------------
 # Vector Index
 # ---------------------------------------------------------------------------
+
 
 class TestVectorIndex:
     def test_build_index(self, benchmark) -> None:
@@ -222,6 +223,7 @@ class TestVectorIndex:
 # ---------------------------------------------------------------------------
 # Graph Store
 # ---------------------------------------------------------------------------
+
 
 class TestGraphStore:
     def test_add_vertices(self, benchmark) -> None:

@@ -15,17 +15,19 @@ batched row output with document data looked up from the store.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any
 
 from uqa.execution.batch import (
+    _SQL_TO_DTYPE,
+    DEFAULT_BATCH_SIZE,
     Batch,
     DataType,
-    DEFAULT_BATCH_SIZE,
-    _SQL_TO_DTYPE,
 )
 from uqa.execution.physical import PhysicalOperator
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from uqa.core.posting_list import PostingList
     from uqa.sql.table import Table
     from uqa.storage.document_store import DocumentStore
@@ -34,9 +36,7 @@ if TYPE_CHECKING:
 class SeqScanOp(PhysicalOperator):
     """Sequential scan: reads all rows from a table in batches."""
 
-    def __init__(
-        self, table: Table, batch_size: int = DEFAULT_BATCH_SIZE
-    ) -> None:
+    def __init__(self, table: Table, batch_size: int = DEFAULT_BATCH_SIZE) -> None:
         self._table = table
         self._batch_size = batch_size
         self._iterator: Iterator[tuple[int, dict[str, Any]]] | None = None
@@ -47,9 +47,7 @@ class SeqScanOp(PhysicalOperator):
             "_doc_id": DataType.INTEGER,
         }
         for name, col in self._table.columns.items():
-            self._schema[name] = _SQL_TO_DTYPE.get(
-                col.type_name, DataType.TEXT
-            )
+            self._schema[name] = _SQL_TO_DTYPE.get(col.type_name, DataType.TEXT)
         store = self._table.document_store
         if hasattr(store, "iter_all"):
             self._iterator = store.iter_all()
@@ -125,11 +123,7 @@ class PostingListScanOp(PhysicalOperator):
         for entry in batch_entries:
             # GeneralizedPostingEntry (from joins) has doc_ids tuple,
             # PostingEntry has doc_id scalar.
-            doc_id = (
-                entry.doc_ids[0]
-                if hasattr(entry, "doc_ids")
-                else entry.doc_id
-            )
+            doc_id = entry.doc_ids[0] if hasattr(entry, "doc_ids") else entry.doc_id
             row: dict[str, Any] = {
                 "_doc_id": doc_id,
                 "_score": entry.payload.score,
@@ -139,7 +133,9 @@ class PostingListScanOp(PhysicalOperator):
             if entry.payload.fields:
                 row.update(entry.payload.fields)
             else:
-                doc = self._doc_store.get(doc_id) if self._doc_store is not None else None
+                doc = (
+                    self._doc_store.get(doc_id) if self._doc_store is not None else None
+                )
                 if doc is not None:
                     row.update(doc)
                 elif self._graph_store is not None:

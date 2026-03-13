@@ -16,7 +16,7 @@ Demonstrates:
   - Aggregation over search results
 """
 
-from uqa.core.types import Between, Equals, GreaterThanOrEqual, InSet, LessThan
+from uqa.core.types import Between, Equals, GreaterThanOrEqual, InSet
 from uqa.engine import Engine
 
 # ======================================================================
@@ -37,86 +37,116 @@ engine.sql("""
 """)
 
 articles = [
-    (1, {
-        "title": "transformer architecture revolutionizes nlp",
-        "body": "the transformer model uses self attention mechanisms to process "
-                "sequential data without recurrence enabling massive parallelism",
-        "category": "nlp",
-        "year": 2017,
-        "citations": 90000,
-    }),
-    (2, {
-        "title": "bert pre-training deep bidirectional transformers",
-        "body": "bert introduces masked language modeling and next sentence prediction "
-                "for pre-training deep bidirectional transformer representations",
-        "category": "nlp",
-        "year": 2019,
-        "citations": 75000,
-    }),
-    (3, {
-        "title": "graph attention networks for node classification",
-        "body": "graph attention networks apply attention mechanisms to graph structured "
-                "data enabling weighted aggregation of neighbor features",
-        "category": "graph",
-        "year": 2018,
-        "citations": 15000,
-    }),
-    (4, {
-        "title": "vision transformer image recognition at scale",
-        "body": "vision transformer splits images into patches and processes them "
-                "with a standard transformer encoder achieving strong results",
-        "category": "cv",
-        "year": 2021,
-        "citations": 25000,
-    }),
-    (5, {
-        "title": "scaling language models methods and insights",
-        "body": "scaling laws show predictable improvement in language model performance "
-                "as compute data and parameters increase following power law curves",
-        "category": "nlp",
-        "year": 2020,
-        "citations": 8000,
-    }),
-    (6, {
-        "title": "diffusion models beat generative adversarial networks",
-        "body": "denoising diffusion probabilistic models achieve higher image quality "
-                "than gans with more stable training and better mode coverage",
-        "category": "cv",
-        "year": 2021,
-        "citations": 12000,
-    }),
-    (7, {
-        "title": "reinforcement learning from human feedback",
-        "body": "rlhf trains language models to follow instructions by combining "
-                "supervised fine tuning with reward modeling and ppo optimization",
-        "category": "alignment",
-        "year": 2022,
-        "citations": 5000,
-    }),
-    (8, {
-        "title": "efficient attention mechanisms for long sequences",
-        "body": "linear attention and sparse attention patterns reduce the quadratic "
-                "cost of self attention enabling processing of very long sequences",
-        "category": "nlp",
-        "year": 2020,
-        "citations": 3000,
-    }),
-    (9, {
-        "title": "multimodal learning with vision and language",
-        "body": "contrastive learning aligns vision and language representations "
-                "in a shared embedding space enabling zero shot transfer",
-        "category": "multimodal",
-        "year": 2021,
-        "citations": 18000,
-    }),
-    (10, {
-        "title": "neural architecture search automation",
-        "body": "automated methods discover neural network architectures that match "
-                "or exceed human designed models using search and optimization",
-        "category": "automl",
-        "year": 2019,
-        "citations": 7000,
-    }),
+    (
+        1,
+        {
+            "title": "transformer architecture revolutionizes nlp",
+            "body": "the transformer model uses self attention mechanisms to process "
+            "sequential data without recurrence enabling massive parallelism",
+            "category": "nlp",
+            "year": 2017,
+            "citations": 90000,
+        },
+    ),
+    (
+        2,
+        {
+            "title": "bert pre-training deep bidirectional transformers",
+            "body": "bert introduces masked language modeling and next sentence prediction "
+            "for pre-training deep bidirectional transformer representations",
+            "category": "nlp",
+            "year": 2019,
+            "citations": 75000,
+        },
+    ),
+    (
+        3,
+        {
+            "title": "graph attention networks for node classification",
+            "body": "graph attention networks apply attention mechanisms to graph structured "
+            "data enabling weighted aggregation of neighbor features",
+            "category": "graph",
+            "year": 2018,
+            "citations": 15000,
+        },
+    ),
+    (
+        4,
+        {
+            "title": "vision transformer image recognition at scale",
+            "body": "vision transformer splits images into patches and processes them "
+            "with a standard transformer encoder achieving strong results",
+            "category": "cv",
+            "year": 2021,
+            "citations": 25000,
+        },
+    ),
+    (
+        5,
+        {
+            "title": "scaling language models methods and insights",
+            "body": "scaling laws show predictable improvement in language model performance "
+            "as compute data and parameters increase following power law curves",
+            "category": "nlp",
+            "year": 2020,
+            "citations": 8000,
+        },
+    ),
+    (
+        6,
+        {
+            "title": "diffusion models beat generative adversarial networks",
+            "body": "denoising diffusion probabilistic models achieve higher image quality "
+            "than gans with more stable training and better mode coverage",
+            "category": "cv",
+            "year": 2021,
+            "citations": 12000,
+        },
+    ),
+    (
+        7,
+        {
+            "title": "reinforcement learning from human feedback",
+            "body": "rlhf trains language models to follow instructions by combining "
+            "supervised fine tuning with reward modeling and ppo optimization",
+            "category": "alignment",
+            "year": 2022,
+            "citations": 5000,
+        },
+    ),
+    (
+        8,
+        {
+            "title": "efficient attention mechanisms for long sequences",
+            "body": "linear attention and sparse attention patterns reduce the quadratic "
+            "cost of self attention enabling processing of very long sequences",
+            "category": "nlp",
+            "year": 2020,
+            "citations": 3000,
+        },
+    ),
+    (
+        9,
+        {
+            "title": "multimodal learning with vision and language",
+            "body": "contrastive learning aligns vision and language representations "
+            "in a shared embedding space enabling zero shot transfer",
+            "category": "multimodal",
+            "year": 2021,
+            "citations": 18000,
+        },
+    ),
+    (
+        10,
+        {
+            "title": "neural architecture search automation",
+            "body": "automated methods discover neural network architectures that match "
+            "or exceed human designed models using search and optimization",
+            "category": "automl",
+            "year": 2019,
+            "citations": 7000,
+        },
+    ),
 ]
 
 for doc_id, doc in articles:
@@ -142,7 +172,11 @@ print(f"  -> {len(results)} documents found")
 # 2. BM25 scored search
 # ------------------------------------------------------------------
 print("\n--- 2. BM25 scored: 'transformer attention' ---")
-q = engine.query(table="articles").term("transformer").or_(engine.query(table="articles").term("attention"))
+q = (
+    engine.query(table="articles")
+    .term("transformer")
+    .or_(engine.query(table="articles").term("attention"))
+)
 results = q.score_bm25("transformer attention").execute()
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
     doc = engine.get_document(entry.doc_id, table="articles")
@@ -153,7 +187,11 @@ for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
 # 3. Bayesian BM25 (calibrated probability)
 # ------------------------------------------------------------------
 print("\n--- 3. Bayesian BM25: 'language model' ---")
-q = engine.query(table="articles").term("language").or_(engine.query(table="articles").term("model"))
+q = (
+    engine.query(table="articles")
+    .term("language")
+    .or_(engine.query(table="articles").term("model"))
+)
 results = q.score_bayesian_bm25("language model").execute()
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
     doc = engine.get_document(entry.doc_id, table="articles")
@@ -165,7 +203,8 @@ for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
 # ------------------------------------------------------------------
 print("\n--- 4. Boolean AND: 'attention' AND 'graph' ---")
 results = (
-    engine.query(table="articles").term("attention")
+    engine.query(table="articles")
+    .term("attention")
     .and_(engine.query(table="articles").term("graph"))
     .execute()
 )
@@ -179,7 +218,8 @@ for entry in results:
 # ------------------------------------------------------------------
 print("\n--- 5. Boolean OR: 'diffusion' OR 'generative' ---")
 results = (
-    engine.query(table="articles").term("diffusion")
+    engine.query(table="articles")
+    .term("diffusion")
     .or_(engine.query(table="articles").term("generative"))
     .execute()
 )
@@ -215,7 +255,8 @@ for entry in results:
 # ------------------------------------------------------------------
 print("\n--- 8. Text + filter: 'attention' AND category='nlp' ---")
 results = (
-    engine.query(table="articles").term("attention")
+    engine.query(table="articles")
+    .term("attention")
     .filter("category", Equals("nlp"))
     .execute()
 )
@@ -261,14 +302,20 @@ results = (
 )
 for entry in results:
     doc = engine.get_document(entry.doc_id, table="articles")
-    print(f"  [{entry.doc_id}] {doc['title']} ({doc['year']}, {doc['citations']:,} cit)")
+    print(
+        f"  [{entry.doc_id}] {doc['title']} ({doc['year']}, {doc['citations']:,} cit)"
+    )
 
 
 # ------------------------------------------------------------------
 # 12. Faceted search: distribution by category
 # ------------------------------------------------------------------
 print("\n--- 12. Faceted search: category distribution ---")
-facets = engine.query(table="articles").filter("year", GreaterThanOrEqual(2020)).facet("category")
+facets = (
+    engine.query(table="articles")
+    .filter("year", GreaterThanOrEqual(2020))
+    .facet("category")
+)
 for category, count in sorted(facets.counts.items(), key=lambda x: -x[1]):
     print(f"  {category:>12}: {count}")
 

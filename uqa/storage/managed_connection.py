@@ -26,6 +26,10 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 class ManagedConnection:
@@ -50,12 +54,12 @@ class ManagedConnection:
 
     # -- Override commit/rollback to respect transaction state ----------
 
-    def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:
+    def execute(self, sql: str, parameters: sqlite3._Parameters = ()) -> sqlite3.Cursor:
         with self._lock:
             return self._raw.execute(sql, parameters)
 
     def execute_fetchall(
-        self, sql: str, parameters: object = ()
+        self, sql: str, parameters: sqlite3._Parameters = ()
     ) -> list[tuple]:
         """Execute a query and return all rows atomically.
 
@@ -66,14 +70,14 @@ class ManagedConnection:
             return self._raw.execute(sql, parameters).fetchall()
 
     def execute_fetchone(
-        self, sql: str, parameters: object = ()
+        self, sql: str, parameters: sqlite3._Parameters = ()
     ) -> tuple | None:
         """Execute a query and return one row atomically."""
         with self._lock:
             return self._raw.execute(sql, parameters).fetchone()
 
     def executemany(
-        self, sql: str, parameters: object
+        self, sql: str, parameters: Iterable[sqlite3._Parameters]
     ) -> sqlite3.Cursor:
         with self._lock:
             return self._raw.executemany(sql, parameters)
@@ -142,3 +146,6 @@ class ManagedConnection:
     def close(self) -> None:
         with self._lock:
             self._raw.close()
+
+
+SQLiteConnection = sqlite3.Connection | ManagedConnection

@@ -4,6 +4,18 @@
 # Copyright (c) 2023-2026 Cognica, Inc.
 #
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from uqa.api.query_builder import QueryBuilder
+    from uqa.core.posting_list import PostingList
+    from uqa.core.types import Edge, Vertex
+    from uqa.engine import Engine
+    from uqa.graph.pattern import GraphPattern
+
+
 def __getattr__(name: str):
     """Lazy imports to avoid circular / missing-module errors during parallel development."""
     _imports = {
@@ -16,6 +28,7 @@ def __getattr__(name: str):
     }
     if name in _imports:
         import importlib
+
         module_path, attr = _imports[name]
         module = importlib.import_module(module_path)
         return getattr(module, attr)
@@ -25,10 +38,10 @@ def __getattr__(name: str):
 __version__ = "0.12.0"
 
 __all__ = [
-    "Engine",
-    "QueryBuilder",
-    "PostingList",
-    "Vertex",
     "Edge",
+    "Engine",
     "GraphPattern",
+    "PostingList",
+    "QueryBuilder",
+    "Vertex",
 ]

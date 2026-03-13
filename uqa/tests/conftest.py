@@ -9,9 +9,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from uqa.core.types import DocId, Edge, Payload, PostingEntry, Vertex
-from uqa.core.posting_list import PostingList
 from uqa.core.hierarchical import HierarchicalDocument
+from uqa.core.posting_list import PostingList
+from uqa.core.types import Edge, Payload, PostingEntry, Vertex
 
 
 @pytest.fixture
@@ -47,10 +47,7 @@ def other_posting_list(other_entries: list[PostingEntry]) -> PostingList:
 
 @pytest.fixture
 def universal_posting_list() -> PostingList:
-    return PostingList([
-        PostingEntry(i, Payload(score=0.0))
-        for i in range(1, 11)
-    ])
+    return PostingList([PostingEntry(i, Payload(score=0.0)) for i in range(1, 11)])
 
 
 @pytest.fixture
@@ -126,14 +123,17 @@ def sample_graph_edges() -> list[Edge]:
 
 @pytest.fixture
 def hierarchical_doc() -> HierarchicalDocument:
-    return HierarchicalDocument(1, {
-        "title": "test document",
-        "metadata": {
-            "author": "Alice",
-            "tags": ["python", "search", "algebra"],
+    return HierarchicalDocument(
+        1,
+        {
+            "title": "test document",
+            "metadata": {
+                "author": "Alice",
+                "tags": ["python", "search", "algebra"],
+            },
+            "sections": [
+                {"heading": "Introduction", "content": "This is the intro"},
+                {"heading": "Methods", "content": "We use posting lists"},
+            ],
         },
-        "sections": [
-            {"heading": "Introduction", "content": "This is the intro"},
-            {"heading": "Methods", "content": "We use posting lists"},
-        ],
-    })
+    )

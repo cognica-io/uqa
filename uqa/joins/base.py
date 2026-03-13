@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from uqa.core.posting_list import GeneralizedPostingList
+if TYPE_CHECKING:
+    from uqa.core.posting_list import GeneralizedPostingList
 
 
 @dataclass(frozen=True, slots=True)

@@ -32,9 +32,7 @@ def engine_with_data(engine):
 
 @pytest.fixture
 def engine_with_table(engine):
-    engine.sql(
-        "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER, name TEXT)"
-    )
+    engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER, name TEXT)")
     engine.sql("INSERT INTO t (id, val, name) VALUES (1, 10, 'alpha')")
     engine.sql("INSERT INTO t (id, val, name) VALUES (2, 20, 'bravo')")
     engine.sql("INSERT INTO t (id, val, name) VALUES (3, 30, 'charlie')")
@@ -242,17 +240,13 @@ class TestScalarFunctionsStep7:
     def test_initcap(self, engine):
         engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY)")
         engine.sql("INSERT INTO t (id) VALUES (1)")
-        result = engine.sql(
-            "SELECT initcap('hello world') AS v FROM t"
-        )
+        result = engine.sql("SELECT initcap('hello world') AS v FROM t")
         assert result.rows[0]["v"] == "Hello World"
 
     def test_translate(self, engine):
         engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY)")
         engine.sql("INSERT INTO t (id) VALUES (1)")
-        result = engine.sql(
-            "SELECT translate('12345', '143', 'ax') AS v FROM t"
-        )
+        result = engine.sql("SELECT translate('12345', '143', 'ax') AS v FROM t")
         # '1'->'a', '4'->'x', '3' deleted
         assert result.rows[0]["v"] == "a2x5"
 
@@ -271,9 +265,7 @@ class TestScalarFunctionsStep7:
     def test_starts_with(self, engine):
         engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
         engine.sql("INSERT INTO t (id, name) VALUES (1, 'PostgreSQL')")
-        result = engine.sql(
-            "SELECT starts_with(name, 'Post') AS v FROM t WHERE id = 1"
-        )
+        result = engine.sql("SELECT starts_with(name, 'Post') AS v FROM t WHERE id = 1")
         assert result.rows[0]["v"] is True
 
 
@@ -304,9 +296,7 @@ class TestOctetLength:
 
 class TestMD5:
     def test_basic(self, engine_with_table):
-        result = engine_with_table.sql(
-            "SELECT md5('hello') AS v FROM t WHERE id = 1"
-        )
+        result = engine_with_table.sql("SELECT md5('hello') AS v FROM t WHERE id = 1")
         assert result.rows[0]["v"] == "5d41402abc4b2a76b9719d911017c592"
 
 
@@ -332,8 +322,7 @@ class TestFormat:
 class TestRegexpMatch:
     def test_basic(self, engine_with_table):
         result = engine_with_table.sql(
-            "SELECT regexp_match('foobarbaz', 'b(.)r') AS v "
-            "FROM t WHERE id = 1"
+            "SELECT regexp_match('foobarbaz', 'b(.)r') AS v FROM t WHERE id = 1"
         )
         assert result.rows[0]["v"] == ["a"]
 
@@ -359,8 +348,7 @@ class TestRegexpReplace:
 
     def test_global_flag(self, engine_with_table):
         result = engine_with_table.sql(
-            "SELECT regexp_replace('aaa', 'a', 'b', 'g') AS v "
-            "FROM t WHERE id = 1"
+            "SELECT regexp_replace('aaa', 'a', 'b', 'g') AS v FROM t WHERE id = 1"
         )
         assert result.rows[0]["v"] == "bbb"
 
@@ -386,15 +374,11 @@ class TestOverlay:
 
 class TestCbrt:
     def test_basic(self, engine_with_table):
-        result = engine_with_table.sql(
-            "SELECT cbrt(27) AS v FROM t WHERE id = 1"
-        )
+        result = engine_with_table.sql("SELECT cbrt(27) AS v FROM t WHERE id = 1")
         assert abs(result.rows[0]["v"] - 3.0) < 0.001
 
     def test_negative(self, engine_with_table):
-        result = engine_with_table.sql(
-            "SELECT cbrt(-8) AS v FROM t WHERE id = 1"
-        )
+        result = engine_with_table.sql("SELECT cbrt(-8) AS v FROM t WHERE id = 1")
         assert abs(result.rows[0]["v"] - (-2.0)) < 0.001
 
 
@@ -405,45 +389,31 @@ class TestCbrt:
 
 class TestTrigFunctions:
     def test_sin(self, engine_with_table):
-        result = engine_with_table.sql(
-            "SELECT sin(0) AS v FROM t WHERE id = 1"
-        )
+        result = engine_with_table.sql("SELECT sin(0) AS v FROM t WHERE id = 1")
         assert abs(result.rows[0]["v"]) < 0.001
 
     def test_cos(self, engine_with_table):
-        result = engine_with_table.sql(
-            "SELECT cos(0) AS v FROM t WHERE id = 1"
-        )
+        result = engine_with_table.sql("SELECT cos(0) AS v FROM t WHERE id = 1")
         assert abs(result.rows[0]["v"] - 1.0) < 0.001
 
     def test_tan(self, engine_with_table):
-        result = engine_with_table.sql(
-            "SELECT tan(0) AS v FROM t WHERE id = 1"
-        )
+        result = engine_with_table.sql("SELECT tan(0) AS v FROM t WHERE id = 1")
         assert abs(result.rows[0]["v"]) < 0.001
 
     def test_asin(self, engine_with_table):
-        result = engine_with_table.sql(
-            "SELECT asin(1) AS v FROM t WHERE id = 1"
-        )
+        result = engine_with_table.sql("SELECT asin(1) AS v FROM t WHERE id = 1")
         assert abs(result.rows[0]["v"] - math.pi / 2) < 0.001
 
     def test_acos(self, engine_with_table):
-        result = engine_with_table.sql(
-            "SELECT acos(1) AS v FROM t WHERE id = 1"
-        )
+        result = engine_with_table.sql("SELECT acos(1) AS v FROM t WHERE id = 1")
         assert abs(result.rows[0]["v"]) < 0.001
 
     def test_atan(self, engine_with_table):
-        result = engine_with_table.sql(
-            "SELECT atan(1) AS v FROM t WHERE id = 1"
-        )
+        result = engine_with_table.sql("SELECT atan(1) AS v FROM t WHERE id = 1")
         assert abs(result.rows[0]["v"] - math.pi / 4) < 0.001
 
     def test_atan2(self, engine_with_table):
-        result = engine_with_table.sql(
-            "SELECT atan2(1, 1) AS v FROM t WHERE id = 1"
-        )
+        result = engine_with_table.sql("SELECT atan2(1, 1) AS v FROM t WHERE id = 1")
         assert abs(result.rows[0]["v"] - math.pi / 4) < 0.001
 
 
@@ -454,15 +424,11 @@ class TestTrigFunctions:
 
 class TestDegreesRadians:
     def test_degrees(self, engine_with_table):
-        result = engine_with_table.sql(
-            "SELECT degrees(pi()) AS v FROM t WHERE id = 1"
-        )
+        result = engine_with_table.sql("SELECT degrees(pi()) AS v FROM t WHERE id = 1")
         assert abs(result.rows[0]["v"] - 180.0) < 0.001
 
     def test_radians(self, engine_with_table):
-        result = engine_with_table.sql(
-            "SELECT radians(180) AS v FROM t WHERE id = 1"
-        )
+        result = engine_with_table.sql("SELECT radians(180) AS v FROM t WHERE id = 1")
         assert abs(result.rows[0]["v"] - math.pi) < 0.001
 
 
@@ -473,15 +439,11 @@ class TestDegreesRadians:
 
 class TestDiv:
     def test_basic(self, engine_with_table):
-        result = engine_with_table.sql(
-            "SELECT div(7, 2) AS v FROM t WHERE id = 1"
-        )
+        result = engine_with_table.sql("SELECT div(7, 2) AS v FROM t WHERE id = 1")
         assert result.rows[0]["v"] == 3
 
     def test_negative(self, engine_with_table):
-        result = engine_with_table.sql(
-            "SELECT div(-7, 2) AS v FROM t WHERE id = 1"
-        )
+        result = engine_with_table.sql("SELECT div(-7, 2) AS v FROM t WHERE id = 1")
         assert result.rows[0]["v"] == -4
 
 
@@ -492,15 +454,11 @@ class TestDiv:
 
 class TestGcdLcm:
     def test_gcd(self, engine_with_table):
-        result = engine_with_table.sql(
-            "SELECT gcd(12, 8) AS v FROM t WHERE id = 1"
-        )
+        result = engine_with_table.sql("SELECT gcd(12, 8) AS v FROM t WHERE id = 1")
         assert result.rows[0]["v"] == 4
 
     def test_lcm(self, engine_with_table):
-        result = engine_with_table.sql(
-            "SELECT lcm(12, 8) AS v FROM t WHERE id = 1"
-        )
+        result = engine_with_table.sql("SELECT lcm(12, 8) AS v FROM t WHERE id = 1")
         assert result.rows[0]["v"] == 24
 
 

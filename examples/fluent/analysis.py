@@ -19,24 +19,20 @@ Demonstrates:
 """
 
 from uqa.analysis import (
-    Analyzer,
     DEFAULT_ANALYZER,
+    Analyzer,
     ASCIIFoldingFilter,
     EdgeNGramFilter,
     HTMLStripCharFilter,
-    KeywordTokenizer,
     LengthFilter,
-    LetterTokenizer,
     LowerCaseFilter,
     MappingCharFilter,
     NGramTokenizer,
-    PatternReplaceCharFilter,
     PatternTokenizer,
     PorterStemFilter,
     StandardTokenizer,
     StopWordFilter,
     SynonymFilter,
-    WhitespaceTokenizer,
     drop_analyzer,
     get_analyzer,
     keyword_analyzer,
@@ -47,7 +43,6 @@ from uqa.analysis import (
 )
 from uqa.engine import Engine
 from uqa.storage.inverted_index import InvertedIndex
-
 
 print("=" * 70)
 print("Text Analysis Pipeline Examples (Python API)")
@@ -156,10 +151,12 @@ synonym_analyzer = Analyzer(
     tokenizer=StandardTokenizer(),
     token_filters=[
         LowerCaseFilter(),
-        SynonymFilter({
-            "fast": ["quick", "rapid", "swift"],
-            "big": ["large", "huge", "enormous"],
-        }),
+        SynonymFilter(
+            {
+                "fast": ["quick", "rapid", "swift"],
+                "big": ["large", "huge", "enormous"],
+            }
+        ),
     ],
 )
 
@@ -225,7 +222,9 @@ register_analyzer("stemming", stem_analyzer)
 print(f"  After registering 'html_search' and 'stemming': {list_analyzers()}")
 
 retrieved = get_analyzer("stemming")
-print(f"  get_analyzer('stemming').analyze('running') -> {retrieved.analyze('running')}")
+print(
+    f"  get_analyzer('stemming').analyze('running') -> {retrieved.analyze('running')}"
+)
 
 drop_analyzer("html_search")
 drop_analyzer("stemming")
@@ -269,19 +268,28 @@ print("\n--- 12. Per-Field Analyzers on InvertedIndex ---")
 
 idx = InvertedIndex()
 idx.set_field_analyzer("title", standard_analyzer())
-idx.set_field_analyzer("body", Analyzer(
-    tokenizer=StandardTokenizer(),
-    token_filters=[LowerCaseFilter(), PorterStemFilter()],
-))
+idx.set_field_analyzer(
+    "body",
+    Analyzer(
+        tokenizer=StandardTokenizer(),
+        token_filters=[LowerCaseFilter(), PorterStemFilter()],
+    ),
+)
 
-idx.add_document(1, {
-    "title": "The Quick Brown Fox",
-    "body": "Foxes are running through the forests",
-})
-idx.add_document(2, {
-    "title": "A Lazy Dog Sleeps",
-    "body": "Dogs sleeping lazily in the sun",
-})
+idx.add_document(
+    1,
+    {
+        "title": "The Quick Brown Fox",
+        "body": "Foxes are running through the forests",
+    },
+)
+idx.add_document(
+    2,
+    {
+        "title": "A Lazy Dog Sleeps",
+        "body": "Dogs sleeping lazily in the sun",
+    },
+)
 
 # 'the' is a stop word -- removed from title (standard analyzer)
 # but NOT from body (no stop word filter, only stem)
@@ -318,27 +326,37 @@ engine.sql("""
 """)
 
 papers = [
-    ("Attention Is All You Need",
-     "The dominant sequence transduction models are based on complex recurrent "
-     "or convolutional neural networks. We propose a new simple network "
-     "architecture the Transformer based solely on attention mechanisms.",
-     2017),
-    ("BERT Pre-training of Deep Bidirectional Transformers",
-     "We introduce BERT a method for pre-training language representations. "
-     "BERT is designed to pre-train deep bidirectional representations.",
-     2019),
-    ("GPT-3 Language Models are Few-Shot Learners",
-     "Recent work has demonstrated substantial gains on NLP tasks via "
-     "pre-training on large corpus of text followed by task-specific fine-tuning.",
-     2020),
-    ("Scaling Laws for Neural Language Models",
-     "We study empirical scaling laws for language model performance. "
-     "The loss scales as a power-law with model size dataset size and compute.",
-     2020),
-    ("Vision Transformers for Image Recognition",
-     "We show that a pure transformer applied directly to sequences of image "
-     "patches can perform very well on image classification tasks.",
-     2021),
+    (
+        "Attention Is All You Need",
+        "The dominant sequence transduction models are based on complex recurrent "
+        "or convolutional neural networks. We propose a new simple network "
+        "architecture the Transformer based solely on attention mechanisms.",
+        2017,
+    ),
+    (
+        "BERT Pre-training of Deep Bidirectional Transformers",
+        "We introduce BERT a method for pre-training language representations. "
+        "BERT is designed to pre-train deep bidirectional representations.",
+        2019,
+    ),
+    (
+        "GPT-3 Language Models are Few-Shot Learners",
+        "Recent work has demonstrated substantial gains on NLP tasks via "
+        "pre-training on large corpus of text followed by task-specific fine-tuning.",
+        2020,
+    ),
+    (
+        "Scaling Laws for Neural Language Models",
+        "We study empirical scaling laws for language model performance. "
+        "The loss scales as a power-law with model size dataset size and compute.",
+        2020,
+    ),
+    (
+        "Vision Transformers for Image Recognition",
+        "We show that a pure transformer applied directly to sequences of image "
+        "patches can perform very well on image classification tasks.",
+        2021,
+    ),
 ]
 
 for title, abstract, year in papers:

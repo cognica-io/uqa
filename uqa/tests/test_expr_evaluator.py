@@ -46,17 +46,14 @@ class TestNullTests:
         assert r.rows[0]["name"] == "Doohickey"
 
     def test_is_not_null(self, engine):
-        r = engine.sql(
-            "SELECT id, name FROM products WHERE category IS NOT NULL"
-        )
+        r = engine.sql("SELECT id, name FROM products WHERE category IS NOT NULL")
         assert len(r.rows) == 2
         names = {row["name"] for row in r.rows}
         assert names == {"Widget", "Gadget"}
 
     def test_is_null_with_and(self, engine):
         r = engine.sql(
-            "SELECT name FROM products "
-            "WHERE category IS NOT NULL AND price > 15"
+            "SELECT name FROM products WHERE category IS NOT NULL AND price > 15"
         )
         assert len(r.rows) == 1
         assert r.rows[0]["name"] == "Gadget"
@@ -77,43 +74,31 @@ class TestNullTests:
 
 class TestArithmetic:
     def test_multiply(self, engine):
-        r = engine.sql(
-            "SELECT name, price * 2 AS double_price FROM products"
-        )
+        r = engine.sql("SELECT name, price * 2 AS double_price FROM products")
         assert len(r.rows) == 3
         assert r.rows[0]["double_price"] == 21.0
         assert r.columns == ["name", "double_price"]
 
     def test_add(self, engine):
-        r = engine.sql(
-            "SELECT name, price + 1 AS incremented FROM products"
-        )
+        r = engine.sql("SELECT name, price + 1 AS incremented FROM products")
         assert r.rows[0]["incremented"] == 11.5
 
     def test_subtract(self, engine):
-        r = engine.sql(
-            "SELECT name, price - 5 AS discounted FROM products"
-        )
+        r = engine.sql("SELECT name, price - 5 AS discounted FROM products")
         assert r.rows[0]["discounted"] == 5.5
 
     def test_divide(self, engine):
-        r = engine.sql(
-            "SELECT name, price / quantity AS unit_cost FROM products"
-        )
+        r = engine.sql("SELECT name, price / quantity AS unit_cost FROM products")
         # 10.50 / 100 = 0.105
         assert abs(r.rows[0]["unit_cost"] - 0.105) < 0.001
 
     def test_modulo(self, engine):
-        r = engine.sql(
-            "SELECT id, quantity % 60 AS remainder FROM products"
-        )
+        r = engine.sql("SELECT id, quantity % 60 AS remainder FROM products")
         assert r.rows[0]["remainder"] == 40  # 100 % 60
         assert r.rows[1]["remainder"] == 50  # 50 % 60
 
     def test_integer_division(self, engine):
-        r = engine.sql(
-            "SELECT id, quantity / 3 AS thirds FROM products"
-        )
+        r = engine.sql("SELECT id, quantity / 3 AS thirds FROM products")
         assert r.rows[0]["thirds"] == 33  # 100 // 3
 
     def test_arithmetic_with_null(self, engine):
@@ -121,22 +106,16 @@ class TestArithmetic:
             "INSERT INTO products (id, name, price, quantity) "
             "VALUES (4, 'NullItem', NULL, 10)"
         )
-        r = engine.sql(
-            "SELECT name, price * 2 AS dp FROM products WHERE id = 4"
-        )
+        r = engine.sql("SELECT name, price * 2 AS dp FROM products WHERE id = 4")
         assert r.rows[0]["dp"] is None
 
     def test_compound_expression(self, engine):
-        r = engine.sql(
-            "SELECT name, (price * quantity) + 10 AS total FROM products"
-        )
+        r = engine.sql("SELECT name, (price * quantity) + 10 AS total FROM products")
         # Widget: 10.5 * 100 + 10 = 1060.0
         assert abs(r.rows[0]["total"] - 1060.0) < 0.01
 
     def test_division_by_zero(self, engine):
-        r = engine.sql(
-            "SELECT name, price / 0 AS bad FROM products LIMIT 1"
-        )
+        r = engine.sql("SELECT name, price / 0 AS bad FROM products LIMIT 1")
         assert r.rows[0]["bad"] is None
 
 
@@ -147,15 +126,12 @@ class TestArithmetic:
 
 class TestStringConcat:
     def test_basic_concat(self, engine):
-        r = engine.sql(
-            "SELECT name || '!' AS excited FROM products"
-        )
+        r = engine.sql("SELECT name || '!' AS excited FROM products")
         assert r.rows[0]["excited"] == "Widget!"
 
     def test_multi_concat(self, engine):
         r = engine.sql(
-            "SELECT name || ' ($' || CAST(price AS TEXT) || ')' "
-            "AS label FROM products"
+            "SELECT name || ' ($' || CAST(price AS TEXT) || ')' AS label FROM products"
         )
         assert r.rows[0]["label"] == "Widget ($10.5)"
 
@@ -164,9 +140,7 @@ class TestStringConcat:
             "INSERT INTO products (id, name, price, quantity, category) "
             "VALUES (4, 'NullCat', 1.0, 1, NULL)"
         )
-        r = engine.sql(
-            "SELECT name || category AS result FROM products WHERE id = 4"
-        )
+        r = engine.sql("SELECT name || category AS result FROM products WHERE id = 4")
         assert r.rows[0]["result"] is None
 
 
@@ -224,23 +198,17 @@ class TestCase:
 
 class TestCast:
     def test_cast_int_to_text(self, engine):
-        r = engine.sql(
-            "SELECT CAST(quantity AS TEXT) AS qty_text FROM products"
-        )
+        r = engine.sql("SELECT CAST(quantity AS TEXT) AS qty_text FROM products")
         assert r.rows[0]["qty_text"] == "100"
 
     def test_cast_text_to_int(self, engine):
-        engine.sql(
-            "CREATE TABLE nums (id INTEGER, val TEXT)"
-        )
+        engine.sql("CREATE TABLE nums (id INTEGER, val TEXT)")
         engine.sql("INSERT INTO nums (id, val) VALUES (1, '42')")
         r = engine.sql("SELECT CAST(val AS INTEGER) AS num FROM nums")
         assert r.rows[0]["num"] == 42
 
     def test_cast_float_to_int(self, engine):
-        r = engine.sql(
-            "SELECT CAST(price AS INTEGER) AS price_int FROM products"
-        )
+        r = engine.sql("SELECT CAST(price AS INTEGER) AS price_int FROM products")
         assert r.rows[0]["price_int"] == 10  # 10.50 -> 10
 
     def test_cast_null(self, engine):
@@ -248,9 +216,7 @@ class TestCast:
             "INSERT INTO products (id, name, price, quantity) "
             "VALUES (4, 'NullItem', NULL, 1)"
         )
-        r = engine.sql(
-            "SELECT CAST(price AS TEXT) AS p FROM products WHERE id = 4"
-        )
+        r = engine.sql("SELECT CAST(price AS TEXT) AS p FROM products WHERE id = 4")
         assert r.rows[0]["p"] is None
 
 
@@ -261,23 +227,18 @@ class TestCast:
 
 class TestCoalesce:
     def test_basic_coalesce(self, engine):
-        r = engine.sql(
-            "SELECT id, COALESCE(category, 'none') AS cat FROM products"
-        )
+        r = engine.sql("SELECT id, COALESCE(category, 'none') AS cat FROM products")
         assert r.rows[0]["cat"] == "tools"
         assert r.rows[2]["cat"] == "none"
 
     def test_coalesce_first_non_null(self, engine):
         r = engine.sql(
-            "SELECT COALESCE(NULL, NULL, 'fallback') AS val FROM products "
-            "LIMIT 1"
+            "SELECT COALESCE(NULL, NULL, 'fallback') AS val FROM products LIMIT 1"
         )
         assert r.rows[0]["val"] == "fallback"
 
     def test_coalesce_all_non_null(self, engine):
-        r = engine.sql(
-            "SELECT COALESCE(name, 'default') AS val FROM products LIMIT 1"
-        )
+        r = engine.sql("SELECT COALESCE(name, 'default') AS val FROM products LIMIT 1")
         assert r.rows[0]["val"] == "Widget"
 
 
@@ -300,15 +261,11 @@ class TestStringFunctions:
         assert r.rows[0]["len"] == 6  # Widget
 
     def test_substring(self, engine):
-        r = engine.sql(
-            "SELECT SUBSTRING(name, 1, 3) AS prefix FROM products"
-        )
+        r = engine.sql("SELECT SUBSTRING(name, 1, 3) AS prefix FROM products")
         assert r.rows[0]["prefix"] == "Wid"
 
     def test_replace(self, engine):
-        r = engine.sql(
-            "SELECT REPLACE(name, 'dget', 'DGET') AS replaced FROM products"
-        )
+        r = engine.sql("SELECT REPLACE(name, 'dget', 'DGET') AS replaced FROM products")
         assert r.rows[0]["replaced"] == "WiDGET"
         assert r.rows[1]["replaced"] == "GaDGET"
 
@@ -319,9 +276,7 @@ class TestStringFunctions:
         assert r.rows[0]["trimmed"] == "hello"
 
     def test_concat_function(self, engine):
-        r = engine.sql(
-            "SELECT CONCAT(name, ' - ', category) AS label FROM products"
-        )
+        r = engine.sql("SELECT CONCAT(name, ' - ', category) AS label FROM products")
         assert r.rows[0]["label"] == "Widget - tools"
         # NULL category becomes empty string in concat()
         assert r.rows[2]["label"] == "Doohickey - "
@@ -339,9 +294,7 @@ class TestStringFunctions:
             "INSERT INTO products (id, name, price, quantity, category) "
             "VALUES (4, 'X', 1.0, 1, NULL)"
         )
-        r = engine.sql(
-            "SELECT UPPER(category) AS up FROM products WHERE id = 4"
-        )
+        r = engine.sql("SELECT UPPER(category) AS up FROM products WHERE id = 4")
         assert r.rows[0]["up"] is None
 
 
@@ -352,15 +305,11 @@ class TestStringFunctions:
 
 class TestMathFunctions:
     def test_abs(self, engine):
-        r = engine.sql(
-            "SELECT ABS(price - 10) AS diff FROM products"
-        )
+        r = engine.sql("SELECT ABS(price - 10) AS diff FROM products")
         assert abs(r.rows[0]["diff"] - 0.5) < 0.01
 
     def test_round(self, engine):
-        r = engine.sql(
-            "SELECT ROUND(price, 1) AS rounded FROM products"
-        )
+        r = engine.sql("SELECT ROUND(price, 1) AS rounded FROM products")
         assert r.rows[0]["rounded"] == 10.5
 
     def test_round_no_decimals(self, engine):
@@ -384,33 +333,26 @@ class TestMathFunctions:
 
 class TestExpressionWhere:
     def test_arithmetic_comparison(self, engine):
-        r = engine.sql(
-            "SELECT name FROM products WHERE price * quantity > 1100"
-        )
+        r = engine.sql("SELECT name FROM products WHERE price * quantity > 1100")
         # Gadget: 25 * 50 = 1250, Doohickey: 5.75 * 200 = 1150
         assert len(r.rows) == 2
         names = {row["name"] for row in r.rows}
         assert names == {"Gadget", "Doohickey"}
 
     def test_expression_left_side(self, engine):
-        r = engine.sql(
-            "SELECT name FROM products WHERE price * 2 > 15"
-        )
+        r = engine.sql("SELECT name FROM products WHERE price * 2 > 15")
         names = {row["name"] for row in r.rows}
         assert names == {"Widget", "Gadget"}
 
     def test_combined_expression_and_column(self, engine):
         r = engine.sql(
-            "SELECT name FROM products "
-            "WHERE quantity >= 100 AND price * 2 > 15"
+            "SELECT name FROM products WHERE quantity >= 100 AND price * 2 > 15"
         )
         assert len(r.rows) == 1
         assert r.rows[0]["name"] == "Widget"
 
     def test_expression_no_match(self, engine):
-        r = engine.sql(
-            "SELECT name FROM products WHERE price * quantity > 99999"
-        )
+        r = engine.sql("SELECT name FROM products WHERE price * quantity > 99999")
         assert len(r.rows) == 0
 
 
@@ -421,35 +363,28 @@ class TestExpressionWhere:
 
 class TestMixedProjection:
     def test_simple_and_computed(self, engine):
-        r = engine.sql(
-            "SELECT id, name, price * quantity AS total FROM products"
-        )
+        r = engine.sql("SELECT id, name, price * quantity AS total FROM products")
         assert r.columns == ["id", "name", "total"]
         assert r.rows[0]["id"] == 1
         assert r.rows[0]["name"] == "Widget"
         assert abs(r.rows[0]["total"] - 1050.0) < 0.01
 
     def test_all_computed(self, engine):
-        r = engine.sql(
-            "SELECT price * 2 AS dp, quantity + 10 AS q10 FROM products"
-        )
+        r = engine.sql("SELECT price * 2 AS dp, quantity + 10 AS q10 FROM products")
         assert r.columns == ["dp", "q10"]
         assert r.rows[0]["dp"] == 21.0
         assert r.rows[0]["q10"] == 110
 
     def test_computed_with_order_by(self, engine):
         r = engine.sql(
-            "SELECT name, price * quantity AS total "
-            "FROM products ORDER BY total DESC"
+            "SELECT name, price * quantity AS total FROM products ORDER BY total DESC"
         )
         # Gadget: 1250, Doohickey: 1150, Widget: 1050
         assert r.rows[0]["name"] == "Gadget"
         assert r.rows[2]["name"] == "Widget"
 
     def test_computed_with_limit(self, engine):
-        r = engine.sql(
-            "SELECT name, price * 2 AS dp FROM products LIMIT 2"
-        )
+        r = engine.sql("SELECT name, price * 2 AS dp FROM products LIMIT 2")
         assert len(r.rows) == 2
 
 
@@ -461,6 +396,7 @@ class TestMixedProjection:
 class TestExprEvaluatorDirect:
     def test_column_ref(self):
         from pglast import parse_sql
+
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         ev = ExprEvaluator()
@@ -470,6 +406,7 @@ class TestExprEvaluatorDirect:
 
     def test_const_integer(self):
         from pglast import parse_sql
+
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         ev = ExprEvaluator()
@@ -479,6 +416,7 @@ class TestExprEvaluatorDirect:
 
     def test_const_string(self):
         from pglast import parse_sql
+
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         ev = ExprEvaluator()
@@ -488,6 +426,7 @@ class TestExprEvaluatorDirect:
 
     def test_const_float(self):
         from pglast import parse_sql
+
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         ev = ExprEvaluator()
@@ -497,6 +436,7 @@ class TestExprEvaluatorDirect:
 
     def test_bool_and(self):
         from pglast import parse_sql
+
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         ev = ExprEvaluator()
@@ -507,6 +447,7 @@ class TestExprEvaluatorDirect:
 
     def test_bool_or(self):
         from pglast import parse_sql
+
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         ev = ExprEvaluator()
@@ -517,6 +458,7 @@ class TestExprEvaluatorDirect:
 
     def test_bool_not(self):
         from pglast import parse_sql
+
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         ev = ExprEvaluator()
@@ -527,6 +469,7 @@ class TestExprEvaluatorDirect:
 
     def test_in_expr(self):
         from pglast import parse_sql
+
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         ev = ExprEvaluator()
@@ -537,6 +480,7 @@ class TestExprEvaluatorDirect:
 
     def test_between(self):
         from pglast import parse_sql
+
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         ev = ExprEvaluator()
@@ -547,6 +491,7 @@ class TestExprEvaluatorDirect:
 
     def test_not_between(self):
         from pglast import parse_sql
+
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         ev = ExprEvaluator()
@@ -557,6 +502,7 @@ class TestExprEvaluatorDirect:
 
     def test_typeof(self):
         from pglast import parse_sql
+
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         ev = ExprEvaluator()
@@ -576,6 +522,7 @@ class TestExprEvaluatorDirect:
 
     def test_unsupported_function(self):
         from pglast import parse_sql
+
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         ev = ExprEvaluator()
@@ -593,8 +540,7 @@ class TestExprEvaluatorDirect:
 class TestNullPhysical:
     def test_is_null_with_group_by(self, engine):
         r = engine.sql(
-            "SELECT category, COUNT(*) AS cnt "
-            "FROM products GROUP BY category"
+            "SELECT category, COUNT(*) AS cnt FROM products GROUP BY category"
         )
         rows_by_cat = {row["category"]: row["cnt"] for row in r.rows}
         assert rows_by_cat[None] == 1
@@ -603,9 +549,7 @@ class TestNullPhysical:
 
     def test_is_null_with_order_by(self, engine):
         r = engine.sql(
-            "SELECT name FROM products "
-            "WHERE category IS NOT NULL "
-            "ORDER BY name"
+            "SELECT name FROM products WHERE category IS NOT NULL ORDER BY name"
         )
         assert r.rows[0]["name"] == "Gadget"
         assert r.rows[1]["name"] == "Widget"
@@ -616,8 +560,7 @@ class TestNullPhysical:
             "VALUES (4, 'Thingamajig', 3.00, 10, NULL)"
         )
         r = engine.sql(
-            "SELECT DISTINCT category FROM products "
-            "WHERE category IS NOT NULL"
+            "SELECT DISTINCT category FROM products WHERE category IS NOT NULL"
         )
         cats = {row["category"] for row in r.rows}
         assert cats == {"tools", "electronics"}

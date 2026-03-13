@@ -1,8 +1,8 @@
 # UQA — Unified Query Algebra
 
-A database prototype that unifies **relational**, **text retrieval**, **vector search**, **graph query**, and **geospatial** paradigms under a single algebraic structure, using posting lists as the universal abstraction. SQL interface targets **PostgreSQL 17** compatibility.
+A multi-paradigm database engine that unifies **relational**, **text retrieval**, **vector search**, **graph query**, and **geospatial** paradigms under a single algebraic structure, using posting lists as the universal abstraction. SQL interface targets **PostgreSQL 17** compatibility.
 
-> **Status:** The unified query algebra theory behind this project is already implemented in production as [Cognica Database](https://cognica.io), a commercial multi-paradigm database engine built in C++20/23. UQA is the research prototype that originated the theory, now open-sourced for academic and experimental use. It is under active development with the goal of becoming a standalone production-grade project. APIs and internals may change as the project matures.
+> **Background:** The unified query algebra theory behind this project is already deployed in production as [Cognica Database](https://cognica.io), a commercial multi-paradigm database engine built in C++20/23. UQA is the standalone Python implementation of that theory, open-sourced under AGPL-3.0. It is under active development and serves both as a production-ready embeddable database and as a reference implementation for the underlying algebraic framework.
 
 ## Background
 

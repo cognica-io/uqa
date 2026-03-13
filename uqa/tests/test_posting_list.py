@@ -14,6 +14,7 @@ Theorem 2.1.2 (Paper 1):
   A4: Identity
   A5: Complement
 """
+
 from __future__ import annotations
 
 from hypothesis import given, settings
@@ -21,7 +22,6 @@ from hypothesis import strategies as st
 
 from uqa.core.posting_list import GeneralizedPostingList, PostingList
 from uqa.core.types import GeneralizedPostingEntry, Payload, PostingEntry
-
 
 # -- Hypothesis strategies --
 
@@ -32,19 +32,23 @@ payload_strategy = st.builds(
     positions=st.tuples(
         *[st.integers(min_value=0, max_value=100) for _ in range(3)]
     ).map(lambda t: tuple(sorted(set(t)))),
-    score=st.floats(min_value=0.0, max_value=10.0, allow_nan=False, allow_infinity=False),
+    score=st.floats(
+        min_value=0.0, max_value=10.0, allow_nan=False, allow_infinity=False
+    ),
 )
 
-posting_entry_strategy = st.builds(PostingEntry, doc_id=doc_id_strategy, payload=payload_strategy)
+posting_entry_strategy = st.builds(
+    PostingEntry, doc_id=doc_id_strategy, payload=payload_strategy
+)
 
-posting_list_strategy = st.lists(
-    posting_entry_strategy, min_size=0, max_size=15
-).map(PostingList)
+posting_list_strategy = st.lists(posting_entry_strategy, min_size=0, max_size=15).map(
+    PostingList
+)
 
 universal_doc_ids = list(range(51))
-universal_posting_list = PostingList([
-    PostingEntry(i, Payload(score=0.0)) for i in universal_doc_ids
-])
+universal_posting_list = PostingList(
+    [PostingEntry(i, Payload(score=0.0)) for i in universal_doc_ids]
+)
 
 
 def posting_list_doc_ids_equal(a: PostingList, b: PostingList) -> bool:
@@ -53,6 +57,7 @@ def posting_list_doc_ids_equal(a: PostingList, b: PostingList) -> bool:
 
 
 # -- Axiom A1: Commutativity --
+
 
 @given(a=posting_list_strategy, b=posting_list_strategy)
 @settings(max_examples=100)
@@ -70,6 +75,7 @@ def test_intersect_commutativity(a: PostingList, b: PostingList) -> None:
 
 # -- Axiom A2: Associativity --
 
+
 @given(a=posting_list_strategy, b=posting_list_strategy, c=posting_list_strategy)
 @settings(max_examples=100)
 def test_union_associativity(a: PostingList, b: PostingList, c: PostingList) -> None:
@@ -81,7 +87,9 @@ def test_union_associativity(a: PostingList, b: PostingList, c: PostingList) -> 
 
 @given(a=posting_list_strategy, b=posting_list_strategy, c=posting_list_strategy)
 @settings(max_examples=100)
-def test_intersect_associativity(a: PostingList, b: PostingList, c: PostingList) -> None:
+def test_intersect_associativity(
+    a: PostingList, b: PostingList, c: PostingList
+) -> None:
     """A intersect (B intersect C) == (A intersect B) intersect C."""
     lhs = a.intersect(b.intersect(c))
     rhs = a.intersect(b).intersect(c)
@@ -89,6 +97,7 @@ def test_intersect_associativity(a: PostingList, b: PostingList, c: PostingList)
 
 
 # -- Axiom A3: Distributivity --
+
 
 @given(a=posting_list_strategy, b=posting_list_strategy, c=posting_list_strategy)
 @settings(max_examples=100)
@@ -114,6 +123,7 @@ def test_union_distributes_over_intersect(
 
 # -- Axiom A4: Identity --
 
+
 @given(a=posting_list_strategy)
 @settings(max_examples=100)
 def test_union_identity(a: PostingList) -> None:
@@ -136,6 +146,7 @@ def test_intersect_identity(a: PostingList) -> None:
 
 # -- Axiom A5: Complement --
 
+
 @given(a=posting_list_strategy)
 @settings(max_examples=100)
 def test_complement_union_is_universal(a: PostingList) -> None:
@@ -156,6 +167,7 @@ def test_complement_intersect_is_empty(a: PostingList) -> None:
 
 
 # -- Sorted invariant --
+
 
 @given(a=posting_list_strategy, b=posting_list_strategy)
 @settings(max_examples=100)
@@ -189,6 +201,7 @@ def test_sorted_invariant_after_complement(a: PostingList) -> None:
 
 # -- Merge payloads --
 
+
 def test_merge_payloads_positions() -> None:
     """Merged positions are the sorted union of both positions."""
     a = PostingList([PostingEntry(1, Payload(positions=(0, 2), score=1.0))])
@@ -221,16 +234,21 @@ def test_merge_payloads_fields() -> None:
 
 # -- GeneralizedPostingList --
 
+
 def test_generalized_posting_list_union() -> None:
     """GeneralizedPostingList union deduplicates by doc_ids tuple."""
-    gpl_a = GeneralizedPostingList([
-        GeneralizedPostingEntry((1, 2), Payload(score=1.0)),
-        GeneralizedPostingEntry((3, 4), Payload(score=0.5)),
-    ])
-    gpl_b = GeneralizedPostingList([
-        GeneralizedPostingEntry((1, 2), Payload(score=0.8)),
-        GeneralizedPostingEntry((5, 6), Payload(score=0.3)),
-    ])
+    gpl_a = GeneralizedPostingList(
+        [
+            GeneralizedPostingEntry((1, 2), Payload(score=1.0)),
+            GeneralizedPostingEntry((3, 4), Payload(score=0.5)),
+        ]
+    )
+    gpl_b = GeneralizedPostingList(
+        [
+            GeneralizedPostingEntry((1, 2), Payload(score=0.8)),
+            GeneralizedPostingEntry((5, 6), Payload(score=0.3)),
+        ]
+    )
     result = gpl_a.union(gpl_b)
     assert len(result) == 3
     ids_set = {e.doc_ids for e in result}
@@ -239,11 +257,13 @@ def test_generalized_posting_list_union() -> None:
 
 def test_generalized_posting_list_sorted() -> None:
     """GeneralizedPostingList entries are sorted by doc_ids."""
-    gpl = GeneralizedPostingList([
-        GeneralizedPostingEntry((5, 6), Payload(score=0.3)),
-        GeneralizedPostingEntry((1, 2), Payload(score=1.0)),
-        GeneralizedPostingEntry((3, 4), Payload(score=0.5)),
-    ])
+    gpl = GeneralizedPostingList(
+        [
+            GeneralizedPostingEntry((5, 6), Payload(score=0.3)),
+            GeneralizedPostingEntry((1, 2), Payload(score=1.0)),
+            GeneralizedPostingEntry((3, 4), Payload(score=0.5)),
+        ]
+    )
     entries = gpl.entries
     for i in range(len(entries) - 1):
         assert entries[i].doc_ids <= entries[i + 1].doc_ids

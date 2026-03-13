@@ -22,28 +22,16 @@ def engine():
 @pytest.fixture
 def engine_with_orders(engine):
     """Two related tables: users and orders."""
-    engine.sql(
-        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"
-    )
+    engine.sql("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
     engine.sql("INSERT INTO users (id, name) VALUES (1, 'Alice')")
     engine.sql("INSERT INTO users (id, name) VALUES (2, 'Bob')")
     engine.sql("INSERT INTO users (id, name) VALUES (3, 'Carol')")
     engine.sql(
-        "CREATE TABLE orders ("
-        "  oid INTEGER PRIMARY KEY, user_id INTEGER, product TEXT"
-        ")"
+        "CREATE TABLE orders (  oid INTEGER PRIMARY KEY, user_id INTEGER, product TEXT)"
     )
-    engine.sql(
-        "INSERT INTO orders (oid, user_id, product) VALUES (10, 1, 'Book')"
-    )
-    engine.sql(
-        "INSERT INTO orders (oid, user_id, product) "
-        "VALUES (11, 1, 'Pen')"
-    )
-    engine.sql(
-        "INSERT INTO orders (oid, user_id, product) "
-        "VALUES (12, 2, 'Notebook')"
-    )
+    engine.sql("INSERT INTO orders (oid, user_id, product) VALUES (10, 1, 'Book')")
+    engine.sql("INSERT INTO orders (oid, user_id, product) VALUES (11, 1, 'Pen')")
+    engine.sql("INSERT INTO orders (oid, user_id, product) VALUES (12, 2, 'Notebook')")
     return engine
 
 
@@ -112,9 +100,7 @@ class TestCrossJoin:
         engine.sql("INSERT INTO b (id, label) VALUES (10, 'p')")
         engine.sql("INSERT INTO b (id, label) VALUES (20, 'q')")
         engine.sql("INSERT INTO b (id, label) VALUES (30, 'r')")
-        result = engine.sql(
-            "SELECT a.val, b.label FROM a CROSS JOIN b"
-        )
+        result = engine.sql("SELECT a.val, b.label FROM a CROSS JOIN b")
         assert len(result.rows) == 6  # 2 * 3
 
     def test_cross_join_empty_side(self, engine):
@@ -134,8 +120,7 @@ class TestRightJoin:
     def test_right_join_preserves_right(self, engine_with_orders):
         # All orders preserved, even if user is missing
         engine_with_orders.sql(
-            "INSERT INTO orders (oid, user_id, product) "
-            "VALUES (13, 99, 'Ghost')"
+            "INSERT INTO orders (oid, user_id, product) VALUES (13, 99, 'Ghost')"
         )
         result = engine_with_orders.sql(
             "SELECT users.name, orders.product "
@@ -147,8 +132,7 @@ class TestRightJoin:
 
     def test_right_join_null_for_unmatched_left(self, engine_with_orders):
         engine_with_orders.sql(
-            "INSERT INTO orders (oid, user_id, product) "
-            "VALUES (13, 99, 'Ghost')"
+            "INSERT INTO orders (oid, user_id, product) VALUES (13, 99, 'Ghost')"
         )
         result = engine_with_orders.sql(
             "SELECT users.name, orders.product "
@@ -168,8 +152,7 @@ class TestFullOuterJoin:
     def test_full_join_preserves_both(self, engine_with_orders):
         # Add order with no matching user
         engine_with_orders.sql(
-            "INSERT INTO orders (oid, user_id, product) "
-            "VALUES (13, 99, 'Ghost')"
+            "INSERT INTO orders (oid, user_id, product) VALUES (13, 99, 'Ghost')"
         )
         result = engine_with_orders.sql(
             "SELECT users.name, orders.product "
@@ -188,9 +171,7 @@ class TestFullOuterJoin:
         engine.sql("INSERT INTO a (id, val) VALUES (1, 'x')")
         engine.sql("CREATE TABLE b (id INTEGER PRIMARY KEY, val TEXT)")
         engine.sql("INSERT INTO b (id, val) VALUES (2, 'y')")
-        result = engine.sql(
-            "SELECT * FROM a FULL OUTER JOIN b ON a.id = b.id"
-        )
+        result = engine.sql("SELECT * FROM a FULL OUTER JOIN b ON a.id = b.id")
         assert len(result.rows) == 2
 
 
@@ -211,9 +192,7 @@ class TestMultipleFromTables:
         assert len(result.rows) == 4  # 2 * 2
 
     def test_implicit_cross_join_with_where(self, engine):
-        engine.sql(
-            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"
-        )
+        engine.sql("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
         engine.sql("INSERT INTO users (id, name) VALUES (1, 'Alice')")
         engine.sql("INSERT INTO users (id, name) VALUES (2, 'Bob')")
         engine.sql(
@@ -221,14 +200,8 @@ class TestMultipleFromTables:
             "  oid INTEGER PRIMARY KEY, user_id INTEGER, product TEXT"
             ")"
         )
-        engine.sql(
-            "INSERT INTO orders (oid, user_id, product) "
-            "VALUES (10, 1, 'Book')"
-        )
-        engine.sql(
-            "INSERT INTO orders (oid, user_id, product) "
-            "VALUES (11, 2, 'Pen')"
-        )
+        engine.sql("INSERT INTO orders (oid, user_id, product) VALUES (10, 1, 'Book')")
+        engine.sql("INSERT INTO orders (oid, user_id, product) VALUES (11, 2, 'Pen')")
         result = engine.sql(
             "SELECT users.name, orders.product "
             "FROM users, orders "

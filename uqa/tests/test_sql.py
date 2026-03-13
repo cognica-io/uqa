@@ -16,12 +16,11 @@ import pytest
 
 from uqa.core.types import Edge, Vertex
 from uqa.engine import Engine
-from uqa.sql.compiler import SQLCompiler, SQLResult
-
 
 # ==================================================================
 # Fixtures
 # ==================================================================
+
 
 @pytest.fixture
 def engine() -> Engine:
@@ -61,6 +60,7 @@ def engine() -> Engine:
 # DDL: CREATE TABLE / DROP TABLE
 # ==================================================================
 
+
 class TestDDL:
     def test_create_table(self) -> None:
         e = Engine()
@@ -96,6 +96,7 @@ class TestDDL:
 # ==================================================================
 # DML: INSERT INTO
 # ==================================================================
+
 
 class TestInsert:
     def test_insert_single_row(self) -> None:
@@ -137,6 +138,7 @@ class TestInsert:
 # DQL: Basic SELECT
 # ==================================================================
 
+
 class TestBasicSelect:
     def test_select_all(self, engine: Engine) -> None:
         result = engine.sql("SELECT * FROM papers")
@@ -167,9 +169,7 @@ class TestBasicSelect:
         assert years == sorted(years, reverse=True)
 
     def test_order_by_with_limit(self, engine: Engine) -> None:
-        result = engine.sql(
-            "SELECT title, year FROM papers ORDER BY year DESC LIMIT 2"
-        )
+        result = engine.sql("SELECT title, year FROM papers ORDER BY year DESC LIMIT 2")
         assert len(result) == 2
         assert result.rows[0]["year"] >= result.rows[1]["year"]
 
@@ -182,6 +182,7 @@ class TestBasicSelect:
 # ==================================================================
 # DQL: WHERE clause
 # ==================================================================
+
 
 class TestWhereClause:
     def test_equals(self, engine: Engine) -> None:
@@ -219,9 +220,7 @@ class TestWhereClause:
             assert 2018 <= row["year"] <= 2020
 
     def test_and(self, engine: Engine) -> None:
-        result = engine.sql(
-            "SELECT * FROM papers WHERE field = 'nlp' AND year >= 2019"
-        )
+        result = engine.sql("SELECT * FROM papers WHERE field = 'nlp' AND year >= 2019")
         for row in result:
             assert row["field"] == "nlp"
             assert row["year"] >= 2019
@@ -252,6 +251,7 @@ class TestWhereClause:
 # DQL: Text search
 # ==================================================================
 
+
 class TestTextSearch:
     def test_text_match_single_term(self, engine: Engine) -> None:
         result = engine.sql(
@@ -265,8 +265,7 @@ class TestTextSearch:
 
     def test_text_match_multi_term(self, engine: Engine) -> None:
         result = engine.sql(
-            "SELECT title FROM papers "
-            "WHERE text_match(title, 'attention transformer')"
+            "SELECT title FROM papers WHERE text_match(title, 'attention transformer')"
         )
         assert len(result) >= 2
 
@@ -302,6 +301,7 @@ class TestTextSearch:
 # DQL: Aggregation
 # ==================================================================
 
+
 class TestAggregation:
     def test_count_all(self, engine: Engine) -> None:
         result = engine.sql("SELECT COUNT(*) AS total FROM papers")
@@ -324,8 +324,7 @@ class TestAggregation:
 
     def test_group_by(self, engine: Engine) -> None:
         result = engine.sql(
-            "SELECT field, COUNT(*) AS cnt FROM papers "
-            "GROUP BY field ORDER BY cnt DESC"
+            "SELECT field, COUNT(*) AS cnt FROM papers GROUP BY field ORDER BY cnt DESC"
         )
         assert len(result) >= 3
         counts = [r["cnt"] for r in result]
@@ -351,6 +350,7 @@ class TestAggregation:
 # DQL: Graph queries
 # ==================================================================
 
+
 class TestGraphQueries:
     def test_traverse(self, engine: Engine) -> None:
         result = engine.sql(
@@ -361,16 +361,12 @@ class TestGraphQueries:
         assert 3 in doc_ids
 
     def test_traverse_2_hops(self, engine: Engine) -> None:
-        result = engine.sql(
-            "SELECT _doc_id FROM traverse(1, 'cited_by', 2, 'papers')"
-        )
+        result = engine.sql("SELECT _doc_id FROM traverse(1, 'cited_by', 2, 'papers')")
         doc_ids = {r["_doc_id"] for r in result}
         assert 4 in doc_ids  # 1->2->4
 
     def test_rpq(self, engine: Engine) -> None:
-        result = engine.sql(
-            "SELECT _doc_id FROM rpq('cited_by/cited_by', 1, 'papers')"
-        )
+        result = engine.sql("SELECT _doc_id FROM rpq('cited_by/cited_by', 1, 'papers')")
         doc_ids = {r["_doc_id"] for r in result}
         assert 4 in doc_ids  # 1->2->4
 
@@ -378,6 +374,7 @@ class TestGraphQueries:
 # ==================================================================
 # SQLResult formatting
 # ==================================================================
+
 
 class TestSQLResult:
     def test_str_format(self, engine: Engine) -> None:
@@ -425,9 +422,7 @@ class TestSQLResult:
     def test_to_arrow_mixed_types(self, engine: Engine) -> None:
         import pyarrow as pa
 
-        result = engine.sql(
-            "SELECT 1 AS i, 3.14 AS f, 'hello' AS s, TRUE AS b"
-        )
+        result = engine.sql("SELECT 1 AS i, 3.14 AS f, 'hello' AS s, TRUE AS b")
         table = result.to_arrow()
         assert table.column("i").type == pa.int64()
         assert table.column("f").type == pa.float64()
@@ -435,11 +430,8 @@ class TestSQLResult:
         assert table.column("b").type == pa.bool_()
 
     def test_to_arrow_with_nulls(self, engine: Engine) -> None:
-        import pyarrow as pa
 
-        result = engine.sql(
-            "SELECT 1 AS v UNION ALL SELECT NULL"
-        )
+        result = engine.sql("SELECT 1 AS v UNION ALL SELECT NULL")
         table = result.to_arrow()
         assert table.num_rows == 2
         assert table.column("v").null_count == 1
@@ -472,10 +464,10 @@ class TestSQLResult:
         assert "vision transformer for image recognition" in titles
 
 
-
 # ==================================================================
 # EXPLAIN / ANALYZE
 # ==================================================================
+
 
 class TestExplain:
     def test_explain_select(self, engine: Engine) -> None:
@@ -535,9 +527,9 @@ class TestAnalyze:
 
     def test_analyze_improves_cardinality(self, engine: Engine) -> None:
         """After ANALYZE, filter selectivity should use real statistics."""
-        from uqa.planner.cardinality import CardinalityEstimator
-        from uqa.operators.primitive import FilterOperator
         from uqa.core.types import Equals, IndexStats
+        from uqa.operators.primitive import FilterOperator
+        from uqa.planner.cardinality import CardinalityEstimator
 
         engine.sql("ANALYZE papers")
         table = engine._tables["papers"]
@@ -574,9 +566,7 @@ class TestDistinct:
         assert len(fields) == len(set(fields))
 
     def test_distinct_with_order_by(self, engine: Engine) -> None:
-        result = engine.sql(
-            "SELECT DISTINCT field FROM papers ORDER BY field"
-        )
+        result = engine.sql("SELECT DISTINCT field FROM papers ORDER BY field")
         fields = [r["field"] for r in result]
         assert fields == sorted(fields)
         assert len(fields) == len(set(fields))
@@ -605,17 +595,12 @@ class TestEdgeCases:
         assert len(result) == 5
 
     def test_filtered_aggregate(self, engine: Engine) -> None:
-        result = engine.sql(
-            "SELECT COUNT(*) AS cnt FROM papers WHERE year >= 2020"
-        )
+        result = engine.sql("SELECT COUNT(*) AS cnt FROM papers WHERE year >= 2020")
         assert result.rows[0]["cnt"] == 2
 
     def test_knn_wrong_arg_count_raises(self, engine: Engine) -> None:
         with pytest.raises(ValueError, match="requires 3 arguments"):
-            engine.sql(
-                "SELECT * FROM papers "
-                "WHERE knn_match(ARRAY[1.0, 2.0], 5)"
-            )
+            engine.sql("SELECT * FROM papers WHERE knn_match(ARRAY[1.0, 2.0], 5)")
 
     def test_unsupported_statement(self, engine: Engine) -> None:
         with pytest.raises(ValueError, match="Unsupported statement"):
@@ -623,14 +608,13 @@ class TestEdgeCases:
 
     def test_unknown_function(self, engine: Engine) -> None:
         with pytest.raises(ValueError, match="Unknown scalar function"):
-            engine.sql(
-                "SELECT * FROM papers WHERE unknown_func(title, 'test')"
-            )
+            engine.sql("SELECT * FROM papers WHERE unknown_func(title, 'test')")
 
 
 # ==================================================================
 # Hybrid queries: fusion of text + vector + graph + filter
 # ==================================================================
+
 
 @pytest.fixture
 def hybrid_engine() -> Engine:
@@ -651,11 +635,11 @@ def hybrid_engine() -> Engine:
     base /= np.linalg.norm(base)
 
     titles = [
-        ('attention is all you need', 2017, 'nlp'),
-        ('bert pre-training', 2019, 'nlp'),
-        ('graph attention networks', 2018, 'graph'),
-        ('vision transformer', 2021, 'cv'),
-        ('scaling language models', 2020, 'nlp'),
+        ("attention is all you need", 2017, "nlp"),
+        ("bert pre-training", 2019, "nlp"),
+        ("graph attention networks", 2018, "graph"),
+        ("vision transformer", 2021, "cv"),
+        ("scaling language models", 2020, "nlp"),
     ]
     for title, year, fld in titles:
         emb = base + rng.randn(8).astype(np.float32) * 0.3
@@ -766,7 +750,8 @@ class TestFusionLogOdds:
         qv = rng.randn(8).astype(np.float32)
         qv /= np.linalg.norm(qv)
 
-        result = hybrid_engine.sql("""
+        result = hybrid_engine.sql(
+            """
             SELECT title, _score FROM papers
             WHERE fuse_log_odds(
                 text_match(title, 'attention'),
@@ -774,7 +759,9 @@ class TestFusionLogOdds:
                 traverse_match(1, 'cited_by', 1)
             )
             ORDER BY _score DESC
-        """, params=[qv])
+        """,
+            params=[qv],
+        )
         assert len(result) > 0
         for row in result:
             assert 0.0 < row["_score"] < 1.0
@@ -785,14 +772,17 @@ class TestFusionLogOdds:
         qv = rng.randn(8).astype(np.float32)
         qv /= np.linalg.norm(qv)
 
-        result = hybrid_engine.sql("""
+        result = hybrid_engine.sql(
+            """
             SELECT title, _score FROM papers
             WHERE fuse_log_odds(
                 bayesian_match(title, 'attention'),
                 knn_match(embedding, $1, 5)
             )
             ORDER BY _score DESC
-        """, params=[qv])
+        """,
+            params=[qv],
+        )
         for row in result:
             assert 0.0 < row["_score"] < 1.0
 
@@ -895,6 +885,7 @@ class TestFusionErrors:
 # SQL integration: hierarchical path functions
 # ==================================================================
 
+
 class TestSQLPathFunctions:
     """Tests for path_agg, path_value, and path_filter SQL functions."""
 
@@ -902,33 +893,45 @@ class TestSQLPathFunctions:
     def order_engine(self) -> Engine:
         e = Engine()
         e.sql("CREATE TABLE orders (id INTEGER PRIMARY KEY, data TEXT)")
-        e.add_document(1, {
-            "order_id": "ORD-001",
-            "customer": "Alice",
-            "items": [
-                {"name": "Widget A", "price": 29.99, "quantity": 2},
-                {"name": "Widget B", "price": 49.99, "quantity": 1},
-            ],
-            "shipping": {"city": "Seoul", "method": "express", "cost": 15.0},
-        }, table="orders")
-        e.add_document(2, {
-            "order_id": "ORD-002",
-            "customer": "Bob",
-            "items": [
-                {"name": "Gadget X", "price": 99.99, "quantity": 1},
-            ],
-            "shipping": {"city": "Busan", "method": "standard", "cost": 5.0},
-        }, table="orders")
-        e.add_document(3, {
-            "order_id": "ORD-003",
-            "customer": "Charlie",
-            "items": [
-                {"name": "Widget A", "price": 29.99, "quantity": 3},
-                {"name": "Gadget X", "price": 99.99, "quantity": 2},
-                {"name": "Part Z", "price": 9.99, "quantity": 10},
-            ],
-            "shipping": {"city": "Seoul", "method": "express", "cost": 20.0},
-        }, table="orders")
+        e.add_document(
+            1,
+            {
+                "order_id": "ORD-001",
+                "customer": "Alice",
+                "items": [
+                    {"name": "Widget A", "price": 29.99, "quantity": 2},
+                    {"name": "Widget B", "price": 49.99, "quantity": 1},
+                ],
+                "shipping": {"city": "Seoul", "method": "express", "cost": 15.0},
+            },
+            table="orders",
+        )
+        e.add_document(
+            2,
+            {
+                "order_id": "ORD-002",
+                "customer": "Bob",
+                "items": [
+                    {"name": "Gadget X", "price": 99.99, "quantity": 1},
+                ],
+                "shipping": {"city": "Busan", "method": "standard", "cost": 5.0},
+            },
+            table="orders",
+        )
+        e.add_document(
+            3,
+            {
+                "order_id": "ORD-003",
+                "customer": "Charlie",
+                "items": [
+                    {"name": "Widget A", "price": 29.99, "quantity": 3},
+                    {"name": "Gadget X", "price": 99.99, "quantity": 2},
+                    {"name": "Part Z", "price": 9.99, "quantity": 10},
+                ],
+                "shipping": {"city": "Seoul", "method": "express", "cost": 20.0},
+            },
+            table="orders",
+        )
         return e
 
     # -- path_agg --
@@ -1025,20 +1028,41 @@ class TestSQLPathFunctions:
 # SQL integration: graph aggregates via standard SQL
 # ==================================================================
 
+
 class TestSQLGraphAggregates:
     """Standard SQL aggregates should work on graph traversal results."""
 
     @pytest.fixture
     def graph_engine(self) -> Engine:
         e = Engine()
-        e.sql("CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, role TEXT, salary INTEGER)")
+        e.sql(
+            "CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, role TEXT, salary INTEGER)"
+        )
         # Build org chart: CEO -> VP -> Engineers
-        e.add_graph_vertex(Vertex(1, "", {"name": "CEO", "role": "executive", "salary": 200000}), table="employees")
-        e.add_graph_vertex(Vertex(2, "", {"name": "VP-Eng", "role": "vp", "salary": 150000}), table="employees")
-        e.add_graph_vertex(Vertex(3, "", {"name": "VP-Sales", "role": "vp", "salary": 140000}), table="employees")
-        e.add_graph_vertex(Vertex(4, "", {"name": "Alice", "role": "engineer", "salary": 120000}), table="employees")
-        e.add_graph_vertex(Vertex(5, "", {"name": "Bob", "role": "engineer", "salary": 110000}), table="employees")
-        e.add_graph_vertex(Vertex(6, "", {"name": "Carol", "role": "sales", "salary": 100000}), table="employees")
+        e.add_graph_vertex(
+            Vertex(1, "", {"name": "CEO", "role": "executive", "salary": 200000}),
+            table="employees",
+        )
+        e.add_graph_vertex(
+            Vertex(2, "", {"name": "VP-Eng", "role": "vp", "salary": 150000}),
+            table="employees",
+        )
+        e.add_graph_vertex(
+            Vertex(3, "", {"name": "VP-Sales", "role": "vp", "salary": 140000}),
+            table="employees",
+        )
+        e.add_graph_vertex(
+            Vertex(4, "", {"name": "Alice", "role": "engineer", "salary": 120000}),
+            table="employees",
+        )
+        e.add_graph_vertex(
+            Vertex(5, "", {"name": "Bob", "role": "engineer", "salary": 110000}),
+            table="employees",
+        )
+        e.add_graph_vertex(
+            Vertex(6, "", {"name": "Carol", "role": "sales", "salary": 100000}),
+            table="employees",
+        )
 
         e.add_graph_edge(Edge(1, 1, 2, "manages"), table="employees")
         e.add_graph_edge(Edge(2, 1, 3, "manages"), table="employees")
@@ -1092,9 +1116,7 @@ class TestSQLGraphAggregates:
         assert names == ["Alice", "Bob", "VP-Eng"]
 
     def test_rpq_query(self, graph_engine: Engine) -> None:
-        result = graph_engine.sql(
-            "SELECT * FROM rpq('manages*', 1, 'employees')"
-        )
+        result = graph_engine.sql("SELECT * FROM rpq('manages*', 1, 'employees')")
         # Kleene star: all reachable from CEO via manages (including CEO)
         assert len(result.rows) >= 5
 
@@ -1103,39 +1125,32 @@ class TestSQLGraphAggregates:
 # REGEXP_SPLIT_TO_TABLE
 # ==================================================================
 
+
 class TestRegexpSplitToTable:
     def test_basic_split(self) -> None:
         e = Engine()
         result = e.sql(
-            "SELECT * FROM regexp_split_to_table("
-            "'hello world foo', '\\s+') AS t(word)"
+            "SELECT * FROM regexp_split_to_table('hello world foo', '\\s+') AS t(word)"
         )
         words = [r["word"] for r in result.rows]
         assert words == ["hello", "world", "foo"]
 
     def test_comma_split(self) -> None:
         e = Engine()
-        result = e.sql(
-            "SELECT * FROM regexp_split_to_table("
-            "'a,b,c', ',') AS t(item)"
-        )
+        result = e.sql("SELECT * FROM regexp_split_to_table('a,b,c', ',') AS t(item)")
         items = [r["item"] for r in result.rows]
         assert items == ["a", "b", "c"]
 
     def test_empty_parts(self) -> None:
         e = Engine()
-        result = e.sql(
-            "SELECT * FROM regexp_split_to_table("
-            "'a,,b', ',') AS t(v)"
-        )
+        result = e.sql("SELECT * FROM regexp_split_to_table('a,,b', ',') AS t(v)")
         vals = [r["v"] for r in result.rows]
         assert vals == ["a", "", "b"]
 
     def test_flags_case_insensitive(self) -> None:
         e = Engine()
         result = e.sql(
-            "SELECT * FROM regexp_split_to_table("
-            "'AXbXc', 'x', 'i') AS t(part)"
+            "SELECT * FROM regexp_split_to_table('AXbXc', 'x', 'i') AS t(part)"
         )
         parts = [r["part"] for r in result.rows]
         assert parts == ["A", "b", "c"]
@@ -1143,8 +1158,7 @@ class TestRegexpSplitToTable:
     def test_default_column_name(self) -> None:
         e = Engine()
         result = e.sql(
-            "SELECT regexp_split_to_table "
-            "FROM regexp_split_to_table('a-b', '-')"
+            "SELECT regexp_split_to_table FROM regexp_split_to_table('a-b', '-')"
         )
         vals = [r["regexp_split_to_table"] for r in result.rows]
         assert vals == ["a", "b"]
@@ -1153,6 +1167,7 @@ class TestRegexpSplitToTable:
 # ==================================================================
 # CORR / COVAR_POP / COVAR_SAMP
 # ==================================================================
+
 
 class TestCovarianceCorrelation:
     @pytest.fixture
@@ -1194,16 +1209,14 @@ class TestCovarianceCorrelation:
 # REGR_* regression functions
 # ==================================================================
 
+
 class TestRegressionFunctions:
     @pytest.fixture
     def regr_engine(self) -> Engine:
         e = Engine()
         e.sql("CREATE TABLE pts (x REAL, y REAL)")
         # y = 2x + 1
-        e.sql(
-            "INSERT INTO pts VALUES "
-            "(1, 3), (2, 5), (3, 7), (4, 9), (5, 11)"
-        )
+        e.sql("INSERT INTO pts VALUES (1, 3), (2, 5), (3, 7), (4, 9), (5, 11)")
         return e
 
     def test_regr_count(self, regr_engine: Engine) -> None:
@@ -1261,6 +1274,7 @@ class TestRegressionFunctions:
 # pg_catalog.pg_type
 # ==================================================================
 
+
 class TestPgType:
     def test_pg_type_exists(self) -> None:
         e = Engine()
@@ -1270,8 +1284,7 @@ class TestPgType:
     def test_pg_type_integer_oid(self) -> None:
         e = Engine()
         r = e.sql(
-            "SELECT oid, typlen FROM pg_catalog.pg_type "
-            "WHERE typname = 'integer'"
+            "SELECT oid, typlen FROM pg_catalog.pg_type WHERE typname = 'integer'"
         )
         assert len(r.rows) == 1
         assert r.rows[0]["oid"] == 23
@@ -1280,8 +1293,7 @@ class TestPgType:
     def test_pg_type_text(self) -> None:
         e = Engine()
         r = e.sql(
-            "SELECT oid, typcategory FROM pg_catalog.pg_type "
-            "WHERE typname = 'text'"
+            "SELECT oid, typcategory FROM pg_catalog.pg_type WHERE typname = 'text'"
         )
         assert len(r.rows) == 1
         assert r.rows[0]["oid"] == 25
@@ -1302,6 +1314,7 @@ class TestPgType:
 # ==================================================================
 # ALTER SEQUENCE
 # ==================================================================
+
 
 class TestAlterSequence:
     def test_restart_with_value(self) -> None:
@@ -1351,6 +1364,7 @@ class TestAlterSequence:
 # TABLE name (shorthand for SELECT * FROM name)
 # ==================================================================
 
+
 class TestTableShorthand:
     def test_table_returns_all_rows(self) -> None:
         e = Engine()
@@ -1384,9 +1398,7 @@ def engine_with_data(pg17_engine):
 
 @pytest.fixture
 def engine_with_table(pg17_engine):
-    pg17_engine.sql(
-        "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER, name TEXT)"
-    )
+    pg17_engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER, name TEXT)")
     pg17_engine.sql("INSERT INTO t (id, val, name) VALUES (1, 10, 'alpha')")
     pg17_engine.sql("INSERT INTO t (id, val, name) VALUES (2, 20, 'bravo')")
     pg17_engine.sql("INSERT INTO t (id, val, name) VALUES (3, 30, 'charlie')")
@@ -1440,41 +1452,31 @@ class TestNullsOrdering:
         return pg17_engine
 
     def test_nulls_first_asc(self, null_data):
-        result = null_data.sql(
-            "SELECT id, val FROM t ORDER BY val ASC NULLS FIRST"
-        )
+        result = null_data.sql("SELECT id, val FROM t ORDER BY val ASC NULLS FIRST")
         vals = [r["val"] for r in result.rows]
         assert vals[0] is None
         assert vals[1:] == [5, 10, 20]
 
     def test_nulls_last_asc(self, null_data):
-        result = null_data.sql(
-            "SELECT id, val FROM t ORDER BY val ASC NULLS LAST"
-        )
+        result = null_data.sql("SELECT id, val FROM t ORDER BY val ASC NULLS LAST")
         vals = [r["val"] for r in result.rows]
         assert vals[-1] is None
         assert vals[:-1] == [5, 10, 20]
 
     def test_nulls_first_desc(self, null_data):
-        result = null_data.sql(
-            "SELECT id, val FROM t ORDER BY val DESC NULLS FIRST"
-        )
+        result = null_data.sql("SELECT id, val FROM t ORDER BY val DESC NULLS FIRST")
         vals = [r["val"] for r in result.rows]
         assert vals[0] is None
         assert vals[1:] == [20, 10, 5]
 
     def test_nulls_last_desc(self, null_data):
-        result = null_data.sql(
-            "SELECT id, val FROM t ORDER BY val DESC NULLS LAST"
-        )
+        result = null_data.sql("SELECT id, val FROM t ORDER BY val DESC NULLS LAST")
         vals = [r["val"] for r in result.rows]
         assert vals[-1] is None
         assert vals[:-1] == [20, 10, 5]
 
     def test_default_nulls_last(self, null_data):
-        result = null_data.sql(
-            "SELECT id, val FROM t ORDER BY val ASC"
-        )
+        result = null_data.sql("SELECT id, val FROM t ORDER BY val ASC")
         vals = [r["val"] for r in result.rows]
         # Default: NULLs last for ASC
         assert vals[-1] is None
@@ -1494,9 +1496,7 @@ class TestColumnAliasOrderBy:
         assert ages == [35, 30, 25, 25]
 
     def test_order_by_ordinal(self, engine_with_data):
-        result = engine_with_data.sql(
-            "SELECT name, age FROM users ORDER BY 2 ASC"
-        )
+        result = engine_with_data.sql("SELECT name, age FROM users ORDER BY 2 ASC")
         ages = [r["age"] for r in result.rows]
         assert ages == [25, 25, 30, 35]
 
@@ -1510,9 +1510,7 @@ class TestColumnAliasOrderBy:
 
     def test_order_by_invalid_ordinal(self, engine_with_data):
         with pytest.raises(ValueError, match="not in select list"):
-            engine_with_data.sql(
-                "SELECT name FROM users ORDER BY 5"
-            )
+            engine_with_data.sql("SELECT name FROM users ORDER BY 5")
 
 
 # ==================================================================
@@ -1526,45 +1524,30 @@ class TestInsertSelect:
             "CREATE TABLE users_copy (id INTEGER, name TEXT, age INTEGER)"
         )
         result = engine_with_data.sql(
-            "INSERT INTO users_copy (id, name, age) "
-            "SELECT id, name, age FROM users"
+            "INSERT INTO users_copy (id, name, age) SELECT id, name, age FROM users"
         )
         assert result.rows[0]["inserted"] == 4
 
-        result = engine_with_data.sql(
-            "SELECT COUNT(*) AS cnt FROM users_copy"
-        )
+        result = engine_with_data.sql("SELECT COUNT(*) AS cnt FROM users_copy")
         assert result.rows[0]["cnt"] == 4
 
     def test_insert_select_with_where(self, engine_with_data):
-        engine_with_data.sql(
-            "CREATE TABLE young (id INTEGER, name TEXT, age INTEGER)"
-        )
+        engine_with_data.sql("CREATE TABLE young (id INTEGER, name TEXT, age INTEGER)")
         engine_with_data.sql(
             "INSERT INTO young (id, name, age) "
             "SELECT id, name, age FROM users WHERE age < 30"
         )
-        result = engine_with_data.sql(
-            "SELECT COUNT(*) AS cnt FROM young"
-        )
+        result = engine_with_data.sql("SELECT COUNT(*) AS cnt FROM young")
         assert result.rows[0]["cnt"] == 2
 
     def test_insert_select_with_columns(self, engine_with_data):
-        engine_with_data.sql(
-            "CREATE TABLE names (name TEXT)"
-        )
-        engine_with_data.sql(
-            "INSERT INTO names (name) SELECT name FROM users"
-        )
-        result = engine_with_data.sql(
-            "SELECT COUNT(*) AS cnt FROM names"
-        )
+        engine_with_data.sql("CREATE TABLE names (name TEXT)")
+        engine_with_data.sql("INSERT INTO names (name) SELECT name FROM users")
+        result = engine_with_data.sql("SELECT COUNT(*) AS cnt FROM names")
         assert result.rows[0]["cnt"] == 4
 
     def test_insert_select_empty(self, engine_with_data):
-        engine_with_data.sql(
-            "CREATE TABLE empty (id INTEGER, name TEXT, age INTEGER)"
-        )
+        engine_with_data.sql("CREATE TABLE empty (id INTEGER, name TEXT, age INTEGER)")
         result = engine_with_data.sql(
             "INSERT INTO empty (id, name, age) "
             "SELECT id, name, age FROM users WHERE age > 100"
@@ -1589,17 +1572,14 @@ class TestDerivedTables:
 
     def test_derived_table_with_where(self, engine_with_data):
         result = engine_with_data.sql(
-            "SELECT name FROM "
-            "(SELECT name, age FROM users) AS t "
-            "WHERE age = 25"
+            "SELECT name FROM (SELECT name, age FROM users) AS t WHERE age = 25"
         )
         names = {r["name"] for r in result.rows}
         assert names == {"Bob", "Dave"}
 
     def test_derived_table_with_aggregation(self, engine_with_data):
         result = engine_with_data.sql(
-            "SELECT COUNT(*) AS cnt FROM "
-            "(SELECT name FROM users WHERE age > 25) AS t"
+            "SELECT COUNT(*) AS cnt FROM (SELECT name FROM users WHERE age > 25) AS t"
         )
         assert result.rows[0]["cnt"] == 2
 
@@ -1622,19 +1602,12 @@ class TestDerivedTables:
 
 class TestDerivedTableAliasCollision:
     def test_alias_does_not_destroy_real_table(self, pg17_engine):
-        pg17_engine.sql(
-            "CREATE TABLE users (id INTEGER, name TEXT)"
-        )
-        pg17_engine.sql(
-            "INSERT INTO users (id, name) VALUES (1, 'Alice')"
-        )
-        pg17_engine.sql(
-            "INSERT INTO users (id, name) VALUES (2, 'Bob')"
-        )
+        pg17_engine.sql("CREATE TABLE users (id INTEGER, name TEXT)")
+        pg17_engine.sql("INSERT INTO users (id, name) VALUES (1, 'Alice')")
+        pg17_engine.sql("INSERT INTO users (id, name) VALUES (2, 'Bob')")
         # Use alias "users" -- same as the real table name
         result = pg17_engine.sql(
-            "SELECT name FROM "
-            "(SELECT id, name FROM users WHERE id = 1) AS users"
+            "SELECT name FROM (SELECT id, name FROM users WHERE id = 1) AS users"
         )
         assert result.rows[0]["name"] == "Alice"
 
@@ -1651,12 +1624,8 @@ class TestDerivedTableAliasCollision:
 class TestSetOperations:
     @pytest.fixture
     def two_tables(self, pg17_engine):
-        pg17_engine.sql(
-            "CREATE TABLE t1 (id INTEGER, val TEXT)"
-        )
-        pg17_engine.sql(
-            "CREATE TABLE t2 (id INTEGER, val TEXT)"
-        )
+        pg17_engine.sql("CREATE TABLE t1 (id INTEGER, val TEXT)")
+        pg17_engine.sql("CREATE TABLE t2 (id INTEGER, val TEXT)")
         pg17_engine.sql("INSERT INTO t1 (id, val) VALUES (1, 'a')")
         pg17_engine.sql("INSERT INTO t1 (id, val) VALUES (2, 'b')")
         pg17_engine.sql("INSERT INTO t1 (id, val) VALUES (3, 'c')")
@@ -1672,9 +1641,7 @@ class TestSetOperations:
         assert len(result.rows) == 6
 
     def test_union_distinct(self, two_tables):
-        result = two_tables.sql(
-            "SELECT id, val FROM t1 UNION SELECT id, val FROM t2"
-        )
+        result = two_tables.sql("SELECT id, val FROM t1 UNION SELECT id, val FROM t2")
         assert len(result.rows) == 4  # 1a, 2b, 3c, 4d
 
     def test_intersect(self, two_tables):
@@ -1690,9 +1657,7 @@ class TestSetOperations:
         assert len(result.rows) == 2
 
     def test_except(self, two_tables):
-        result = two_tables.sql(
-            "SELECT id, val FROM t1 EXCEPT SELECT id, val FROM t2"
-        )
+        result = two_tables.sql("SELECT id, val FROM t1 EXCEPT SELECT id, val FROM t2")
         assert len(result.rows) == 1
         assert result.rows[0]["val"] == "a"
 
@@ -1705,29 +1670,20 @@ class TestSetOperations:
 
     def test_union_with_order_by(self, two_tables):
         result = two_tables.sql(
-            "SELECT id, val FROM t1 "
-            "UNION ALL "
-            "SELECT id, val FROM t2 "
-            "ORDER BY 1"
+            "SELECT id, val FROM t1 UNION ALL SELECT id, val FROM t2 ORDER BY 1"
         )
         ids = [r["id"] for r in result.rows]
         assert ids == sorted(ids)
 
     def test_union_with_limit(self, two_tables):
         result = two_tables.sql(
-            "SELECT id, val FROM t1 "
-            "UNION ALL "
-            "SELECT id, val FROM t2 "
-            "ORDER BY 1 "
-            "LIMIT 3"
+            "SELECT id, val FROM t1 UNION ALL SELECT id, val FROM t2 ORDER BY 1 LIMIT 3"
         )
         assert len(result.rows) == 3
 
     def test_column_count_mismatch_error(self, two_tables):
         with pytest.raises(ValueError, match="column count mismatch"):
-            two_tables.sql(
-                "SELECT id, val FROM t1 UNION SELECT id FROM t2"
-            )
+            two_tables.sql("SELECT id, val FROM t1 UNION SELECT id FROM t2")
 
     def test_chained_union(self, two_tables):
         two_tables.sql("CREATE TABLE t3 (id INTEGER, val TEXT)")
@@ -1748,29 +1704,19 @@ class TestSetOperations:
 class TestCreateTableAs:
     def test_basic(self, engine_with_table):
         engine_with_table.sql("CREATE TABLE t2 AS SELECT id, val FROM t")
-        result = engine_with_table.sql(
-            "SELECT id, val FROM t2 ORDER BY id"
-        )
+        result = engine_with_table.sql("SELECT id, val FROM t2 ORDER BY id")
         assert len(result.rows) == 3
         assert result.rows[0]["id"] == 1
         assert result.rows[0]["val"] == 10
 
     def test_with_where(self, engine_with_table):
-        engine_with_table.sql(
-            "CREATE TABLE t2 AS SELECT id, val FROM t WHERE val > 15"
-        )
-        result = engine_with_table.sql(
-            "SELECT id, val FROM t2 ORDER BY id"
-        )
+        engine_with_table.sql("CREATE TABLE t2 AS SELECT id, val FROM t WHERE val > 15")
+        result = engine_with_table.sql("SELECT id, val FROM t2 ORDER BY id")
         assert len(result.rows) == 2
 
     def test_with_expression(self, engine_with_table):
-        engine_with_table.sql(
-            "CREATE TABLE t2 AS SELECT id, val * 2 AS doubled FROM t"
-        )
-        result = engine_with_table.sql(
-            "SELECT id, doubled FROM t2 ORDER BY id"
-        )
+        engine_with_table.sql("CREATE TABLE t2 AS SELECT id, val * 2 AS doubled FROM t")
+        result = engine_with_table.sql("SELECT id, doubled FROM t2 ORDER BY id")
         assert result.rows[0]["doubled"] == 20
 
 
@@ -1919,10 +1865,7 @@ class TestCreateTemporaryTable:
         e.sql("CREATE TABLE src (id INT PRIMARY KEY, val INT)")
         e.sql("INSERT INTO src VALUES (1, 10)")
         e.sql("INSERT INTO src VALUES (2, 20)")
-        e.sql(
-            "CREATE TEMP TABLE tmp AS "
-            "SELECT id, val FROM src WHERE val > 10"
-        )
+        e.sql("CREATE TEMP TABLE tmp AS SELECT id, val FROM src WHERE val > 10")
         r = e.sql("SELECT id, val FROM tmp")
         assert len(r.rows) == 1
         assert r.rows[0]["val"] == 20
@@ -1930,15 +1873,10 @@ class TestCreateTemporaryTable:
     def test_temp_table_insert_and_query(self):
         """Temp tables support normal DML operations."""
         e = Engine()
-        e.sql(
-            "CREATE TEMPORARY TABLE staging "
-            "(id INT PRIMARY KEY, status TEXT)"
-        )
+        e.sql("CREATE TEMPORARY TABLE staging (id INT PRIMARY KEY, status TEXT)")
         e.sql("INSERT INTO staging VALUES (1, 'pending')")
         e.sql("INSERT INTO staging VALUES (2, 'done')")
         e.sql("UPDATE staging SET status = 'done' WHERE id = 1")
-        r = e.sql(
-            "SELECT id, status FROM staging ORDER BY id"
-        )
+        r = e.sql("SELECT id, status FROM staging ORDER BY id")
         assert r.rows[0]["status"] == "done"
         assert r.rows[1]["status"] == "done"

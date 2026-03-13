@@ -17,6 +17,8 @@ scalar values.  Used by the SQL compiler for:
 - COALESCE and string functions (UPPER, LOWER, LENGTH, SUBSTRING, etc.)
 """
 
+# pyright: reportArgumentType=false, reportOperatorIssue=false
+
 from __future__ import annotations
 
 import base64
@@ -26,7 +28,7 @@ import math
 import random
 import re
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -35,21 +37,29 @@ from pglast.ast import (
     A_Const,
     A_Expr,
     BoolExpr,
-    Boolean as PgBoolean,
     CaseExpr,
     CoalesceExpr,
     ColumnRef,
-    Float as PgFloat,
     FuncCall,
-    Integer as PgInteger,
     MinMaxExpr,
     NullTest,
     RangeVar,
-    SQLValueFunction,
     SelectStmt,
-    String as PgString,
+    SQLValueFunction,
     SubLink,
     TypeCast,
+)
+from pglast.ast import (
+    Boolean as PgBoolean,
+)
+from pglast.ast import (
+    Float as PgFloat,
+)
+from pglast.ast import (
+    Integer as PgInteger,
+)
+from pglast.ast import (
+    String as PgString,
 )
 from pglast.enums.parsenodes import A_Expr_Kind
 from pglast.enums.primnodes import (
@@ -108,9 +118,7 @@ class ExprEvaluator:
 
         raise ValueError(f"Unsupported expression node: {type(node).__name__}")
 
-    def _eval_a_array_expr(
-        self, node: A_ArrayExpr, row: dict[str, Any]
-    ) -> Any:
+    def _eval_a_array_expr(self, node: A_ArrayExpr, row: dict[str, Any]) -> Any:
         """Evaluate an array expression."""
         if node.elements is None:
             return []
@@ -182,6 +190,7 @@ class ExprEvaluator:
             pattern = self.evaluate(node.rexpr, row)
             op_name = node.name[0].sval
             from uqa.core.types import _like_match
+
             matched = _like_match(str(val), pattern, case_sensitive=True)
             return not matched if op_name == "!~~" else matched
 
@@ -192,6 +201,7 @@ class ExprEvaluator:
             pattern = self.evaluate(node.rexpr, row)
             op_name = node.name[0].sval
             from uqa.core.types import _like_match
+
             matched = _like_match(str(val), pattern, case_sensitive=False)
             return not matched if op_name == "!~~*" else matched
 
@@ -306,14 +316,10 @@ class ExprEvaluator:
 
     def _eval_sublink(self, node: SubLink, row: dict[str, Any]) -> Any:
         if self._subquery_executor is None:
-            raise ValueError(
-                "Subquery in expression requires a subquery executor"
-            )
+            raise ValueError("Subquery in expression requires a subquery executor")
 
         # Substitute correlated column references from the outer row
-        subselect = self._substitute_correlated_refs(
-            node.subselect, row
-        )
+        subselect = self._substitute_correlated_refs(node.subselect, row)
 
         link_type = SubLinkType(node.subLinkType)
 
@@ -343,9 +349,7 @@ class ExprEvaluator:
 
         raise ValueError(f"Unsupported subquery type: {link_type.name}")
 
-    def _substitute_correlated_refs(
-        self, node: Any, outer_row: dict[str, Any]
-    ) -> Any:
+    def _substitute_correlated_refs(self, node: Any, outer_row: dict[str, Any]) -> Any:
         """Replace correlated ColumnRef nodes with constants from the outer row.
 
         A correlated reference is a multi-part ColumnRef (e.g., ``e.dept``)
@@ -365,7 +369,9 @@ class ExprEvaluator:
         return self._subst_correlated(node, outer_row, inner_tables)
 
     def _subst_correlated(
-        self, node: Any, outer_row: dict[str, Any],
+        self,
+        node: Any,
+        outer_row: dict[str, Any],
         inner_tables: set[str],
     ) -> Any:
         """Recursively walk AST, replacing correlated ColumnRefs."""
@@ -381,16 +387,14 @@ class ExprEvaluator:
 
         if isinstance(node, tuple):
             return tuple(
-                self._subst_correlated(item, outer_row, inner_tables)
-                for item in node
+                self._subst_correlated(item, outer_row, inner_tables) for item in node
             )
         if isinstance(node, list):
             return [
-                self._subst_correlated(item, outer_row, inner_tables)
-                for item in node
+                self._subst_correlated(item, outer_row, inner_tables) for item in node
             ]
 
-        if hasattr(node, '__slots__') and isinstance(node.__slots__, dict):
+        if hasattr(node, "__slots__") and isinstance(node.__slots__, dict):
             kwargs = {}
             for slot in node.__slots__:
                 val = getattr(node, slot, None)
@@ -398,15 +402,11 @@ class ExprEvaluator:
                     kwargs[slot] = None
                 elif isinstance(val, (tuple, list)):
                     kwargs[slot] = type(val)(
-                        self._subst_correlated(
-                            item, outer_row, inner_tables
-                        )
+                        self._subst_correlated(item, outer_row, inner_tables)
                         for item in val
                     )
-                elif hasattr(val, '__slots__'):
-                    kwargs[slot] = self._subst_correlated(
-                        val, outer_row, inner_tables
-                    )
+                elif hasattr(val, "__slots__"):
+                    kwargs[slot] = self._subst_correlated(val, outer_row, inner_tables)
                 else:
                     kwargs[slot] = val
             try:
@@ -445,9 +445,8 @@ class ExprEvaluator:
         node: SQLValueFunction, row: dict[str, Any] | None = None
     ) -> Any:
 
-
         op = SQLValueFunctionOp(node.op)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if op == SQLValueFunctionOp.SVFOP_CURRENT_DATE:
             return now.strftime("%Y-%m-%d")
         if op in (
@@ -476,18 +475,42 @@ class ExprEvaluator:
 
     # -- FuncCall (scalar functions) -----------------------------------
 
-    _AGG_FUNCS = frozenset({
-        "count", "sum", "avg", "min", "max", "string_agg",
-        "array_agg", "bool_and", "bool_or",
-        "stddev", "stddev_pop", "stddev_samp",
-        "variance", "var_pop", "var_samp",
-        "percentile_cont", "percentile_disc", "mode",
-        "json_object_agg", "jsonb_object_agg",
-        "corr", "covar_pop", "covar_samp",
-        "regr_count", "regr_avgx", "regr_avgy",
-        "regr_sxx", "regr_syy", "regr_sxy",
-        "regr_slope", "regr_intercept", "regr_r2",
-    })
+    _AGG_FUNCS = frozenset(
+        {
+            "count",
+            "sum",
+            "avg",
+            "min",
+            "max",
+            "string_agg",
+            "array_agg",
+            "bool_and",
+            "bool_or",
+            "stddev",
+            "stddev_pop",
+            "stddev_samp",
+            "variance",
+            "var_pop",
+            "var_samp",
+            "percentile_cont",
+            "percentile_disc",
+            "mode",
+            "json_object_agg",
+            "jsonb_object_agg",
+            "corr",
+            "covar_pop",
+            "covar_samp",
+            "regr_count",
+            "regr_avgx",
+            "regr_avgy",
+            "regr_sxx",
+            "regr_syy",
+            "regr_sxy",
+            "regr_slope",
+            "regr_intercept",
+            "regr_r2",
+        }
+    )
 
     def _eval_func_call(self, node: FuncCall, row: dict[str, Any]) -> Any:
         func_name = node.funcname[-1].sval.lower()
@@ -619,7 +642,6 @@ def _json_access(obj: Any, key: Any, *, as_text: bool) -> Any:
     ``->`` returns JSON, ``->>`` returns text.
     """
 
-
     if obj is None:
         return None
     if isinstance(obj, str):
@@ -645,7 +667,6 @@ def _json_path_access(obj: Any, path_str: Any, *, as_text: bool) -> Any:
     Path is a PostgreSQL text array literal like '{a,b,c}'.
     Follows Def 5.2.3 recursive path evaluation.
     """
-
 
     if obj is None or path_str is None:
         return None
@@ -684,18 +705,17 @@ def _json_contains(container: Any, contained: Any) -> bool:
     Returns True if *container* contains *contained* at every level.
     """
 
-
     if container is None or contained is None:
         return False
     if isinstance(container, str):
         # Only parse if it looks like a JSON object/array, not a
         # plain scalar string (which would fail json.loads).
         stripped = container.strip()
-        if stripped and stripped[0] in ('{', '['):
+        if stripped and stripped[0] in ("{", "["):
             container = json.loads(container)
     if isinstance(contained, str):
         stripped = contained.strip()
-        if stripped and stripped[0] in ('{', '['):
+        if stripped and stripped[0] in ("{", "["):
             contained = json.loads(contained)
 
     if isinstance(contained, dict):
@@ -722,7 +742,6 @@ def _json_has_key(obj: Any, key: Any) -> bool:
     if obj is None:
         return False
     if isinstance(obj, str):
-    
         obj = json.loads(obj)
     if isinstance(obj, dict):
         return str(key) in obj
@@ -749,7 +768,6 @@ def _json_has_any_key(obj: Any, keys: Any) -> bool:
     if obj is None or keys is None:
         return False
     if isinstance(obj, str):
-    
         obj = json.loads(obj)
     keys = _parse_pg_array_literal(keys)
     if isinstance(obj, dict):
@@ -762,7 +780,6 @@ def _json_has_all_keys(obj: Any, keys: Any) -> bool:
     if obj is None or keys is None:
         return False
     if isinstance(obj, str):
-    
         obj = json.loads(obj)
     keys = _parse_pg_array_literal(keys)
     if isinstance(obj, dict):
@@ -855,7 +872,6 @@ _CAST_MAP: dict[str, type] = {
 
 def _cast_value(value: Any, type_name: str) -> Any:
 
-
     if type_name in ("json", "jsonb"):
         if isinstance(value, (dict, list)):
             return value
@@ -907,6 +923,8 @@ def _sf_lower(args: list[Any]) -> Any:
 
 def _sf_length(args: list[Any]) -> Any:
     return len(str(args[0])) if args[0] is not None else None
+
+
 def _sf_trim(args: list[Any]) -> Any:
     if args[0] is None:
         return None
@@ -1006,8 +1024,8 @@ def _sf_translate(args: list[Any]) -> Any:
     s, from_chars, to_chars = str(args[0]), str(args[1]), str(args[2])
     table = str.maketrans(
         from_chars,
-        to_chars[:len(from_chars)].ljust(len(from_chars)),
-        from_chars[len(to_chars):] if len(to_chars) < len(from_chars) else "",
+        to_chars[: len(from_chars)].ljust(len(from_chars)),
+        from_chars[len(to_chars) :] if len(to_chars) < len(from_chars) else "",
     )
     return s.translate(table)
 
@@ -1114,7 +1132,7 @@ def _sf_overlay(args: list[Any]) -> Any:
     repl = str(args[1])
     pos = int(args[2]) - 1  # 1-based to 0-based
     length = int(args[3]) if len(args) > 3 and args[3] is not None else len(repl)
-    return s[:pos] + repl + s[pos + length:]
+    return s[:pos] + repl + s[pos + length :]
 
 
 def _sf_lpad(args: list[Any]) -> Any:
@@ -1176,7 +1194,7 @@ def _sf_encode(args: list[Any]) -> Any:
             if 32 <= b < 127 and b != 92:
                 parts.append(chr(b))
             else:
-                parts.append("\\%03o" % b)
+                parts.append(f"\\{b:03o}")
         return "".join(parts)
     raise ValueError(f"Unsupported encode format: {fmt}")
 
@@ -1194,8 +1212,10 @@ def _sf_decode(args: list[Any]) -> Any:
         result = bytearray()
         i = 0
         while i < len(text):
-            if text[i] == "\\" and i + 3 < len(text) and re.match(
-                r"[0-7]{3}", text[i + 1 : i + 4]
+            if (
+                text[i] == "\\"
+                and i + 3 < len(text)
+                and re.match(r"[0-7]{3}", text[i + 1 : i + 4])
             ):
                 result.append(int(text[i + 1 : i + 4], 8))
                 i += 4
@@ -1396,7 +1416,7 @@ def _sf_trim_scale(args: list[Any]) -> Any:
 
 
 def _sf_now(args: list[Any]) -> Any:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def _sf_extract(args: list[Any]) -> Any:
@@ -1501,11 +1521,11 @@ def _sf_isfinite(args: list[Any]) -> Any:
 
 
 def _sf_clock_timestamp(args: list[Any]) -> Any:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def _sf_timeofday(args: list[Any]) -> Any:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     weekday = now.strftime("%a")
     month = now.strftime("%b")
     day = now.strftime("%d")
@@ -1602,11 +1622,7 @@ def _sf_jsonb_strip_nulls(args: list[Any]) -> Any:
 
     def _strip_nulls(v: Any) -> Any:
         if isinstance(v, dict):
-            return {
-                k: _strip_nulls(val)
-                for k, val in v.items()
-                if val is not None
-            }
+            return {k: _strip_nulls(val) for k, val in v.items() if val is not None}
         return v
 
     return _strip_nulls(obj)
@@ -1667,7 +1683,7 @@ def _sf_array_append(args: list[Any]) -> Any:
     if not args or args[0] is None:
         return None
     arr = args[0] if isinstance(args[0], list) else [args[0]]
-    return arr + [args[1]] if len(args) > 1 else arr
+    return [*arr, args[1]] if len(args) > 1 else arr
 
 
 def _sf_array_remove(args: list[Any]) -> Any:
@@ -1691,6 +1707,7 @@ def _sf_cardinality(args: list[Any]) -> Any:
 
 # -- Spatial functions -----------------------------------------------------
 
+
 def _sf_point(args: list[Any]) -> list[float]:
     """POINT(x, y) -> [x, y]."""
     if len(args) != 2:
@@ -1711,9 +1728,7 @@ def _sf_st_distance(args: list[Any]) -> float | None:
         return haversine_distance(
             float(p1[1]), float(p1[0]), float(p2[1]), float(p2[0])
         )
-    raise ValueError(
-        "ST_Distance() arguments must be POINT values ([x, y])"
-    )
+    raise ValueError("ST_Distance() arguments must be POINT values ([x, y])")
 
 
 def _sf_st_within(args: list[Any]) -> bool | None:
@@ -1731,9 +1746,7 @@ def _sf_st_within(args: list[Any]) -> bool | None:
             float(p1[1]), float(p1[0]), float(p2[1]), float(p2[0])
         )
         return dist <= dist_limit
-    raise ValueError(
-        "ST_Within() first two arguments must be POINT values ([x, y])"
-    )
+    raise ValueError("ST_Within() first two arguments must be POINT values ([x, y])")
 
 
 def _sf_st_dwithin(args: list[Any]) -> bool | None:
@@ -1747,60 +1760,115 @@ def _sf_st_dwithin(args: list[Any]) -> bool | None:
 # -- Dispatch table --------------------------------------------------------
 
 _SCALAR_FUNCTIONS: dict[str, Any] = {
-    "upper": _sf_upper, "lower": _sf_lower, "length": _sf_length,
-    "trim": _sf_trim, "btrim": _sf_trim,
-    "ltrim": _sf_ltrim, "rtrim": _sf_rtrim,
-    "replace": _sf_replace, "substring": _sf_substring, "substr": _sf_substring,
-    "concat": _sf_concat, "concat_ws": _sf_concat_ws,
-    "left": _sf_left, "right": _sf_right,
-    "initcap": _sf_initcap, "translate": _sf_translate,
-    "ascii": _sf_ascii, "chr": _sf_chr, "starts_with": _sf_starts_with,
-    "char_length": _sf_length, "character_length": _sf_length,
-    "position": _sf_position, "strpos": _sf_strpos,
-    "octet_length": _sf_octet_length, "md5": _sf_md5, "format": _sf_format,
-    "regexp_match": _sf_regexp_match, "regexp_matches": _sf_regexp_matches,
-    "regexp_replace": _sf_regexp_replace, "overlay": _sf_overlay,
-    "lpad": _sf_lpad, "rpad": _sf_rpad,
-    "repeat": _sf_repeat, "reverse": _sf_reverse, "split_part": _sf_split_part,
-    "encode": _sf_encode, "decode": _sf_decode,
+    "upper": _sf_upper,
+    "lower": _sf_lower,
+    "length": _sf_length,
+    "trim": _sf_trim,
+    "btrim": _sf_trim,
+    "ltrim": _sf_ltrim,
+    "rtrim": _sf_rtrim,
+    "replace": _sf_replace,
+    "substring": _sf_substring,
+    "substr": _sf_substring,
+    "concat": _sf_concat,
+    "concat_ws": _sf_concat_ws,
+    "left": _sf_left,
+    "right": _sf_right,
+    "initcap": _sf_initcap,
+    "translate": _sf_translate,
+    "ascii": _sf_ascii,
+    "chr": _sf_chr,
+    "starts_with": _sf_starts_with,
+    "char_length": _sf_length,
+    "character_length": _sf_length,
+    "position": _sf_position,
+    "strpos": _sf_strpos,
+    "octet_length": _sf_octet_length,
+    "md5": _sf_md5,
+    "format": _sf_format,
+    "regexp_match": _sf_regexp_match,
+    "regexp_matches": _sf_regexp_matches,
+    "regexp_replace": _sf_regexp_replace,
+    "overlay": _sf_overlay,
+    "lpad": _sf_lpad,
+    "rpad": _sf_rpad,
+    "repeat": _sf_repeat,
+    "reverse": _sf_reverse,
+    "split_part": _sf_split_part,
+    "encode": _sf_encode,
+    "decode": _sf_decode,
     "regexp_split_to_array": _sf_regexp_split_to_array,
-    "abs": _sf_abs, "round": _sf_round,
-    "ceil": _sf_ceil, "ceiling": _sf_ceil, "floor": _sf_floor,
-    "power": _sf_power, "pow": _sf_power, "sqrt": _sf_sqrt,
-    "log": _sf_log, "log10": _sf_log, "ln": _sf_ln, "exp": _sf_exp,
-    "mod": _sf_mod, "trunc": _sf_trunc, "sign": _sf_sign,
-    "pi": _sf_pi, "random": _sf_random, "cbrt": _sf_cbrt,
-    "degrees": _sf_degrees, "radians": _sf_radians,
-    "sin": _sf_sin, "cos": _sf_cos, "tan": _sf_tan,
-    "asin": _sf_asin, "acos": _sf_acos, "atan": _sf_atan, "atan2": _sf_atan2,
-    "div": _sf_div, "gcd": _sf_gcd, "lcm": _sf_lcm,
+    "abs": _sf_abs,
+    "round": _sf_round,
+    "ceil": _sf_ceil,
+    "ceiling": _sf_ceil,
+    "floor": _sf_floor,
+    "power": _sf_power,
+    "pow": _sf_power,
+    "sqrt": _sf_sqrt,
+    "log": _sf_log,
+    "log10": _sf_log,
+    "ln": _sf_ln,
+    "exp": _sf_exp,
+    "mod": _sf_mod,
+    "trunc": _sf_trunc,
+    "sign": _sf_sign,
+    "pi": _sf_pi,
+    "random": _sf_random,
+    "cbrt": _sf_cbrt,
+    "degrees": _sf_degrees,
+    "radians": _sf_radians,
+    "sin": _sf_sin,
+    "cos": _sf_cos,
+    "tan": _sf_tan,
+    "asin": _sf_asin,
+    "acos": _sf_acos,
+    "atan": _sf_atan,
+    "atan2": _sf_atan2,
+    "div": _sf_div,
+    "gcd": _sf_gcd,
+    "lcm": _sf_lcm,
     "width_bucket": _sf_width_bucket,
-    "min_scale": _sf_min_scale, "trim_scale": _sf_trim_scale,
-    "now": _sf_now, "extract": _sf_extract, "date_part": _sf_extract,
+    "min_scale": _sf_min_scale,
+    "trim_scale": _sf_trim_scale,
+    "now": _sf_now,
+    "extract": _sf_extract,
+    "date_part": _sf_extract,
     "date_trunc": _sf_date_trunc,
-    "make_timestamp": _sf_make_timestamp, "make_interval": _sf_make_interval,
+    "make_timestamp": _sf_make_timestamp,
+    "make_interval": _sf_make_interval,
     "make_date": _sf_make_date,
-    "to_char": _sf_to_char, "to_date": _sf_to_date,
+    "to_char": _sf_to_char,
+    "to_date": _sf_to_date,
     "to_timestamp": _sf_to_timestamp,
-    "age": _sf_age, "to_number": _sf_to_number,
-    "overlaps": _sf_overlaps, "isfinite": _sf_isfinite,
-    "clock_timestamp": _sf_clock_timestamp, "timeofday": _sf_timeofday,
+    "age": _sf_age,
+    "to_number": _sf_to_number,
+    "overlaps": _sf_overlaps,
+    "isfinite": _sf_isfinite,
+    "clock_timestamp": _sf_clock_timestamp,
+    "timeofday": _sf_timeofday,
     "typeof": _sf_typeof,
     "json_build_object": _sf_json_build_object,
     "jsonb_build_object": _sf_json_build_object,
     "json_build_array": _sf_json_build_array,
     "jsonb_build_array": _sf_json_build_array,
-    "json_typeof": _sf_json_typeof, "jsonb_typeof": _sf_json_typeof,
+    "json_typeof": _sf_json_typeof,
+    "jsonb_typeof": _sf_json_typeof,
     "json_array_length": _sf_json_array_length,
     "jsonb_array_length": _sf_json_array_length,
     "json_extract_path": _sf_json_extract_path,
     "json_extract_path_text": _sf_json_extract_path_text,
     "jsonb_extract_path": _sf_json_extract_path,
     "jsonb_extract_path_text": _sf_json_extract_path_text,
-    "to_json": _sf_to_json, "to_jsonb": _sf_to_json, "row_to_json": _sf_to_json,
-    "jsonb_set": _sf_jsonb_set, "jsonb_insert": _sf_jsonb_set,
-    "json_each": _sf_json_each, "jsonb_each": _sf_json_each,
-    "json_each_text": _sf_json_each_text, "jsonb_each_text": _sf_json_each_text,
+    "to_json": _sf_to_json,
+    "to_jsonb": _sf_to_json,
+    "row_to_json": _sf_to_json,
+    "jsonb_set": _sf_jsonb_set,
+    "jsonb_insert": _sf_jsonb_set,
+    "json_each": _sf_json_each,
+    "jsonb_each": _sf_json_each,
+    "json_each_text": _sf_json_each_text,
+    "jsonb_each_text": _sf_json_each_text,
     "json_array_elements": _sf_json_array_elements,
     "jsonb_array_elements": _sf_json_array_elements,
     "json_array_elements_text": _sf_json_array_elements_text,
@@ -1810,9 +1878,12 @@ _SCALAR_FUNCTIONS: dict[str, Any] = {
     "jsonb_strip_nulls": _sf_jsonb_strip_nulls,
     "json_strip_nulls": _sf_jsonb_strip_nulls,
     "gen_random_uuid": _sf_gen_random_uuid,
-    "array_length": _sf_array_length, "array_upper": _sf_array_upper,
-    "array_lower": _sf_array_lower, "array_cat": _sf_array_cat,
-    "array_append": _sf_array_append, "array_remove": _sf_array_remove,
+    "array_length": _sf_array_length,
+    "array_upper": _sf_array_upper,
+    "array_lower": _sf_array_lower,
+    "array_cat": _sf_array_cat,
+    "array_append": _sf_array_append,
+    "array_remove": _sf_array_remove,
     "cardinality": _sf_cardinality,
     "point": _sf_point,
     "st_distance": _sf_st_distance,
@@ -1823,7 +1894,6 @@ _SCALAR_FUNCTIONS: dict[str, Any] = {
 
 def _extract_datetime_field(field: str, timestamp_str: str) -> Any:
     """Extract a field from a timestamp/date string (EXTRACT / DATE_PART)."""
-
 
     dt = datetime.fromisoformat(timestamp_str)
     if field == "year":
@@ -1855,11 +1925,9 @@ def _extract_datetime_field(field: str, timestamp_str: str) -> Any:
 def _date_trunc(precision: str, timestamp_str: str) -> str:
     """Truncate a timestamp to the given precision (DATE_TRUNC)."""
 
-
     dt = datetime.fromisoformat(timestamp_str)
     if precision == "year":
-        dt = dt.replace(month=1, day=1, hour=0, minute=0, second=0,
-                         microsecond=0)
+        dt = dt.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
     elif precision == "month":
         dt = dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     elif precision == "day":
@@ -1881,9 +1949,7 @@ def _date_trunc(precision: str, timestamp_str: str) -> str:
 def _json_build_object(args: list[Any]) -> dict:
     """Build a JSON object from alternating key-value pairs."""
     if len(args) % 2 != 0:
-        raise ValueError(
-            "json_build_object requires an even number of arguments"
-        )
+        raise ValueError("json_build_object requires an even number of arguments")
     result: dict = {}
     for i in range(0, len(args), 2):
         key = str(args[i]) if args[i] is not None else "null"
@@ -1896,7 +1962,6 @@ def _json_typeof(value: Any) -> str | None:
     if value is None:
         return None
     if isinstance(value, str):
-    
         value = json.loads(value)
     if isinstance(value, dict):
         return "object"
@@ -1916,7 +1981,6 @@ def _json_typeof(value: Any) -> str | None:
 def _json_array_length(value: Any) -> int | None:
     """Return the number of elements in a JSON array."""
 
-
     if value is None:
         return None
     if isinstance(value, str):
@@ -1932,7 +1996,6 @@ def _json_extract_path(args: list[Any], *, as_text: bool) -> Any:
     Implements Paper 1, Definition 5.2.3 (recursive path evaluation):
     ``eval(h, [k1, k2, ...])``
     """
-
 
     if not args or args[0] is None:
         return None
@@ -1964,7 +2027,6 @@ def _jsonb_set(args: list[Any]) -> Any:
     Sets a value in a JSON document at the given path.
     """
 
-
     if len(args) < 3 or args[0] is None:
         return None
     target = args[0]
@@ -1977,9 +2039,10 @@ def _jsonb_set(args: list[Any]) -> Any:
     create = bool(args[3]) if len(args) > 3 else True
 
     import copy
+
     result = copy.deepcopy(target)
     obj = result
-    for i, key in enumerate(keys[:-1]):
+    for _i, key in enumerate(keys[:-1]):
         if isinstance(obj, dict):
             if key not in obj:
                 if not create:
@@ -2009,7 +2072,6 @@ def _jsonb_set(args: list[Any]) -> Any:
 def _json_each(args: list[Any], *, as_text: bool) -> list[dict]:
     """Expand a JSON object into key-value rows."""
 
-
     if not args or args[0] is None:
         return []
     obj = args[0]
@@ -2030,7 +2092,6 @@ def _json_each(args: list[Any], *, as_text: bool) -> list[dict]:
 
 def _json_array_elements(args: list[Any], *, as_text: bool) -> list[Any]:
     """Expand a JSON array into individual elements."""
-
 
     if not args or args[0] is None:
         return []
@@ -2053,14 +2114,22 @@ def _json_array_elements(args: list[Any], *, as_text: bool) -> list[Any]:
 # -- Date/time formatting helpers ----------------------------------------
 
 _PG_TO_STRFTIME: list[tuple[str, str]] = [
-    ("YYYY", "%Y"), ("YY", "%y"),
-    ("MM", "%m"), ("DD", "%d"),
-    ("HH24", "%H"), ("HH12", "%I"), ("HH", "%H"),
-    ("MI", "%M"), ("SS", "%S"),
+    ("YYYY", "%Y"),
+    ("YY", "%y"),
+    ("MM", "%m"),
+    ("DD", "%d"),
+    ("HH24", "%H"),
+    ("HH12", "%I"),
+    ("HH", "%H"),
+    ("MI", "%M"),
+    ("SS", "%S"),
     ("US", "%f"),
-    ("AM", "%p"), ("PM", "%p"),
-    ("Month", "%B"), ("Mon", "%b"),
-    ("Day", "%A"), ("Dy", "%a"),
+    ("AM", "%p"),
+    ("PM", "%p"),
+    ("Month", "%B"),
+    ("Mon", "%b"),
+    ("Day", "%A"),
+    ("Dy", "%a"),
     ("TZ", "%Z"),
 ]
 

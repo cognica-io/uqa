@@ -12,10 +12,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-import numpy as np
-from numpy.typing import NDArray
-
-
 DocId = int
 FieldName = str
 TermValue = str
@@ -159,6 +155,7 @@ class IsNull(Predicate):
     Note: FilterOperator must check ``is_null_predicate()`` and bypass the
     ``value is not None`` guard for this predicate to work correctly.
     """
+
     def evaluate(self, value: Any) -> bool:
         return value is None
 
@@ -166,6 +163,7 @@ class IsNull(Predicate):
 @dataclass(frozen=True, slots=True)
 class IsNotNull(Predicate):
     """Matches when value is not None."""
+
     def evaluate(self, value: Any) -> bool:
         return value is not None
 
@@ -176,6 +174,7 @@ class Like(Predicate):
 
     Translates SQL ``%`` and ``_`` wildcards into Python regex.
     """
+
     pattern: str
 
     def evaluate(self, value: Any) -> bool:
@@ -185,6 +184,7 @@ class Like(Predicate):
 @dataclass(frozen=True, slots=True)
 class NotLike(Predicate):
     """SQL NOT LIKE pattern match (case-sensitive)."""
+
     pattern: str
 
     def evaluate(self, value: Any) -> bool:
@@ -194,6 +194,7 @@ class NotLike(Predicate):
 @dataclass(frozen=True, slots=True)
 class ILike(Predicate):
     """SQL ILIKE pattern match (case-insensitive)."""
+
     pattern: str
 
     def evaluate(self, value: Any) -> bool:
@@ -203,6 +204,7 @@ class ILike(Predicate):
 @dataclass(frozen=True, slots=True)
 class NotILike(Predicate):
     """SQL NOT ILIKE pattern match (case-insensitive)."""
+
     pattern: str
 
     def evaluate(self, value: Any) -> bool:

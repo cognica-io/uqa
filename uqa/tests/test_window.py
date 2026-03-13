@@ -44,8 +44,7 @@ def engine():
 class TestRowNumber:
     def test_row_number_basic(self, engine):
         r = engine.sql(
-            "SELECT name, ROW_NUMBER() OVER (ORDER BY salary DESC) AS rn "
-            "FROM employees"
+            "SELECT name, ROW_NUMBER() OVER (ORDER BY salary DESC) AS rn FROM employees"
         )
         # Sorted by salary DESC: Eve(95k), Alice(90k), Carol(85k),
         # Frank(80k), Bob(75k), Dave(70k)
@@ -67,12 +66,11 @@ class TestRowNumber:
 
     def test_row_number_asc(self, engine):
         r = engine.sql(
-            "SELECT name, ROW_NUMBER() OVER (ORDER BY salary) AS rn "
-            "FROM employees"
+            "SELECT name, ROW_NUMBER() OVER (ORDER BY salary) AS rn FROM employees"
         )
         rows_by_rn = {row["rn"]: row["name"] for row in r.rows}
         assert rows_by_rn[1] == "Dave"  # lowest salary
-        assert rows_by_rn[6] == "Eve"   # highest salary
+        assert rows_by_rn[6] == "Eve"  # highest salary
 
 
 # ==================================================================
@@ -88,8 +86,7 @@ class TestRank:
             "(7, 'Grace', 'eng', 90000)"
         )
         r = engine.sql(
-            "SELECT name, RANK() OVER (ORDER BY salary DESC) AS rnk "
-            "FROM employees"
+            "SELECT name, RANK() OVER (ORDER BY salary DESC) AS rnk FROM employees"
         )
         rank_map = {row["name"]: row["rnk"] for row in r.rows}
         assert rank_map["Eve"] == 1
@@ -121,10 +118,7 @@ class TestRank:
             "RANK() OVER (PARTITION BY dept ORDER BY salary DESC) AS rnk "
             "FROM employees"
         )
-        eng_ranks = {
-            row["name"]: row["rnk"]
-            for row in r.rows if row["dept"] == "eng"
-        }
+        eng_ranks = {row["name"]: row["rnk"] for row in r.rows if row["dept"] == "eng"}
         assert eng_ranks["Eve"] == 1
         assert eng_ranks["Alice"] == 2
         assert eng_ranks["Carol"] == 3
@@ -177,8 +171,7 @@ class TestLagLead:
             "FROM employees"
         )
         eng_rows = sorted(
-            [row for row in r.rows if row["dept"] == "eng"],
-            key=lambda r: r["salary"]
+            [row for row in r.rows if row["dept"] == "eng"], key=lambda r: r["salary"]
         )
         # First eng employee has no prev in partition
         assert eng_rows[0]["prev_sal"] is None
@@ -303,9 +296,7 @@ def pg17_engine():
 @pytest.fixture
 def engine_with_scores(pg17_engine):
     pg17_engine.sql(
-        "CREATE TABLE scores ("
-        "  id INTEGER PRIMARY KEY, name TEXT, score INTEGER"
-        ")"
+        "CREATE TABLE scores (  id INTEGER PRIMARY KEY, name TEXT, score INTEGER)"
     )
     pg17_engine.sql("INSERT INTO scores (id, name, score) VALUES (1, 'A', 100)")
     pg17_engine.sql("INSERT INTO scores (id, name, score) VALUES (2, 'B', 200)")
@@ -317,9 +308,7 @@ def engine_with_scores(pg17_engine):
 
 @pytest.fixture
 def engine_with_table(pg17_engine):
-    pg17_engine.sql(
-        "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER, name TEXT)"
-    )
+    pg17_engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER, name TEXT)")
     pg17_engine.sql("INSERT INTO t (id, val, name) VALUES (1, 10, 'alpha')")
     pg17_engine.sql("INSERT INTO t (id, val, name) VALUES (2, 20, 'bravo')")
     pg17_engine.sql("INSERT INTO t (id, val, name) VALUES (3, 30, 'charlie')")
@@ -386,9 +375,7 @@ class TestNthValue:
             assert row["second"] == "B"
 
     def test_nth_value_out_of_range(self, pg17_engine):
-        pg17_engine.sql(
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)"
-        )
+        pg17_engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
         pg17_engine.sql("INSERT INTO t (id, val) VALUES (1, 10)")
         result = pg17_engine.sql(
             "SELECT nth_value(val, 5) OVER (ORDER BY id) AS v FROM t"
@@ -415,13 +402,9 @@ class TestWindowFrames:
         assert totals == [100, 300, 500, 800, 1200]
 
     def test_sliding_window_avg(self, pg17_engine):
-        pg17_engine.sql(
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)"
-        )
+        pg17_engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
         for i, v in enumerate([10, 20, 30, 40, 50], start=1):
-            pg17_engine.sql(
-                f"INSERT INTO t (id, val) VALUES ({i}, {v})"
-            )
+            pg17_engine.sql(f"INSERT INTO t (id, val) VALUES ({i}, {v})")
         result = pg17_engine.sql(
             "SELECT id, val, "
             "  AVG(val) OVER ("
@@ -597,10 +580,7 @@ class TestWindowFilterEdgeCases:
 
     def test_avg_filter(self):
         e = Engine()
-        e.sql(
-            "CREATE TABLE scores "
-            "(id INT PRIMARY KEY, subject TEXT, score INT)"
-        )
+        e.sql("CREATE TABLE scores (id INT PRIMARY KEY, subject TEXT, score INT)")
         e.sql("INSERT INTO scores VALUES (1, 'math', 90)")
         e.sql("INSERT INTO scores VALUES (2, 'math', 60)")
         e.sql("INSERT INTO scores VALUES (3, 'sci', 80)")
@@ -620,10 +600,7 @@ class TestWindowFilterEdgeCases:
 
     def test_sum_filter(self):
         e = Engine()
-        e.sql(
-            "CREATE TABLE vals "
-            "(id INT PRIMARY KEY, grp TEXT, amount INT)"
-        )
+        e.sql("CREATE TABLE vals (id INT PRIMARY KEY, grp TEXT, amount INT)")
         e.sql("INSERT INTO vals VALUES (1, 'a', 10)")
         e.sql("INSERT INTO vals VALUES (2, 'a', 20)")
         e.sql("INSERT INTO vals VALUES (3, 'a', 30)")
@@ -640,10 +617,7 @@ class TestWindowFilterEdgeCases:
 
     def test_count_filter(self):
         e = Engine()
-        e.sql(
-            "CREATE TABLE items "
-            "(id INT PRIMARY KEY, category TEXT, price INT)"
-        )
+        e.sql("CREATE TABLE items (id INT PRIMARY KEY, category TEXT, price INT)")
         e.sql("INSERT INTO items VALUES (1, 'food', 5)")
         e.sql("INSERT INTO items VALUES (2, 'food', 15)")
         e.sql("INSERT INTO items VALUES (3, 'food', 25)")

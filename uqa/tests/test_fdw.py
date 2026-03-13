@@ -30,7 +30,6 @@ import pytest
 from uqa.engine import Engine
 from uqa.fdw.duckdb_handler import DuckDBFDWHandler
 
-
 # ======================================================================
 # Fixtures
 # ======================================================================
@@ -50,11 +49,13 @@ def parquet_path(tmp_path):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    table = pa.table({
-        "id": [1, 2, 3, 4, 5],
-        "name": ["alice", "bob", "carol", "dave", "eve"],
-        "value": [10, 20, 30, 40, 50],
-    })
+    table = pa.table(
+        {
+            "id": [1, 2, 3, 4, 5],
+            "name": ["alice", "bob", "carol", "dave", "eve"],
+            "value": [10, 20, 30, 40, 50],
+        }
+    )
     path = str(tmp_path / "test_data.parquet")
     pq.write_table(table, path)
     return path
@@ -66,12 +67,14 @@ def orders_parquet(tmp_path):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    table = pa.table({
-        "order_id": [1, 2, 3, 4, 5],
-        "product_id": [1, 3, 2, 1, 5],
-        "customer": ["alice", "bob", "alice", "carol", "bob"],
-        "quantity": [2, 5, 1, 3, 10],
-    })
+    table = pa.table(
+        {
+            "order_id": [1, 2, 3, 4, 5],
+            "product_id": [1, 3, 2, 1, 5],
+            "customer": ["alice", "bob", "alice", "carol", "bob"],
+            "quantity": [2, 5, 1, 3, 10],
+        }
+    )
     path = str(tmp_path / "orders.parquet")
     pq.write_table(table, path)
     return path
@@ -107,11 +110,8 @@ def fdw_engine(engine, parquet_path):
 
 
 class TestCreateDropServer:
-
     def test_create_server(self, engine):
-        engine.sql(
-            "CREATE SERVER local FOREIGN DATA WRAPPER duckdb_fdw"
-        )
+        engine.sql("CREATE SERVER local FOREIGN DATA WRAPPER duckdb_fdw")
         assert "local" in engine._foreign_servers
         assert engine._foreign_servers["local"].fdw_type == "duckdb_fdw"
 
@@ -145,39 +145,24 @@ class TestCreateDropServer:
         assert server.options["port"] == "8815"
 
     def test_create_server_no_options(self, engine):
-        engine.sql(
-            "CREATE SERVER bare FOREIGN DATA WRAPPER duckdb_fdw"
-        )
+        engine.sql("CREATE SERVER bare FOREIGN DATA WRAPPER duckdb_fdw")
         assert engine._foreign_servers["bare"].options == {}
 
     def test_create_server_if_not_exists(self, engine):
-        engine.sql(
-            "CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw"
-        )
-        engine.sql(
-            "CREATE SERVER IF NOT EXISTS s1 "
-            "FOREIGN DATA WRAPPER duckdb_fdw"
-        )
+        engine.sql("CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw")
+        engine.sql("CREATE SERVER IF NOT EXISTS s1 FOREIGN DATA WRAPPER duckdb_fdw")
 
     def test_create_duplicate_server_error(self, engine):
-        engine.sql(
-            "CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw"
-        )
+        engine.sql("CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw")
         with pytest.raises(ValueError, match="already exists"):
-            engine.sql(
-                "CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw"
-            )
+            engine.sql("CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw")
 
     def test_create_server_unsupported_fdw(self, engine):
         with pytest.raises(ValueError, match="Unsupported FDW type"):
-            engine.sql(
-                "CREATE SERVER bad FOREIGN DATA WRAPPER postgres_fdw"
-            )
+            engine.sql("CREATE SERVER bad FOREIGN DATA WRAPPER postgres_fdw")
 
     def test_drop_server(self, engine):
-        engine.sql(
-            "CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw"
-        )
+        engine.sql("CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw")
         engine.sql("DROP SERVER s1")
         assert "s1" not in engine._foreign_servers
 
@@ -189,20 +174,15 @@ class TestCreateDropServer:
             engine.sql("DROP SERVER nonexistent")
 
     def test_drop_server_with_dependent_table(self, engine):
+        engine.sql("CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw")
         engine.sql(
-            "CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw"
-        )
-        engine.sql(
-            "CREATE FOREIGN TABLE ft (id INTEGER) "
-            "SERVER s1 OPTIONS (source 'dummy')"
+            "CREATE FOREIGN TABLE ft (id INTEGER) SERVER s1 OPTIONS (source 'dummy')"
         )
         with pytest.raises(ValueError, match="depends on it"):
             engine.sql("DROP SERVER s1")
 
     def test_drop_server_closes_handler(self, engine, parquet_path):
-        engine.sql(
-            "CREATE SERVER local FOREIGN DATA WRAPPER duckdb_fdw"
-        )
+        engine.sql("CREATE SERVER local FOREIGN DATA WRAPPER duckdb_fdw")
         engine.sql(
             f"CREATE FOREIGN TABLE ft (id INTEGER) "
             f"SERVER local OPTIONS (source '{parquet_path}')"
@@ -220,11 +200,8 @@ class TestCreateDropServer:
 
 
 class TestCreateDropForeignTable:
-
     def test_create_foreign_table(self, engine):
-        engine.sql(
-            "CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw"
-        )
+        engine.sql("CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw")
         engine.sql(
             "CREATE FOREIGN TABLE data "
             "(id INTEGER, name TEXT, value REAL) "
@@ -237,28 +214,23 @@ class TestCreateDropForeignTable:
         assert ft.options["source"] == "test.parquet"
 
     def test_create_foreign_table_column_types(self, engine):
-        engine.sql(
-            "CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw"
-        )
+        engine.sql("CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw")
         engine.sql(
             "CREATE FOREIGN TABLE ft "
             "(a INTEGER, b TEXT, c REAL, d BOOLEAN, e BIGINT) "
             "SERVER s1 OPTIONS (source 'x')"
         )
         ft = engine._foreign_tables["ft"]
-        assert ft.columns["a"].python_type == int
-        assert ft.columns["b"].python_type == str
-        assert ft.columns["c"].python_type == float
-        assert ft.columns["d"].python_type == bool
-        assert ft.columns["e"].python_type == int
+        assert ft.columns["a"].python_type is int
+        assert ft.columns["b"].python_type is str
+        assert ft.columns["c"].python_type is float
+        assert ft.columns["d"].python_type is bool
+        assert ft.columns["e"].python_type is int
 
     def test_create_foreign_table_if_not_exists(self, engine):
+        engine.sql("CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw")
         engine.sql(
-            "CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw"
-        )
-        engine.sql(
-            "CREATE FOREIGN TABLE ft (id INTEGER) "
-            "SERVER s1 OPTIONS (source 'x')"
+            "CREATE FOREIGN TABLE ft (id INTEGER) SERVER s1 OPTIONS (source 'x')"
         )
         engine.sql(
             "CREATE FOREIGN TABLE IF NOT EXISTS ft (id INTEGER) "
@@ -266,30 +238,24 @@ class TestCreateDropForeignTable:
         )
 
     def test_create_duplicate_foreign_table_error(self, engine):
+        engine.sql("CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw")
         engine.sql(
-            "CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw"
-        )
-        engine.sql(
-            "CREATE FOREIGN TABLE ft (id INTEGER) "
-            "SERVER s1 OPTIONS (source 'x')"
+            "CREATE FOREIGN TABLE ft (id INTEGER) SERVER s1 OPTIONS (source 'x')"
         )
         with pytest.raises(ValueError, match="already exists"):
             engine.sql(
-                "CREATE FOREIGN TABLE ft (id INTEGER) "
-                "SERVER s1 OPTIONS (source 'x')"
+                "CREATE FOREIGN TABLE ft (id INTEGER) SERVER s1 OPTIONS (source 'x')"
             )
 
     def test_create_foreign_table_name_conflicts_with_regular_table(
-        self, engine,
+        self,
+        engine,
     ):
         engine.sql("CREATE TABLE data (id INTEGER)")
-        engine.sql(
-            "CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw"
-        )
+        engine.sql("CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw")
         with pytest.raises(ValueError, match="already exists"):
             engine.sql(
-                "CREATE FOREIGN TABLE data (id INTEGER) "
-                "SERVER s1 OPTIONS (source 'x')"
+                "CREATE FOREIGN TABLE data (id INTEGER) SERVER s1 OPTIONS (source 'x')"
             )
 
     def test_create_foreign_table_missing_server(self, engine):
@@ -300,27 +266,20 @@ class TestCreateDropForeignTable:
             )
 
     def test_multiple_foreign_tables_on_same_server(self, engine):
+        engine.sql("CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw")
         engine.sql(
-            "CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw"
+            "CREATE FOREIGN TABLE ft1 (id INTEGER) SERVER s1 OPTIONS (source 'a')"
         )
         engine.sql(
-            "CREATE FOREIGN TABLE ft1 (id INTEGER) "
-            "SERVER s1 OPTIONS (source 'a')"
-        )
-        engine.sql(
-            "CREATE FOREIGN TABLE ft2 (name TEXT) "
-            "SERVER s1 OPTIONS (source 'b')"
+            "CREATE FOREIGN TABLE ft2 (name TEXT) SERVER s1 OPTIONS (source 'b')"
         )
         assert engine._foreign_tables["ft1"].server_name == "s1"
         assert engine._foreign_tables["ft2"].server_name == "s1"
 
     def test_drop_foreign_table(self, engine):
+        engine.sql("CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw")
         engine.sql(
-            "CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw"
-        )
-        engine.sql(
-            "CREATE FOREIGN TABLE ft (id INTEGER) "
-            "SERVER s1 OPTIONS (source 'x')"
+            "CREATE FOREIGN TABLE ft (id INTEGER) SERVER s1 OPTIONS (source 'x')"
         )
         engine.sql("DROP FOREIGN TABLE ft")
         assert "ft" not in engine._foreign_tables
@@ -333,12 +292,9 @@ class TestCreateDropForeignTable:
             engine.sql("DROP FOREIGN TABLE nonexistent")
 
     def test_drop_foreign_table_then_server(self, engine):
+        engine.sql("CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw")
         engine.sql(
-            "CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw"
-        )
-        engine.sql(
-            "CREATE FOREIGN TABLE ft (id INTEGER) "
-            "SERVER s1 OPTIONS (source 'x')"
+            "CREATE FOREIGN TABLE ft (id INTEGER) SERVER s1 OPTIONS (source 'x')"
         )
         engine.sql("DROP FOREIGN TABLE ft")
         engine.sql("DROP SERVER s1")
@@ -351,12 +307,9 @@ class TestCreateDropForeignTable:
 
 
 class TestDMLGuard:
-
     @pytest.fixture(autouse=True)
     def setup_foreign_table(self, engine):
-        engine.sql(
-            "CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw"
-        )
+        engine.sql("CREATE SERVER s1 FOREIGN DATA WRAPPER duckdb_fdw")
         engine.sql(
             "CREATE FOREIGN TABLE ft (id INTEGER, name TEXT) "
             "SERVER s1 OPTIONS (source 'dummy')"
@@ -381,7 +334,6 @@ class TestDMLGuard:
 
 
 class TestSourceNormalization:
-
     def test_parquet_path_auto_wrapped(self):
         result = DuckDBFDWHandler._normalize_source("/data/file.parquet")
         assert result == "read_parquet('/data/file.parquet')"
@@ -416,7 +368,6 @@ class TestSourceNormalization:
 
 
 class TestDuckDBFDWBasicQueries:
-
     def test_select_all(self, fdw_engine):
         result = fdw_engine.sql("SELECT * FROM data ORDER BY id")
         assert len(result.rows) == 5
@@ -426,17 +377,13 @@ class TestDuckDBFDWBasicQueries:
         assert result.rows[4]["name"] == "eve"
 
     def test_select_columns(self, fdw_engine):
-        result = fdw_engine.sql(
-            "SELECT name, value FROM data ORDER BY id"
-        )
+        result = fdw_engine.sql("SELECT name, value FROM data ORDER BY id")
         assert result.columns == ["name", "value"]
         assert result.rows[0]["name"] == "alice"
         assert result.rows[0]["value"] == 10
 
     def test_where_equality(self, fdw_engine):
-        result = fdw_engine.sql(
-            "SELECT name FROM data WHERE id = 3"
-        )
+        result = fdw_engine.sql("SELECT name FROM data WHERE id = 3")
         assert len(result.rows) == 1
         assert result.rows[0]["name"] == "carol"
 
@@ -465,13 +412,14 @@ class TestDuckDBFDWBasicQueries:
             "SELECT name FROM data WHERE id IN (1, 3, 5) ORDER BY id"
         )
         assert [r["name"] for r in result.rows] == [
-            "alice", "carol", "eve",
+            "alice",
+            "carol",
+            "eve",
         ]
 
     def test_where_between(self, fdw_engine):
         result = fdw_engine.sql(
-            "SELECT name FROM data WHERE value BETWEEN 20 AND 40 "
-            "ORDER BY value"
+            "SELECT name FROM data WHERE value BETWEEN 20 AND 40 ORDER BY value"
         )
         assert len(result.rows) == 3
 
@@ -482,30 +430,26 @@ class TestDuckDBFDWBasicQueries:
         assert [r["name"] for r in result.rows] == ["bob", "carol"]
 
     def test_order_by_desc(self, fdw_engine):
-        result = fdw_engine.sql(
-            "SELECT name FROM data ORDER BY value DESC"
-        )
+        result = fdw_engine.sql("SELECT name FROM data ORDER BY value DESC")
         assert [r["name"] for r in result.rows] == [
-            "eve", "dave", "carol", "bob", "alice",
+            "eve",
+            "dave",
+            "carol",
+            "bob",
+            "alice",
         ]
         assert list(result.rows[0].keys()) == ["name"]
 
     def test_limit(self, fdw_engine):
-        result = fdw_engine.sql(
-            "SELECT * FROM data ORDER BY id LIMIT 2"
-        )
+        result = fdw_engine.sql("SELECT * FROM data ORDER BY id LIMIT 2")
         assert len(result.rows) == 2
 
     def test_limit_offset(self, fdw_engine):
-        result = fdw_engine.sql(
-            "SELECT name FROM data ORDER BY id LIMIT 2 OFFSET 2"
-        )
+        result = fdw_engine.sql("SELECT name FROM data ORDER BY id LIMIT 2 OFFSET 2")
         assert [r["name"] for r in result.rows] == ["carol", "dave"]
 
     def test_distinct(self, fdw_engine):
-        result = fdw_engine.sql(
-            "SELECT DISTINCT value FROM data ORDER BY value"
-        )
+        result = fdw_engine.sql("SELECT DISTINCT value FROM data ORDER BY value")
         assert len(result.rows) == 5
 
     def test_count(self, fdw_engine):
@@ -521,9 +465,7 @@ class TestDuckDBFDWBasicQueries:
         assert result.rows[0]["avg_val"] == 30.0
 
     def test_min_max(self, fdw_engine):
-        result = fdw_engine.sql(
-            "SELECT MIN(value) AS lo, MAX(value) AS hi FROM data"
-        )
+        result = fdw_engine.sql("SELECT MIN(value) AS lo, MAX(value) AS hi FROM data")
         assert result.rows[0]["lo"] == 10
         assert result.rows[0]["hi"] == 50
 
@@ -534,18 +476,22 @@ class TestDuckDBFDWBasicQueries:
 
 
 class TestDuckDBFDWAggregation:
-
     @pytest.fixture(autouse=True)
     def setup(self, engine, tmp_path):
         import pyarrow as pa
         import pyarrow.parquet as pq
 
         path = str(tmp_path / "sales.parquet")
-        pq.write_table(pa.table({
-            "region": ["East", "East", "West", "West", "East"],
-            "product": ["A", "B", "A", "B", "A"],
-            "amount": [100, 200, 150, 250, 120],
-        }), path)
+        pq.write_table(
+            pa.table(
+                {
+                    "region": ["East", "East", "West", "West", "East"],
+                    "product": ["A", "B", "A", "B", "A"],
+                    "amount": [100, 200, 150, 250, 120],
+                }
+            ),
+            path,
+        )
 
         engine.sql("CREATE SERVER local FOREIGN DATA WRAPPER duckdb_fdw")
         engine.sql(
@@ -589,12 +535,10 @@ class TestDuckDBFDWAggregation:
 
 
 class TestDuckDBFDWJoins:
-
     def test_join_foreign_and_local(self, fdw_engine):
         fdw_engine.sql("CREATE TABLE tags (id INTEGER, tag TEXT)")
         fdw_engine.sql(
-            "INSERT INTO tags (id, tag) VALUES "
-            "(1, 'admin'), (2, 'user'), (3, 'guest')"
+            "INSERT INTO tags (id, tag) VALUES (1, 'admin'), (2, 'user'), (3, 'guest')"
         )
         result = fdw_engine.sql(
             "SELECT d.name, t.tag FROM data d "
@@ -608,7 +552,10 @@ class TestDuckDBFDWJoins:
         assert result.rows[2]["tag"] == "guest"
 
     def test_join_two_foreign_tables(
-        self, engine, parquet_path, orders_parquet,
+        self,
+        engine,
+        parquet_path,
+        orders_parquet,
     ):
         engine.sql("CREATE SERVER local FOREIGN DATA WRAPPER duckdb_fdw")
         engine.sql(
@@ -633,7 +580,10 @@ class TestDuckDBFDWJoins:
         assert result.rows[0]["quantity"] == 2
 
     def test_three_way_join_local_and_foreign(
-        self, engine, parquet_path, orders_parquet,
+        self,
+        engine,
+        parquet_path,
+        orders_parquet,
     ):
         engine.sql("CREATE SERVER local FOREIGN DATA WRAPPER duckdb_fdw")
         engine.sql(
@@ -647,10 +597,7 @@ class TestDuckDBFDWJoins:
             f"customer TEXT, quantity INTEGER) "
             f"SERVER local OPTIONS (source '{orders_parquet}')"
         )
-        engine.sql(
-            "CREATE TABLE customer_tiers "
-            "(customer TEXT PRIMARY KEY, tier TEXT)"
-        )
+        engine.sql("CREATE TABLE customer_tiers (customer TEXT PRIMARY KEY, tier TEXT)")
         engine.sql(
             "INSERT INTO customer_tiers (customer, tier) VALUES "
             "('alice', 'gold'), ('bob', 'silver'), ('carol', 'bronze')"
@@ -669,9 +616,7 @@ class TestDuckDBFDWJoins:
 
     def test_left_join_foreign_and_local(self, fdw_engine):
         fdw_engine.sql("CREATE TABLE tags (id INTEGER, tag TEXT)")
-        fdw_engine.sql(
-            "INSERT INTO tags (id, tag) VALUES (1, 'admin'), (3, 'guest')"
-        )
+        fdw_engine.sql("INSERT INTO tags (id, tag) VALUES (1, 'admin'), (3, 'guest')")
         result = fdw_engine.sql(
             "SELECT d.name, t.tag FROM data d "
             "LEFT JOIN tags t ON d.id = t.id "
@@ -689,19 +634,16 @@ class TestDuckDBFDWJoins:
 
 
 class TestDuckDBFDWSubqueries:
-
     def test_subquery_in_where(self, fdw_engine):
         fdw_engine.sql("CREATE TABLE selected (id INTEGER)")
-        fdw_engine.sql(
-            "INSERT INTO selected (id) VALUES (1), (3), (5)"
-        )
+        fdw_engine.sql("INSERT INTO selected (id) VALUES (1), (3), (5)")
         result = fdw_engine.sql(
-            "SELECT name FROM data "
-            "WHERE id IN (SELECT id FROM selected) "
-            "ORDER BY id"
+            "SELECT name FROM data WHERE id IN (SELECT id FROM selected) ORDER BY id"
         )
         assert [r["name"] for r in result.rows] == [
-            "alice", "carol", "eve",
+            "alice",
+            "carol",
+            "eve",
         ]
 
     def test_cte_over_foreign_table(self, fdw_engine):
@@ -712,7 +654,9 @@ class TestDuckDBFDWSubqueries:
             SELECT name FROM high_value ORDER BY value
         """)
         assert [r["name"] for r in result.rows] == [
-            "carol", "dave", "eve",
+            "carol",
+            "dave",
+            "eve",
         ]
 
     def test_scalar_subquery(self, fdw_engine):
@@ -734,7 +678,6 @@ class TestDuckDBFDWSubqueries:
 
 
 class TestDuckDBFDWWindowFunctions:
-
     def test_row_number(self, fdw_engine):
         result = fdw_engine.sql("""
             SELECT name, value,
@@ -769,7 +712,6 @@ class TestDuckDBFDWWindowFunctions:
 
 
 class TestDuckDBFDWExplain:
-
     def test_explain_foreign_table(self, fdw_engine):
         result = fdw_engine.sql("EXPLAIN SELECT * FROM data")
         assert len(result.rows) > 0
@@ -784,7 +726,6 @@ class TestDuckDBFDWExplain:
 
 
 class TestDuckDBFDWSources:
-
     def test_parquet_auto_detected(self, engine, parquet_path):
         engine.sql("CREATE SERVER local FOREIGN DATA WRAPPER duckdb_fdw")
         engine.sql(
@@ -813,9 +754,7 @@ class TestDuckDBFDWSources:
             f"(id INTEGER, name TEXT, score REAL) "
             f"SERVER local OPTIONS (source '{csv_path}')"
         )
-        result = engine.sql(
-            "SELECT * FROM csvdata ORDER BY id"
-        )
+        result = engine.sql("SELECT * FROM csvdata ORDER BY id")
         assert len(result.rows) == 3
         assert result.rows[0]["name"] == "alice"
         assert result.rows[0]["score"] == pytest.approx(95.5)
@@ -848,8 +787,7 @@ class TestDuckDBFDWSources:
     def test_missing_source_option(self, engine):
         engine.sql("CREATE SERVER local FOREIGN DATA WRAPPER duckdb_fdw")
         engine.sql(
-            "CREATE FOREIGN TABLE ft (id INTEGER) "
-            "SERVER local OPTIONS (dummy 'x')"
+            "CREATE FOREIGN TABLE ft (id INTEGER) SERVER local OPTIONS (dummy 'x')"
         )
         with pytest.raises(ValueError, match="missing required option"):
             engine.sql("SELECT * FROM ft")
@@ -861,14 +799,16 @@ class TestDuckDBFDWSources:
 
 
 class TestHandlerLifecycle:
-
     def test_handler_cached_per_server(self, fdw_engine, parquet_path):
         fdw_engine.sql("SELECT * FROM data")
         fdw_engine.sql("SELECT * FROM data")
         assert "local" in fdw_engine._fdw_handlers
 
     def test_handler_shared_across_tables(
-        self, engine, parquet_path, orders_parquet,
+        self,
+        engine,
+        parquet_path,
+        orders_parquet,
     ):
         engine.sql("CREATE SERVER local FOREIGN DATA WRAPPER duckdb_fdw")
         engine.sql(
@@ -900,7 +840,6 @@ class TestHandlerLifecycle:
 
 
 class TestInformationSchema:
-
     def test_foreign_table_type(self, fdw_engine):
         fdw_engine.sql("CREATE TABLE local_t (x INTEGER)")
         result = fdw_engine.sql(
@@ -914,8 +853,7 @@ class TestInformationSchema:
 
     def test_foreign_table_with_view(self, fdw_engine):
         fdw_engine.sql(
-            "CREATE VIEW high_value AS "
-            "SELECT name FROM data WHERE value > 30"
+            "CREATE VIEW high_value AS SELECT name FROM data WHERE value > 30"
         )
         result = fdw_engine.sql(
             "SELECT table_name, table_type "
@@ -947,7 +885,6 @@ class TestInformationSchema:
 
 
 class TestCatalogPersistence:
-
     def test_persist_and_restore_server(self, tmp_path):
         db_path = str(tmp_path / "test.db")
         engine1 = Engine(db_path=db_path)
@@ -1061,21 +998,27 @@ def hive_parquet_path(tmp_path):
         ("2023", "6", [{"id": 1, "name": "alpha", "amount": 100}]),
         ("2023", "12", [{"id": 2, "name": "beta", "amount": 200}]),
         ("2024", "3", [{"id": 3, "name": "gamma", "amount": 300}]),
-        ("2024", "9", [
-            {"id": 4, "name": "delta", "amount": 400},
-            {"id": 5, "name": "epsilon", "amount": 500},
-        ]),
+        (
+            "2024",
+            "9",
+            [
+                {"id": 4, "name": "delta", "amount": 400},
+                {"id": 5, "name": "epsilon", "amount": 500},
+            ],
+        ),
     ]
 
     base = tmp_path / "data"
     for year, month, rows in partitions:
         part_dir = base / f"year={year}" / f"month={month}"
         part_dir.mkdir(parents=True)
-        table = pa.table({
-            "id": [r["id"] for r in rows],
-            "name": [r["name"] for r in rows],
-            "amount": [r["amount"] for r in rows],
-        })
+        table = pa.table(
+            {
+                "id": [r["id"] for r in rows],
+                "name": [r["name"] for r in rows],
+                "amount": [r["amount"] for r in rows],
+            }
+        )
         pq.write_table(table, str(part_dir / "data.parquet"))
 
     return str(base / "**/*.parquet")
@@ -1100,40 +1043,33 @@ class TestHivePartitionDiscovery:
     """Verify that Hive partition columns are discovered and queryable."""
 
     def test_select_all_rows(self, hive_engine):
-        result = hive_engine.sql(
-            "SELECT * FROM sales ORDER BY id"
-        )
+        result = hive_engine.sql("SELECT * FROM sales ORDER BY id")
         assert len(result.rows) == 5
         assert result.rows[0]["name"] == "alpha"
         assert result.rows[4]["name"] == "epsilon"
 
     def test_partition_columns_populated(self, hive_engine):
-        result = hive_engine.sql(
-            "SELECT id, year, month FROM sales ORDER BY id"
-        )
+        result = hive_engine.sql("SELECT id, year, month FROM sales ORDER BY id")
         assert result.rows[0] == {"id": 1, "year": 2023, "month": 6}
         assert result.rows[2] == {"id": 3, "year": 2024, "month": 3}
         assert result.rows[4] == {"id": 5, "year": 2024, "month": 9}
 
     def test_data_and_partition_columns_together(self, hive_engine):
-        result = hive_engine.sql(
-            "SELECT name, amount, year FROM sales WHERE id = 3"
-        )
+        result = hive_engine.sql("SELECT name, amount, year FROM sales WHERE id = 3")
         assert len(result.rows) == 1
         assert result.rows[0] == {
-            "name": "gamma", "amount": 300, "year": 2024,
+            "name": "gamma",
+            "amount": 300,
+            "year": 2024,
         }
 
     def test_distinct_partition_values(self, hive_engine):
-        result = hive_engine.sql(
-            "SELECT DISTINCT year FROM sales ORDER BY year"
-        )
+        result = hive_engine.sql("SELECT DISTINCT year FROM sales ORDER BY year")
         assert [r["year"] for r in result.rows] == [2023, 2024]
 
     def test_count_per_partition(self, hive_engine):
         result = hive_engine.sql(
-            "SELECT year, COUNT(*) AS cnt FROM sales "
-            "GROUP BY year ORDER BY year"
+            "SELECT year, COUNT(*) AS cnt FROM sales GROUP BY year ORDER BY year"
         )
         assert result.rows[0]["year"] == 2023
         assert result.rows[0]["cnt"] == 2
@@ -1150,42 +1086,38 @@ class TestHivePredicatePushdown:
         )
         assert len(result.rows) == 3
         assert [r["name"] for r in result.rows] == [
-            "gamma", "delta", "epsilon",
+            "gamma",
+            "delta",
+            "epsilon",
         ]
 
     def test_comparison_on_partition_column(self, hive_engine):
-        result = hive_engine.sql(
-            "SELECT id FROM sales WHERE month > 6 ORDER BY id"
-        )
+        result = hive_engine.sql("SELECT id FROM sales WHERE month > 6 ORDER BY id")
         assert [r["id"] for r in result.rows] == [2, 4, 5]
 
     def test_multiple_partition_predicates(self, hive_engine):
         result = hive_engine.sql(
-            "SELECT name FROM sales "
-            "WHERE year = 2024 AND month = 9 ORDER BY id"
+            "SELECT name FROM sales WHERE year = 2024 AND month = 9 ORDER BY id"
         )
         assert [r["name"] for r in result.rows] == ["delta", "epsilon"]
 
     def test_partition_and_data_predicates(self, hive_engine):
         """Partition predicate pushed down, data predicate applied post-scan."""
         result = hive_engine.sql(
-            "SELECT name FROM sales "
-            "WHERE year = 2024 AND amount >= 400 ORDER BY name"
+            "SELECT name FROM sales WHERE year = 2024 AND amount >= 400 ORDER BY name"
         )
         assert [r["name"] for r in result.rows] == ["delta", "epsilon"]
 
     def test_between_on_partition_column(self, hive_engine):
         result = hive_engine.sql(
-            "SELECT id FROM sales "
-            "WHERE month BETWEEN 3 AND 9 ORDER BY id"
+            "SELECT id FROM sales WHERE month BETWEEN 3 AND 9 ORDER BY id"
         )
         assert [r["id"] for r in result.rows] == [1, 3, 4, 5]
 
     def test_or_not_pushed_down(self, hive_engine):
         """OR predicates are not pushable -- deferred to post-scan filter."""
         result = hive_engine.sql(
-            "SELECT id FROM sales "
-            "WHERE year = 2023 OR month = 9 ORDER BY id"
+            "SELECT id FROM sales WHERE year = 2023 OR month = 9 ORDER BY id"
         )
         assert [r["id"] for r in result.rows] == [1, 2, 4, 5]
 
@@ -1199,28 +1131,19 @@ class TestHivePredicatePushdown:
         assert [r["id"] for r in result.rows] == [3, 4, 5]
 
     def test_not_equal_on_partition(self, hive_engine):
-        result = hive_engine.sql(
-            "SELECT id FROM sales WHERE year != 2023 ORDER BY id"
-        )
+        result = hive_engine.sql("SELECT id FROM sales WHERE year != 2023 ORDER BY id")
         assert [r["id"] for r in result.rows] == [3, 4, 5]
 
     def test_less_than_on_partition(self, hive_engine):
-        result = hive_engine.sql(
-            "SELECT name FROM sales WHERE month < 6 ORDER BY id"
-        )
+        result = hive_engine.sql("SELECT name FROM sales WHERE month < 6 ORDER BY id")
         assert [r["name"] for r in result.rows] == ["gamma"]
 
     def test_greater_equal_on_partition(self, hive_engine):
-        result = hive_engine.sql(
-            "SELECT id FROM sales WHERE year >= 2024 ORDER BY id"
-        )
+        result = hive_engine.sql("SELECT id FROM sales WHERE year >= 2024 ORDER BY id")
         assert [r["id"] for r in result.rows] == [3, 4, 5]
 
     def test_string_predicate_on_data_column(self, hive_engine):
-        result = hive_engine.sql(
-            "SELECT year, name FROM sales "
-            "WHERE name = 'gamma'"
-        )
+        result = hive_engine.sql("SELECT year, name FROM sales WHERE name = 'gamma'")
         assert len(result.rows) == 1
         assert result.rows[0] == {"year": 2024, "name": "gamma"}
 
@@ -1230,8 +1153,7 @@ class TestHivePartitionAggregation:
 
     def test_sum_per_year(self, hive_engine):
         result = hive_engine.sql(
-            "SELECT year, SUM(amount) AS total FROM sales "
-            "GROUP BY year ORDER BY year"
+            "SELECT year, SUM(amount) AS total FROM sales GROUP BY year ORDER BY year"
         )
         assert result.rows[0]["year"] == 2023
         assert result.rows[0]["total"] == 300
@@ -1260,16 +1182,9 @@ class TestHivePartitionJoins:
     """Joins between Hive-partitioned foreign tables and local tables."""
 
     def test_join_hive_with_local_table(self, hive_engine):
-        hive_engine.sql(
-            "CREATE TABLE regions "
-            "(year INTEGER, region TEXT)"
-        )
-        hive_engine.sql(
-            "INSERT INTO regions (year, region) VALUES (2023, 'APAC')"
-        )
-        hive_engine.sql(
-            "INSERT INTO regions (year, region) VALUES (2024, 'EMEA')"
-        )
+        hive_engine.sql("CREATE TABLE regions (year INTEGER, region TEXT)")
+        hive_engine.sql("INSERT INTO regions (year, region) VALUES (2023, 'APAC')")
+        hive_engine.sql("INSERT INTO regions (year, region) VALUES (2024, 'EMEA')")
         result = hive_engine.sql(
             "SELECT s.name, r.region FROM sales s "
             "INNER JOIN regions r ON s.year = r.year "
@@ -1293,8 +1208,7 @@ class TestHivePartitionOrderLimit:
 
     def test_limit_with_partition_filter(self, hive_engine):
         result = hive_engine.sql(
-            "SELECT name FROM sales WHERE year = 2024 "
-            "ORDER BY amount LIMIT 2"
+            "SELECT name FROM sales WHERE year = 2024 ORDER BY amount LIMIT 2"
         )
         assert len(result.rows) == 2
         assert result.rows[0]["name"] == "gamma"
@@ -1306,38 +1220,39 @@ class TestHiveNormalizeSource:
 
     def test_bare_parquet_with_hive(self):
         result = DuckDBFDWHandler._normalize_source(
-            "/data/**/*.parquet", hive_partitioning=True,
+            "/data/**/*.parquet",
+            hive_partitioning=True,
         )
         assert result == (
-            "read_parquet('/data/**/*.parquet', "
-            "hive_partitioning = true)"
+            "read_parquet('/data/**/*.parquet', hive_partitioning = true)"
         )
 
     def test_bare_parquet_without_hive(self):
         result = DuckDBFDWHandler._normalize_source(
-            "/data/**/*.parquet", hive_partitioning=False,
+            "/data/**/*.parquet",
+            hive_partitioning=False,
         )
         assert result == "read_parquet('/data/**/*.parquet')"
 
     def test_bare_csv_with_hive(self):
         result = DuckDBFDWHandler._normalize_source(
-            "/logs/**/*.csv", hive_partitioning=True,
+            "/logs/**/*.csv",
+            hive_partitioning=True,
         )
-        assert result == (
-            "read_csv('/logs/**/*.csv', "
-            "hive_partitioning = true)"
-        )
+        assert result == ("read_csv('/logs/**/*.csv', hive_partitioning = true)")
 
     def test_explicit_expression_ignores_hive_flag(self):
         expr = "read_parquet('/data/*.parquet', filename=true)"
         result = DuckDBFDWHandler._normalize_source(
-            expr, hive_partitioning=True,
+            expr,
+            hive_partitioning=True,
         )
         assert result == expr
 
     def test_table_name_ignores_hive_flag(self):
         result = DuckDBFDWHandler._normalize_source(
-            "my_table", hive_partitioning=True,
+            "my_table",
+            hive_partitioning=True,
         )
         assert result == "my_table"
 
@@ -1348,102 +1263,124 @@ class TestHiveBuildWhereClause:
     def test_single_equality(self):
         from uqa.fdw.foreign_table import FDWPredicate
 
-        where, params = DuckDBFDWHandler._build_where_clause([
-            FDWPredicate("year", "=", 2024),
-        ])
+        where, params = DuckDBFDWHandler._build_where_clause(
+            [
+                FDWPredicate("year", "=", 2024),
+            ]
+        )
         assert where == "year = ?"
         assert params == [2024]
 
     def test_multiple_predicates(self):
         from uqa.fdw.foreign_table import FDWPredicate
 
-        where, params = DuckDBFDWHandler._build_where_clause([
-            FDWPredicate("year", "=", 2024),
-            FDWPredicate("month", ">", 6),
-        ])
+        where, params = DuckDBFDWHandler._build_where_clause(
+            [
+                FDWPredicate("year", "=", 2024),
+                FDWPredicate("month", ">", 6),
+            ]
+        )
         assert where == "year = ? AND month > ?"
         assert params == [2024, 6]
 
     def test_string_value(self):
         from uqa.fdw.foreign_table import FDWPredicate
 
-        where, params = DuckDBFDWHandler._build_where_clause([
-            FDWPredicate("name", "=", "alice"),
-        ])
+        where, params = DuckDBFDWHandler._build_where_clause(
+            [
+                FDWPredicate("name", "=", "alice"),
+            ]
+        )
         assert where == "name = ?"
         assert params == ["alice"]
 
     def test_null_equality(self):
         from uqa.fdw.foreign_table import FDWPredicate
 
-        where, params = DuckDBFDWHandler._build_where_clause([
-            FDWPredicate("col", "=", None),
-        ])
+        where, params = DuckDBFDWHandler._build_where_clause(
+            [
+                FDWPredicate("col", "=", None),
+            ]
+        )
         assert where == "col IS NULL"
         assert params == []
 
     def test_null_not_equal(self):
         from uqa.fdw.foreign_table import FDWPredicate
 
-        where, params = DuckDBFDWHandler._build_where_clause([
-            FDWPredicate("col", "!=", None),
-        ])
+        where, params = DuckDBFDWHandler._build_where_clause(
+            [
+                FDWPredicate("col", "!=", None),
+            ]
+        )
         assert where == "col IS NOT NULL"
         assert params == []
 
     def test_in_operator(self):
         from uqa.fdw.foreign_table import FDWPredicate
 
-        where, params = DuckDBFDWHandler._build_where_clause([
-            FDWPredicate("year", "IN", (2023, 2024)),
-        ])
+        where, params = DuckDBFDWHandler._build_where_clause(
+            [
+                FDWPredicate("year", "IN", (2023, 2024)),
+            ]
+        )
         assert where == "year IN (?, ?)"
         assert params == [2023, 2024]
 
     def test_in_with_strings(self):
         from uqa.fdw.foreign_table import FDWPredicate
 
-        where, params = DuckDBFDWHandler._build_where_clause([
-            FDWPredicate("name", "IN", ("alice", "bob")),
-        ])
+        where, params = DuckDBFDWHandler._build_where_clause(
+            [
+                FDWPredicate("name", "IN", ("alice", "bob")),
+            ]
+        )
         assert where == "name IN (?, ?)"
         assert params == ["alice", "bob"]
 
     def test_like_operator(self):
         from uqa.fdw.foreign_table import FDWPredicate
 
-        where, params = DuckDBFDWHandler._build_where_clause([
-            FDWPredicate("name", "LIKE", "%foo%"),
-        ])
+        where, params = DuckDBFDWHandler._build_where_clause(
+            [
+                FDWPredicate("name", "LIKE", "%foo%"),
+            ]
+        )
         assert where == "name LIKE ?"
         assert params == ["%foo%"]
 
     def test_not_like_operator(self):
         from uqa.fdw.foreign_table import FDWPredicate
 
-        where, params = DuckDBFDWHandler._build_where_clause([
-            FDWPredicate("name", "NOT LIKE", "%bar%"),
-        ])
+        where, params = DuckDBFDWHandler._build_where_clause(
+            [
+                FDWPredicate("name", "NOT LIKE", "%bar%"),
+            ]
+        )
         assert where == "name NOT LIKE ?"
         assert params == ["%bar%"]
 
     def test_ilike_operator(self):
         from uqa.fdw.foreign_table import FDWPredicate
 
-        where, params = DuckDBFDWHandler._build_where_clause([
-            FDWPredicate("name", "ILIKE", "%FOO%"),
-        ])
+        where, params = DuckDBFDWHandler._build_where_clause(
+            [
+                FDWPredicate("name", "ILIKE", "%FOO%"),
+            ]
+        )
         assert where == "name ILIKE ?"
         assert params == ["%FOO%"]
 
     def test_mixed_operators(self):
         from uqa.fdw.foreign_table import FDWPredicate
 
-        where, params = DuckDBFDWHandler._build_where_clause([
-            FDWPredicate("year", "IN", (2023, 2024)),
-            FDWPredicate("name", "LIKE", "a%"),
-            FDWPredicate("amount", ">", 100),
-        ])
+        where, params = DuckDBFDWHandler._build_where_clause(
+            [
+                FDWPredicate("year", "IN", (2023, 2024)),
+                FDWPredicate("name", "LIKE", "a%"),
+                FDWPredicate("amount", ">", 100),
+            ]
+        )
         assert where == "year IN (?, ?) AND name LIKE ? AND amount > ?"
         assert params == [2023, 2024, "a%", 100]
 
@@ -1454,8 +1391,7 @@ class TestPredicateExtraction:
     def test_all_predicates_pushed_no_deferred_where(self, hive_engine):
         """When all predicates are pushable, no post-scan filter needed."""
         result = hive_engine.sql(
-            "SELECT name FROM sales "
-            "WHERE year = 2023 AND month = 6"
+            "SELECT name FROM sales WHERE year = 2023 AND month = 6"
         )
         assert len(result.rows) == 1
         assert result.rows[0]["name"] == "alpha"
@@ -1469,15 +1405,12 @@ class TestPredicateExtraction:
 
     def test_not_like_pushed_down(self, hive_engine):
         result = hive_engine.sql(
-            "SELECT name FROM sales "
-            "WHERE name NOT LIKE '%a%' ORDER BY id"
+            "SELECT name FROM sales WHERE name NOT LIKE '%a%' ORDER BY id"
         )
         assert [r["name"] for r in result.rows] == ["epsilon"]
 
     def test_ilike_pushed_down(self, hive_engine):
-        result = hive_engine.sql(
-            "SELECT name FROM sales WHERE name ILIKE 'ALPHA'"
-        )
+        result = hive_engine.sql("SELECT name FROM sales WHERE name ILIKE 'ALPHA'")
         assert len(result.rows) == 1
         assert result.rows[0]["name"] == "alpha"
 
@@ -1496,39 +1429,33 @@ class TestPredicateExtraction:
 
     def test_in_with_strings(self, hive_engine):
         result = hive_engine.sql(
-            "SELECT id FROM sales "
-            "WHERE name IN ('alpha', 'gamma') ORDER BY id"
+            "SELECT id FROM sales WHERE name IN ('alpha', 'gamma') ORDER BY id"
         )
         assert [r["id"] for r in result.rows] == [1, 3]
 
     def test_in_and_comparison_together(self, hive_engine):
         """Both IN and comparison pushed down."""
         result = hive_engine.sql(
-            "SELECT name FROM sales "
-            "WHERE year IN (2024) AND amount > 300 ORDER BY id"
+            "SELECT name FROM sales WHERE year IN (2024) AND amount > 300 ORDER BY id"
         )
         assert [r["name"] for r in result.rows] == ["delta", "epsilon"]
 
     def test_like_and_comparison_together(self, hive_engine):
         """Both LIKE and comparison pushed down."""
         result = hive_engine.sql(
-            "SELECT id FROM sales "
-            "WHERE year = 2024 AND name LIKE '%a%' ORDER BY id"
+            "SELECT id FROM sales WHERE year = 2024 AND name LIKE '%a%' ORDER BY id"
         )
         assert [r["id"] for r in result.rows] == [3, 4]
 
     def test_no_where_clause(self, hive_engine):
         """No WHERE -- all rows returned, no pushdown."""
-        result = hive_engine.sql(
-            "SELECT COUNT(*) AS cnt FROM sales"
-        )
+        result = hive_engine.sql("SELECT COUNT(*) AS cnt FROM sales")
         assert result.rows[0]["cnt"] == 5
 
     def test_or_remains_deferred(self, hive_engine):
         """OR predicates cannot be pushed down."""
         result = hive_engine.sql(
-            "SELECT id FROM sales "
-            "WHERE name = 'alpha' OR name = 'gamma' ORDER BY id"
+            "SELECT id FROM sales WHERE name = 'alpha' OR name = 'gamma' ORDER BY id"
         )
         assert [r["id"] for r in result.rows] == [1, 3]
 

@@ -6,10 +6,13 @@
 
 from __future__ import annotations
 
-import numpy as np
-from numpy.typing import NDArray
+from typing import TYPE_CHECKING
 
+import numpy as np
 from bayesian_bm25 import cosine_to_probability
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 
 class VectorScorer:

@@ -6,11 +6,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import hnswlib
 import numpy as np
-from numpy.typing import NDArray
 
 from uqa.core.posting_list import PostingList
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 from uqa.core.types import DocId, Payload, PostingEntry
 
 _INITIAL_CAPACITY = 1024

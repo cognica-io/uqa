@@ -6,13 +6,12 @@
 
 from __future__ import annotations
 
-import sqlite3
 from typing import TYPE_CHECKING
 
-from uqa.core.posting_list import PostingList
-
 if TYPE_CHECKING:
+    from uqa.core.posting_list import PostingList
     from uqa.scoring.bm25 import BM25Scorer
+    from uqa.storage.managed_connection import SQLiteConnection
 
 
 class BlockMaxIndex:
@@ -71,7 +70,7 @@ class BlockMaxIndex:
 
     # -- SQLite persistence --------------------------------------------
 
-    def save_to_sqlite(self, conn: sqlite3.Connection) -> None:
+    def save_to_sqlite(self, conn: SQLiteConnection) -> None:
         """Persist all block-max scores to a ``_global_blockmax`` table."""
         conn.execute(
             "CREATE TABLE IF NOT EXISTS _global_blockmax ("
@@ -94,7 +93,7 @@ class BlockMaxIndex:
                 )
         conn.commit()
 
-    def load_from_sqlite(self, conn: sqlite3.Connection) -> None:
+    def load_from_sqlite(self, conn: SQLiteConnection) -> None:
         """Load block-max scores from the ``_global_blockmax`` table."""
         # Check if table exists.
         row = conn.execute(
@@ -105,9 +104,7 @@ class BlockMaxIndex:
             return
 
         # Detect legacy schema (without table_name column) and migrate.
-        col_info = conn.execute(
-            "PRAGMA table_info(_global_blockmax)"
-        ).fetchall()
+        col_info = conn.execute("PRAGMA table_info(_global_blockmax)").fetchall()
         col_names = {r[1] for r in col_info}
         if "table_name" not in col_names:
             self._migrate_legacy_blockmax(conn)
@@ -121,7 +118,7 @@ class BlockMaxIndex:
 
         current_key: tuple[str, str, str] | None = None
         scores: list[float] = []
-        for table_name, field, term, block_idx, max_score in rows:
+        for table_name, field, term, _block_idx, max_score in rows:
             key = (table_name, field, term)
             if key != current_key:
                 if current_key is not None:
@@ -132,7 +129,7 @@ class BlockMaxIndex:
         if current_key is not None:
             self._block_maxes[current_key] = scores
 
-    def _migrate_legacy_blockmax(self, conn: sqlite3.Connection) -> None:
+    def _migrate_legacy_blockmax(self, conn: SQLiteConnection) -> None:
         """Migrate old _global_blockmax (without table_name) to new schema."""
         rows = conn.execute(
             "SELECT field, term, block_idx, max_score "

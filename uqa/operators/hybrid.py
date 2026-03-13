@@ -32,9 +32,7 @@ class HybridTextVectorOperator(Operator):
         self.vector_op = VectorSimilarityOperator(query_vector, threshold)
 
     def execute(self, context: ExecutionContext) -> PostingList:
-        return self.term_op.execute(context).intersect(
-            self.vector_op.execute(context)
-        )
+        return self.term_op.execute(context).intersect(self.vector_op.execute(context))
 
     def cost_estimate(self, stats: IndexStats) -> float:
         return min(
@@ -56,9 +54,7 @@ class SemanticFilterOperator(Operator):
         self.vector_op = VectorSimilarityOperator(query_vector, threshold)
 
     def execute(self, context: ExecutionContext) -> PostingList:
-        return self.source.execute(context).intersect(
-            self.vector_op.execute(context)
-        )
+        return self.source.execute(context).intersect(self.vector_op.execute(context))
 
     def cost_estimate(self, stats: IndexStats) -> float:
         return min(
@@ -185,9 +181,7 @@ class ProbBoolFusionOperator(Operator):
         )
         entries: list[PostingEntry] = []
         for doc_id in sorted(all_doc_ids):
-            probs = [
-                smap.get(doc_id, self.default_prob) for smap in score_maps
-            ]
+            probs = [smap.get(doc_id, self.default_prob) for smap in score_maps]
             fused = fuse_fn(probs)
             entries.append(PostingEntry(doc_id, Payload(score=fused)))
 
@@ -225,9 +219,8 @@ class VectorExclusionOperator(Operator):
         return PostingList.from_sorted(entries)
 
     def cost_estimate(self, stats: IndexStats) -> float:
-        return (
-            self.positive.cost_estimate(stats)
-            + self.negative_op.cost_estimate(stats)
+        return self.positive.cost_estimate(stats) + self.negative_op.cost_estimate(
+            stats
         )
 
 
@@ -258,9 +251,7 @@ class FacetVectorOperator(Operator):
 
         if self.source is not None:
             source_pl = self.source.execute(context)
-            candidate_ids = [
-                e.doc_id for e in source_pl if e.doc_id in vector_ids
-            ]
+            candidate_ids = [e.doc_id for e in source_pl if e.doc_id in vector_ids]
         else:
             candidate_ids = sorted(vector_ids)
 

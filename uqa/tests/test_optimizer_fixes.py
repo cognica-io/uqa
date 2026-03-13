@@ -8,17 +8,14 @@
 
 from __future__ import annotations
 
-import pytest
-
 from uqa.core.types import (
     Equals,
     GreaterThan,
     IndexStats,
-    PostingEntry,
     Payload,
+    PostingEntry,
 )
 from uqa.engine import Engine
-
 
 # ==================================================================
 # Phase 1: C2 -- Graph filter pushdown to correct vertex
@@ -133,8 +130,7 @@ class TestOnConflictHashIndex:
         # Insert initial rows
         for i in range(100):
             engine.sql(
-                f"INSERT INTO items (id, name, count) "
-                f"VALUES ({i}, 'item_{i}', 0)"
+                f"INSERT INTO items (id, name, count) VALUES ({i}, 'item_{i}', 0)"
             )
 
         # Batch upsert with ON CONFLICT (some new, some existing)
@@ -218,19 +214,23 @@ class TestCardinalityDamping:
 class TestHashJoinBuildSide:
     def test_build_on_smaller_side(self) -> None:
         """Hash join should produce correct results regardless of side sizes."""
+        from uqa.core.posting_list import PostingList
         from uqa.joins.base import JoinCondition
         from uqa.joins.inner import InnerJoinOperator
-        from uqa.core.posting_list import PostingList
 
         # Left: 2 entries, Right: 5 entries
-        left = PostingList([
-            PostingEntry(1, Payload(score=0.0, fields={"id": 1, "name": "a"})),
-            PostingEntry(2, Payload(score=0.0, fields={"id": 2, "name": "b"})),
-        ])
-        right = PostingList([
-            PostingEntry(i, Payload(score=0.0, fields={"fk": i % 2 + 1, "val": i}))
-            for i in range(1, 6)
-        ])
+        left = PostingList(
+            [
+                PostingEntry(1, Payload(score=0.0, fields={"id": 1, "name": "a"})),
+                PostingEntry(2, Payload(score=0.0, fields={"id": 2, "name": "b"})),
+            ]
+        )
+        right = PostingList(
+            [
+                PostingEntry(i, Payload(score=0.0, fields={"fk": i % 2 + 1, "val": i}))
+                for i in range(1, 6)
+            ]
+        )
 
         condition = JoinCondition(left_field="id", right_field="fk")
         join = InnerJoinOperator(left, right, condition)
@@ -247,19 +247,23 @@ class TestHashJoinBuildSide:
 
     def test_build_on_smaller_right(self) -> None:
         """When right is smaller, build hash table on right side."""
+        from uqa.core.posting_list import PostingList
         from uqa.joins.base import JoinCondition
         from uqa.joins.inner import InnerJoinOperator
-        from uqa.core.posting_list import PostingList
 
         # Left: 5 entries, Right: 2 entries (right is smaller)
-        left = PostingList([
-            PostingEntry(i, Payload(score=0.0, fields={"fk": i % 2 + 1, "val": i}))
-            for i in range(1, 6)
-        ])
-        right = PostingList([
-            PostingEntry(1, Payload(score=0.0, fields={"id": 1, "name": "a"})),
-            PostingEntry(2, Payload(score=0.0, fields={"id": 2, "name": "b"})),
-        ])
+        left = PostingList(
+            [
+                PostingEntry(i, Payload(score=0.0, fields={"fk": i % 2 + 1, "val": i}))
+                for i in range(1, 6)
+            ]
+        )
+        right = PostingList(
+            [
+                PostingEntry(1, Payload(score=0.0, fields={"id": 1, "name": "a"})),
+                PostingEntry(2, Payload(score=0.0, fields={"id": 2, "name": "b"})),
+            ]
+        )
 
         condition = JoinCondition(left_field="fk", right_field="id")
         join = InnerJoinOperator(left, right, condition)
@@ -280,22 +284,36 @@ class TestHashJoinBuildSide:
 class TestIndexJoinSelection:
     def test_small_input_uses_index_join(self) -> None:
         """DPccp should select IndexJoin for small cardinality inputs."""
-        from uqa.planner.join_order import JoinOrderOptimizer, INDEX_JOIN_THRESHOLD
         from uqa.joins.index import IndexJoinOperator
+        from uqa.planner.join_order import JoinOrderOptimizer
 
         class _FakeOp:
             def __init__(self, name: str) -> None:
                 self.name = name
 
         relations = [
-            {"alias": "big", "operator": _FakeOp("big"), "table": None,
-             "cardinality": 10000.0, "column_stats": {}},
-            {"alias": "small", "operator": _FakeOp("small"), "table": None,
-             "cardinality": 50.0, "column_stats": {}},
+            {
+                "alias": "big",
+                "operator": _FakeOp("big"),
+                "table": None,
+                "cardinality": 10000.0,
+                "column_stats": {},
+            },
+            {
+                "alias": "small",
+                "operator": _FakeOp("small"),
+                "table": None,
+                "cardinality": 50.0,
+                "column_stats": {},
+            },
         ]
         predicates = [
-            {"left_alias": "big", "right_alias": "small",
-             "left_field": "id", "right_field": "fk"},
+            {
+                "left_alias": "big",
+                "right_alias": "small",
+                "left_field": "id",
+                "right_field": "fk",
+            },
         ]
 
         optimizer = JoinOrderOptimizer()
@@ -305,22 +323,36 @@ class TestIndexJoinSelection:
 
     def test_large_input_uses_hash_join(self) -> None:
         """DPccp should select InnerJoin (hash) for large cardinality inputs."""
-        from uqa.planner.join_order import JoinOrderOptimizer
         from uqa.joins.inner import InnerJoinOperator
+        from uqa.planner.join_order import JoinOrderOptimizer
 
         class _FakeOp:
             def __init__(self, name: str) -> None:
                 self.name = name
 
         relations = [
-            {"alias": "a", "operator": _FakeOp("a"), "table": None,
-             "cardinality": 5000.0, "column_stats": {}},
-            {"alias": "b", "operator": _FakeOp("b"), "table": None,
-             "cardinality": 3000.0, "column_stats": {}},
+            {
+                "alias": "a",
+                "operator": _FakeOp("a"),
+                "table": None,
+                "cardinality": 5000.0,
+                "column_stats": {},
+            },
+            {
+                "alias": "b",
+                "operator": _FakeOp("b"),
+                "table": None,
+                "cardinality": 3000.0,
+                "column_stats": {},
+            },
         ]
         predicates = [
-            {"left_alias": "a", "right_alias": "b",
-             "left_field": "id", "right_field": "fk"},
+            {
+                "left_alias": "a",
+                "right_alias": "b",
+                "left_field": "id",
+                "right_field": "fk",
+            },
         ]
 
         optimizer = JoinOrderOptimizer()
@@ -344,8 +376,7 @@ class TestPredicatePushdownBelowJoins:
             engine.sql(f"INSERT INTO t1 (id, val) VALUES ({i}, 'v{i}')")
         for i in range(20):
             engine.sql(
-                f"INSERT INTO t2 (id, t1_id, data) "
-                f"VALUES ({i}, {i % 10}, 'd{i}')"
+                f"INSERT INTO t2 (id, t1_id, data) VALUES ({i}, {i % 10}, 'd{i}')"
             )
 
         # WHERE t1.val = 'v3' references only t1 -> pushable
@@ -367,10 +398,7 @@ class TestPredicatePushdownBelowJoins:
         for i in range(5):
             engine.sql(f"INSERT INTO a (id, x) VALUES ({i}, {i * 10})")
         for i in range(10):
-            engine.sql(
-                f"INSERT INTO b (id, a_id, y) "
-                f"VALUES ({i}, {i % 5}, {i})"
-            )
+            engine.sql(f"INSERT INTO b (id, a_id, y) VALUES ({i}, {i % 5}, {i})")
 
         # WHERE a.x = b.y references both tables -> not pushable
         result = engine.sql(
@@ -419,9 +447,7 @@ class TestConstantFolding:
         engine.sql("CREATE TABLE cf3 (id INTEGER PRIMARY KEY, name TEXT)")
         engine.sql("INSERT INTO cf3 (id, name) VALUES (1, 'hello world')")
 
-        result = engine.sql(
-            "SELECT id FROM cf3 WHERE name = 'hello' || ' ' || 'world'"
-        )
+        result = engine.sql("SELECT id FROM cf3 WHERE name = 'hello' || ' ' || 'world'")
         assert len(result.rows) == 1
         assert result.rows[0]["id"] == 1
 
@@ -442,12 +468,10 @@ class TestDPccp2Tables:
             engine.sql(f"INSERT INTO dp_a (id, name) VALUES ({i}, 'a{i}')")
         for i in range(10):
             engine.sql(
-                f"INSERT INTO dp_b (id, a_id, val) "
-                f"VALUES ({i}, {i % 5}, 'b{i}')"
+                f"INSERT INTO dp_b (id, a_id, val) VALUES ({i}, {i % 5}, 'b{i}')"
             )
 
         result = engine.sql(
-            "SELECT dp_a.name, dp_b.val "
-            "FROM dp_a JOIN dp_b ON dp_a.id = dp_b.a_id"
+            "SELECT dp_a.name, dp_b.val FROM dp_a JOIN dp_b ON dp_a.id = dp_b.a_id"
         )
         assert len(result.rows) == 10

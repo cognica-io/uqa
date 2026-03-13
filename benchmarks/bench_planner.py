@@ -14,13 +14,13 @@ from __future__ import annotations
 
 import pytest
 
-from uqa.planner.join_graph import JoinGraph
 from uqa.planner.join_enumerator import DPccp
-
+from uqa.planner.join_graph import JoinGraph
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _build_chain_graph(n: int) -> JoinGraph:
     """Build a chain join graph: R0 - R1 - R2 - ... - R(n-1)."""
@@ -79,13 +79,14 @@ def _build_cycle_graph(n: int) -> JoinGraph:
             cardinality=500.0,
         )
     for i in range(n):
-        g.add_edge(i, (i + 1) % n, f"c{i}", f"c{(i+1)%n}", selectivity=0.02)
+        g.add_edge(i, (i + 1) % n, f"c{i}", f"c{(i + 1) % n}", selectivity=0.02)
     return g
 
 
 # ---------------------------------------------------------------------------
 # DPccp with varying relation counts
 # ---------------------------------------------------------------------------
+
 
 class TestDPccp:
     @pytest.mark.parametrize("n", [3, 5, 8, 10])
@@ -121,6 +122,7 @@ class TestDPccp:
 # DPccp topology comparison at fixed size
 # ---------------------------------------------------------------------------
 
+
 class TestDPccpTopology:
     def test_chain_8(self, benchmark) -> None:
         g = _build_chain_graph(8)
@@ -147,6 +149,7 @@ class TestDPccpTopology:
 # Greedy fallback for large queries
 # ---------------------------------------------------------------------------
 
+
 class TestGreedyFallback:
     @pytest.mark.parametrize("n", [16, 20, 30])
     def test_greedy_chain(self, benchmark, n: int) -> None:
@@ -167,12 +170,13 @@ class TestGreedyFallback:
 # Histogram and cardinality estimation
 # ---------------------------------------------------------------------------
 
+
 class TestHistogram:
     def test_analyze(self, benchmark) -> None:
         """Benchmark ANALYZE (histogram + MCV construction)."""
-        from uqa.engine import Engine
         from benchmarks.data.generators import BenchmarkDataGenerator
         from benchmarks.data.schemas import BENCH_TABLE_DDL
+        from uqa.engine import Engine
 
         e = Engine()
         e.sql(BENCH_TABLE_DDL)
@@ -192,9 +196,9 @@ class TestHistogram:
 class TestSelectivity:
     def test_equality_selectivity(self, benchmark) -> None:
         """Benchmark selectivity estimation for equality predicates."""
-        from uqa.engine import Engine
         from benchmarks.data.generators import BenchmarkDataGenerator
         from benchmarks.data.schemas import BENCH_TABLE_DDL
+        from uqa.engine import Engine
 
         e = Engine()
         e.sql(BENCH_TABLE_DDL)
@@ -213,9 +217,9 @@ class TestSelectivity:
 
     def test_range_selectivity(self, benchmark) -> None:
         """Benchmark selectivity estimation for range predicates."""
-        from uqa.engine import Engine
         from benchmarks.data.generators import BenchmarkDataGenerator
         from benchmarks.data.schemas import BENCH_TABLE_DDL
+        from uqa.engine import Engine
 
         e = Engine()
         e.sql(BENCH_TABLE_DDL)

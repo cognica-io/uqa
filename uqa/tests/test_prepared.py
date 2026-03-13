@@ -43,8 +43,7 @@ def engine():
 class TestPrepare:
     def test_prepare_select(self, engine):
         engine.sql(
-            "PREPARE get_by_id (INTEGER) AS "
-            "SELECT name FROM employees WHERE id = $1"
+            "PREPARE get_by_id (INTEGER) AS SELECT name FROM employees WHERE id = $1"
         )
         assert "get_by_id" in engine._prepared
 
@@ -62,17 +61,11 @@ class TestPrepare:
         assert "ins" in engine._prepared
 
     def test_prepare_update(self, engine):
-        engine.sql(
-            "PREPARE upd AS "
-            "UPDATE employees SET salary = $1 WHERE id = $2"
-        )
+        engine.sql("PREPARE upd AS UPDATE employees SET salary = $1 WHERE id = $2")
         assert "upd" in engine._prepared
 
     def test_prepare_delete(self, engine):
-        engine.sql(
-            "PREPARE del AS "
-            "DELETE FROM employees WHERE id = $1"
-        )
+        engine.sql("PREPARE del AS DELETE FROM employees WHERE id = $1")
         assert "del" in engine._prepared
 
 
@@ -83,19 +76,13 @@ class TestPrepare:
 
 class TestExecute:
     def test_execute_select_single_param(self, engine):
-        engine.sql(
-            "PREPARE get_by_id AS "
-            "SELECT name FROM employees WHERE id = $1"
-        )
+        engine.sql("PREPARE get_by_id AS SELECT name FROM employees WHERE id = $1")
         r = engine.sql("EXECUTE get_by_id (1)")
         assert len(r.rows) == 1
         assert r.rows[0]["name"] == "Alice"
 
     def test_execute_select_different_params(self, engine):
-        engine.sql(
-            "PREPARE get_by_id AS "
-            "SELECT name FROM employees WHERE id = $1"
-        )
+        engine.sql("PREPARE get_by_id AS SELECT name FROM employees WHERE id = $1")
         r1 = engine.sql("EXECUTE get_by_id (1)")
         r2 = engine.sql("EXECUTE get_by_id (3)")
         assert r1.rows[0]["name"] == "Alice"
@@ -122,19 +109,13 @@ class TestExecute:
         assert r.rows[0]["name"] == "Frank"
 
     def test_execute_update(self, engine):
-        engine.sql(
-            "PREPARE upd AS "
-            "UPDATE employees SET salary = $1 WHERE id = $2"
-        )
+        engine.sql("PREPARE upd AS UPDATE employees SET salary = $1 WHERE id = $2")
         engine.sql("EXECUTE upd (100000, 1)")
         r = engine.sql("SELECT salary FROM employees WHERE id = 1")
         assert r.rows[0]["salary"] == 100000.0
 
     def test_execute_delete(self, engine):
-        engine.sql(
-            "PREPARE del AS "
-            "DELETE FROM employees WHERE id = $1"
-        )
+        engine.sql("PREPARE del AS DELETE FROM employees WHERE id = $1")
         engine.sql("EXECUTE del (4)")
         r = engine.sql("SELECT COUNT(*) AS cnt FROM employees")
         assert r.rows[0]["cnt"] == 4
@@ -145,18 +126,14 @@ class TestExecute:
 
     def test_execute_missing_param_raises(self, engine):
         engine.sql(
-            "PREPARE q AS "
-            "SELECT name FROM employees WHERE id = $1 AND dept = $2"
+            "PREPARE q AS SELECT name FROM employees WHERE id = $1 AND dept = $2"
         )
         with pytest.raises(ValueError, match="No value supplied"):
             engine.sql("EXECUTE q (1)")
 
     def test_execute_reusable(self, engine):
         """Prepared statement can be executed multiple times."""
-        engine.sql(
-            "PREPARE get_name AS "
-            "SELECT name FROM employees WHERE id = $1"
-        )
+        engine.sql("PREPARE get_name AS SELECT name FROM employees WHERE id = $1")
         names = []
         for i in range(1, 6):
             r = engine.sql(f"EXECUTE get_name ({i})")
@@ -186,21 +163,15 @@ class TestDeallocate:
         assert len(engine._prepared) == 0
 
     def test_execute_after_deallocate_raises(self, engine):
-        engine.sql(
-            "PREPARE q AS SELECT name FROM employees WHERE id = $1"
-        )
+        engine.sql("PREPARE q AS SELECT name FROM employees WHERE id = $1")
         engine.sql("DEALLOCATE q")
         with pytest.raises(ValueError, match="does not exist"):
             engine.sql("EXECUTE q (1)")
 
     def test_reprepare_after_deallocate(self, engine):
-        engine.sql(
-            "PREPARE q AS SELECT name FROM employees WHERE dept = $1"
-        )
+        engine.sql("PREPARE q AS SELECT name FROM employees WHERE dept = $1")
         engine.sql("DEALLOCATE q")
-        engine.sql(
-            "PREPARE q AS SELECT salary FROM employees WHERE id = $1"
-        )
+        engine.sql("PREPARE q AS SELECT salary FROM employees WHERE id = $1")
         r = engine.sql("EXECUTE q (1)")
         assert r.rows[0]["salary"] == 90000.0
 
@@ -212,10 +183,7 @@ class TestDeallocate:
 
 class TestPreparedIntegration:
     def test_prepare_with_typed_params(self, engine):
-        engine.sql(
-            "PREPARE q (INTEGER) AS "
-            "SELECT name FROM employees WHERE id = $1"
-        )
+        engine.sql("PREPARE q (INTEGER) AS SELECT name FROM employees WHERE id = $1")
         r = engine.sql("EXECUTE q (2)")
         assert r.rows[0]["name"] == "Bob"
 
@@ -231,13 +199,14 @@ class TestPreparedIntegration:
         assert r.rows[1]["name"] == "Alice"
 
     def test_prepare_select_no_params(self, engine):
-        engine.sql(
-            "PREPARE all_names AS "
-            "SELECT name FROM employees ORDER BY name"
-        )
+        engine.sql("PREPARE all_names AS SELECT name FROM employees ORDER BY name")
         r = engine.sql("EXECUTE all_names")
         assert [row["name"] for row in r.rows] == [
-            "Alice", "Bob", "Carol", "Dave", "Eve"
+            "Alice",
+            "Bob",
+            "Carol",
+            "Dave",
+            "Eve",
         ]
 
     def test_prepare_with_null_param(self, engine):
@@ -246,17 +215,13 @@ class TestPreparedIntegration:
             "(6, 'Frank', NULL, 80000)"
         )
         engine.sql(
-            "PREPARE get_null_dept AS "
-            "SELECT name FROM employees WHERE dept IS NULL"
+            "PREPARE get_null_dept AS SELECT name FROM employees WHERE dept IS NULL"
         )
         r = engine.sql("EXECUTE get_null_dept")
         assert r.rows[0]["name"] == "Frank"
 
     def test_multiple_prepared_coexist(self, engine):
-        engine.sql(
-            "PREPARE by_id AS "
-            "SELECT name FROM employees WHERE id = $1"
-        )
+        engine.sql("PREPARE by_id AS SELECT name FROM employees WHERE id = $1")
         engine.sql(
             "PREPARE by_dept AS "
             "SELECT name FROM employees WHERE dept = $1 ORDER BY name"
@@ -264,6 +229,4 @@ class TestPreparedIntegration:
         r1 = engine.sql("EXECUTE by_id (1)")
         r2 = engine.sql("EXECUTE by_dept ('eng')")
         assert r1.rows[0]["name"] == "Alice"
-        assert [row["name"] for row in r2.rows] == [
-            "Alice", "Carol", "Eve"
-        ]
+        assert [row["name"] for row in r2.rows] == ["Alice", "Carol", "Eve"]

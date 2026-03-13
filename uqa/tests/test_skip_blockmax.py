@@ -14,13 +14,10 @@ from __future__ import annotations
 
 import sqlite3
 
-import pytest
-
 from uqa.core.types import IndexStats
 from uqa.scoring.bm25 import BM25Params, BM25Scorer
 from uqa.storage.block_max_index import BlockMaxIndex
 from uqa.storage.sqlite_inverted_index import SQLiteInvertedIndex
-
 
 # -- Helpers ---------------------------------------------------------------
 
@@ -54,8 +51,7 @@ class TestSkipPointerConstruction:
 
         # The skip table should exist.
         row = idx._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name = ?",
+            "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
             (f"_skip_{idx._table_name}_body",),
         ).fetchone()
         assert row is not None
@@ -188,8 +184,7 @@ class TestBlockMaxScores:
         idx.add_document(1, {"body": "hello world"})
 
         row = idx._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name = ?",
+            "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
             (f"_blockmax_{idx._table_name}_body",),
         ).fetchone()
         assert row is not None
@@ -424,9 +419,7 @@ class TestBlockMaxIndexPersistence:
             "    PRIMARY KEY (field, term, block_idx)"
             ")"
         )
-        conn.execute(
-            "INSERT INTO _global_blockmax VALUES ('body', 'hello', 0, 2.5)"
-        )
+        conn.execute("INSERT INTO _global_blockmax VALUES ('body', 'hello', 0, 2.5)")
         conn.commit()
 
         bm = BlockMaxIndex()
@@ -451,9 +444,7 @@ class TestEngineIntegration:
         with Engine(db_path=db) as engine:
             engine.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, body TEXT)")
             for i in range(1, 200):
-                engine.sql(
-                    f"INSERT INTO docs (body) VALUES ('alpha term{i}')"
-                )
+                engine.sql(f"INSERT INTO docs (body) VALUES ('alpha term{i}')")
 
             table = engine._tables["docs"]
             inv_idx = table.inverted_index

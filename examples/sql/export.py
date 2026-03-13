@@ -23,7 +23,6 @@ import pyarrow.parquet as pq
 
 from uqa.engine import Engine
 
-
 engine = Engine()
 
 print("=" * 70)
@@ -70,7 +69,7 @@ table = result.to_arrow()
 print(f"  Type: {type(table).__name__}")
 print(f"  Rows: {table.num_rows}")
 print(f"  Columns: {table.column_names}")
-print(f"  Schema:")
+print("  Schema:")
 for field in table.schema:
     print(f"    {field.name}: {field.type}")
 print(f"  Memory: {table.nbytes} bytes")

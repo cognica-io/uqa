@@ -84,7 +84,9 @@ print("\n  Table created: sales (12 rows)")
 # ==================================================================
 # 1. COUNT(DISTINCT)
 # ==================================================================
-show("1. COUNT(DISTINCT product) by region", engine.sql("""
+show(
+    "1. COUNT(DISTINCT product) by region",
+    engine.sql("""
     SELECT region,
            COUNT(*) AS total_sales,
            COUNT(DISTINCT product) AS unique_products,
@@ -92,51 +94,63 @@ show("1. COUNT(DISTINCT product) by region", engine.sql("""
     FROM sales
     GROUP BY region
     ORDER BY region
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 2. STRING_AGG
 # ==================================================================
-show("2. STRING_AGG: product list per rep", engine.sql("""
+show(
+    "2. STRING_AGG: product list per rep",
+    engine.sql("""
     SELECT rep,
            STRING_AGG(DISTINCT product, ', ') AS products
     FROM sales
     GROUP BY rep
     ORDER BY rep
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 3. ARRAY_AGG
 # ==================================================================
-show("3. ARRAY_AGG: quantities per region", engine.sql("""
+show(
+    "3. ARRAY_AGG: quantities per region",
+    engine.sql("""
     SELECT region,
            ARRAY_AGG(quantity) AS quantities
     FROM sales
     WHERE returned = FALSE
     GROUP BY region
     ORDER BY region
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 4. BOOL_AND / BOOL_OR
 # ==================================================================
-show("4. BOOL_AND / BOOL_OR: return status by rep", engine.sql("""
+show(
+    "4. BOOL_AND / BOOL_OR: return status by rep",
+    engine.sql("""
     SELECT rep,
            BOOL_AND(returned) AS all_returned,
            BOOL_OR(returned) AS any_returned
     FROM sales
     GROUP BY rep
     ORDER BY rep
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 5. Aggregate with FILTER clause
 # ==================================================================
-show("5. FILTER: conditional aggregates in one query", engine.sql("""
+show(
+    "5. FILTER: conditional aggregates in one query",
+    engine.sql("""
     SELECT region,
            SUM(amount) AS total,
            SUM(amount) FILTER (WHERE returned = FALSE) AS net_revenue,
@@ -144,25 +158,31 @@ show("5. FILTER: conditional aggregates in one query", engine.sql("""
     FROM sales
     GROUP BY region
     ORDER BY region
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 6. Aggregate with ORDER BY within aggregate
 # ==================================================================
-show("6. STRING_AGG with ORDER BY", engine.sql("""
+show(
+    "6. STRING_AGG with ORDER BY",
+    engine.sql("""
     SELECT region,
            STRING_AGG(rep, ', ' ORDER BY rep) AS reps_sorted
     FROM sales
     GROUP BY region
     ORDER BY region
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 7. STDDEV / VARIANCE
 # ==================================================================
-show("7. STDDEV and VARIANCE of sale amounts", engine.sql("""
+show(
+    "7. STDDEV and VARIANCE of sale amounts",
+    engine.sql("""
     SELECT region,
            AVG(amount) AS avg_amount,
            STDDEV(amount) AS stddev_amount,
@@ -171,35 +191,44 @@ show("7. STDDEV and VARIANCE of sale amounts", engine.sql("""
     WHERE returned = FALSE
     GROUP BY region
     ORDER BY region
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 8. PERCENTILE_CONT / PERCENTILE_DISC
 # ==================================================================
-show("8. Percentile: median and P90 sale amount", engine.sql("""
+show(
+    "8. Percentile: median and P90 sale amount",
+    engine.sql("""
     SELECT
         PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount) AS median,
         PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount) AS p90,
         PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY amount) AS median_disc
     FROM sales
     WHERE returned = FALSE
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 9. MODE
 # ==================================================================
-show("9. MODE: most frequent product", engine.sql("""
+show(
+    "9. MODE: most frequent product",
+    engine.sql("""
     SELECT MODE() WITHIN GROUP (ORDER BY product) AS most_common
     FROM sales
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 10. Window: ROW_NUMBER + running total
 # ==================================================================
-show("10. Window: running total by date", engine.sql("""
+show(
+    "10. Window: running total by date",
+    engine.sql("""
     SELECT rep, sale_date, amount,
            SUM(amount) OVER (ORDER BY sale_date
                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_total
@@ -207,13 +236,16 @@ show("10. Window: running total by date", engine.sql("""
     WHERE returned = FALSE
     ORDER BY sale_date
     LIMIT 8
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 11. Window: ROWS BETWEEN for moving average
 # ==================================================================
-show("11. Window: 3-row moving average", engine.sql("""
+show(
+    "11. Window: 3-row moving average",
+    engine.sql("""
     SELECT rep, sale_date, amount,
            AVG(amount) OVER (ORDER BY sale_date
                ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS moving_avg
@@ -221,13 +253,16 @@ show("11. Window: 3-row moving average", engine.sql("""
     WHERE returned = FALSE
     ORDER BY sale_date
     LIMIT 8
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 12. Window: PERCENT_RANK and CUME_DIST
 # ==================================================================
-show("12. PERCENT_RANK and CUME_DIST", engine.sql("""
+show(
+    "12. PERCENT_RANK and CUME_DIST",
+    engine.sql("""
     SELECT rep, amount,
            PERCENT_RANK() OVER (ORDER BY amount) AS pct_rank,
            CUME_DIST() OVER (ORDER BY amount) AS cume_dist
@@ -235,13 +270,16 @@ show("12. PERCENT_RANK and CUME_DIST", engine.sql("""
     WHERE returned = FALSE
     ORDER BY amount DESC
     LIMIT 6
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 13. Window: NTH_VALUE
 # ==================================================================
-show("13. NTH_VALUE: 2nd highest sale per region", engine.sql("""
+show(
+    "13. NTH_VALUE: 2nd highest sale per region",
+    engine.sql("""
     SELECT rep, region, amount,
            NTH_VALUE(amount, 2) OVER (
                PARTITION BY region ORDER BY amount DESC
@@ -250,13 +288,16 @@ show("13. NTH_VALUE: 2nd highest sale per region", engine.sql("""
     FROM sales
     WHERE returned = FALSE
     ORDER BY region, amount DESC
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 14. Named window
 # ==================================================================
-show("14. Named window: multiple functions sharing window", engine.sql("""
+show(
+    "14. Named window: multiple functions sharing window",
+    engine.sql("""
     SELECT rep, amount,
            ROW_NUMBER() OVER w AS rn,
            RANK() OVER w AS rnk,
@@ -266,13 +307,16 @@ show("14. Named window: multiple functions sharing window", engine.sql("""
     WINDOW w AS (ORDER BY amount DESC)
     ORDER BY amount DESC
     LIMIT 6
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 15. Date functions: EXTRACT, DATE_TRUNC
 # ==================================================================
-show("15. EXTRACT and DATE_TRUNC", engine.sql("""
+show(
+    "15. EXTRACT and DATE_TRUNC",
+    engine.sql("""
     SELECT sale_date,
            EXTRACT(YEAR FROM sale_date) AS yr,
            EXTRACT(MONTH FROM sale_date) AS mo,
@@ -280,13 +324,16 @@ show("15. EXTRACT and DATE_TRUNC", engine.sql("""
     FROM sales
     ORDER BY sale_date
     LIMIT 6
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 16. Date grouping: monthly revenue
 # ==================================================================
-show("16. Monthly revenue summary", engine.sql("""
+show(
+    "16. Monthly revenue summary",
+    engine.sql("""
     SELECT DATE_TRUNC('month', sale_date) AS month,
            COUNT(*) AS num_sales,
            SUM(amount) AS revenue
@@ -294,13 +341,16 @@ show("16. Monthly revenue summary", engine.sql("""
     WHERE returned = FALSE
     GROUP BY DATE_TRUNC('month', sale_date)
     ORDER BY month
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 17. GREATEST, LEAST, NULLIF
 # ==================================================================
-show("17. GREATEST / LEAST / NULLIF", engine.sql("""
+show(
+    "17. GREATEST / LEAST / NULLIF",
+    engine.sql("""
     SELECT rep, amount, quantity,
            GREATEST(amount, quantity * 100) AS higher_metric,
            LEAST(amount, 1000) AS capped_amount,
@@ -308,13 +358,16 @@ show("17. GREATEST / LEAST / NULLIF", engine.sql("""
     FROM sales
     ORDER BY amount DESC
     LIMIT 6
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 18. CASE with aggregates: pivot-style query
 # ==================================================================
-show("18. CASE pivot: revenue by product", engine.sql("""
+show(
+    "18. CASE pivot: revenue by product",
+    engine.sql("""
     SELECT rep,
            SUM(CASE WHEN product = 'Widget' THEN amount ELSE 0 END) AS widget_rev,
            SUM(CASE WHEN product = 'Gadget' THEN amount ELSE 0 END) AS gadget_rev,
@@ -324,7 +377,8 @@ show("18. CASE pivot: revenue by product", engine.sql("""
     WHERE returned = FALSE
     GROUP BY rep
     ORDER BY total DESC
-"""))
+"""),
+)
 
 
 # ==================================================================
@@ -351,25 +405,33 @@ engine.sql("""INSERT INTO events (event_type, payload, created_at) VALUES
      '2024-03-01 11:00:00')
 """)
 
-show("19a. JSON ->> operator: extract fields", engine.sql("""
+show(
+    "19a. JSON ->> operator: extract fields",
+    engine.sql("""
     SELECT event_type,
            payload->>'user' AS username,
            created_at
     FROM events
     ORDER BY created_at
-"""))
+"""),
+)
 
-show("19b. JSON containment @>", engine.sql("""
+show(
+    "19b. JSON containment @>",
+    engine.sql("""
     SELECT event_type, payload->>'user' AS username
     FROM events
     WHERE payload @> '{"device": "mobile"}'::jsonb
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 20. String functions: POSITION, SPLIT_PART, LPAD
 # ==================================================================
-show("20. String functions", engine.sql("""
+show(
+    "20. String functions",
+    engine.sql("""
     SELECT rep,
            POSITION('o' IN rep) AS o_pos,
            LPAD(rep, 8, '.') AS padded,
@@ -377,13 +439,16 @@ show("20. String functions", engine.sql("""
     FROM sales
     GROUP BY rep
     ORDER BY rep
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 21. Math functions: POWER, SQRT, LOG
 # ==================================================================
-show("21. Math functions on amounts", engine.sql("""
+show(
+    "21. Math functions on amounts",
+    engine.sql("""
     SELECT rep, amount,
            ROUND(SQRT(amount), 2) AS sqrt_amt,
            ROUND(LN(amount), 2) AS ln_amt,
@@ -392,13 +457,16 @@ show("21. Math functions on amounts", engine.sql("""
     WHERE returned = FALSE
     ORDER BY amount DESC
     LIMIT 5
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 22. Complex CTE: running rank with threshold
 # ==================================================================
-show("22. CTE: top performers (above median)", engine.sql("""
+show(
+    "22. CTE: top performers (above median)",
+    engine.sql("""
     WITH rep_totals AS (
         SELECT rep, SUM(amount) AS total_revenue
         FROM sales
@@ -413,7 +481,8 @@ show("22. CTE: top performers (above median)", engine.sql("""
     FROM rep_totals rt, median_calc mc
     WHERE rt.total_revenue >= mc.median_rev
     ORDER BY rt.total_revenue DESC
-"""))
+"""),
+)
 
 
 # ==================================================================
@@ -438,26 +507,30 @@ engine.sql("""
     ON CONFLICT (rep) DO UPDATE SET achieved = EXCLUDED.achieved
 """)
 
-show("23. UPSERT: quota vs achieved", engine.sql("""
+show(
+    "23. UPSERT: quota vs achieved",
+    engine.sql("""
     SELECT rep, quota, achieved,
            CASE WHEN achieved >= quota THEN 'MET' ELSE 'MISS' END AS status
     FROM rep_quotas
     ORDER BY rep
-"""))
+"""),
+)
 
 
 # ==================================================================
 # 24. DELETE ... RETURNING
 # ==================================================================
-show("24. DELETE RETURNING: remove returned sales", engine.sql("""
+show(
+    "24. DELETE RETURNING: remove returned sales",
+    engine.sql("""
     DELETE FROM sales
     WHERE returned = TRUE
     RETURNING id, rep, product, amount
-"""))
+"""),
+)
 
-show("    Remaining sales count", engine.sql(
-    "SELECT COUNT(*) AS remaining FROM sales"
-))
+show("    Remaining sales count", engine.sql("SELECT COUNT(*) AS remaining FROM sales"))
 
 
 print("\n" + "=" * 70)

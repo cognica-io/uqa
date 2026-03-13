@@ -22,7 +22,6 @@ import pyarrow.parquet as pq
 
 from uqa.engine import Engine
 
-
 engine = Engine()
 
 print("=" * 70)
@@ -71,11 +70,7 @@ print("  Inserted 5 articles.")
 # ==================================================================
 print("\n--- 2. execute_arrow() ---")
 
-table = (
-    engine.query(table="articles")
-    .term("attention", field="body")
-    .execute_arrow()
-)
+table = engine.query(table="articles").term("attention", field="body").execute_arrow()
 
 print(f"  Type: {type(table).__name__}")
 print(f"  Rows: {table.num_rows}")
@@ -154,14 +149,12 @@ print(f"  Scores: {restored.column('_score').to_pylist()}")
 print("\n--- 7. Empty result ---")
 
 table = (
-    engine.query(table="articles")
-    .term("xyznonexistent", field="body")
-    .execute_arrow()
+    engine.query(table="articles").term("xyznonexistent", field="body").execute_arrow()
 )
 
 print(f"  Rows: {table.num_rows}")
 print(f"  Columns: {table.column_names}")
-print(f"  Schema:")
+print("  Schema:")
 for field in table.schema:
     print(f"    {field.name}: {field.type}")
 

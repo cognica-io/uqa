@@ -18,10 +18,10 @@ import pytest
 
 from benchmarks.data.generators import BenchmarkDataGenerator
 
-
 # ---------------------------------------------------------------------------
 # Union
 # ---------------------------------------------------------------------------
+
 
 class TestUnion:
     @pytest.mark.parametrize("size", [1_000, 10_000, 100_000])
@@ -43,6 +43,7 @@ class TestUnion:
 # Intersect
 # ---------------------------------------------------------------------------
 
+
 class TestIntersect:
     @pytest.mark.parametrize("size", [1_000, 10_000, 100_000])
     def test_intersect_by_size(self, benchmark, size: int) -> None:
@@ -62,6 +63,7 @@ class TestIntersect:
 # ---------------------------------------------------------------------------
 # Difference
 # ---------------------------------------------------------------------------
+
 
 class TestDifference:
     @pytest.mark.parametrize("size", [1_000, 10_000, 100_000])
@@ -83,6 +85,7 @@ class TestDifference:
 # Top-K
 # ---------------------------------------------------------------------------
 
+
 class TestTopK:
     @pytest.mark.parametrize("k", [10, 100, 1_000])
     def test_top_k(self, benchmark, k: int) -> None:
@@ -95,6 +98,7 @@ class TestTopK:
 # ---------------------------------------------------------------------------
 # N-way merge
 # ---------------------------------------------------------------------------
+
 
 class TestMultiMerge:
     @pytest.mark.parametrize("n", [2, 4, 8, 16])
@@ -123,6 +127,7 @@ class TestMultiMerge:
 # ---------------------------------------------------------------------------
 # Payload merge overhead
 # ---------------------------------------------------------------------------
+
 
 class TestPayloadMerge:
     def test_union_with_scores(self, benchmark) -> None:

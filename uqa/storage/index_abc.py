@@ -8,21 +8,20 @@
 
 from __future__ import annotations
 
-import sqlite3
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from uqa.core.posting_list import PostingList
-from uqa.storage.index_types import IndexDef
-
 if TYPE_CHECKING:
+    from uqa.core.posting_list import PostingList
     from uqa.core.types import Predicate
+    from uqa.storage.index_types import IndexDef
+    from uqa.storage.managed_connection import SQLiteConnection
 
 
 class Index(ABC):
     """Abstract index that supports predicate scans and cost estimation."""
 
-    def __init__(self, index_def: IndexDef, conn: sqlite3.Connection) -> None:
+    def __init__(self, index_def: IndexDef, conn: SQLiteConnection) -> None:
         self._index_def = index_def
         self._conn = conn
 

@@ -16,12 +16,7 @@ from uqa.engine import Engine
 @pytest.fixture
 def engine():
     e = Engine()
-    e.sql(
-        "CREATE TABLE departments ("
-        "id INTEGER PRIMARY KEY, "
-        "name TEXT NOT NULL"
-        ")"
-    )
+    e.sql("CREATE TABLE departments (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
     e.sql(
         "INSERT INTO departments (id, name) VALUES "
         "(1, 'Engineering'), "
@@ -97,19 +92,13 @@ class TestCTEBasic:
 
     def test_cte_cleanup(self, engine):
         """CTE temporary tables should be cleaned up after query."""
-        engine.sql(
-            "WITH temp_cte AS (SELECT 1 AS val) "
-            "SELECT val FROM temp_cte"
-        )
+        engine.sql("WITH temp_cte AS (SELECT 1 AS val) SELECT val FROM temp_cte")
         # The CTE table should not exist after the query
         assert "temp_cte" not in engine._tables
 
     def test_cte_does_not_shadow_real_table(self, engine):
         """After CTE query, real table is still accessible."""
-        engine.sql(
-            "WITH x AS (SELECT name FROM employees LIMIT 1) "
-            "SELECT name FROM x"
-        )
+        engine.sql("WITH x AS (SELECT name FROM employees LIMIT 1) SELECT name FROM x")
         r = engine.sql("SELECT COUNT(*) AS cnt FROM employees")
         assert r.rows[0]["cnt"] == 5
 
@@ -223,20 +212,16 @@ class TestWithRecursive:
             ")"
         )
         pg17_engine.sql(
-            "INSERT INTO employees (eid, ename, manager_id) "
-            "VALUES (1, 'CEO', 0)"
+            "INSERT INTO employees (eid, ename, manager_id) VALUES (1, 'CEO', 0)"
         )
         pg17_engine.sql(
-            "INSERT INTO employees (eid, ename, manager_id) "
-            "VALUES (2, 'VP', 1)"
+            "INSERT INTO employees (eid, ename, manager_id) VALUES (2, 'VP', 1)"
         )
         pg17_engine.sql(
-            "INSERT INTO employees (eid, ename, manager_id) "
-            "VALUES (3, 'Manager', 2)"
+            "INSERT INTO employees (eid, ename, manager_id) VALUES (3, 'Manager', 2)"
         )
         pg17_engine.sql(
-            "INSERT INTO employees (eid, ename, manager_id) "
-            "VALUES (4, 'Developer', 3)"
+            "INSERT INTO employees (eid, ename, manager_id) VALUES (4, 'Developer', 3)"
         )
         # Use distinct column names to avoid collision in join
         result = pg17_engine.sql(

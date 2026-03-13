@@ -148,9 +148,7 @@ class DPccp:
         n = len(self._graph)
 
         # Pre-compute neighbor lists as Python lists for faster iteration.
-        neighbors: list[list[int]] = [
-            self._graph.neighbors(i) for i in range(n)
-        ]
+        neighbors: list[list[int]] = [self._graph.neighbors(i) for i in range(n)]
 
         # Bytearray lookup table: connected[mask] == 1 iff the subgraph
         # represented by mask is connected.  At most 2^16 = 64 KB for
@@ -162,7 +160,7 @@ class DPccp:
             connected[mask] = 1
             prev_layer.append(mask)
 
-        for size in range(2, n + 1):
+        for _size in range(2, n + 1):
             cur_layer: list[int] = []
             for s_mask in prev_layer:
                 # Find lowest set bit position (= min node in subset).
@@ -220,13 +218,9 @@ class DPccp:
                 plan1 = dp.get(sub)
                 plan2 = dp.get(comp)
                 if plan1 is not None and plan2 is not None:
-                    edges = graph.edges_between(
-                        plan1.relations, plan2.relations
-                    )
+                    edges = graph.edges_between(plan1.relations, plan2.relations)
                     if edges:
-                        self._emit_csg_cmp_pair(
-                            plan1, plan2, edges, subset_mask
-                        )
+                        self._emit_csg_cmp_pair(plan1, plan2, edges, subset_mask)
             sub_rest = (sub_rest - 1) & rest
 
         # sub_rest == 0: s1 = {min element}, s2 = rest of subset.
@@ -235,13 +229,9 @@ class DPccp:
             plan1 = dp.get(lowest_bit)
             plan2 = dp.get(rest)
             if plan1 is not None and plan2 is not None:
-                edges = graph.edges_between(
-                    plan1.relations, plan2.relations
-                )
+                edges = graph.edges_between(plan1.relations, plan2.relations)
                 if edges:
-                    self._emit_csg_cmp_pair(
-                        plan1, plan2, edges, subset_mask
-                    )
+                    self._emit_csg_cmp_pair(plan1, plan2, edges, subset_mask)
 
     def _emit_csg_cmp_pair(
         self,
@@ -387,9 +377,7 @@ class DPccp:
 
         return sub
 
-    def _remap_plan(
-        self, plan: JoinPlan, original_indices: list[int]
-    ) -> JoinPlan:
+    def _remap_plan(self, plan: JoinPlan, original_indices: list[int]) -> JoinPlan:
         """Remap plan relation indices from subgraph back to original graph."""
         new_rels = frozenset(original_indices[i] for i in plan.relations)
         return JoinPlan(
@@ -397,13 +385,9 @@ class DPccp:
             operator=plan.operator,
             cardinality=plan.cardinality,
             cost=plan.cost,
-            left=(
-                self._remap_plan(plan.left, original_indices)
-                if plan.left else None
-            ),
+            left=(self._remap_plan(plan.left, original_indices) if plan.left else None),
             right=(
-                self._remap_plan(plan.right, original_indices)
-                if plan.right else None
+                self._remap_plan(plan.right, original_indices) if plan.right else None
             ),
             join_edge=plan.join_edge,
         )
@@ -424,10 +408,8 @@ class DPccp:
 
             items = list(active.items())
             for i, (m1, p1) in enumerate(items):
-                for m2, p2 in items[i + 1:]:
-                    edges = self._graph.edges_between(
-                        p1.relations, p2.relations
-                    )
+                for m2, p2 in items[i + 1 :]:
+                    edges = self._graph.edges_between(p1.relations, p2.relations)
                     if not edges:
                         continue
 
@@ -435,9 +417,7 @@ class DPccp:
                     for edge in edges:
                         cardinality *= edge.selectivity
 
-                    cost = (
-                        p1.cardinality + p2.cardinality + p1.cost + p2.cost
-                    )
+                    cost = p1.cardinality + p2.cardinality + p1.cost + p2.cost
 
                     if cost < best_cost:
                         best_cost = cost

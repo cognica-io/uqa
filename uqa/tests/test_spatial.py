@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import math
 import os
 import tempfile
 
@@ -16,7 +15,6 @@ import pytest
 
 from uqa.engine import Engine
 from uqa.storage.spatial_index import SpatialIndex, haversine_distance
-
 
 # -- Known distances -------------------------------------------------------
 # NYC:    (40.7128, -74.0060)  -- (lat, lon) -> POINT(-74.0060, 40.7128)
@@ -33,6 +31,7 @@ TOKYO_LON, TOKYO_LAT = 139.6503, 35.6762
 # ==========================================================================
 # Unit tests: Haversine distance
 # ==========================================================================
+
 
 class TestHaversine:
     def test_same_point(self):
@@ -57,6 +56,7 @@ class TestHaversine:
 # ==========================================================================
 # Unit tests: SpatialIndex
 # ==========================================================================
+
 
 class TestSpatialIndex:
     def test_add_and_search(self):
@@ -140,6 +140,7 @@ class TestSpatialIndex:
 # SQL integration tests
 # ==========================================================================
 
+
 class TestSpatialSQL:
     @pytest.fixture()
     def engine(self):
@@ -170,13 +171,9 @@ class TestSpatialSQL:
         result = engine.sql("SELECT name, location FROM places ORDER BY name")
         assert len(result.rows) == 2
         assert result.rows[0]["name"] == "LA"
-        assert result.rows[0]["location"] == pytest.approx(
-            [-118.2437, 34.0522]
-        )
+        assert result.rows[0]["location"] == pytest.approx([-118.2437, 34.0522])
         assert result.rows[1]["name"] == "NYC"
-        assert result.rows[1]["location"] == pytest.approx(
-            [-74.0060, 40.7128]
-        )
+        assert result.rows[1]["location"] == pytest.approx([-74.0060, 40.7128])
 
     def test_spatial_within_without_index(self, engine):
         engine.sql(
@@ -211,9 +208,7 @@ class TestSpatialSQL:
             "VALUES ('LA', POINT(-118.2437, 34.0522))"
         )
         # Create R*Tree index
-        engine.sql(
-            "CREATE INDEX idx_loc ON places USING rtree (location)"
-        )
+        engine.sql("CREATE INDEX idx_loc ON places USING rtree (location)")
         table = engine._tables["places"]
         assert "location" in table.spatial_indexes
         assert table.spatial_indexes["location"].count() == 2
@@ -231,9 +226,7 @@ class TestSpatialSQL:
             "INSERT INTO places (name, location) "
             "VALUES ('London', POINT(-0.1278, 51.5074))"
         )
-        engine.sql(
-            "CREATE INDEX idx_loc ON places USING rtree (location)"
-        )
+        engine.sql("CREATE INDEX idx_loc ON places USING rtree (location)")
 
         # 100km from NYC
         result = engine.sql(
@@ -261,9 +254,7 @@ class TestSpatialSQL:
             "INSERT INTO places (name, location) "
             "VALUES ('Tokyo', POINT(139.6503, 35.6762))"
         )
-        engine.sql(
-            "CREATE INDEX idx_loc ON places USING rtree (location)"
-        )
+        engine.sql("CREATE INDEX idx_loc ON places USING rtree (location)")
 
         # 6000km from NYC -- NYC, LA, London all within range
         result = engine.sql(
@@ -324,9 +315,7 @@ class TestSpatialSQL:
             "INSERT INTO places (name, location) "
             "VALUES ('London', POINT(-0.1278, 51.5074))"
         )
-        engine.sql(
-            "CREATE INDEX idx_loc ON places USING rtree (location)"
-        )
+        engine.sql("CREATE INDEX idx_loc ON places USING rtree (location)")
 
         result = engine.sql(
             "SELECT name, "
@@ -348,9 +337,7 @@ class TestSpatialSQL:
             "INSERT INTO places (name, location) "
             "VALUES ('LA', POINT(-118.2437, 34.0522))"
         )
-        engine.sql(
-            "CREATE INDEX idx_loc ON places USING rtree (location)"
-        )
+        engine.sql("CREATE INDEX idx_loc ON places USING rtree (location)")
         assert engine._tables["places"].spatial_indexes["location"].count() == 2
 
         engine.sql("DELETE FROM places WHERE name = 'NYC'")
@@ -367,9 +354,7 @@ class TestSpatialSQL:
             "INSERT INTO places (name, location) "
             "VALUES ('NYC', POINT(-74.0060, 40.7128))"
         )
-        engine.sql(
-            "CREATE INDEX idx_loc ON places USING rtree (location)"
-        )
+        engine.sql("CREATE INDEX idx_loc ON places USING rtree (location)")
         assert engine._tables["places"].spatial_indexes["location"].count() == 1
 
         engine.sql("TRUNCATE places")
@@ -380,14 +365,11 @@ class TestSpatialSQL:
             "INSERT INTO places (name, location) "
             "VALUES ('NYC', POINT(-74.0060, 40.7128))"
         )
-        engine.sql(
-            "CREATE INDEX idx_loc ON places USING rtree (location)"
-        )
+        engine.sql("CREATE INDEX idx_loc ON places USING rtree (location)")
 
         # Move NYC to LA's position
         engine.sql(
-            "UPDATE places SET location = POINT(-118.2437, 34.0522) "
-            "WHERE name = 'NYC'"
+            "UPDATE places SET location = POINT(-118.2437, 34.0522) WHERE name = 'NYC'"
         )
 
         # Should no longer be found near NYC
@@ -410,22 +392,17 @@ class TestSpatialSQL:
             "INSERT INTO places (name, location) "
             "VALUES ('NYC', POINT(-74.0060, 40.7128))"
         )
-        engine.sql(
-            "CREATE INDEX idx_loc ON places USING rtree (location)"
-        )
+        engine.sql("CREATE INDEX idx_loc ON places USING rtree (location)")
 
         result = engine.sql(
-            "SELECT name FROM places "
-            "WHERE spatial_within(location, $1, $2)",
-            params=[[-74.0060, 40.7128], 100000]
+            "SELECT name FROM places WHERE spatial_within(location, $1, $2)",
+            params=[[-74.0060, 40.7128], 100000],
         )
         names = [r["name"] for r in result.rows]
         assert "NYC" in names
 
     def test_insert_auto_updates_index(self, engine):
-        engine.sql(
-            "CREATE INDEX idx_loc ON places USING rtree (location)"
-        )
+        engine.sql("CREATE INDEX idx_loc ON places USING rtree (location)")
         assert engine._tables["places"].spatial_indexes["location"].count() == 0
 
         engine.sql(
@@ -436,9 +413,7 @@ class TestSpatialSQL:
 
     def test_rtree_index_on_non_point_column_fails(self, engine):
         with pytest.raises(ValueError, match="not a POINT column"):
-            engine.sql(
-                "CREATE INDEX idx_name ON places USING rtree (name)"
-            )
+            engine.sql("CREATE INDEX idx_name ON places USING rtree (name)")
 
     def test_spatial_and_text_search(self):
         e = Engine()
@@ -462,9 +437,7 @@ class TestSpatialSQL:
             "INSERT INTO restaurants (name, cuisine, location) "
             "VALUES ('Far Pizza', 'italian', POINT(-118.2437, 34.0522))"
         )
-        e.sql(
-            "CREATE INDEX idx_rloc ON restaurants USING rtree (location)"
-        )
+        e.sql("CREATE INDEX idx_rloc ON restaurants USING rtree (location)")
 
         # Find italian restaurants within 10km of NYC
         result = e.sql(
@@ -500,9 +473,7 @@ class TestSpatialPersistence:
                     "INSERT INTO places (name, location) "
                     "VALUES ('LA', POINT(-118.2437, 34.0522))"
                 )
-                e.sql(
-                    "CREATE INDEX idx_loc ON places USING rtree (location)"
-                )
+                e.sql("CREATE INDEX idx_loc ON places USING rtree (location)")
 
             # Second session: verify data and index persist
             with Engine(db_path=db_path) as e:
@@ -537,9 +508,7 @@ class TestSpatialPersistence:
                         location POINT
                     )
                 """)
-                e.sql(
-                    "CREATE INDEX idx_loc ON places USING rtree (location)"
-                )
+                e.sql("CREATE INDEX idx_loc ON places USING rtree (location)")
                 e.sql(
                     "INSERT INTO places (name, location) "
                     "VALUES ('NYC', POINT(-74.0060, 40.7128))"
@@ -587,9 +556,7 @@ class TestSpatialFusion:
             "VALUES ('Far Pizza', 'great italian pizza', "
             "POINT(-118.2437, 34.0522))"
         )
-        e.sql(
-            "CREATE INDEX idx_rloc ON restaurants USING rtree (location)"
-        )
+        e.sql("CREATE INDEX idx_rloc ON restaurants USING rtree (location)")
 
         # Fuse text + spatial signals
         result = e.sql(

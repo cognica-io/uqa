@@ -53,9 +53,7 @@ class BM25Scorer:
         idf_val = self.idf(doc_freq)
         return self.score_with_idf(term_freq, doc_length, idf_val)
 
-    def score_with_idf(
-        self, term_freq: int, doc_length: int, idf_val: float
-    ) -> float:
+    def score_with_idf(self, term_freq: int, doc_length: int, idf_val: float) -> float:
         """Compute BM25 score with a pre-computed IDF value.
 
         Avoids redundant IDF computation when scoring many documents

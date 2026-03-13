@@ -25,7 +25,6 @@ import pytest
 from uqa.storage.managed_connection import ManagedConnection
 from uqa.storage.transaction import Transaction
 
-
 # ======================================================================
 # ManagedConnection
 # ======================================================================
@@ -225,10 +224,9 @@ class TestTransaction:
         raw.commit()
         conn = ManagedConnection(raw)
 
-        with pytest.raises(RuntimeError):
-            with Transaction(conn):
-                conn.execute("INSERT INTO t VALUES (1)")
-                raise RuntimeError("test error")
+        with pytest.raises(RuntimeError), Transaction(conn):
+            conn.execute("INSERT INTO t VALUES (1)")
+            raise RuntimeError("test error")
 
         row = raw.execute("SELECT COUNT(*) FROM t").fetchone()
         assert row[0] == 0
@@ -387,17 +385,21 @@ class TestSQLTransactions:
         from uqa.engine import Engine
 
         db = str(tmp_path / "test.db")
-        with Engine(db_path=db) as engine:
-            with pytest.raises(ValueError, match="No active transaction"):
-                engine.sql("COMMIT")
+        with (
+            Engine(db_path=db) as engine,
+            pytest.raises(ValueError, match="No active transaction"),
+        ):
+            engine.sql("COMMIT")
 
     def test_rollback_without_begin_raises(self, tmp_path):
         from uqa.engine import Engine
 
         db = str(tmp_path / "test.db")
-        with Engine(db_path=db) as engine:
-            with pytest.raises(ValueError, match="No active transaction"):
-                engine.sql("ROLLBACK")
+        with (
+            Engine(db_path=db) as engine,
+            pytest.raises(ValueError, match="No active transaction"),
+        ):
+            engine.sql("ROLLBACK")
 
     def test_double_begin_raises(self, tmp_path):
         from uqa.engine import Engine

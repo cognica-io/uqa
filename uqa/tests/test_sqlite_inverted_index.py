@@ -9,16 +9,11 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import TYPE_CHECKING
 
-import pytest
-
-from uqa.core.posting_list import PostingList
-from uqa.core.types import IndexStats, Payload, PostingEntry
 from uqa.analysis.analyzer import whitespace_analyzer
+from uqa.core.types import Payload, PostingEntry
 from uqa.storage.inverted_index import IndexedTerms
 from uqa.storage.sqlite_inverted_index import SQLiteInvertedIndex
-
 
 # ======================================================================
 # Helpers
@@ -295,8 +290,8 @@ class TestStats:
 
     def test_multiple_documents(self, tmp_path):
         idx = _make_index(tmp_path)
-        idx.add_document(1, {"body": "hello world"})       # length 2
-        idx.add_document(2, {"body": "a b c d"})            # length 4
+        idx.add_document(1, {"body": "hello world"})  # length 2
+        idx.add_document(2, {"body": "a b c d"})  # length 4
 
         s = idx.stats
         assert s.total_docs == 2

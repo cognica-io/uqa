@@ -10,8 +10,8 @@ Pipeline: text -> CharFilter* -> Tokenizer -> TokenFilter* -> tokens
 """
 
 from uqa.analysis.analyzer import (
-    Analyzer,
     DEFAULT_ANALYZER,
+    Analyzer,
     drop_analyzer,
     get_analyzer,
     keyword_analyzer,
@@ -49,9 +49,28 @@ from uqa.analysis.tokenizer import (
 )
 
 __all__ = [
-    # Analyzer
-    "Analyzer",
     "DEFAULT_ANALYZER",
+    "ASCIIFoldingFilter",
+    "Analyzer",
+    "CharFilter",
+    "EdgeNGramFilter",
+    "HTMLStripCharFilter",
+    "KeywordTokenizer",
+    "LengthFilter",
+    "LetterTokenizer",
+    "LowerCaseFilter",
+    "MappingCharFilter",
+    "NGramFilter",
+    "NGramTokenizer",
+    "PatternReplaceCharFilter",
+    "PatternTokenizer",
+    "PorterStemFilter",
+    "StandardTokenizer",
+    "StopWordFilter",
+    "SynonymFilter",
+    "TokenFilter",
+    "Tokenizer",
+    "WhitespaceTokenizer",
     "drop_analyzer",
     "get_analyzer",
     "keyword_analyzer",
@@ -60,27 +79,4 @@ __all__ = [
     "standard_analyzer",
     "standard_cjk_analyzer",
     "whitespace_analyzer",
-    # CharFilter
-    "CharFilter",
-    "HTMLStripCharFilter",
-    "MappingCharFilter",
-    "PatternReplaceCharFilter",
-    # TokenFilter
-    "ASCIIFoldingFilter",
-    "EdgeNGramFilter",
-    "LengthFilter",
-    "LowerCaseFilter",
-    "NGramFilter",
-    "PorterStemFilter",
-    "StopWordFilter",
-    "SynonymFilter",
-    "TokenFilter",
-    # Tokenizer
-    "KeywordTokenizer",
-    "LetterTokenizer",
-    "NGramTokenizer",
-    "PatternTokenizer",
-    "StandardTokenizer",
-    "Tokenizer",
-    "WhitespaceTokenizer",
 ]

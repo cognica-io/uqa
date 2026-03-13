@@ -6,13 +6,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from uqa.core.hierarchical import HierarchicalDocument, project_paths, unnest_array
 from uqa.core.posting_list import PostingList
 from uqa.core.types import PathExpr, Payload, PostingEntry, Predicate
-from uqa.operators.aggregation import AggregationMonoid
 from uqa.operators.base import ExecutionContext, Operator
+
+if TYPE_CHECKING:
+    from uqa.operators.aggregation import AggregationMonoid
 
 
 class PathFilterOperator(Operator):
@@ -72,14 +74,16 @@ class PathProjectOperator(Operator):
                 continue
             hdoc = HierarchicalDocument(entry.doc_id, doc_data)
             projected = project_paths(hdoc, self.paths)
-            entries.append(PostingEntry(
-                entry.doc_id,
-                Payload(
-                    positions=entry.payload.positions,
-                    score=entry.payload.score,
-                    fields=projected,
-                ),
-            ))
+            entries.append(
+                PostingEntry(
+                    entry.doc_id,
+                    Payload(
+                        positions=entry.payload.positions,
+                        score=entry.payload.score,
+                        fields=projected,
+                    ),
+                )
+            )
         return PostingList.from_sorted(entries)
 
 
@@ -106,14 +110,16 @@ class PathUnnestOperator(Operator):
             for unnested_doc in unnested:
                 fields = dict(entry.payload.fields)
                 fields["_unnested_data"] = unnested_doc.data
-                entries.append(PostingEntry(
-                    entry.doc_id,
-                    Payload(
-                        positions=entry.payload.positions,
-                        score=entry.payload.score,
-                        fields=fields,
-                    ),
-                ))
+                entries.append(
+                    PostingEntry(
+                        entry.doc_id,
+                        Payload(
+                            positions=entry.payload.positions,
+                            score=entry.payload.score,
+                            fields=fields,
+                        ),
+                    )
+                )
         return PostingList(entries)
 
 
@@ -213,7 +219,5 @@ class UnifiedFilterOperator(Operator):
         else:
             from uqa.operators.primitive import FilterOperator
 
-            delegate = FilterOperator(
-                self.field_expr, self.predicate, self.source
-            )
+            delegate = FilterOperator(self.field_expr, self.predicate, self.source)
         return delegate.execute(context)

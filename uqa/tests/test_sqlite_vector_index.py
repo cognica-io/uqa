@@ -22,7 +22,6 @@ import numpy as np
 from uqa.storage.catalog import Catalog
 from uqa.storage.sqlite_vector_index import SQLiteVectorIndex
 
-
 # -- Helpers ---------------------------------------------------------------
 
 
@@ -37,7 +36,8 @@ def _random_vector(dim: int = 8, seed: int = 42) -> np.ndarray:
 
 
 def _make_index(
-    conn, dimensions: int = 8,
+    conn,
+    dimensions: int = 8,
 ) -> SQLiteVectorIndex:
     return SQLiteVectorIndex(conn, dimensions=dimensions)
 
@@ -69,9 +69,7 @@ class TestWriteThrough:
         for i in range(1, 6):
             idx.add(i, _random_vector(8, seed=i))
 
-        count = catalog.conn.execute(
-            "SELECT COUNT(*) FROM _vectors"
-        ).fetchone()[0]
+        count = catalog.conn.execute("SELECT COUNT(*) FROM _vectors").fetchone()[0]
         assert count == 5
         assert idx.count() == 5
         catalog.close()
@@ -80,8 +78,7 @@ class TestWriteThrough:
         catalog = _make_catalog(tmp_path)
         idx = _make_index(catalog.conn)
 
-        vec = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
-                       dtype=np.float32)
+        vec = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], dtype=np.float32)
         idx.add(1, vec)
 
         row = catalog.conn.execute(
@@ -254,33 +251,19 @@ class TestEngineIntegration:
 
         db = str(tmp_path / "test.db")
         with Engine(db_path=db) as engine:
-            engine.sql(
-                "CREATE TABLE docs ("
-                "  id SERIAL PRIMARY KEY,"
-                "  emb VECTOR(8)"
-                ")"
-            )
+            engine.sql("CREATE TABLE docs (  id SERIAL PRIMARY KEY,  emb VECTOR(8))")
             assert engine._tables["docs"].vector_indexes == {}
 
             engine.sql("CREATE INDEX idx_emb ON docs USING hnsw (emb)")
             assert "emb" in engine._tables["docs"].vector_indexes
-            assert isinstance(
-                engine._tables["docs"].vector_indexes["emb"], HNSWIndex
-            )
+            assert isinstance(engine._tables["docs"].vector_indexes["emb"], HNSWIndex)
 
     def test_vector_stored_in_document_store(self):
         from uqa.engine import Engine
 
         with Engine() as engine:
-            engine.sql(
-                "CREATE TABLE docs ("
-                "  id SERIAL PRIMARY KEY,"
-                "  emb VECTOR(4)"
-                ")"
-            )
-            engine.sql(
-                "INSERT INTO docs (emb) VALUES (ARRAY[1.0, 0, 0, 0])"
-            )
+            engine.sql("CREATE TABLE docs (  id SERIAL PRIMARY KEY,  emb VECTOR(4))")
+            engine.sql("INSERT INTO docs (emb) VALUES (ARRAY[1.0, 0, 0, 0])")
             doc = engine._tables["docs"].document_store.get(1)
             assert doc is not None
             assert doc["emb"] == [1.0, 0.0, 0.0, 0.0]
@@ -301,9 +284,7 @@ class TestEngineIntegration:
 
             vec = np.array([1.0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
             arr = "ARRAY[" + ",".join(str(float(v)) for v in vec) + "]"
-            engine.sql(
-                f"INSERT INTO docs (title, emb) VALUES ('test', {arr})"
-            )
+            engine.sql(f"INSERT INTO docs (title, emb) VALUES ('test', {arr})")
 
             vec_idx = engine._tables["docs"].vector_indexes["emb"]
             assert len(vec_idx._doc_id_to_internal) == 1
@@ -326,9 +307,7 @@ class TestEngineIntegration:
             )
             vec = np.array([1.0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
             arr = "ARRAY[" + ",".join(str(float(v)) for v in vec) + "]"
-            engine.sql(
-                f"INSERT INTO docs (title, emb) VALUES ('test', {arr})"
-            )
+            engine.sql(f"INSERT INTO docs (title, emb) VALUES ('test', {arr})")
 
             # No HNSW index -- knn_match falls back to brute-force
             result = engine.sql(
@@ -352,9 +331,7 @@ class TestEngineIntegration:
                 "  emb VECTOR(8)"
                 ")"
             )
-            engine.add_document(
-                1, {"title": "test"}, table="docs", embedding=vec
-            )
+            engine.add_document(1, {"title": "test"}, table="docs", embedding=vec)
 
             doc = engine._tables["docs"].document_store.get(1)
             assert doc is not None
@@ -374,9 +351,7 @@ class TestEngineIntegration:
             )
             vec = np.array([1.0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
             arr = "ARRAY[" + ",".join(str(float(v)) for v in vec) + "]"
-            engine.sql(
-                f"INSERT INTO docs (title, emb) VALUES ('test', {arr})"
-            )
+            engine.sql(f"INSERT INTO docs (title, emb) VALUES ('test', {arr})")
 
         # Both scalar and vector data persist across restart
         with Engine(db_path=db) as engine:
@@ -398,9 +373,7 @@ class TestEngineIntegration:
                 ")"
             )
             vec = np.array([1.0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
-            engine.add_document(
-                1, {"title": "test"}, table="docs", embedding=vec
-            )
+            engine.add_document(1, {"title": "test"}, table="docs", embedding=vec)
             engine.delete_document(1, table="docs")
             assert engine._tables["docs"].document_store.get(1) is None
 

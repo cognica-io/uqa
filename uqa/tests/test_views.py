@@ -56,9 +56,7 @@ class TestCreateView:
 
     def test_create_view_name_conflicts_with_table(self, engine):
         with pytest.raises(ValueError, match="already exists as a table"):
-            engine.sql(
-                "CREATE VIEW employees AS SELECT name FROM employees"
-            )
+            engine.sql("CREATE VIEW employees AS SELECT name FROM employees")
 
 
 # ==================================================================
@@ -69,8 +67,7 @@ class TestCreateView:
 class TestSelectFromView:
     def test_select_all_from_view(self, engine):
         engine.sql(
-            "CREATE VIEW eng AS "
-            "SELECT name, salary FROM employees WHERE dept = 'eng'"
+            "CREATE VIEW eng AS SELECT name, salary FROM employees WHERE dept = 'eng'"
         )
         r = engine.sql("SELECT name FROM eng ORDER BY name")
         assert [row["name"] for row in r.rows] == ["Alice", "Carol", "Eve"]
@@ -103,16 +100,12 @@ class TestSelectFromView:
         assert r.rows[0]["name"] == "Eve"
 
     def test_view_preserves_column_types(self, engine):
-        engine.sql(
-            "CREATE VIEW v AS SELECT name, salary FROM employees"
-        )
+        engine.sql("CREATE VIEW v AS SELECT name, salary FROM employees")
         r = engine.sql("SELECT salary FROM v WHERE name = 'Alice'")
         assert r.rows[0]["salary"] == 90000.0
 
     def test_view_with_distinct(self, engine):
-        engine.sql(
-            "CREATE VIEW depts AS SELECT DISTINCT dept FROM employees"
-        )
+        engine.sql("CREATE VIEW depts AS SELECT DISTINCT dept FROM employees")
         r = engine.sql("SELECT dept FROM depts ORDER BY dept")
         assert [row["dept"] for row in r.rows] == ["eng", "mkt", "sales"]
 
@@ -124,9 +117,7 @@ class TestSelectFromView:
 
 class TestViewCleanup:
     def test_view_does_not_leak_temp_table(self, engine):
-        engine.sql(
-            "CREATE VIEW v AS SELECT name FROM employees"
-        )
+        engine.sql("CREATE VIEW v AS SELECT name FROM employees")
         engine.sql("SELECT name FROM v")
         # The temporary materialized table should be cleaned up;
         # only the original employees table should remain.
@@ -134,18 +125,14 @@ class TestViewCleanup:
         assert "v" in engine._views
 
     def test_view_does_not_shadow_real_table(self, engine):
-        engine.sql(
-            "CREATE VIEW v AS SELECT name FROM employees LIMIT 1"
-        )
+        engine.sql("CREATE VIEW v AS SELECT name FROM employees LIMIT 1")
         engine.sql("SELECT name FROM v")
         # Real table still works
         r = engine.sql("SELECT COUNT(*) AS cnt FROM employees")
         assert r.rows[0]["cnt"] == 6
 
     def test_multiple_view_queries(self, engine):
-        engine.sql(
-            "CREATE VIEW v AS SELECT name, salary FROM employees"
-        )
+        engine.sql("CREATE VIEW v AS SELECT name, salary FROM employees")
         r1 = engine.sql("SELECT COUNT(*) AS cnt FROM v")
         r2 = engine.sql("SELECT name FROM v WHERE salary > 90000")
         assert r1.rows[0]["cnt"] == 6
@@ -178,13 +165,9 @@ class TestDropView:
             engine.sql("SELECT name FROM v")
 
     def test_recreate_view_after_drop(self, engine):
-        engine.sql(
-            "CREATE VIEW v AS SELECT name FROM employees WHERE dept = 'eng'"
-        )
+        engine.sql("CREATE VIEW v AS SELECT name FROM employees WHERE dept = 'eng'")
         engine.sql("DROP VIEW v")
-        engine.sql(
-            "CREATE VIEW v AS SELECT name FROM employees WHERE dept = 'mkt'"
-        )
+        engine.sql("CREATE VIEW v AS SELECT name FROM employees WHERE dept = 'mkt'")
         r = engine.sql("SELECT name FROM v ORDER BY name")
         assert [row["name"] for row in r.rows] == ["Bob", "Frank"]
 
@@ -196,9 +179,7 @@ class TestDropView:
 
 class TestViewIntegration:
     def test_view_reflects_data_changes(self, engine):
-        engine.sql(
-            "CREATE VIEW v AS SELECT name, salary FROM employees"
-        )
+        engine.sql("CREATE VIEW v AS SELECT name, salary FROM employees")
         engine.sql(
             "INSERT INTO employees (id, name, dept, salary) VALUES "
             "(7, 'Grace', 'eng', 100000)"
@@ -218,10 +199,7 @@ class TestViewIntegration:
         assert r.rows[0]["name"] == "Eve"
 
     def test_view_used_in_subquery(self, engine):
-        engine.sql(
-            "CREATE VIEW eng_ids AS "
-            "SELECT id FROM employees WHERE dept = 'eng'"
-        )
+        engine.sql("CREATE VIEW eng_ids AS SELECT id FROM employees WHERE dept = 'eng'")
         r = engine.sql(
             "SELECT name FROM employees "
             "WHERE id IN (SELECT id FROM eng_ids) "
@@ -235,16 +213,14 @@ class TestViewIntegration:
             "SELECT name, salary FROM employees WHERE salary > 80000"
         )
         engine.sql(
-            "CREATE VIEW very_high AS "
-            "SELECT name FROM high_sal WHERE salary > 90000"
+            "CREATE VIEW very_high AS SELECT name FROM high_sal WHERE salary > 90000"
         )
         r = engine.sql("SELECT name FROM very_high")
         assert [row["name"] for row in r.rows] == ["Eve"]
 
     def test_cte_and_view_together(self, engine):
         engine.sql(
-            "CREATE VIEW eng AS "
-            "SELECT name, salary FROM employees WHERE dept = 'eng'"
+            "CREATE VIEW eng AS SELECT name, salary FROM employees WHERE dept = 'eng'"
         )
         r = engine.sql(
             "WITH top AS (SELECT name FROM eng WHERE salary > 90000) "

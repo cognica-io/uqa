@@ -25,19 +25,15 @@ from uqa.engine import Engine
 from uqa.graph.cypher.ast import (
     BinaryOp,
     CreateClause,
-    CypherQuery,
     DeleteClause,
     Literal,
     MatchClause,
     MergeClause,
     NodePattern,
-    PathPattern,
     PropertyAccess,
     RelPattern,
     ReturnClause,
-    ReturnItem,
     SetClause,
-    SetItem,
     Variable,
     WithClause,
 )
@@ -46,7 +42,6 @@ from uqa.graph.cypher.lexer import Token, TokenType, is_keyword, tokenize
 from uqa.graph.cypher.parser import parse_cypher
 from uqa.graph.posting_list import GraphPostingList
 from uqa.graph.store import GraphStore
-
 
 # -- Fixtures --------------------------------------------------------------
 
@@ -87,12 +82,12 @@ class TestCypherLexer:
         tokens = tokenize("MATCH (n) RETURN n")
         types = [t.type for t in tokens if t.type != TokenType.EOF]
         assert types == [
-            TokenType.IDENT,    # MATCH
+            TokenType.IDENT,  # MATCH
             TokenType.LPAREN,
-            TokenType.IDENT,    # n
+            TokenType.IDENT,  # n
             TokenType.RPAREN,
-            TokenType.IDENT,    # RETURN
-            TokenType.IDENT,    # n
+            TokenType.IDENT,  # RETURN
+            TokenType.IDENT,  # n
         ]
 
     def test_string_literal(self):
@@ -296,9 +291,7 @@ class TestCypherParser:
         assert q.clauses[1].where is not None
 
     def test_return_order_by_limit(self):
-        q = parse_cypher(
-            "MATCH (n:Person) RETURN n.name ORDER BY n.age DESC LIMIT 2"
-        )
+        q = parse_cypher("MATCH (n:Person) RETURN n.name ORDER BY n.age DESC LIMIT 2")
         ret = q.clauses[1]
         assert isinstance(ret, ReturnClause)
         assert ret.order_by is not None
@@ -377,9 +370,7 @@ class TestCypherMatch:
     def test_match_relationship(self):
         g = _make_social_graph()
         c = CypherCompiler(g)
-        q = parse_cypher(
-            "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name, b.name"
-        )
+        q = parse_cypher("MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name, b.name")
         rows = c.execute(q)
         assert len(rows) == 4  # 4 KNOWS edges
         pairs = {(r["a.name"], r["b.name"]) for r in rows}
@@ -414,8 +405,7 @@ class TestCypherMatch:
         g = _make_social_graph()
         c = CypherCompiler(g)
         q = parse_cypher(
-            "MATCH (a:Person {name: 'Alice'})-[:KNOWS*1..2]->(b:Person) "
-            "RETURN b.name"
+            "MATCH (a:Person {name: 'Alice'})-[:KNOWS*1..2]->(b:Person) RETURN b.name"
         )
         rows = c.execute(q)
         names = {r["b.name"] for r in rows}
@@ -428,8 +418,7 @@ class TestCypherMatch:
         g = _make_social_graph()
         c = CypherCompiler(g)
         q = parse_cypher(
-            "MATCH (b:Person)<-[:KNOWS]-(a:Person {name: 'Alice'}) "
-            "RETURN b.name"
+            "MATCH (b:Person)<-[:KNOWS]-(a:Person {name: 'Alice'}) RETURN b.name"
         )
         rows = c.execute(q)
         names = {r["b.name"] for r in rows}
@@ -438,10 +427,7 @@ class TestCypherMatch:
     def test_match_cross_label_pattern(self):
         g = _make_social_graph()
         c = CypherCompiler(g)
-        q = parse_cypher(
-            "MATCH (p:Person)-[:LIVES_IN]->(c:City) "
-            "RETURN p.name, c.name"
-        )
+        q = parse_cypher("MATCH (p:Person)-[:LIVES_IN]->(c:City) RETURN p.name, c.name")
         rows = c.execute(q)
         assert len(rows) == 4
         city_map = {r["p.name"]: r["c.name"] for r in rows}
@@ -498,7 +484,7 @@ class TestCypherCreate:
         assert len(rows) == 1
         assert len(g.vertices) == 2
         assert len(g.edges) == 1
-        edge = list(g.edges.values())[0]
+        edge = next(iter(g.edges.values()))
         assert edge.label == "KNOWS"
         assert edge.properties["since"] == 2024
 
@@ -508,7 +494,7 @@ class TestCypherCreate:
         q = parse_cypher(
             "CREATE (a:Person {name: 'A'}), (b:Person {name: 'B'}) RETURN a, b"
         )
-        rows = c.execute(q)
+        _rows = c.execute(q)
         assert len(g.vertices) == 2
 
     def test_create_with_existing_binding(self):
@@ -523,9 +509,7 @@ class TestCypherCreate:
         assert len(rows) == 1
         assert rows[0]["b.name"] == "NewFriend"
         # Edge should connect Alice to the new vertex
-        new_edges = [
-            e for e in g.edges.values() if e.label == "FRIEND"
-        ]
+        new_edges = [e for e in g.edges.values() if e.label == "FRIEND"]
         assert len(new_edges) == 1
         assert new_edges[0].source_id == 1  # Alice's ID
 
@@ -534,9 +518,7 @@ class TestCypherSet:
     def test_set_property(self):
         g = _make_social_graph()
         c = CypherCompiler(g)
-        q = parse_cypher(
-            "MATCH (n:Person {name: 'Alice'}) SET n.age = 31 RETURN n.age"
-        )
+        q = parse_cypher("MATCH (n:Person {name: 'Alice'}) SET n.age = 31 RETURN n.age")
         rows = c.execute(q)
         assert rows[0]["n.age"] == 31
         assert g.get_vertex(1).properties["age"] == 31
@@ -545,8 +527,7 @@ class TestCypherSet:
         g = _make_social_graph()
         c = CypherCompiler(g)
         q = parse_cypher(
-            "MATCH (n:Person {name: 'Bob'}) SET n.email = 'bob@test.com' "
-            "RETURN n.email"
+            "MATCH (n:Person {name: 'Bob'}) SET n.email = 'bob@test.com' RETURN n.email"
         )
         rows = c.execute(q)
         assert rows[0]["n.email"] == "bob@test.com"
@@ -557,9 +538,7 @@ class TestCypherDelete:
         g = _make_social_graph()
         c = CypherCompiler(g)
         initial_count = len(g.vertices)
-        q = parse_cypher(
-            "MATCH (n:Person {name: 'Diana'}) DETACH DELETE n"
-        )
+        q = parse_cypher("MATCH (n:Person {name: 'Diana'}) DETACH DELETE n")
         c.execute(q)
         assert len(g.vertices) == initial_count - 1
         assert g.get_vertex(4) is None
@@ -567,9 +546,7 @@ class TestCypherDelete:
     def test_delete_without_detach_fails(self):
         g = _make_social_graph()
         c = CypherCompiler(g)
-        q = parse_cypher(
-            "MATCH (n:Person {name: 'Alice'}) DELETE n"
-        )
+        q = parse_cypher("MATCH (n:Person {name: 'Alice'}) DELETE n")
         with pytest.raises(ValueError, match="incident edges"):
             c.execute(q)
 
@@ -589,9 +566,7 @@ class TestCypherMerge:
     def test_merge_creates_when_missing(self):
         g = GraphStore()
         c = CypherCompiler(g)
-        q = parse_cypher(
-            "MERGE (n:Person {name: 'Alice'}) RETURN n"
-        )
+        q = parse_cypher("MERGE (n:Person {name: 'Alice'}) RETURN n")
         rows = c.execute(q)
         assert len(rows) == 1
         assert len(g.vertices) == 1
@@ -600,9 +575,7 @@ class TestCypherMerge:
         g = _make_social_graph()
         c = CypherCompiler(g)
         initial_count = len(g.vertices)
-        q = parse_cypher(
-            "MERGE (n:Person {name: 'Alice'}) RETURN n"
-        )
+        q = parse_cypher("MERGE (n:Person {name: 'Alice'}) RETURN n")
         rows = c.execute(q)
         assert len(rows) == 1
         assert len(g.vertices) == initial_count  # No new vertex
@@ -644,9 +617,7 @@ class TestCypherReturn:
     def test_return_order_by(self):
         g = _make_social_graph()
         c = CypherCompiler(g)
-        q = parse_cypher(
-            "MATCH (n:Person) RETURN n.name ORDER BY n.age"
-        )
+        q = parse_cypher("MATCH (n:Person) RETURN n.name ORDER BY n.age")
         rows = c.execute(q)
         ages = [r["n.name"] for r in rows]
         assert ages[0] == "Bob"  # youngest (25)
@@ -654,27 +625,21 @@ class TestCypherReturn:
     def test_return_order_by_desc(self):
         g = _make_social_graph()
         c = CypherCompiler(g)
-        q = parse_cypher(
-            "MATCH (n:Person) RETURN n.name ORDER BY n.age DESC"
-        )
+        q = parse_cypher("MATCH (n:Person) RETURN n.name ORDER BY n.age DESC")
         rows = c.execute(q)
         assert rows[0]["n.name"] == "Charlie"  # oldest (35)
 
     def test_return_limit(self):
         g = _make_social_graph()
         c = CypherCompiler(g)
-        q = parse_cypher(
-            "MATCH (n:Person) RETURN n.name ORDER BY n.age LIMIT 2"
-        )
+        q = parse_cypher("MATCH (n:Person) RETURN n.name ORDER BY n.age LIMIT 2")
         rows = c.execute(q)
         assert len(rows) == 2
 
     def test_return_skip(self):
         g = _make_social_graph()
         c = CypherCompiler(g)
-        q = parse_cypher(
-            "MATCH (n:Person) RETURN n.name ORDER BY n.age SKIP 2"
-        )
+        q = parse_cypher("MATCH (n:Person) RETURN n.name ORDER BY n.age SKIP 2")
         rows = c.execute(q)
         assert len(rows) == 2
 
@@ -682,8 +647,7 @@ class TestCypherReturn:
         g = _make_social_graph()
         c = CypherCompiler(g)
         q = parse_cypher(
-            "MATCH (n:Person)-[:LIVES_IN]->(c:City) "
-            "RETURN DISTINCT c.name"
+            "MATCH (n:Person)-[:LIVES_IN]->(c:City) RETURN DISTINCT c.name"
         )
         rows = c.execute(q)
         assert len(rows) == 2
@@ -691,9 +655,7 @@ class TestCypherReturn:
     def test_return_expression(self):
         g = _make_social_graph()
         c = CypherCompiler(g)
-        q = parse_cypher(
-            "MATCH (n:Person) RETURN n.name, n.age + 1 AS next_age"
-        )
+        q = parse_cypher("MATCH (n:Person) RETURN n.name, n.age + 1 AS next_age")
         rows = c.execute(q)
         alice = next(r for r in rows if r["n.name"] == "Alice")
         assert alice["next_age"] == 31
@@ -717,9 +679,7 @@ class TestCypherWith:
         g = _make_social_graph()
         c = CypherCompiler(g)
         q = parse_cypher(
-            "MATCH (n:Person) "
-            "WITH n ORDER BY n.age DESC LIMIT 2 "
-            "RETURN n.name"
+            "MATCH (n:Person) WITH n ORDER BY n.age DESC LIMIT 2 RETURN n.name"
         )
         rows = c.execute(q)
         assert len(rows) == 2
@@ -737,9 +697,7 @@ class TestCypherUnwind:
         g = _make_social_graph()
         c = CypherCompiler(g)
         q = parse_cypher(
-            "UNWIND ['Alice', 'Bob'] AS name "
-            "MATCH (n:Person {name: name}) "
-            "RETURN n.age"
+            "UNWIND ['Alice', 'Bob'] AS name MATCH (n:Person {name: name}) RETURN n.age"
         )
         rows = c.execute(q)
         ages = {r["n.age"] for r in rows}
@@ -841,9 +799,7 @@ class TestCypherPostingList:
         """Verify graph payloads track matched vertices and edges."""
         g = _make_social_graph()
         c = CypherCompiler(g)
-        q = parse_cypher(
-            "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a, b"
-        )
+        q = parse_cypher("MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a, b")
         match_clause = q.clauses[0]
         gpl = c._exec_match(match_clause, c._empty_binding())
 
@@ -865,6 +821,7 @@ class TestCypherPostingList:
         # Convert to standard PostingList and back
         pl = gpl.to_posting_list()
         from uqa.core.posting_list import PostingList
+
         assert isinstance(pl, PostingList)
 
         gpl2 = GraphPostingList.from_posting_list(pl)
@@ -875,9 +832,7 @@ class TestCypherPostingList:
         """Fields store vertex/edge IDs (int), not objects."""
         g = _make_social_graph()
         c = CypherCompiler(g)
-        q = parse_cypher(
-            "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a, r, b"
-        )
+        q = parse_cypher("MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a, r, b")
         match_clause = q.clauses[0]
         gpl = c._exec_match(match_clause, c._empty_binding())
 

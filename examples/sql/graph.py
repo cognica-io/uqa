@@ -36,26 +36,104 @@ gs = engine.get_graph_store("employees")
 
 # Employees
 employees = [
-    Vertex(1, "", {"name": "Alice", "role": "ceo", "dept": "Executive", "salary": 250000, "years": 15}),
-    Vertex(2, "", {"name": "Bob", "role": "vp", "dept": "Engineering", "salary": 180000, "years": 12}),
-    Vertex(3, "", {"name": "Carol", "role": "vp", "dept": "Sales", "salary": 170000, "years": 10}),
-    Vertex(4, "", {"name": "Dave", "role": "engineer", "dept": "Engineering", "salary": 130000, "years": 6}),
-    Vertex(5, "", {"name": "Eve", "role": "engineer", "dept": "Engineering", "salary": 125000, "years": 4}),
-    Vertex(6, "", {"name": "Frank", "role": "engineer", "dept": "Engineering", "salary": 120000, "years": 3}),
-    Vertex(7, "", {"name": "Grace", "role": "sales", "dept": "Sales", "salary": 110000, "years": 5}),
-    Vertex(8, "", {"name": "Hank", "role": "sales", "dept": "Sales", "salary": 105000, "years": 2}),
+    Vertex(
+        1,
+        "",
+        {
+            "name": "Alice",
+            "role": "ceo",
+            "dept": "Executive",
+            "salary": 250000,
+            "years": 15,
+        },
+    ),
+    Vertex(
+        2,
+        "",
+        {
+            "name": "Bob",
+            "role": "vp",
+            "dept": "Engineering",
+            "salary": 180000,
+            "years": 12,
+        },
+    ),
+    Vertex(
+        3,
+        "",
+        {"name": "Carol", "role": "vp", "dept": "Sales", "salary": 170000, "years": 10},
+    ),
+    Vertex(
+        4,
+        "",
+        {
+            "name": "Dave",
+            "role": "engineer",
+            "dept": "Engineering",
+            "salary": 130000,
+            "years": 6,
+        },
+    ),
+    Vertex(
+        5,
+        "",
+        {
+            "name": "Eve",
+            "role": "engineer",
+            "dept": "Engineering",
+            "salary": 125000,
+            "years": 4,
+        },
+    ),
+    Vertex(
+        6,
+        "",
+        {
+            "name": "Frank",
+            "role": "engineer",
+            "dept": "Engineering",
+            "salary": 120000,
+            "years": 3,
+        },
+    ),
+    Vertex(
+        7,
+        "",
+        {
+            "name": "Grace",
+            "role": "sales",
+            "dept": "Sales",
+            "salary": 110000,
+            "years": 5,
+        },
+    ),
+    Vertex(
+        8,
+        "",
+        {
+            "name": "Hank",
+            "role": "sales",
+            "dept": "Sales",
+            "salary": 105000,
+            "years": 2,
+        },
+    ),
 ]
 for v in employees:
     gs.add_vertex(v)
 
 # Management edges
 edges = [
-    Edge(1, 1, 2, "manages"), Edge(2, 1, 3, "manages"),
-    Edge(3, 2, 4, "manages"), Edge(4, 2, 5, "manages"),
-    Edge(5, 2, 6, "manages"), Edge(6, 3, 7, "manages"),
+    Edge(1, 1, 2, "manages"),
+    Edge(2, 1, 3, "manages"),
+    Edge(3, 2, 4, "manages"),
+    Edge(4, 2, 5, "manages"),
+    Edge(5, 2, 6, "manages"),
+    Edge(6, 3, 7, "manages"),
     Edge(7, 3, 8, "manages"),
     # Mentorship edges
-    Edge(10, 4, 5, "mentors"), Edge(11, 4, 6, "mentors"),
+    Edge(10, 4, 5, "mentors"),
+    Edge(11, 4, 6, "mentors"),
     Edge(12, 7, 8, "mentors"),
 ]
 for e in edges:
@@ -89,98 +167,135 @@ print("=" * 70)
 # ==================================================================
 # FROM traverse(): basic graph traversal
 # ==================================================================
-show("1. CEO's direct reports", engine.sql(
-    "SELECT name, role, salary FROM traverse(1, 'manages', 1) "
-    "WHERE name != 'Alice' ORDER BY salary DESC"
-))
+show(
+    "1. CEO's direct reports",
+    engine.sql(
+        "SELECT name, role, salary FROM traverse(1, 'manages', 1) "
+        "WHERE name != 'Alice' ORDER BY salary DESC"
+    ),
+)
 
-show("2. Full org tree (3 hops)", engine.sql(
-    "SELECT name, role, dept, salary FROM traverse(1, 'manages', 3) "
-    "ORDER BY salary DESC"
-))
+show(
+    "2. Full org tree (3 hops)",
+    engine.sql(
+        "SELECT name, role, dept, salary FROM traverse(1, 'manages', 3) "
+        "ORDER BY salary DESC"
+    ),
+)
 
-show("3. Bob's team (2 hops)", engine.sql(
-    "SELECT name, role, years FROM traverse(2, 'manages', 2) ORDER BY years DESC"
-))
+show(
+    "3. Bob's team (2 hops)",
+    engine.sql(
+        "SELECT name, role, years FROM traverse(2, 'manages', 2) ORDER BY years DESC"
+    ),
+)
 
 
 # ==================================================================
 # Aggregates over graph traversal
 # ==================================================================
-show("4. SUM salary of Bob's team", engine.sql(
-    "SELECT SUM(salary) AS total_salary FROM traverse(2, 'manages', 2)"
-))
+show(
+    "4. SUM salary of Bob's team",
+    engine.sql("SELECT SUM(salary) AS total_salary FROM traverse(2, 'manages', 2)"),
+)
 
-show("5. AVG salary of Bob's team", engine.sql(
-    "SELECT AVG(salary) AS avg_salary FROM traverse(2, 'manages', 2)"
-))
+show(
+    "5. AVG salary of Bob's team",
+    engine.sql("SELECT AVG(salary) AS avg_salary FROM traverse(2, 'manages', 2)"),
+)
 
-show("6. COUNT of full org", engine.sql(
-    "SELECT COUNT(*) AS headcount FROM traverse(1, 'manages', 3)"
-))
+show(
+    "6. COUNT of full org",
+    engine.sql("SELECT COUNT(*) AS headcount FROM traverse(1, 'manages', 3)"),
+)
 
-show("7. Salary range of full org", engine.sql(
-    "SELECT MIN(salary) AS lowest, MAX(salary) AS highest "
-    "FROM traverse(1, 'manages', 3)"
-))
+show(
+    "7. Salary range of full org",
+    engine.sql(
+        "SELECT MIN(salary) AS lowest, MAX(salary) AS highest "
+        "FROM traverse(1, 'manages', 3)"
+    ),
+)
 
 
 # ==================================================================
 # GROUP BY on graph results
 # ==================================================================
-show("8. Headcount by role", engine.sql(
-    "SELECT role, COUNT(*) AS cnt, AVG(salary) AS avg_sal "
-    "FROM traverse(1, 'manages', 3) GROUP BY role ORDER BY avg_sal DESC"
-))
+show(
+    "8. Headcount by role",
+    engine.sql(
+        "SELECT role, COUNT(*) AS cnt, AVG(salary) AS avg_sal "
+        "FROM traverse(1, 'manages', 3) GROUP BY role ORDER BY avg_sal DESC"
+    ),
+)
 
-show("9. Dept summary", engine.sql(
-    "SELECT dept, COUNT(*) AS cnt, SUM(salary) AS total "
-    "FROM traverse(1, 'manages', 3) GROUP BY dept"
-))
+show(
+    "9. Dept summary",
+    engine.sql(
+        "SELECT dept, COUNT(*) AS cnt, SUM(salary) AS total "
+        "FROM traverse(1, 'manages', 3) GROUP BY dept"
+    ),
+)
 
 
 # ==================================================================
 # WHERE filter on graph results
 # ==================================================================
-show("10. Engineers only", engine.sql(
-    "SELECT name, salary, years FROM traverse(1, 'manages', 3) "
-    "WHERE role = 'engineer' ORDER BY salary DESC"
-))
+show(
+    "10. Engineers only",
+    engine.sql(
+        "SELECT name, salary, years FROM traverse(1, 'manages', 3) "
+        "WHERE role = 'engineer' ORDER BY salary DESC"
+    ),
+)
 
-show("11. Salary > 120000", engine.sql(
-    "SELECT name, role, salary FROM traverse(1, 'manages', 3) "
-    "WHERE salary > 120000 ORDER BY salary DESC"
-))
+show(
+    "11. Salary > 120000",
+    engine.sql(
+        "SELECT name, role, salary FROM traverse(1, 'manages', 3) "
+        "WHERE salary > 120000 ORDER BY salary DESC"
+    ),
+)
 
 
 # ==================================================================
 # LIMIT on graph results
 # ==================================================================
-show("12. Top 3 earners in org", engine.sql(
-    "SELECT name, role, salary FROM traverse(1, 'manages', 3) "
-    "ORDER BY salary DESC LIMIT 3"
-))
+show(
+    "12. Top 3 earners in org",
+    engine.sql(
+        "SELECT name, role, salary FROM traverse(1, 'manages', 3) "
+        "ORDER BY salary DESC LIMIT 3"
+    ),
+)
 
 
 # ==================================================================
 # FROM rpq(): regular path queries
 # ==================================================================
-show("13. RPQ: manages* from CEO", engine.sql(
-    "SELECT name, role, salary FROM rpq('manages*', 1) ORDER BY salary DESC"
-))
+show(
+    "13. RPQ: manages* from CEO",
+    engine.sql(
+        "SELECT name, role, salary FROM rpq('manages*', 1) ORDER BY salary DESC"
+    ),
+)
 
-show("14. RPQ: manages/mentors from Bob", engine.sql(
-    "SELECT name, role FROM rpq('manages/mentors', 2)"
-))
+show(
+    "14. RPQ: manages/mentors from Bob",
+    engine.sql("SELECT name, role FROM rpq('manages/mentors', 2)"),
+)
 
 
 # ==================================================================
 # RPQ with aggregates
 # ==================================================================
-show("15. RPQ aggregate: total salary via manages*", engine.sql(
-    "SELECT SUM(salary) AS total, AVG(salary) AS average, COUNT(*) AS cnt "
-    "FROM rpq('manages*', 1)"
-))
+show(
+    "15. RPQ aggregate: total salary via manages*",
+    engine.sql(
+        "SELECT SUM(salary) AS total, AVG(salary) AS average, COUNT(*) AS cnt "
+        "FROM rpq('manages*', 1)"
+    ),
+)
 
 
 # ==================================================================
@@ -214,10 +329,13 @@ for e in edges:
     if e.label == "manages":
         engine.add_graph_edge(e, table="reviews")
 
-show("16. Reviews + traverse_match (Bob's team)", engine.sql(
-    "SELECT employee_id, rating, comment FROM reviews "
-    "WHERE traverse_match(2, 'manages', 2) ORDER BY rating DESC"
-))
+show(
+    "16. Reviews + traverse_match (Bob's team)",
+    engine.sql(
+        "SELECT employee_id, rating, comment FROM reviews "
+        "WHERE traverse_match(2, 'manages', 2) ORDER BY rating DESC"
+    ),
+)
 
 
 print("\n" + "=" * 70)

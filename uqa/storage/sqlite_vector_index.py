@@ -19,12 +19,16 @@ neighbor-list-level reconstruction.
 
 from __future__ import annotations
 
-import sqlite3
+from typing import TYPE_CHECKING
 
 import numpy as np
-from numpy.typing import NDArray
 
 from uqa.core.posting_list import PostingList
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
+
+    from uqa.storage.managed_connection import SQLiteConnection
 from uqa.core.types import DocId, Payload, PostingEntry
 from uqa.storage.vector_index import HNSWIndex
 
@@ -34,7 +38,7 @@ class SQLiteVectorIndex(HNSWIndex):
 
     def __init__(
         self,
-        conn: sqlite3.Connection,
+        conn: SQLiteConnection,
         dimensions: int,
         ef_construction: int = 200,
         m: int = 16,
@@ -48,8 +52,7 @@ class SQLiteVectorIndex(HNSWIndex):
     def _load_from_sqlite(self) -> None:
         """Load all vectors from the ``_vectors`` table into hnswlib."""
         row = self._conn.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type='table' AND name='_vectors'"
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='_vectors'"
         ).fetchone()
         if row is None:
             return
@@ -104,9 +107,7 @@ class SQLiteVectorIndex(HNSWIndex):
             del self._doc_id_to_internal[doc_id]
             del self._internal_to_doc_id[internal_id]
 
-        self._conn.execute(
-            "DELETE FROM _vectors WHERE doc_id = ?", (doc_id,)
-        )
+        self._conn.execute("DELETE FROM _vectors WHERE doc_id = ?", (doc_id,))
         self._conn.commit()
 
     # -- Search (override to account for deleted elements) ---------------

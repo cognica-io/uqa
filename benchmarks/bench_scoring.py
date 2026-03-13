@@ -14,17 +14,17 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from uqa.core.types import IndexStats
-from uqa.scoring.bm25 import BM25Params, BM25Scorer
-from uqa.scoring.bayesian_bm25 import BayesianBM25Params, BayesianBM25Scorer
-from uqa.scoring.vector import VectorScorer
-from uqa.fusion.log_odds import LogOddsFusion
 from benchmarks.data.generators import BenchmarkDataGenerator
-
+from uqa.core.types import IndexStats
+from uqa.fusion.log_odds import LogOddsFusion
+from uqa.scoring.bayesian_bm25 import BayesianBM25Params, BayesianBM25Scorer
+from uqa.scoring.bm25 import BM25Params, BM25Scorer
+from uqa.scoring.vector import VectorScorer
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_index_stats(total_docs: int = 10000) -> IndexStats:
     return IndexStats(
@@ -37,6 +37,7 @@ def _make_index_stats(total_docs: int = 10000) -> IndexStats:
 # ---------------------------------------------------------------------------
 # BM25
 # ---------------------------------------------------------------------------
+
 
 class TestBM25:
     def test_score_single(self, benchmark) -> None:
@@ -77,6 +78,7 @@ class TestBM25:
 # Bayesian BM25
 # ---------------------------------------------------------------------------
 
+
 class TestBayesianBM25:
     def test_score_single(self, benchmark) -> None:
         stats = _make_index_stats()
@@ -111,6 +113,7 @@ class TestBayesianBM25:
 # Vector Scoring
 # ---------------------------------------------------------------------------
 
+
 class TestVectorScoring:
     @pytest.mark.parametrize("dim", [64, 128, 256])
     def test_cosine_similarity(self, benchmark, dim: int) -> None:
@@ -139,6 +142,7 @@ class TestVectorScoring:
 # ---------------------------------------------------------------------------
 # Log-Odds Fusion
 # ---------------------------------------------------------------------------
+
 
 class TestLogOddsFusion:
     @pytest.mark.parametrize("n_signals", [2, 3, 5, 10])

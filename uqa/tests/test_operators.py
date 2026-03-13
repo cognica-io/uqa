@@ -14,13 +14,15 @@ Tests:
 - AggregationMonoid laws (identity, associativity via combine)
 - Hierarchical ops on nested JSON
 """
+
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
 
-from uqa.core.hierarchical import HierarchicalDocument
-from uqa.core.posting_list import PostingList
+from uqa.analysis.analyzer import whitespace_analyzer
 from uqa.core.types import (
     Between,
     Equals,
@@ -30,8 +32,6 @@ from uqa.core.types import (
     LessThan,
     LessThanOrEqual,
     NotEquals,
-    Payload,
-    PostingEntry,
 )
 from uqa.operators.aggregation import (
     AggregateOperator,
@@ -57,10 +57,12 @@ from uqa.operators.primitive import (
     TermOperator,
     VectorSimilarityOperator,
 )
-from uqa.analysis.analyzer import whitespace_analyzer
 from uqa.storage.document_store import DocumentStore
 from uqa.storage.inverted_index import InvertedIndex
 from uqa.storage.vector_index import HNSWIndex
+
+if TYPE_CHECKING:
+    from uqa.core.hierarchical import HierarchicalDocument
 
 
 @pytest.fixture
@@ -108,6 +110,7 @@ def context(
 
 # -- TermOperator --
 
+
 class TestTermOperator:
     def test_returns_correct_posting_list(self, context: ExecutionContext) -> None:
         op = TermOperator("neural", field="title")
@@ -132,6 +135,7 @@ class TestTermOperator:
 
 
 # -- FilterOperator --
+
 
 class TestFilterOperator:
     def test_equals(self, context: ExecutionContext) -> None:
@@ -181,6 +185,7 @@ class TestFilterOperator:
 
 # -- Boolean operators --
 
+
 class TestBooleanOperators:
     def test_union(self, context: ExecutionContext) -> None:
         op_a = TermOperator("neural", field="title")
@@ -210,6 +215,7 @@ class TestBooleanOperators:
 
 # -- HybridTextVectorOperator --
 
+
 class TestHybridOperator:
     def test_hybrid_is_intersect_of_term_and_vector(
         self, context: ExecutionContext, sample_vectors: dict[int, np.ndarray]
@@ -222,7 +228,9 @@ class TestHybridOperator:
         # Manually compute intersect
         term_result = TermOperator("neural", field="title").execute(context)
         # Note: hybrid uses field=None for term, but we test the set relationship
-        vec_result = VectorSimilarityOperator(query_vec, threshold=-1.0).execute(context)
+        vec_result = VectorSimilarityOperator(query_vec, threshold=-1.0).execute(
+            context
+        )
         manual_intersect = term_result.intersect(vec_result)
 
         assert hybrid_result.doc_ids == manual_intersect.doc_ids
@@ -240,6 +248,7 @@ class TestHybridOperator:
 
 
 # -- AggregationMonoid laws --
+
 
 class TestAggregationMonoids:
     def test_count_identity(self) -> None:
@@ -340,6 +349,7 @@ class TestAggregationMonoids:
 
 # -- Hierarchical operators --
 
+
 class TestHierarchicalOperators:
     @pytest.fixture
     def hier_context(self, hierarchical_doc: HierarchicalDocument) -> ExecutionContext:
@@ -401,6 +411,7 @@ class TestHierarchicalOperators:
 
 # -- Vector operators --
 
+
 class TestVectorOperators:
     def test_knn_returns_k_results(
         self, context: ExecutionContext, sample_vectors: dict[int, np.ndarray]
@@ -423,6 +434,7 @@ class TestVectorOperators:
 
 # -- FacetOperator --
 
+
 class TestFacetOperator:
     def test_facet_counts(self, context: ExecutionContext) -> None:
         source = FilterOperator("year", GreaterThanOrEqual(2023))
@@ -435,6 +447,7 @@ class TestFacetOperator:
 
 
 # -- Storage layer --
+
 
 class TestDocumentStore:
     def test_put_get(self) -> None:

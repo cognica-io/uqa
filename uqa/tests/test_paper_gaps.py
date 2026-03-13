@@ -29,14 +29,12 @@ from uqa.core.types import (
     Equals,
     GreaterThan,
     IndexStats,
-    LessThan,
     Payload,
     PostingEntry,
     Vertex,
 )
 from uqa.graph.store import GraphStore
 from uqa.operators.base import ExecutionContext, Operator
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -105,11 +103,13 @@ class TestVectorExclusionOperator:
     def test_excludes_negative_matches(self) -> None:
         from uqa.operators.hybrid import VectorExclusionOperator
 
-        positive = _FixedOperator([
-            PostingEntry(1, Payload(score=0.9)),
-            PostingEntry(2, Payload(score=0.8)),
-            PostingEntry(3, Payload(score=0.7)),
-        ])
+        positive = _FixedOperator(
+            [
+                PostingEntry(1, Payload(score=0.9)),
+                PostingEntry(2, Payload(score=0.8)),
+                PostingEntry(3, Payload(score=0.7)),
+            ]
+        )
         # Negative vector op will execute against vector index -- use a context
         # with no vector index so negative returns empty -> nothing excluded.
         ctx = ExecutionContext()
@@ -155,11 +155,13 @@ class TestFacetVectorOperator:
         store.put(3, {"category": "A", "title": "doc3"})
 
         # Use a fixed source instead of vector index
-        source = _FixedOperator([
-            PostingEntry(1, Payload(score=0.9)),
-            PostingEntry(2, Payload(score=0.8)),
-            PostingEntry(3, Payload(score=0.7)),
-        ])
+        source = _FixedOperator(
+            [
+                PostingEntry(1, Payload(score=0.9)),
+                PostingEntry(2, Payload(score=0.8)),
+                PostingEntry(3, Payload(score=0.7)),
+            ]
+        )
 
         query_vec = np.zeros(4, dtype=np.float32)
         op = FacetVectorOperator("category", query_vec, threshold=0.5, source=source)
@@ -190,28 +192,39 @@ class TestPathAggregateOperator:
         from uqa.storage.document_store import DocumentStore
 
         store = DocumentStore()
-        store.put(1, {
-            "title": "order1",
-            "items": [10, 20, 30],
-        })
-        store.put(2, {
-            "title": "order2",
-            "items": [5, 15],
-        })
-        store.put(3, {
-            "title": "order3",
-            "items": 42,  # single value, not a list
-        })
+        store.put(
+            1,
+            {
+                "title": "order1",
+                "items": [10, 20, 30],
+            },
+        )
+        store.put(
+            2,
+            {
+                "title": "order2",
+                "items": [5, 15],
+            },
+        )
+        store.put(
+            3,
+            {
+                "title": "order3",
+                "items": 42,  # single value, not a list
+            },
+        )
         return ExecutionContext(document_store=store)
 
     def test_sum_over_array(self) -> None:
         from uqa.operators.aggregation import SumMonoid
         from uqa.operators.hierarchical import PathAggregateOperator
 
-        source = _FixedOperator([
-            PostingEntry(1, Payload(score=0.0)),
-            PostingEntry(2, Payload(score=0.0)),
-        ])
+        source = _FixedOperator(
+            [
+                PostingEntry(1, Payload(score=0.0)),
+                PostingEntry(2, Payload(score=0.0)),
+            ]
+        )
         op = PathAggregateOperator(["items"], SumMonoid(), source)
         result = op.execute(self._make_context())
         assert len(result) == 2
@@ -223,9 +236,11 @@ class TestPathAggregateOperator:
         from uqa.operators.aggregation import AvgMonoid
         from uqa.operators.hierarchical import PathAggregateOperator
 
-        source = _FixedOperator([
-            PostingEntry(1, Payload(score=0.0)),
-        ])
+        source = _FixedOperator(
+            [
+                PostingEntry(1, Payload(score=0.0)),
+            ]
+        )
         op = PathAggregateOperator(["items"], AvgMonoid(), source)
         result = op.execute(self._make_context())
         assert result.entries[0].payload.score == pytest.approx(20.0)
@@ -263,7 +278,7 @@ class TestPathAggregateOperator:
         assert result.entries[0].payload.score == pytest.approx(3.0)
 
     def test_min_max_over_array(self) -> None:
-        from uqa.operators.aggregation import MinMonoid, MaxMonoid
+        from uqa.operators.aggregation import MaxMonoid, MinMonoid
         from uqa.operators.hierarchical import PathAggregateOperator
 
         source = _FixedOperator([PostingEntry(1, Payload(score=0.0))])
@@ -288,18 +303,27 @@ class TestUnifiedFilterOperator:
         from uqa.storage.document_store import DocumentStore
 
         store = DocumentStore()
-        store.put(1, {
-            "year": 2023,
-            "metadata": {"author": "Alice", "score": 95},
-        })
-        store.put(2, {
-            "year": 2024,
-            "metadata": {"author": "Bob", "score": 88},
-        })
-        store.put(3, {
-            "year": 2025,
-            "metadata": {"author": "Alice", "score": 72},
-        })
+        store.put(
+            1,
+            {
+                "year": 2023,
+                "metadata": {"author": "Alice", "score": 95},
+            },
+        )
+        store.put(
+            2,
+            {
+                "year": 2024,
+                "metadata": {"author": "Bob", "score": 88},
+            },
+        )
+        store.put(
+            3,
+            {
+                "year": 2025,
+                "metadata": {"author": "Alice", "score": 72},
+            },
+        )
         return ExecutionContext(document_store=store)
 
     def test_flat_field_filter(self) -> None:
@@ -326,10 +350,12 @@ class TestUnifiedFilterOperator:
     def test_with_source_operator(self) -> None:
         from uqa.operators.hierarchical import UnifiedFilterOperator
 
-        source = _FixedOperator([
-            PostingEntry(1, Payload(score=1.0)),
-            PostingEntry(2, Payload(score=0.8)),
-        ])
+        source = _FixedOperator(
+            [
+                PostingEntry(1, Payload(score=1.0)),
+                PostingEntry(2, Payload(score=0.8)),
+            ]
+        )
         op = UnifiedFilterOperator("year", GreaterThan(2023), source=source)
         result = op.execute(self._make_context())
         assert [e.doc_id for e in result] == [2]

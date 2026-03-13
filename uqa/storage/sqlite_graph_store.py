@@ -25,9 +25,12 @@ directly, taking advantage of the adjacency indexes.
 from __future__ import annotations
 
 import json
-import sqlite3
+from typing import TYPE_CHECKING
 
 from uqa.core.types import Edge, Vertex
+
+if TYPE_CHECKING:
+    from uqa.storage.managed_connection import SQLiteConnection
 from uqa.graph.store import GraphStore
 
 
@@ -46,7 +49,7 @@ class SQLiteGraphStore(GraphStore):
 
     def __init__(
         self,
-        conn: sqlite3.Connection,
+        conn: SQLiteConnection,
         table_name: str | None = None,
     ) -> None:
         super().__init__()
@@ -86,20 +89,16 @@ class SQLiteGraphStore(GraphStore):
             f"properties_json TEXT NOT NULL)"
         )
         self._conn.execute(
-            f'CREATE INDEX IF NOT EXISTS "{vtx}_label" '
-            f'ON "{vtx}" (label)'
+            f'CREATE INDEX IF NOT EXISTS "{vtx}_label" ON "{vtx}" (label)'
         )
         self._conn.execute(
-            f'CREATE INDEX IF NOT EXISTS "{edg}_out" '
-            f'ON "{edg}" (source_id, label)'
+            f'CREATE INDEX IF NOT EXISTS "{edg}_out" ON "{edg}" (source_id, label)'
         )
         self._conn.execute(
-            f'CREATE INDEX IF NOT EXISTS "{edg}_in" '
-            f'ON "{edg}" (target_id, label)'
+            f'CREATE INDEX IF NOT EXISTS "{edg}_in" ON "{edg}" (target_id, label)'
         )
         self._conn.execute(
-            f'CREATE INDEX IF NOT EXISTS "{edg}_label" '
-            f'ON "{edg}" (label)'
+            f'CREATE INDEX IF NOT EXISTS "{edg}_label" ON "{edg}" (label)'
         )
         self._conn.commit()
 
@@ -108,13 +107,11 @@ class SQLiteGraphStore(GraphStore):
         vtx = self._vtx_table
         cols = {
             row[1]
-            for row in self._conn.execute(
-                f'PRAGMA table_info("{vtx}")'
-            ).fetchall()
+            for row in self._conn.execute(f'PRAGMA table_info("{vtx}")').fetchall()
         }
         if "label" not in cols:
             self._conn.execute(
-                f'ALTER TABLE "{vtx}" ADD COLUMN label TEXT NOT NULL DEFAULT \'\''
+                f"ALTER TABLE \"{vtx}\" ADD COLUMN label TEXT NOT NULL DEFAULT ''"
             )
             self._conn.execute(
                 f'CREATE INDEX IF NOT EXISTS "{vtx}_label" ON "{vtx}" (label)'
@@ -138,8 +135,7 @@ class SQLiteGraphStore(GraphStore):
             super().add_vertex(vertex)
 
         rows = self._conn.execute(
-            f"SELECT edge_id, source_id, target_id, label, properties_json "
-            f'FROM "{edg}"'
+            f'SELECT edge_id, source_id, target_id, label, properties_json FROM "{edg}"'
         ).fetchall()
         for eid, src, tgt, label, props_json in rows:
             edge = Edge(
@@ -172,8 +168,7 @@ class SQLiteGraphStore(GraphStore):
     def remove_vertex(self, vertex_id: int) -> None:
         super().remove_vertex(vertex_id)
         self._conn.execute(
-            f'DELETE FROM "{self._edge_table}" '
-            f"WHERE source_id = ? OR target_id = ?",
+            f'DELETE FROM "{self._edge_table}" WHERE source_id = ? OR target_id = ?',
             (vertex_id, vertex_id),
         )
         self._conn.execute(
@@ -219,27 +214,23 @@ class SQLiteGraphStore(GraphStore):
         if direction == "out":
             if label is not None:
                 rows = self._conn.execute(
-                    f'SELECT target_id FROM "{edg}" '
-                    f"WHERE source_id = ? AND label = ?",
+                    f'SELECT target_id FROM "{edg}" WHERE source_id = ? AND label = ?',
                     (vertex_id, label),
                 ).fetchall()
             else:
                 rows = self._conn.execute(
-                    f'SELECT target_id FROM "{edg}" '
-                    f"WHERE source_id = ?",
+                    f'SELECT target_id FROM "{edg}" WHERE source_id = ?',
                     (vertex_id,),
                 ).fetchall()
         else:
             if label is not None:
                 rows = self._conn.execute(
-                    f'SELECT source_id FROM "{edg}" '
-                    f"WHERE target_id = ? AND label = ?",
+                    f'SELECT source_id FROM "{edg}" WHERE target_id = ? AND label = ?',
                     (vertex_id, label),
                 ).fetchall()
             else:
                 rows = self._conn.execute(
-                    f'SELECT source_id FROM "{edg}" '
-                    f"WHERE target_id = ?",
+                    f'SELECT source_id FROM "{edg}" WHERE target_id = ?',
                     (vertex_id,),
                 ).fetchall()
         return [r[0] for r in rows]
@@ -248,8 +239,7 @@ class SQLiteGraphStore(GraphStore):
         """Return all vertices with the given label using the label index."""
         vtx = self._vtx_table
         rows = self._conn.execute(
-            f'SELECT vertex_id, label, properties_json FROM "{vtx}" '
-            f"WHERE label = ?",
+            f'SELECT vertex_id, label, properties_json FROM "{vtx}" WHERE label = ?',
             (label,),
         ).fetchall()
         return [

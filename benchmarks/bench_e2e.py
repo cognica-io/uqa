@@ -12,9 +12,6 @@ Uses pre-populated tables from conftest fixtures.
 
 from __future__ import annotations
 
-import pytest
-
-from uqa.engine import Engine
 from benchmarks.data.generators import BenchmarkDataGenerator
 from benchmarks.data.schemas import (
     BENCH_TABLE_DDL,
@@ -22,11 +19,12 @@ from benchmarks.data.schemas import (
     ORDERS_DDL,
     PRODUCTS_DDL,
 )
-
+from uqa.engine import Engine
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _engine_with_data(n: int = 1000) -> Engine:
     e = Engine()
@@ -53,9 +51,13 @@ def _engine_with_joins(n_orders: int = 500) -> Engine:
         num_orders=n_orders, num_customers=100
     )
     for c in customers:
-        e.sql(f"INSERT INTO customers VALUES ({c['id']}, '{c['name']}', '{c['region']}')")
+        e.sql(
+            f"INSERT INTO customers VALUES ({c['id']}, '{c['name']}', '{c['region']}')"
+        )
     for p in products:
-        e.sql(f"INSERT INTO products VALUES ({p['id']}, '{p['name']}', {p['price']}, '{p['category']}')")
+        e.sql(
+            f"INSERT INTO products VALUES ({p['id']}, '{p['name']}', {p['price']}, '{p['category']}')"
+        )
     for o in orders:
         e.sql(
             f"INSERT INTO orders VALUES ({o['id']}, {o['customer_id']}, "
@@ -67,6 +69,7 @@ def _engine_with_joins(n_orders: int = 500) -> Engine:
 # ---------------------------------------------------------------------------
 # OLTP-style queries
 # ---------------------------------------------------------------------------
+
 
 class TestOLTP:
     def test_point_lookup(self, benchmark) -> None:
@@ -102,8 +105,7 @@ class TestOLTP:
         def do_delete() -> None:
             counter[0] += 1
             e.sql(
-                f"INSERT INTO bench VALUES ("
-                f"{counter[0]}, 'del', 1.0, 'cat_0', 1, TRUE)"
+                f"INSERT INTO bench VALUES ({counter[0]}, 'del', 1.0, 'cat_0', 1, TRUE)"
             )
             e.sql(f"DELETE FROM bench WHERE id = {counter[0]}")
 
@@ -113,6 +115,7 @@ class TestOLTP:
 # ---------------------------------------------------------------------------
 # OLAP-style queries
 # ---------------------------------------------------------------------------
+
 
 class TestOLAP:
     def test_aggregate_group(self, benchmark) -> None:
@@ -146,6 +149,7 @@ class TestOLAP:
 # ---------------------------------------------------------------------------
 # JOIN queries
 # ---------------------------------------------------------------------------
+
 
 class TestJoin:
     def test_2way_join(self, benchmark) -> None:
@@ -189,13 +193,13 @@ class TestJoin:
 # Subqueries
 # ---------------------------------------------------------------------------
 
+
 class TestSubquery:
     def test_scalar_subquery(self, benchmark) -> None:
         e = _engine_with_data()
         benchmark(
             e.sql,
-            "SELECT id, value FROM bench "
-            "WHERE value > (SELECT AVG(value) FROM bench)",
+            "SELECT id, value FROM bench WHERE value > (SELECT AVG(value) FROM bench)",
         )
 
     def test_exists_subquery(self, benchmark) -> None:
@@ -212,6 +216,7 @@ class TestSubquery:
 # ---------------------------------------------------------------------------
 # CTE
 # ---------------------------------------------------------------------------
+
 
 class TestCTE:
     def test_single_cte(self, benchmark) -> None:
@@ -242,6 +247,7 @@ class TestCTE:
 # Window Functions
 # ---------------------------------------------------------------------------
 
+
 class TestWindowE2E:
     def test_row_number(self, benchmark) -> None:
         e = _engine_with_data(500)
@@ -265,6 +271,7 @@ class TestWindowE2E:
 # ---------------------------------------------------------------------------
 # ANALYZE
 # ---------------------------------------------------------------------------
+
 
 class TestAnalyze:
     def test_analyze(self, benchmark) -> None:

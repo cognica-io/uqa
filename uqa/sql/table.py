@@ -13,10 +13,9 @@ Statistics are refreshed via ``ANALYZE table_name``.
 
 from __future__ import annotations
 
-import sqlite3
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -27,21 +26,43 @@ from uqa.storage.inverted_index import IndexedTerms, InvertedIndex
 from uqa.storage.sqlite_document_store import SQLiteDocumentStore
 from uqa.storage.sqlite_graph_store import SQLiteGraphStore
 from uqa.storage.sqlite_inverted_index import SQLiteInvertedIndex
-from uqa.storage.vector_index import HNSWIndex
 
+if TYPE_CHECKING:
+    from uqa.storage.managed_connection import SQLiteConnection
+    from uqa.storage.vector_index import HNSWIndex
 
 _SQL_TYPE_MAP: dict[str, type] = {
-    "integer": int, "int": int, "int2": int, "int4": int, "int8": int,
-    "bigint": int, "smallint": int,
-    "serial": int, "bigserial": int,
-    "text": str, "varchar": str, "character varying": str,
-    "char": str, "character": str, "name": str,
-    "real": float, "float": float, "float4": float, "float8": float,
-    "double precision": float, "numeric": float, "decimal": float,
-    "boolean": bool, "bool": bool,
-    "date": str, "timestamp": str, "timestamptz": str,
-    "timestamp without time zone": str, "timestamp with time zone": str,
-    "json": object, "jsonb": object,
+    "integer": int,
+    "int": int,
+    "int2": int,
+    "int4": int,
+    "int8": int,
+    "bigint": int,
+    "smallint": int,
+    "serial": int,
+    "bigserial": int,
+    "text": str,
+    "varchar": str,
+    "character varying": str,
+    "char": str,
+    "character": str,
+    "name": str,
+    "real": float,
+    "float": float,
+    "float4": float,
+    "float8": float,
+    "double precision": float,
+    "numeric": float,
+    "decimal": float,
+    "boolean": bool,
+    "bool": bool,
+    "date": str,
+    "timestamp": str,
+    "timestamptz": str,
+    "timestamp without time zone": str,
+    "timestamp with time zone": str,
+    "json": object,
+    "jsonb": object,
     "uuid": str,
     "bytea": bytes,
     "point": list,
@@ -130,7 +151,7 @@ class Table:
         self,
         name: str,
         columns: list[ColumnDef],
-        conn: sqlite3.Connection | None = None,
+        conn: SQLiteConnection | None = None,
     ) -> None:
         self.name = name
         self.columns: OrderedDict[str, ColumnDef] = OrderedDict(
@@ -161,17 +182,15 @@ class Table:
         self.fk_update_validators: list[Any] = []
 
         if conn is not None:
-            col_pairs = [
-                (col.name, col.type_name) for col in columns
-            ]
+            col_pairs = [(col.name, col.type_name) for col in columns]
             self.document_store: DocumentStore | SQLiteDocumentStore = (
                 SQLiteDocumentStore(conn, name, col_pairs)
             )
             self.inverted_index: InvertedIndex | SQLiteInvertedIndex = (
                 SQLiteInvertedIndex(conn, name)
             )
-            self.graph_store: GraphStore | SQLiteGraphStore = (
-                SQLiteGraphStore(conn, table_name=name)
+            self.graph_store: GraphStore | SQLiteGraphStore = SQLiteGraphStore(
+                conn, table_name=name
             )
             self.block_max_index = BlockMaxIndex()
         else:
@@ -246,9 +265,7 @@ class Table:
             if value is None:
                 continue  # NULL is allowed in UNIQUE columns
             for existing_id in self.document_store.doc_ids:
-                existing_val = self.document_store.get_field(
-                    existing_id, col_name
-                )
+                existing_val = self.document_store.get_field(existing_id, col_name)
                 if existing_val == value:
                     raise ValueError(
                         f"UNIQUE constraint violated: "
@@ -271,9 +288,7 @@ class Table:
         # -- unknown column check -------------------------------------
         for col_name in row:
             if col_name not in self.columns:
-                raise ValueError(
-                    f"Unknown column '{col_name}' for table '{self.name}'"
-                )
+                raise ValueError(f"Unknown column '{col_name}' for table '{self.name}'")
 
         # -- type coercion + defaults ---------------------------------
         coerced: dict[str, Any] = {}
@@ -364,16 +379,12 @@ class Table:
                     values.append(val)
 
             distinct = len(set(values))
-            comparable = [
-                v for v in values if isinstance(v, (int, float, str))
-            ]
+            comparable = [v for v in values if isinstance(v, (int, float, str))]
             min_val = min(comparable) if comparable else None
             max_val = max(comparable) if comparable else None
 
             histogram = self._build_histogram(comparable)
-            mcv_values, mcv_frequencies = self._build_mcv(
-                values, n
-            )
+            mcv_values, mcv_frequencies = self._build_mcv(values, n)
 
             stats[col_name] = ColumnStats(
                 distinct_count=distinct,
@@ -419,9 +430,7 @@ class Table:
         return boundaries
 
     @classmethod
-    def _build_mcv(
-        cls, values: list[Any], total: int
-    ) -> tuple[list[Any], list[float]]:
+    def _build_mcv(cls, values: list[Any], total: int) -> tuple[list[Any], list[float]]:
         """Build most-common-value list with frequencies.
 
         Returns (values, frequencies) where frequencies are fractions
@@ -481,6 +490,7 @@ def _coerce_array(value: Any) -> list:
         return value
     if isinstance(value, str):
         import json as json_mod
+
         return json_mod.loads(value)
     return [value]
 

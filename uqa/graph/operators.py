@@ -7,12 +7,9 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from typing import TYPE_CHECKING
-
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from uqa.core.types import Payload, PostingEntry
-from uqa.graph.cypher.ast import CypherQuery
 from uqa.graph.pattern import (
     Alternation,
     Concat,
@@ -25,6 +22,7 @@ from uqa.graph.pattern import (
 from uqa.graph.posting_list import GraphPayload, GraphPostingList
 
 if TYPE_CHECKING:
+    from uqa.graph.cypher.ast import CypherQuery
     from uqa.graph.store import GraphStore
 
 
@@ -140,9 +138,7 @@ class PatternMatchOperator:
 
         return GraphPostingList(entries, graph_payloads)
 
-    def _compute_candidates(
-        self, graph: GraphStore
-    ) -> dict[str, list[int]]:
+    def _compute_candidates(self, graph: GraphStore) -> dict[str, list[int]]:
         """Pre-compute candidate vertex IDs per variable with arc consistency.
 
         Step 1: Evaluate vertex constraints once for all vertices.
@@ -169,10 +165,9 @@ class PatternMatchOperator:
 
                 tgt_set = set(candidates[tgt_var])
                 new_src = [
-                    vid for vid in candidates[src_var]
-                    if self._has_matching_edge_out(
-                        graph, vid, tgt_set, ep
-                    )
+                    vid
+                    for vid in candidates[src_var]
+                    if self._has_matching_edge_out(graph, vid, tgt_set, ep)
                 ]
                 if len(new_src) < len(candidates[src_var]):
                     candidates[src_var] = new_src
@@ -180,10 +175,9 @@ class PatternMatchOperator:
 
                 src_set = set(candidates[src_var])
                 new_tgt = [
-                    vid for vid in candidates[tgt_var]
-                    if self._has_matching_edge_in(
-                        graph, vid, src_set, ep
-                    )
+                    vid
+                    for vid in candidates[tgt_var]
+                    if self._has_matching_edge_in(graph, vid, src_set, ep)
                 ]
                 if len(new_tgt) < len(candidates[tgt_var]):
                     candidates[tgt_var] = new_tgt
@@ -253,8 +247,13 @@ class PatternMatchOperator:
             # Incremental edge validation
             if self._validate_edges_for(graph, var, var_edges, assignment):
                 self._backtrack(
-                    graph, var_candidates, var_edges,
-                    unassigned, assignment, assigned_values, matches,
+                    graph,
+                    var_candidates,
+                    var_edges,
+                    unassigned,
+                    assignment,
+                    assigned_values,
+                    matches,
                 )
 
             del assignment[var]
@@ -297,10 +296,11 @@ class PatternMatchOperator:
             tgt_id = assignment[ep.target_var]
             for eid in graph._adj_out.get(src_id, []):
                 edge = graph._edges[eid]
-                if edge.target_id == tgt_id:
-                    if ep.label is None or edge.label == ep.label:
-                        edge_ids.add(eid)
-                        break
+                if edge.target_id == tgt_id and (
+                    ep.label is None or edge.label == ep.label
+                ):
+                    edge_ids.add(eid)
+                    break
         return frozenset(edge_ids)
 
 
@@ -460,9 +460,11 @@ class RegularPathQueryOperator:
                     next_nfa = _epsilon_closure(next_nfa)
                     next_ids = frozenset(s.state_id for s in next_nfa)
 
-                    if nfa.accept.state_id in next_ids:
-                        if (sv, neighbor) not in result_pairs:
-                            result_pairs.append((sv, neighbor))
+                    if (
+                        nfa.accept.state_id in next_ids
+                        and (sv, neighbor) not in result_pairs
+                    ):
+                        result_pairs.append((sv, neighbor))
 
                     config = (neighbor, next_ids)
                     if config not in visited_configs:

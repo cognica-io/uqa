@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from bayesian_bm25 import BayesianProbabilityTransform
 
 from uqa.core.types import IndexStats
-from uqa.scoring.bm25 import BM25Params, BM25Scorer
-from bayesian_bm25 import BayesianProbabilityTransform
 from uqa.scoring.bayesian_bm25 import BayesianBM25Params, BayesianBM25Scorer
+from uqa.scoring.bm25 import BM25Params, BM25Scorer
 from uqa.scoring.vector import VectorScorer
 
 
@@ -107,12 +107,9 @@ class TestBayesianBM25Scorer:
         """Composite prior must be in [0.1, 0.9] for all inputs."""
         for tf in [0, 1, 5, 10, 50, 100]:
             for dl_ratio in [0.005, 0.05, 0.5, 1.0, 2.5, 10.0]:
-                prior = BayesianProbabilityTransform.composite_prior(
-                    tf, dl_ratio
-                )
+                prior = BayesianProbabilityTransform.composite_prior(tf, dl_ratio)
                 assert 0.1 <= prior <= 0.9, (
-                    f"prior={prior} out of [0.1, 0.9] "
-                    f"at tf={tf}, dl_ratio={dl_ratio}"
+                    f"prior={prior} out of [0.1, 0.9] at tf={tf}, dl_ratio={dl_ratio}"
                 )
 
     def test_base_rate_identity(self, index_stats: IndexStats) -> None:
@@ -121,19 +118,13 @@ class TestBayesianBM25Scorer:
         logit(0.5) = 0, so adding it to the posterior is neutral.
         Verify base_rate=0.5 produces the same output as no base_rate.
         """
-        scorer_05 = BayesianBM25Scorer(
-            BayesianBM25Params(base_rate=0.5), index_stats
-        )
-        scorer_default = BayesianBM25Scorer(
-            BayesianBM25Params(), index_stats
-        )
+        scorer_05 = BayesianBM25Scorer(BayesianBM25Params(base_rate=0.5), index_stats)
+        scorer_default = BayesianBM25Scorer(BayesianBM25Params(), index_stats)
 
         for tf in [1, 5, 10]:
             for dl in [100, 200, 500]:
                 p_05 = scorer_05.score(term_freq=tf, doc_length=dl, doc_freq=100)
-                p_def = scorer_default.score(
-                    term_freq=tf, doc_length=dl, doc_freq=100
-                )
+                p_def = scorer_default.score(term_freq=tf, doc_length=dl, doc_freq=100)
                 assert abs(p_05 - p_def) < 1e-12, (
                     f"base_rate=0.5 not identity at tf={tf}, dl={dl}"
                 )
@@ -192,8 +183,12 @@ class TestVectorScorer:
         assert VectorScorer.cosine_similarity(z, z) == 0.0
 
     def test_similarity_to_probability_range(self) -> None:
-        assert VectorScorer.similarity_to_probability(1.0) == pytest.approx(1.0, abs=1e-9)
-        assert VectorScorer.similarity_to_probability(-1.0) == pytest.approx(0.0, abs=1e-9)
+        assert VectorScorer.similarity_to_probability(1.0) == pytest.approx(
+            1.0, abs=1e-9
+        )
+        assert VectorScorer.similarity_to_probability(-1.0) == pytest.approx(
+            0.0, abs=1e-9
+        )
         assert VectorScorer.similarity_to_probability(0.0) == pytest.approx(0.5)
 
     def test_similarity_to_probability_monotonic(self) -> None:

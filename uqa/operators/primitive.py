@@ -22,7 +22,10 @@ if TYPE_CHECKING:
 
 
 def _brute_force_knn(
-    context: ExecutionContext, field: str, query: NDArray, k: int,
+    context: ExecutionContext,
+    field: str,
+    query: NDArray,
+    k: int,
 ) -> PostingList:
     """Exact KNN via sequential cosine similarity scan over document store."""
     doc_store = context.document_store
@@ -48,15 +51,15 @@ def _brute_force_knn(
         scored.append((doc_id, similarity))
 
     scored.sort(key=lambda x: x[1], reverse=True)
-    entries = [
-        PostingEntry(doc_id, Payload(score=sim))
-        for doc_id, sim in scored[:k]
-    ]
+    entries = [PostingEntry(doc_id, Payload(score=sim)) for doc_id, sim in scored[:k]]
     return PostingList(entries)
 
 
 def _brute_force_threshold(
-    context: ExecutionContext, field: str, query: NDArray, threshold: float,
+    context: ExecutionContext,
+    field: str,
+    query: NDArray,
+    threshold: float,
 ) -> PostingList:
     """Exact threshold search via sequential cosine similarity scan."""
     doc_store = context.document_store
@@ -150,6 +153,7 @@ class VectorSimilarityOperator(Operator):
 
     def cost_estimate(self, stats: IndexStats) -> float:
         import math
+
         return float(stats.dimensions) * math.log2(stats.total_docs + 1)
 
 
@@ -174,12 +178,11 @@ class KNNOperator(Operator):
         vec_idx = context.vector_indexes.get(self.field)
         if vec_idx is not None:
             return vec_idx.search_knn(self.query_vector, self.k)
-        return _brute_force_knn(
-            context, self.field, self.query_vector, self.k
-        )
+        return _brute_force_knn(context, self.field, self.query_vector, self.k)
 
     def cost_estimate(self, stats: IndexStats) -> float:
         import math
+
         return float(stats.dimensions) * math.log2(stats.total_docs + 1)
 
 
@@ -205,9 +208,7 @@ class SpatialWithinOperator(Operator):
     def execute(self, context: ExecutionContext) -> PostingList:
         sp_idx = context.spatial_indexes.get(self.field)
         if sp_idx is not None:
-            return sp_idx.search_within(
-                self.center_x, self.center_y, self.distance
-            )
+            return sp_idx.search_within(self.center_x, self.center_y, self.distance)
         return self._brute_force_scan(context)
 
     def _brute_force_scan(self, context: ExecutionContext) -> PostingList:
@@ -227,13 +228,12 @@ class SpatialWithinOperator(Operator):
             )
             if dist <= self.distance:
                 score = 1.0 - (dist / self.distance) if self.distance > 0 else 1.0
-                entries.append(
-                    PostingEntry(doc_id, Payload(score=score))
-                )
+                entries.append(PostingEntry(doc_id, Payload(score=score)))
         return PostingList.from_sorted(entries)
 
     def cost_estimate(self, stats: IndexStats) -> float:
         import math
+
         return math.log2(stats.total_docs + 1)
 
 
@@ -259,6 +259,7 @@ class FilterOperator(Operator):
             return PostingList()
 
         from uqa.core.types import is_null_predicate
+
         null_aware = is_null_predicate(self.predicate)
 
         if self.source is not None:
@@ -322,17 +323,19 @@ class FacetOperator(Operator):
 
         entries: list[PostingEntry] = []
         for i, (value, count) in enumerate(sorted(value_counts.items())):
-            entries.append(PostingEntry(
-                doc_id=i,
-                payload=Payload(
-                    score=float(count),
-                    fields={
-                        "_facet_field": self.field,
-                        "_facet_value": value,
-                        "_facet_count": count,
-                    },
-                ),
-            ))
+            entries.append(
+                PostingEntry(
+                    doc_id=i,
+                    payload=Payload(
+                        score=float(count),
+                        fields={
+                            "_facet_field": self.field,
+                            "_facet_value": value,
+                            "_facet_count": count,
+                        },
+                    ),
+                )
+            )
         return PostingList.from_sorted(entries)
 
 
@@ -404,23 +407,23 @@ class ScoreOperator(Operator):
                 total_score = self.scorer.combine_scores(per_term_scores)  # type: ignore[union-attr]
             else:
                 total_score = sum(per_term_scores)
-            entries.append(PostingEntry(
-                entry.doc_id,
-                Payload(
-                    positions=entry.payload.positions,
-                    score=total_score,
-                    fields=entry.payload.fields,
-                ),
-            ))
+            entries.append(
+                PostingEntry(
+                    entry.doc_id,
+                    Payload(
+                        positions=entry.payload.positions,
+                        score=total_score,
+                        fields=entry.payload.fields,
+                    ),
+                )
+            )
         return PostingList.from_sorted(entries)
 
 
 class IndexScanOperator(Operator):
     """Index-backed scan: uses a B-tree (or other) index instead of a full table scan."""
 
-    def __init__(
-        self, index: Index, field: str, predicate: Predicate
-    ) -> None:
+    def __init__(self, index: Index, field: str, predicate: Predicate) -> None:
         self.index = index
         self.field = field
         self.predicate = predicate

@@ -36,24 +36,16 @@ class TestCTASSelectStar:
             "('Alice', 'Eng'), ('Bob', 'Sales')"
         )
         engine.sql(
-            "CREATE TABLE eng AS "
-            "SELECT id, name FROM employees WHERE dept = 'Eng'"
+            "CREATE TABLE eng AS SELECT id, name FROM employees WHERE dept = 'Eng'"
         )
         result = engine.sql("SELECT * FROM eng")
         assert len(result.rows) == 1
         assert result.rows[0]["name"] == "Alice"
 
     def test_ctas_explicit_cols_select_star_order_by(self, engine):
-        engine.sql(
-            "CREATE TABLE t (id SERIAL PRIMARY KEY, val INTEGER, cat TEXT)"
-        )
-        engine.sql(
-            "INSERT INTO t (val, cat) VALUES "
-            "(10, 'a'), (20, 'b'), (30, 'a')"
-        )
-        engine.sql(
-            "CREATE TABLE t2 AS SELECT id, val FROM t WHERE cat = 'a'"
-        )
+        engine.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, val INTEGER, cat TEXT)")
+        engine.sql("INSERT INTO t (val, cat) VALUES (10, 'a'), (20, 'b'), (30, 'a')")
+        engine.sql("CREATE TABLE t2 AS SELECT id, val FROM t WHERE cat = 'a'")
         result = engine.sql("SELECT * FROM t2 ORDER BY id")
         assert len(result.rows) == 2
         vals = [r["val"] for r in result.rows]
@@ -77,12 +69,9 @@ class TestDeleteUsingSelectStar:
     """DELETE ... USING followed by SELECT * must work."""
 
     def test_delete_using_then_select_star(self, engine):
+        engine.sql("CREATE TABLE employees (id INTEGER, name TEXT)")
         engine.sql(
-            "CREATE TABLE employees (id INTEGER, name TEXT)"
-        )
-        engine.sql(
-            "INSERT INTO employees VALUES "
-            "(1, 'Alice'), (2, 'Bob'), (3, 'Carol')"
+            "INSERT INTO employees VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol')"
         )
         engine.sql("CREATE TABLE blacklist (name TEXT PRIMARY KEY)")
         engine.sql("INSERT INTO blacklist VALUES ('Bob')")
@@ -100,15 +89,10 @@ class TestDeleteUsingSelectStar:
 
     def test_delete_using_select_star_order_by(self, engine):
         engine.sql("CREATE TABLE items (id INTEGER, name TEXT)")
-        engine.sql(
-            "INSERT INTO items VALUES (1, 'x'), (2, 'y'), (3, 'z')"
-        )
+        engine.sql("INSERT INTO items VALUES (1, 'x'), (2, 'y'), (3, 'z')")
         engine.sql("CREATE TABLE remove_list (name TEXT)")
         engine.sql("INSERT INTO remove_list VALUES ('y'), ('z')")
-        engine.sql(
-            "DELETE FROM items USING remove_list r "
-            "WHERE items.name = r.name"
-        )
+        engine.sql("DELETE FROM items USING remove_list r WHERE items.name = r.name")
         result = engine.sql("SELECT * FROM items ORDER BY id")
         assert len(result.rows) == 1
         assert result.rows[0]["name"] == "x"
@@ -124,10 +108,7 @@ class TestAggregateInSubqueryHaving:
 
     def test_count_in_having_subquery(self, engine):
         engine.sql("CREATE TABLE t (id INTEGER, dept TEXT)")
-        engine.sql(
-            "INSERT INTO t VALUES "
-            "(1, 'A'), (2, 'A'), (3, 'B')"
-        )
+        engine.sql("INSERT INTO t VALUES (1, 'A'), (2, 'A'), (3, 'B')")
         result = engine.sql(
             "SELECT dept FROM t "
             "WHERE dept IN ("
@@ -138,9 +119,7 @@ class TestAggregateInSubqueryHaving:
         assert sorted(depts) == ["A", "A"]
 
     def test_sum_in_having_subquery(self, engine):
-        engine.sql(
-            "CREATE TABLE sales (id INTEGER, region TEXT, amount INTEGER)"
-        )
+        engine.sql("CREATE TABLE sales (id INTEGER, region TEXT, amount INTEGER)")
         engine.sql(
             "INSERT INTO sales VALUES "
             "(1, 'East', 100), (2, 'East', 200), "
@@ -183,15 +162,9 @@ class TestNestedAggregate:
     """Aggregates wrapped in scalar functions must be recognized."""
 
     def test_round_stddev(self, engine):
-        engine.sql(
-            "CREATE TABLE t (id INTEGER, salary NUMERIC(10,2))"
-        )
-        engine.sql(
-            "INSERT INTO t VALUES (1, 95000), (2, 82000), (3, 105000)"
-        )
-        result = engine.sql(
-            "SELECT ROUND(STDDEV(salary)::NUMERIC, 2) AS sd FROM t"
-        )
+        engine.sql("CREATE TABLE t (id INTEGER, salary NUMERIC(10,2))")
+        engine.sql("INSERT INTO t VALUES (1, 95000), (2, 82000), (3, 105000)")
+        result = engine.sql("SELECT ROUND(STDDEV(salary)::NUMERIC, 2) AS sd FROM t")
         assert len(result.rows) == 1
         sd = float(result.rows[0]["sd"])
         assert sd > 0
@@ -199,17 +172,14 @@ class TestNestedAggregate:
     def test_round_variance(self, engine):
         engine.sql("CREATE TABLE t (v NUMERIC(10,2))")
         engine.sql("INSERT INTO t VALUES (10), (20), (30)")
-        result = engine.sql(
-            "SELECT ROUND(VARIANCE(v)::NUMERIC, 2) AS var FROM t"
-        )
+        result = engine.sql("SELECT ROUND(VARIANCE(v)::NUMERIC, 2) AS var FROM t")
         assert len(result.rows) == 1
         assert float(result.rows[0]["var"]) > 0
 
     def test_round_corr(self, engine):
         engine.sql("CREATE TABLE stats_data (x REAL, y REAL)")
         engine.sql(
-            "INSERT INTO stats_data VALUES "
-            "(1, 2), (2, 4), (3, 5), (4, 4), (5, 5)"
+            "INSERT INTO stats_data VALUES (1, 2), (2, 4), (3, 5), (4, 4), (5, 5)"
         )
         result = engine.sql(
             "SELECT ROUND(CORR(x, y)::NUMERIC, 4) AS correlation FROM stats_data"
@@ -259,9 +229,7 @@ class TestWindowDefaultFrame:
     def test_running_sum(self, engine):
         engine.sql("CREATE TABLE ws (v INTEGER)")
         engine.sql("INSERT INTO ws VALUES (1), (2), (3), (4), (5)")
-        result = engine.sql(
-            "SELECT v, SUM(v) OVER (ORDER BY v) AS running_sum FROM ws"
-        )
+        result = engine.sql("SELECT v, SUM(v) OVER (ORDER BY v) AS running_sum FROM ws")
         sums = {r["v"]: r["running_sum"] for r in result.rows}
         assert sums[1] == 1
         assert sums[2] == 3
@@ -272,9 +240,7 @@ class TestWindowDefaultFrame:
     def test_running_avg(self, engine):
         engine.sql("CREATE TABLE ws (v INTEGER)")
         engine.sql("INSERT INTO ws VALUES (1), (2), (3), (4), (5)")
-        result = engine.sql(
-            "SELECT v, AVG(v) OVER (ORDER BY v) AS running_avg FROM ws"
-        )
+        result = engine.sql("SELECT v, AVG(v) OVER (ORDER BY v) AS running_avg FROM ws")
         avgs = {r["v"]: float(r["running_avg"]) for r in result.rows}
         assert avgs[1] == pytest.approx(1.0)
         assert avgs[2] == pytest.approx(1.5)
@@ -294,17 +260,14 @@ class TestWindowDefaultFrame:
     def test_no_order_by_uses_whole_partition(self, engine):
         engine.sql("CREATE TABLE ws (v INTEGER)")
         engine.sql("INSERT INTO ws VALUES (1), (2), (3)")
-        result = engine.sql(
-            "SELECT v, SUM(v) OVER () AS total FROM ws"
-        )
+        result = engine.sql("SELECT v, SUM(v) OVER () AS total FROM ws")
         for r in result.rows:
             assert r["total"] == 6
 
     def test_running_sum_with_partition(self, engine):
         engine.sql("CREATE TABLE ws (grp TEXT, v INTEGER)")
         engine.sql(
-            "INSERT INTO ws VALUES "
-            "('a', 1), ('a', 2), ('a', 3), ('b', 10), ('b', 20)"
+            "INSERT INTO ws VALUES ('a', 1), ('a', 2), ('a', 3), ('b', 10), ('b', 20)"
         )
         result = engine.sql(
             "SELECT grp, v, "
@@ -371,35 +334,25 @@ class TestConcatWS:
     """CONCAT_WS must join arguments with the given separator."""
 
     def test_concat_ws_basic(self, engine):
-        result = engine.sql(
-            "SELECT CONCAT_WS('-', 'a', 'b', 'c') AS result"
-        )
+        result = engine.sql("SELECT CONCAT_WS('-', 'a', 'b', 'c') AS result")
         assert result.rows[0]["result"] == "a-b-c"
 
     def test_concat_ws_comma(self, engine):
-        result = engine.sql(
-            "SELECT CONCAT_WS(', ', 'Alice', 'Bob', 'Carol') AS names"
-        )
+        result = engine.sql("SELECT CONCAT_WS(', ', 'Alice', 'Bob', 'Carol') AS names")
         assert result.rows[0]["names"] == "Alice, Bob, Carol"
 
     def test_concat_ws_single_arg(self, engine):
-        result = engine.sql(
-            "SELECT CONCAT_WS('-', 'only') AS result"
-        )
+        result = engine.sql("SELECT CONCAT_WS('-', 'only') AS result")
         assert result.rows[0]["result"] == "only"
 
     def test_concat_ws_with_nulls(self, engine):
         engine.sql("CREATE TABLE t (a TEXT, b TEXT, c TEXT)")
         engine.sql("INSERT INTO t VALUES ('x', NULL, 'z')")
-        result = engine.sql(
-            "SELECT CONCAT_WS('-', a, b, c) AS result FROM t"
-        )
+        result = engine.sql("SELECT CONCAT_WS('-', a, b, c) AS result FROM t")
         assert result.rows[0]["result"] == "x-z"
 
     def test_concat_ws_null_separator(self, engine):
-        result = engine.sql(
-            "SELECT CONCAT_WS(NULL, 'a', 'b') AS result"
-        )
+        result = engine.sql("SELECT CONCAT_WS(NULL, 'a', 'b') AS result")
         assert result.rows[0]["result"] is None
 
 
@@ -413,17 +366,12 @@ class TestJSONOperatorsInWhere:
 
     @pytest.fixture
     def engine_with_jsonb(self, engine):
-        engine.sql(
-            "CREATE TABLE jdocs (id SERIAL PRIMARY KEY, data JSONB)"
-        )
+        engine.sql("CREATE TABLE jdocs (id SERIAL PRIMARY KEY, data JSONB)")
         engine.sql(
             "INSERT INTO jdocs (data) VALUES "
-            "('{\"name\":\"Alice\",\"age\":30,\"tags\":[\"a\",\"b\"]}')"
+            '(\'{"name":"Alice","age":30,"tags":["a","b"]}\')'
         )
-        engine.sql(
-            "INSERT INTO jdocs (data) VALUES "
-            "('{\"name\":\"Bob\",\"age\":25}')"
-        )
+        engine.sql('INSERT INTO jdocs (data) VALUES (\'{"name":"Bob","age":25}\')')
         return engine
 
     def test_contains_operator_in_where(self, engine_with_jsonb):
@@ -434,9 +382,7 @@ class TestJSONOperatorsInWhere:
         assert ids == [1]
 
     def test_key_exists_operator_in_where(self, engine_with_jsonb):
-        result = engine_with_jsonb.sql(
-            "SELECT id FROM jdocs WHERE data ? 'tags'"
-        )
+        result = engine_with_jsonb.sql("SELECT id FROM jdocs WHERE data ? 'tags'")
         ids = [r["id"] for r in result.rows]
         assert ids == [1]
 
@@ -477,8 +423,7 @@ class TestDateTimeFunctions:
 
     def test_to_char(self, engine):
         result = engine.sql(
-            "SELECT TO_CHAR(TIMESTAMP '2024-06-15 10:30:00', "
-            "'YYYY-MM-DD') AS formatted"
+            "SELECT TO_CHAR(TIMESTAMP '2024-06-15 10:30:00', 'YYYY-MM-DD') AS formatted"
         )
         assert result.rows[0]["formatted"] == "2024-06-15"
 
@@ -490,9 +435,7 @@ class TestDateTimeFunctions:
         assert result.rows[0]["formatted"] == "2024-06-15 14:30:45"
 
     def test_to_date(self, engine):
-        result = engine.sql(
-            "SELECT TO_DATE('2024-06-15', 'YYYY-MM-DD') AS parsed_date"
-        )
+        result = engine.sql("SELECT TO_DATE('2024-06-15', 'YYYY-MM-DD') AS parsed_date")
         val = str(result.rows[0]["parsed_date"])
         assert "2024-06-15" in val
 
@@ -506,16 +449,13 @@ class TestDateTimeFunctions:
         assert "10:30" in val
 
     def test_make_date(self, engine):
-        result = engine.sql(
-            "SELECT MAKE_DATE(2024, 6, 15) AS d"
-        )
+        result = engine.sql("SELECT MAKE_DATE(2024, 6, 15) AS d")
         val = str(result.rows[0]["d"])
         assert "2024-06-15" in val
 
     def test_age(self, engine):
         result = engine.sql(
-            "SELECT AGE(TIMESTAMP '2024-06-15', "
-            "TIMESTAMP '2020-01-01') AS age_result"
+            "SELECT AGE(TIMESTAMP '2024-06-15', TIMESTAMP '2020-01-01') AS age_result"
         )
         val = str(result.rows[0]["age_result"])
         assert "4 year" in val
@@ -530,9 +470,7 @@ class TestIntervalAndNamedArg:
     """INTERVAL literals and MAKE_INTERVAL with named args must work."""
 
     def test_interval_literal(self, engine):
-        result = engine.sql(
-            "SELECT INTERVAL '2 hours 30 minutes' AS dur"
-        )
+        result = engine.sql("SELECT INTERVAL '2 hours 30 minutes' AS dur")
         val = str(result.rows[0]["dur"])
         assert "2" in val
         assert "30" in val
@@ -543,13 +481,9 @@ class TestIntervalAndNamedArg:
         assert "day" in val or "1" in val
 
     def test_make_interval_named_args(self, engine):
-        result = engine.sql(
-            "SELECT MAKE_INTERVAL(days => 5, hours => 3) AS iv"
-        )
+        result = engine.sql("SELECT MAKE_INTERVAL(days => 5, hours => 3) AS iv")
         assert result.rows[0]["iv"] is not None
 
     def test_make_interval_single_arg(self, engine):
-        result = engine.sql(
-            "SELECT MAKE_INTERVAL(hours => 12) AS iv"
-        )
+        result = engine.sql("SELECT MAKE_INTERVAL(hours => 12) AS iv")
         assert result.rows[0]["iv"] is not None

@@ -16,9 +16,7 @@ from __future__ import annotations
 import os
 import tempfile
 
-import pytest
-
-from uqa.execution.batch import Batch, DEFAULT_BATCH_SIZE
+from uqa.execution.batch import DEFAULT_BATCH_SIZE, Batch
 from uqa.execution.physical import PhysicalOperator
 from uqa.execution.relational import (
     DistinctOp,
@@ -26,16 +24,13 @@ from uqa.execution.relational import (
     SortOp,
 )
 
-
 # -- Helpers ---------------------------------------------------------------
 
 
 class RowSourceOp(PhysicalOperator):
     """Emit pre-built rows as batches for testing."""
 
-    def __init__(
-        self, rows: list[dict], batch_size: int = DEFAULT_BATCH_SIZE
-    ) -> None:
+    def __init__(self, rows: list[dict], batch_size: int = DEFAULT_BATCH_SIZE) -> None:
         self._rows = rows
         self._batch_size = batch_size
         self._offset = 0
@@ -199,12 +194,16 @@ class TestSortOpSpill:
             {"a": 2, "b": 2},
         ]
         op = SortOp(
-            RowSourceOp(rows), [("a", False), ("b", False)],
+            RowSourceOp(rows),
+            [("a", False), ("b", False)],
             spill_threshold=2,
         )
         result = _drain(op)
         assert [(r["a"], r["b"]) for r in result] == [
-            (1, 1), (1, 2), (2, 1), (2, 2),
+            (1, 1),
+            (1, 2),
+            (2, 1),
+            (2, 2),
         ]
 
     def test_spill_with_nulls(self):
@@ -244,7 +243,8 @@ class TestHashAggOpSpill:
             {"g": "a", "v": 3},
         ]
         op = HashAggOp(
-            RowSourceOp(rows), ["g"],
+            RowSourceOp(rows),
+            ["g"],
             [("total", "sum", "v")],
             spill_threshold=100,
         )
@@ -255,7 +255,8 @@ class TestHashAggOpSpill:
     def test_spill_groupby(self):
         rows = [{"g": i % 5, "v": i} for i in range(100)]
         op = HashAggOp(
-            RowSourceOp(rows), ["g"],
+            RowSourceOp(rows),
+            ["g"],
             [("cnt", "count", None), ("total", "sum", "v")],
             spill_threshold=30,
         )
@@ -264,14 +265,13 @@ class TestHashAggOpSpill:
         by_g = {r["g"]: r for r in result}
         for g in range(5):
             assert by_g[g]["cnt"] == 20
-            assert by_g[g]["total"] == sum(
-                i for i in range(100) if i % 5 == g
-            )
+            assert by_g[g]["total"] == sum(i for i in range(100) if i % 5 == g)
 
     def test_spill_aggregate_only(self):
         rows = [{"v": i} for i in range(50)]
         op = HashAggOp(
-            RowSourceOp(rows), [],
+            RowSourceOp(rows),
+            [],
             [("cnt", "count", None)],
             spill_threshold=20,
         )
@@ -281,7 +281,8 @@ class TestHashAggOpSpill:
 
     def test_spill_empty_input(self):
         op = HashAggOp(
-            RowSourceOp([]), [],
+            RowSourceOp([]),
+            [],
             [("cnt", "count", None)],
             spill_threshold=10,
         )
@@ -292,7 +293,8 @@ class TestHashAggOpSpill:
     def test_spill_cleanup(self):
         rows = [{"g": i % 3, "v": i} for i in range(60)]
         op = HashAggOp(
-            RowSourceOp(rows), ["g"],
+            RowSourceOp(rows),
+            ["g"],
             [("cnt", "count", None)],
             spill_threshold=20,
         )
@@ -315,7 +317,9 @@ class TestDistinctOpSpill:
     def test_no_spill_small_input(self):
         rows = [{"v": 1}, {"v": 2}, {"v": 1}, {"v": 3}]
         op = DistinctOp(
-            RowSourceOp(rows), ["v"], spill_threshold=100,
+            RowSourceOp(rows),
+            ["v"],
+            spill_threshold=100,
         )
         result = _drain(op)
         assert sorted(r["v"] for r in result) == [1, 2, 3]
@@ -323,18 +327,19 @@ class TestDistinctOpSpill:
     def test_spill_dedup(self):
         rows = [{"v": i % 10} for i in range(200)]
         op = DistinctOp(
-            RowSourceOp(rows), ["v"], spill_threshold=50,
+            RowSourceOp(rows),
+            ["v"],
+            spill_threshold=50,
         )
         result = _drain(op)
         assert sorted(r["v"] for r in result) == list(range(10))
 
     def test_spill_multi_column(self):
-        rows = [
-            {"a": i % 3, "b": i % 5}
-            for i in range(100)
-        ]
+        rows = [{"a": i % 3, "b": i % 5} for i in range(100)]
         op = DistinctOp(
-            RowSourceOp(rows), ["a", "b"], spill_threshold=30,
+            RowSourceOp(rows),
+            ["a", "b"],
+            spill_threshold=30,
         )
         result = _drain(op)
         keys = sorted((r["a"], r["b"]) for r in result)
@@ -343,7 +348,9 @@ class TestDistinctOpSpill:
 
     def test_spill_empty_input(self):
         op = DistinctOp(
-            RowSourceOp([]), ["v"], spill_threshold=5,
+            RowSourceOp([]),
+            ["v"],
+            spill_threshold=5,
         )
         result = _drain(op)
         assert result == []
@@ -351,7 +358,9 @@ class TestDistinctOpSpill:
     def test_spill_cleanup(self):
         rows = [{"v": i % 5} for i in range(100)]
         op = DistinctOp(
-            RowSourceOp(rows), ["v"], spill_threshold=20,
+            RowSourceOp(rows),
+            ["v"],
+            spill_threshold=20,
         )
         op.open()
         assert op._spill_mgr is not None
@@ -374,9 +383,7 @@ class TestSQLSpillIntegration:
 
         db = str(tmp_path / "test.db")
         with Engine(db_path=db, spill_threshold=10) as engine:
-            engine.sql(
-                "CREATE TABLE t (id SERIAL PRIMARY KEY, v INTEGER)"
-            )
+            engine.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, v INTEGER)")
             for i in range(30, 0, -1):
                 engine.sql(f"INSERT INTO t (v) VALUES ({i})")
             rows = engine.sql("SELECT v FROM t ORDER BY v ASC")
@@ -387,16 +394,10 @@ class TestSQLSpillIntegration:
 
         db = str(tmp_path / "test.db")
         with Engine(db_path=db, spill_threshold=10) as engine:
-            engine.sql(
-                "CREATE TABLE t (id SERIAL PRIMARY KEY, g INTEGER, v INTEGER)"
-            )
+            engine.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, g INTEGER, v INTEGER)")
             for i in range(50):
-                engine.sql(
-                    f"INSERT INTO t (g, v) VALUES ({i % 5}, {i})"
-                )
-            rows = engine.sql(
-                "SELECT g, COUNT(*) AS cnt FROM t GROUP BY g ORDER BY g"
-            )
+                engine.sql(f"INSERT INTO t (g, v) VALUES ({i % 5}, {i})")
+            rows = engine.sql("SELECT g, COUNT(*) AS cnt FROM t GROUP BY g ORDER BY g")
             assert len(rows) == 5
             assert all(r["cnt"] == 10 for r in rows)
 
@@ -405,9 +406,7 @@ class TestSQLSpillIntegration:
 
         db = str(tmp_path / "test.db")
         with Engine(db_path=db, spill_threshold=10) as engine:
-            engine.sql(
-                "CREATE TABLE t (id SERIAL PRIMARY KEY, v INTEGER)"
-            )
+            engine.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, v INTEGER)")
             for i in range(40):
                 engine.sql(f"INSERT INTO t (v) VALUES ({i % 8})")
             rows = engine.sql("SELECT DISTINCT v FROM t ORDER BY v")

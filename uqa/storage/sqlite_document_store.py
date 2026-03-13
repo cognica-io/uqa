@@ -14,13 +14,15 @@ SQLite affinity so that type round-tripping is preserved.
 from __future__ import annotations
 
 import json
-import sqlite3
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any
 
 from uqa.core.hierarchical import HierarchicalDocument
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from uqa.core.types import DocId, FieldName, PathExpr
+    from uqa.storage.managed_connection import SQLiteConnection
 
 
 # Mapping from SQL type keywords to SQLite column affinity.
@@ -82,7 +84,7 @@ class SQLiteDocumentStore:
 
     def __init__(
         self,
-        conn: sqlite3.Connection,
+        conn: SQLiteConnection,
         table_name: str,
         columns: list[tuple[str, str]],
     ) -> None:
@@ -92,7 +94,8 @@ class SQLiteDocumentStore:
         self._col_set: frozenset[str] = frozenset(self._columns)
         self._has_atomic_fetch = hasattr(conn, "execute_fetchall")
         self._json_cols: frozenset[str] = frozenset(
-            name for name, type_name in columns
+            name
+            for name, type_name in columns
             if type_name.lower() in ("json", "jsonb", "vector", "point")
             or type_name.lower().endswith("[]")
         )
@@ -103,25 +106,19 @@ class SQLiteDocumentStore:
             affinity = _AFFINITY_MAP.get(type_name.lower(), "TEXT")
             col_defs.append(f"{name} {affinity}")
 
-        ddl = (
-            f"CREATE TABLE IF NOT EXISTS {self._table} "
-            f"({', '.join(col_defs)})"
-        )
+        ddl = f"CREATE TABLE IF NOT EXISTS {self._table} ({', '.join(col_defs)})"
         self._conn.execute(ddl)
         self._conn.commit()
 
         # Pre-build reusable SQL fragments
         all_cols = ", ".join(self._columns)
         placeholders = ", ".join(["?"] * (1 + len(self._columns)))
-        col_list = ", ".join(["_rowid"] + self._columns)
+        col_list = ", ".join(["_rowid", *self._columns])
 
         self._sql_put = (
-            f"INSERT OR REPLACE INTO {self._table} ({col_list}) "
-            f"VALUES ({placeholders})"
+            f"INSERT OR REPLACE INTO {self._table} ({col_list}) VALUES ({placeholders})"
         )
-        self._sql_get = (
-            f"SELECT {all_cols} FROM {self._table} WHERE _rowid = ?"
-        )
+        self._sql_get = f"SELECT {all_cols} FROM {self._table} WHERE _rowid = ?"
         self._sql_delete = f"DELETE FROM {self._table} WHERE _rowid = ?"
         self._sql_ids = f"SELECT _rowid FROM {self._table}"
         self._sql_count = f"SELECT COUNT(*) FROM {self._table}"
@@ -149,12 +146,10 @@ class SQLiteDocumentStore:
 
     def put(self, doc_id: DocId, document: dict) -> None:
         """Insert or replace a document (row) keyed by *doc_id*."""
-        values = [doc_id]
+        values: list[Any] = [doc_id]
         for c in self._columns:
             v = document.get(c)
-            if v is not None and c in self._json_cols and isinstance(
-                v, (dict, list)
-            ):
+            if v is not None and c in self._json_cols and isinstance(v, (dict, list)):
                 v = json.dumps(v, ensure_ascii=False)
             values.append(v)
         self._conn.execute(self._sql_put, values)

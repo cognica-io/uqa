@@ -10,13 +10,10 @@ from __future__ import annotations
 
 import os
 import tempfile
-from io import StringIO
-from unittest.mock import patch
 
 import pytest
 
-from uqa.cli import SQLCompleter, UQAShell, _SQL_KEYWORDS
-
+from uqa.cli import _SQL_KEYWORDS, UQAShell
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -60,9 +57,7 @@ def shell_with_foreign_table(shell):
         )
         conn.close()
 
-        shell._engine.sql(
-            "CREATE SERVER test_srv FOREIGN DATA WRAPPER duckdb_fdw"
-        )
+        shell._engine.sql("CREATE SERVER test_srv FOREIGN DATA WRAPPER duckdb_fdw")
         shell._engine.sql(
             f"CREATE FOREIGN TABLE ftest ("
             f"  id INTEGER, val TEXT"
@@ -82,8 +77,16 @@ class TestKeywords:
     """Verify the expanded keyword list covers key categories."""
 
     def test_ddl_keywords(self):
-        for kw in ("ALTER", "ADD", "COLUMN", "RENAME", "TRUNCATE", "UNIQUE",
-                    "CHECK", "CONSTRAINT"):
+        for kw in (
+            "ALTER",
+            "ADD",
+            "COLUMN",
+            "RENAME",
+            "TRUNCATE",
+            "UNIQUE",
+            "CHECK",
+            "CONSTRAINT",
+        ):
             assert kw in _SQL_KEYWORDS
 
     def test_dml_keywords(self):
@@ -95,10 +98,22 @@ class TestKeywords:
             assert kw in _SQL_KEYWORDS
 
     def test_window_keywords(self):
-        for kw in ("OVER", "PARTITION", "WINDOW", "ROWS", "RANGE",
-                    "UNBOUNDED", "PRECEDING", "FOLLOWING", "ROW_NUMBER",
-                    "RANK", "DENSE_RANK", "PERCENT_RANK", "CUME_DIST",
-                    "NTH_VALUE"):
+        for kw in (
+            "OVER",
+            "PARTITION",
+            "WINDOW",
+            "ROWS",
+            "RANGE",
+            "UNBOUNDED",
+            "PRECEDING",
+            "FOLLOWING",
+            "ROW_NUMBER",
+            "RANK",
+            "DENSE_RANK",
+            "PERCENT_RANK",
+            "CUME_DIST",
+            "NTH_VALUE",
+        ):
             assert kw in _SQL_KEYWORDS
 
     def test_fdw_keywords(self):
@@ -122,10 +137,23 @@ class TestKeywords:
         assert "JSONB" in _SQL_KEYWORDS
 
     def test_misc_keywords(self):
-        for kw in ("CASE", "WHEN", "THEN", "ELSE", "END",
-                    "CAST", "COALESCE", "NULLIF",
-                    "UNION", "ALL", "EXCEPT", "INTERSECT",
-                    "OFFSET", "ILIKE", "GENERATE_SERIES"):
+        for kw in (
+            "CASE",
+            "WHEN",
+            "THEN",
+            "ELSE",
+            "END",
+            "CAST",
+            "COALESCE",
+            "NULLIF",
+            "UNION",
+            "ALL",
+            "EXCEPT",
+            "INTERSECT",
+            "OFFSET",
+            "ILIKE",
+            "GENERATE_SERIES",
+        ):
             assert kw in _SQL_KEYWORDS
 
 
@@ -279,9 +307,7 @@ class TestListIndexes:
         assert "No tables." in capsys.readouterr().out
 
     def test_no_indexed_fields(self, shell, capsys):
-        shell._engine.sql(
-            "CREATE TABLE nums (id INT PRIMARY KEY, val INT)"
-        )
+        shell._engine.sql("CREATE TABLE nums (id INT PRIMARY KEY, val INT)")
         shell._cmd_list_indexes()
         assert "No indexed fields." in capsys.readouterr().out
 
@@ -289,9 +315,7 @@ class TestListIndexes:
         shell._engine.sql(
             "CREATE TABLE docs (id SERIAL PRIMARY KEY, title TEXT, body TEXT)"
         )
-        shell._engine.sql(
-            "INSERT INTO docs (title, body) VALUES ('Hello', 'World')"
-        )
+        shell._engine.sql("INSERT INTO docs (title, body) VALUES ('Hello', 'World')")
         shell._cmd_list_indexes()
         out = capsys.readouterr().out
         assert "docs" in out
@@ -411,18 +435,14 @@ class TestExpandedDisplay:
 
 class TestOutputRedirection:
     def test_redirect_to_file(self, shell_with_table):
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             path = f.name
 
         try:
             shell_with_table._cmd_output(path)
             assert shell_with_table._output_file == path
 
-            result = shell_with_table._engine.sql(
-                "SELECT * FROM users ORDER BY id"
-            )
+            result = shell_with_table._engine.sql("SELECT * FROM users ORDER BY id")
             shell_with_table._print_result(result)
 
             with open(path) as f:
@@ -440,9 +460,7 @@ class TestOutputRedirection:
         assert "stdout" in out
 
     def test_output_timing_to_file(self, shell_with_table):
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             path = f.name
 
         try:
@@ -458,18 +476,14 @@ class TestOutputRedirection:
             os.unlink(path)
 
     def test_expanded_to_file(self, shell_with_table):
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             path = f.name
 
         try:
             shell_with_table._output_file = path
             shell_with_table._expanded = True
 
-            result = shell_with_table._engine.sql(
-                "SELECT * FROM users ORDER BY id"
-            )
+            result = shell_with_table._engine.sql("SELECT * FROM users ORDER BY id")
             shell_with_table._print_result(result)
 
             with open(path) as f:

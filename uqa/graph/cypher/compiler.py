@@ -30,7 +30,7 @@ Execution model:
 from __future__ import annotations
 
 from collections import deque
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from uqa.core.types import Edge, Payload, PostingEntry, Vertex
 from uqa.graph.cypher.ast import (
@@ -51,12 +51,11 @@ from uqa.graph.cypher.ast import (
     MergeClause,
     NodePattern,
     OrderByItem,
+    Parameter,
     PathPattern,
     PropertyAccess,
-    Parameter,
     RelPattern,
     ReturnClause,
-    ReturnItem,
     SetClause,
     SetItem,
     UnaryOp,
@@ -65,8 +64,9 @@ from uqa.graph.cypher.ast import (
     WithClause,
 )
 from uqa.graph.posting_list import GraphPayload, GraphPostingList
-from uqa.graph.store import GraphStore
 
+if TYPE_CHECKING:
+    from uqa.graph.store import GraphStore
 
 # Type alias: a binding row stored in PostingEntry.payload.fields.
 # Keys are Cypher variable names, values are vertex_id (int), edge_id
@@ -177,9 +177,7 @@ class CypherCompiler:
 
             # Apply WHERE filter
             if clause.where is not None:
-                matched = [
-                    m for m in matched if self._eval(clause.where, m)
-                ]
+                matched = [m for m in matched if self._eval(clause.where, m)]
 
             if clause.optional and not matched:
                 # OPTIONAL MATCH: keep existing binding with NULLs
@@ -198,12 +196,14 @@ class CypherCompiler:
             else:
                 for m_fields in matched:
                     vtx_ids = frozenset(
-                        v for v in m_fields.values() if isinstance(v, int)
-                        and self._graph.get_vertex(v) is not None
+                        v
+                        for v in m_fields.values()
+                        if isinstance(v, int) and self._graph.get_vertex(v) is not None
                     )
                     edge_ids = frozenset(
-                        v for v in m_fields.values() if isinstance(v, int)
-                        and self._graph.get_edge(v) is not None
+                        v
+                        for v in m_fields.values()
+                        if isinstance(v, int) and self._graph.get_edge(v) is not None
                     )
                     entry, doc_id = self._make_binding_entry(
                         m_fields, vtx_ids, edge_ids
@@ -249,9 +249,9 @@ class CypherCompiler:
         current: list[BindingFields] = []
         for vtx in candidates:
             new_fields = dict(fields)
-            if first.variable in fields:
-                if fields[first.variable] != vtx.vertex_id:
-                    continue
+            assert first.variable is not None
+            if first.variable in fields and fields[first.variable] != vtx.vertex_id:
+                continue
             new_fields[first.variable] = vtx.vertex_id
             current.append(new_fields)
 
@@ -273,14 +273,15 @@ class CypherCompiler:
 
         # Strip synthetic anonymous variables from results
         anon_vars = {
-            e.variable for e in anon_elements
+            e.variable
+            for e in anon_elements
             if isinstance(e, (NodePattern, RelPattern))
-            and e.variable and e.variable.startswith("_anon_")
+            and e.variable
+            and e.variable.startswith("_anon_")
         }
         if anon_vars:
             current = [
-                {k: v for k, v in f.items() if k not in anon_vars}
-                for f in current
+                {k: v for k, v in f.items() if k not in anon_vars} for f in current
             ]
 
         return current
@@ -293,28 +294,30 @@ class CypherCompiler:
         for elem in elements:
             if isinstance(elem, NodePattern) and elem.variable is None:
                 anon_var = f"_anon_{self._alloc_doc_id()}"
-                result.append(NodePattern(
-                    variable=anon_var,
-                    labels=elem.labels,
-                    properties=elem.properties,
-                ))
+                result.append(
+                    NodePattern(
+                        variable=anon_var,
+                        labels=elem.labels,
+                        properties=elem.properties,
+                    )
+                )
             elif isinstance(elem, RelPattern) and elem.variable is None:
                 anon_var = f"_anon_{self._alloc_doc_id()}"
-                result.append(RelPattern(
-                    variable=anon_var,
-                    types=elem.types,
-                    properties=elem.properties,
-                    direction=elem.direction,
-                    min_hops=elem.min_hops,
-                    max_hops=elem.max_hops,
-                ))
+                result.append(
+                    RelPattern(
+                        variable=anon_var,
+                        types=elem.types,
+                        properties=elem.properties,
+                        direction=elem.direction,
+                        min_hops=elem.min_hops,
+                        max_hops=elem.max_hops,
+                    )
+                )
             else:
                 result.append(elem)
         return tuple(result)
 
-    def _node_candidates(
-        self, pat: NodePattern, fields: BindingFields
-    ) -> list[Vertex]:
+    def _node_candidates(self, pat: NodePattern, fields: BindingFields) -> list[Vertex]:
         """Return candidate vertices matching a node pattern."""
         if pat.variable and pat.variable in fields:
             val = fields[pat.variable]
@@ -368,9 +371,7 @@ class CypherCompiler:
             return []
 
         if rel_pat.min_hops is not None or rel_pat.max_hops is not None:
-            return self._expand_var_length(
-                fields, prev_vid, rel_pat, next_node
-            )
+            return self._expand_var_length(fields, prev_vid, rel_pat, next_node)
 
         return self._expand_single_hop(fields, prev_vid, rel_pat, next_node)
 
@@ -395,14 +396,18 @@ class CypherCompiler:
             # Check consistency with already-bound variables
             new_fields = dict(fields)
             if rel_pat.variable:
-                if rel_pat.variable in fields:
-                    if fields[rel_pat.variable] != edge.edge_id:
-                        continue
+                if (
+                    rel_pat.variable in fields
+                    and fields[rel_pat.variable] != edge.edge_id
+                ):
+                    continue
                 new_fields[rel_pat.variable] = edge.edge_id
             if next_node.variable:
-                if next_node.variable in fields:
-                    if fields[next_node.variable] != neighbor.vertex_id:
-                        continue
+                if (
+                    next_node.variable in fields
+                    and fields[next_node.variable] != neighbor.vertex_id
+                ):
+                    continue
                 new_fields[next_node.variable] = neighbor.vertex_id
             results.append(new_fields)
 
@@ -420,9 +425,7 @@ class CypherCompiler:
 
         results: list[BindingFields] = []
         # BFS with deque for O(1) popleft; tuple for immutable path
-        frontier: deque[tuple[int, int, tuple[int, ...]]] = deque(
-            [(src_vid, 0, ())]
-        )
+        frontier: deque[tuple[int, int, tuple[int, ...]]] = deque([(src_vid, 0, ())])
 
         while frontier:
             vid, depth, path_eids = frontier.popleft()
@@ -434,9 +437,11 @@ class CypherCompiler:
                     if rel_pat.variable:
                         new_fields[rel_pat.variable] = list(path_eids)
                     if next_node.variable:
-                        if next_node.variable in fields:
-                            if fields[next_node.variable] != vid:
-                                continue
+                        if (
+                            next_node.variable in fields
+                            and fields[next_node.variable] != vid
+                        ):
+                            continue
                         new_fields[next_node.variable] = vid
                     results.append(new_fields)
 
@@ -448,15 +453,11 @@ class CypherCompiler:
                     continue
                 if not self._edge_matches(edge, rel_pat, fields):
                     continue
-                frontier.append(
-                    (neighbor_id, depth + 1, path_eids + (edge.edge_id,))
-                )
+                frontier.append((neighbor_id, depth + 1, (*path_eids, edge.edge_id)))
 
         return results
 
-    def _get_edges(
-        self, vertex_id: int, rel_pat: RelPattern
-    ) -> list[tuple[Edge, int]]:
+    def _get_edges(self, vertex_id: int, rel_pat: RelPattern) -> list[tuple[Edge, int]]:
         results: list[tuple[Edge, int]] = []
         direction = rel_pat.direction
 
@@ -552,9 +553,7 @@ class CypherCompiler:
                 if elem.variable:
                     fields[elem.variable] = edge.edge_id
 
-    def _create_vertex(
-        self, pat: NodePattern, fields: BindingFields
-    ) -> Vertex:
+    def _create_vertex(self, pat: NodePattern, fields: BindingFields) -> Vertex:
         vid = self._graph.next_vertex_id()
         label = pat.labels[0] if pat.labels else ""
         props: dict[str, Any] = {}
@@ -617,9 +616,7 @@ class CypherCompiler:
             else:
                 created_vids: set[int] = set()
                 created_eids: set[int] = set()
-                self._create_path(
-                    clause.pattern, fields, created_vids, created_eids
-                )
+                self._create_path(clause.pattern, fields, created_vids, created_eids)
                 if clause.on_create_set:
                     for item in clause.on_create_set:
                         self._apply_set_item(item, fields)
@@ -646,9 +643,7 @@ class CypherCompiler:
             fields = dict(binding_entry.payload.fields)
             for item in clause.items:
                 self._apply_set_item(item, fields)
-            entry, doc_id = self._make_binding_entry(
-                fields, frozenset(), frozenset()
-            )
+            entry, doc_id = self._make_binding_entry(fields, frozenset(), frozenset())
             entries.append(entry)
             payloads[doc_id] = GraphPayload()
 
@@ -810,9 +805,7 @@ class CypherCompiler:
         if clause.order_by:
             for item in reversed(clause.order_by):
                 binding_list.sort(
-                    key=lambda e: _sort_key(
-                        self._eval(item.expr, e.payload.fields)
-                    ),
+                    key=lambda e: _sort_key(self._eval(item.expr, e.payload.fields)),
                     reverse=not item.ascending,
                 )
 
@@ -1016,9 +1009,7 @@ class CypherCompiler:
         paired = list(zip(rows, binding_list))
         for item in reversed(order_items):
             paired.sort(
-                key=lambda p: _sort_key(
-                    self._eval(item.expr, p[1].payload.fields)
-                ),
+                key=lambda p: _sort_key(self._eval(item.expr, p[1].payload.fields)),
                 reverse=not item.ascending,
             )
         return [p[0] for p in paired]
@@ -1089,6 +1080,7 @@ class CypherCompiler:
             return self._eval_case(expr, fields)
 
         from uqa.graph.cypher.ast import ListIndex
+
         if isinstance(expr, ListIndex):
             lst = self._eval(expr.expr, fields)
             idx = self._eval(expr.index, fields)
@@ -1136,7 +1128,7 @@ class CypherCompiler:
             "-": lambda a, b: a - b,
             "*": lambda a, b: a * b,
             "%": lambda a, b: a % b,
-            "^": lambda a, b: a ** b,
+            "^": lambda a, b: a**b,
             "STARTS WITH": lambda a, b: str(a).startswith(str(b)),
             "ENDS WITH": lambda a, b: str(a).endswith(str(b)),
             "CONTAINS": lambda a, b: str(b) in str(a),
@@ -1172,7 +1164,11 @@ class CypherCompiler:
         args = expr.args
 
         if name == "id":
-            val = fields.get(args[0].name) if isinstance(args[0], Variable) else self._eval(args[0], fields)
+            val = (
+                fields.get(args[0].name)
+                if isinstance(args[0], Variable)
+                else self._eval(args[0], fields)
+            )
             if isinstance(val, int):
                 return val
             return None
@@ -1281,7 +1277,7 @@ class CypherCompiler:
             start = self._eval(args[1], fields)
             if len(args) > 2:
                 length = self._eval(args[2], fields)
-                return s[start:start + length] if isinstance(s, str) else None
+                return s[start : start + length] if isinstance(s, str) else None
             return s[start:] if isinstance(s, str) else None
         if name == "split":
             s = self._eval(args[0], fields)
@@ -1329,9 +1325,7 @@ class CypherCompiler:
 # -- Module-level helpers --------------------------------------------------
 
 
-def _set_nested(
-    props: dict[str, Any], keys: tuple[str, ...], value: Any
-) -> None:
+def _set_nested(props: dict[str, Any], keys: tuple[str, ...], value: Any) -> None:
     target = props
     for k in keys[:-1]:
         target = target.setdefault(k, {})
@@ -1342,7 +1336,7 @@ def _expr_name(expr: CypherExpr) -> str:
     if isinstance(expr, Variable):
         return expr.name
     if isinstance(expr, PropertyAccess):
-        return ".".join((expr.variable,) + expr.keys)
+        return ".".join((expr.variable, *expr.keys))
     if isinstance(expr, FunctionCall):
         return expr.name
     return str(expr)

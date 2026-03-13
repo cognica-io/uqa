@@ -62,8 +62,7 @@ class TestOffset:
 
     def test_offset_with_where(self, engine):
         r = engine.sql(
-            "SELECT id FROM items WHERE category = 'fruit' "
-            "ORDER BY id LIMIT 2 OFFSET 1"
+            "SELECT id FROM items WHERE category = 'fruit' ORDER BY id LIMIT 2 OFFSET 1"
         )
         assert [row["id"] for row in r.rows] == [2, 4]
 
@@ -127,9 +126,7 @@ class TestLike:
         assert r.rows == []
 
     def test_not_like(self, engine):
-        r = engine.sql(
-            "SELECT name FROM items WHERE name NOT LIKE '%a%' ORDER BY name"
-        )
+        r = engine.sql("SELECT name FROM items WHERE name NOT LIKE '%a%' ORDER BY name")
         # Case-sensitive: lowercase 'a' appears in Banana, Carrot, Date, Eggplant, Grape, Habanero
         # Only Apple (uppercase A only) and Fig (no a at all) lack lowercase 'a'
         names = [row["name"] for row in r.rows]
@@ -200,17 +197,14 @@ class TestLikeWithExpressions:
 
     def test_like_with_order_and_limit(self, engine):
         r = engine.sql(
-            "SELECT name FROM items WHERE name LIKE '%a%' "
-            "ORDER BY name LIMIT 2"
+            "SELECT name FROM items WHERE name LIKE '%a%' ORDER BY name LIMIT 2"
         )
         # 6 matches sorted: Banana, Carrot, Date, Eggplant, Grape, Habanero
         assert [row["name"] for row in r.rows] == ["Banana", "Carrot"]
 
     def test_ilike_in_where_expr(self, engine):
         """ILIKE should work in expression-based WHERE."""
-        r = engine.sql(
-            "SELECT name FROM items WHERE name ILIKE '%egg%'"
-        )
+        r = engine.sql("SELECT name FROM items WHERE name ILIKE '%egg%'")
         assert len(r.rows) == 1
         assert r.rows[0]["name"] == "Eggplant"
 
@@ -222,9 +216,7 @@ class TestLikeUpdate:
             "SELECT name FROM items WHERE category = 'tropical' ORDER BY name"
         )
         # Banana, Eggplant, Habanero all contain 'an'
-        assert [row["name"] for row in r.rows] == [
-            "Banana", "Eggplant", "Habanero"
-        ]
+        assert [row["name"] for row in r.rows] == ["Banana", "Eggplant", "Habanero"]
 
     def test_delete_where_like(self, engine):
         engine.sql("DELETE FROM items WHERE name LIKE 'E%'")

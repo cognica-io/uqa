@@ -22,14 +22,16 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import tempfile
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 from uqa.analysis import (
-    Analyzer,
     DEFAULT_ANALYZER,
+    Analyzer,
     ASCIIFoldingFilter,
     EdgeNGramFilter,
     HTMLStripCharFilter,
@@ -57,7 +59,6 @@ from uqa.analysis import (
 from uqa.storage.inverted_index import InvertedIndex
 from uqa.storage.sqlite_inverted_index import SQLiteInvertedIndex
 
-
 # ======================================================================
 # Tokenizers
 # ======================================================================
@@ -81,6 +82,7 @@ class TestWhitespaceTokenizer:
         d = tok.to_dict()
         assert d == {"type": "whitespace"}
         from uqa.analysis.tokenizer import Tokenizer
+
         restored = Tokenizer.from_dict(d)
         assert isinstance(restored, WhitespaceTokenizer)
 
@@ -103,6 +105,7 @@ class TestStandardTokenizer:
         tok = StandardTokenizer()
         d = tok.to_dict()
         from uqa.analysis.tokenizer import Tokenizer
+
         assert isinstance(Tokenizer.from_dict(d), StandardTokenizer)
 
 
@@ -135,6 +138,7 @@ class TestNGramTokenizer:
         tok = NGramTokenizer(min_gram=2, max_gram=3)
         d = tok.to_dict()
         from uqa.analysis.tokenizer import Tokenizer
+
         restored = Tokenizer.from_dict(d)
         assert isinstance(restored, NGramTokenizer)
 
@@ -152,6 +156,7 @@ class TestPatternTokenizer:
         tok = PatternTokenizer(pattern=r"\|")
         d = tok.to_dict()
         from uqa.analysis.tokenizer import Tokenizer
+
         restored = Tokenizer.from_dict(d)
         assert isinstance(restored, PatternTokenizer)
 
@@ -180,6 +185,7 @@ class TestLowerCaseFilter:
         f = LowerCaseFilter()
         d = f.to_dict()
         from uqa.analysis.token_filter import TokenFilter
+
         restored = TokenFilter.from_dict(d)
         assert isinstance(restored, LowerCaseFilter)
 
@@ -199,6 +205,7 @@ class TestStopWordFilter:
         f = StopWordFilter("english", custom_words={"extra"})
         d = f.to_dict()
         from uqa.analysis.token_filter import TokenFilter
+
         restored = TokenFilter.from_dict(d)
         assert isinstance(restored, StopWordFilter)
         assert restored.filter(["extra"]) == []
@@ -226,6 +233,7 @@ class TestASCIIFoldingFilter:
         f = ASCIIFoldingFilter()
         d = f.to_dict()
         from uqa.analysis.token_filter import TokenFilter
+
         restored = TokenFilter.from_dict(d)
         assert isinstance(restored, ASCIIFoldingFilter)
 
@@ -245,6 +253,7 @@ class TestSynonymFilter:
         f = SynonymFilter({"a": ["b"]})
         d = f.to_dict()
         from uqa.analysis.token_filter import TokenFilter
+
         restored = TokenFilter.from_dict(d)
         assert isinstance(restored, SynonymFilter)
 
@@ -252,6 +261,7 @@ class TestSynonymFilter:
 class TestNGramFilter:
     def test_default(self):
         from uqa.analysis.token_filter import NGramFilter
+
         f = NGramFilter(min_gram=2, max_gram=3)
         result = f.filter(["hello"])
         assert "he" in result
@@ -264,11 +274,13 @@ class TestNGramFilter:
 
     def test_short_token_dropped(self):
         from uqa.analysis.token_filter import NGramFilter
+
         f = NGramFilter(min_gram=2, max_gram=3)
         assert f.filter(["a"]) == []
 
     def test_keep_short(self):
         from uqa.analysis.token_filter import NGramFilter
+
         f = NGramFilter(min_gram=2, max_gram=3, keep_short=True)
         result = f.filter(["a", "hello"])
         assert result[0] == "a"
@@ -276,6 +288,7 @@ class TestNGramFilter:
 
     def test_keep_short_mixed(self):
         from uqa.analysis.token_filter import NGramFilter
+
         f = NGramFilter(min_gram=3, max_gram=4, keep_short=True)
         result = f.filter(["ab", "cd", "hello"])
         assert "ab" in result
@@ -284,17 +297,20 @@ class TestNGramFilter:
 
     def test_roundtrip(self):
         from uqa.analysis.token_filter import NGramFilter
+
         f = NGramFilter(min_gram=2, max_gram=4)
         d = f.to_dict()
         assert d == {"type": "ngram", "min_gram": 2, "max_gram": 4}
         assert "keep_short" not in d
         from uqa.analysis.token_filter import TokenFilter
+
         restored = TokenFilter.from_dict(d)
         assert isinstance(restored, NGramFilter)
         assert restored.filter(["abc"]) == f.filter(["abc"])
 
     def test_roundtrip_keep_short(self):
         from uqa.analysis.token_filter import NGramFilter, TokenFilter
+
         f = NGramFilter(min_gram=2, max_gram=3, keep_short=True)
         d = f.to_dict()
         assert d["keep_short"] is True
@@ -302,8 +318,10 @@ class TestNGramFilter:
         assert restored.filter(["a"]) == ["a"]
 
     def test_validation(self):
-        from uqa.analysis.token_filter import NGramFilter
         import pytest
+
+        from uqa.analysis.token_filter import NGramFilter
+
         with pytest.raises(ValueError):
             NGramFilter(min_gram=0)
         with pytest.raises(ValueError):
@@ -325,6 +343,7 @@ class TestEdgeNGramFilter:
         f = EdgeNGramFilter(min_gram=2, max_gram=5)
         d = f.to_dict()
         from uqa.analysis.token_filter import TokenFilter
+
         restored = TokenFilter.from_dict(d)
         assert isinstance(restored, EdgeNGramFilter)
 
@@ -369,6 +388,7 @@ class TestHTMLStripCharFilter:
         f = HTMLStripCharFilter()
         d = f.to_dict()
         from uqa.analysis.char_filter import CharFilter
+
         restored = CharFilter.from_dict(d)
         assert isinstance(restored, HTMLStripCharFilter)
 
@@ -382,6 +402,7 @@ class TestMappingCharFilter:
         f = MappingCharFilter({"x": "y"})
         d = f.to_dict()
         from uqa.analysis.char_filter import CharFilter
+
         restored = CharFilter.from_dict(d)
         assert isinstance(restored, MappingCharFilter)
 
@@ -395,6 +416,7 @@ class TestPatternReplaceCharFilter:
         f = PatternReplaceCharFilter(r"\s+", " ")
         d = f.to_dict()
         from uqa.analysis.char_filter import CharFilter
+
         restored = CharFilter.from_dict(d)
         assert isinstance(restored, PatternReplaceCharFilter)
 
@@ -440,6 +462,7 @@ class TestAnalyzer:
 
     def test_standard_cjk_analyzer(self):
         from uqa.analysis import standard_cjk_analyzer
+
         a = standard_cjk_analyzer()
         result = a.analyze("hello world")
         assert "he" in result
@@ -449,6 +472,7 @@ class TestAnalyzer:
 
     def test_standard_cjk_analyzer_stemming(self):
         from uqa.analysis import standard_cjk_analyzer
+
         a = standard_cjk_analyzer()
         result = a.analyze("Running")
         assert "ru" in result
@@ -457,6 +481,7 @@ class TestAnalyzer:
     def test_standard_cjk_analyzer_keep_short(self):
         """Short tokens (< min_gram) are preserved by keep_short=True."""
         from uqa.analysis import standard_cjk_analyzer
+
         a = standard_cjk_analyzer()
         # "x marks" -> tokenize -> ["x", "marks"] -> lower -> ["x", "marks"]
         # -> ascii_fold -> ["x", "marks"] -> stop -> ["x", "marks"]
@@ -598,9 +623,7 @@ class TestSQLiteInvertedIndexAnalyzer:
 
     def test_custom_analyzer(self, tmp_path):
         conn = sqlite3.connect(str(tmp_path / "test.db"))
-        idx = SQLiteInvertedIndex(
-            conn, "test_table", analyzer=standard_analyzer()
-        )
+        idx = SQLiteInvertedIndex(conn, "test_table", analyzer=standard_analyzer())
         idx.add_document(1, {"title": "The Quick Brown Fox"})
         assert len(idx.get_posting_list("title", "the")) == 0
         assert len(idx.get_posting_list("title", "quick")) == 1
@@ -633,6 +656,7 @@ class TestSQLiteInvertedIndexAnalyzer:
 class TestAnalyzerSQL:
     def _engine(self):
         from uqa.engine import Engine
+
         return Engine()
 
     def test_create_and_list_analyzers(self):
@@ -643,8 +667,7 @@ class TestAnalyzerSQL:
             "char_filters": [],
         }
         result = engine.sql(
-            f"SELECT * FROM create_analyzer('my_test_analyzer', "
-            f"'{json.dumps(config)}')"
+            f"SELECT * FROM create_analyzer('my_test_analyzer', '{json.dumps(config)}')"
         )
         assert len(result.rows) == 1
         assert "created" in result.rows[0]["create_analyzer"]

@@ -36,11 +36,11 @@ class SortMergeJoinOperator(JoinOperator):
 
         left_sorted = sorted(
             left_entries,
-            key=lambda e: e.payload.fields.get(self.condition.left_field),
+            key=lambda e: e.payload.fields.get(self.condition.left_field) or 0,
         )
         right_sorted = sorted(
             right_entries,
-            key=lambda e: e.payload.fields.get(self.condition.right_field),
+            key=lambda e: e.payload.fields.get(self.condition.right_field) or 0,
         )
 
         result: list[GeneralizedPostingEntry] = []

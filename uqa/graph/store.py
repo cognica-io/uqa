@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import TYPE_CHECKING
 
-from uqa.core.types import Edge, Vertex
+if TYPE_CHECKING:
+    from uqa.core.types import Edge, Vertex
 
 
 class GraphStore:
@@ -46,7 +48,9 @@ class GraphStore:
         for eid in out_eids:
             edge = self._edges.pop(eid, None)
             if edge is not None:
-                self._adj_in.get(edge.target_id, []).remove(eid) if eid in self._adj_in.get(edge.target_id, []) else None
+                self._adj_in.get(edge.target_id, []).remove(
+                    eid
+                ) if eid in self._adj_in.get(edge.target_id, []) else None
                 lbl_list = self._label_index.get(edge.label, [])
                 if eid in lbl_list:
                     lbl_list.remove(eid)

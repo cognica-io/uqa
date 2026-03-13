@@ -27,63 +27,34 @@ def engine():
 
 class TestDateTimeTypes:
     def test_create_table_with_date(self, engine):
-        engine.sql(
-            "CREATE TABLE events (id INTEGER, event_date DATE)"
-        )
+        engine.sql("CREATE TABLE events (id INTEGER, event_date DATE)")
         result = engine.sql(
-            "INSERT INTO events (id, event_date) "
-            "VALUES (1, '2024-01-15')"
+            "INSERT INTO events (id, event_date) VALUES (1, '2024-01-15')"
         )
         assert result.rows[0]["inserted"] == 1
 
     def test_insert_date_values(self, engine):
-        engine.sql(
-            "CREATE TABLE log (id INTEGER, ts TIMESTAMP)"
-        )
-        engine.sql(
-            "INSERT INTO log (id, ts) VALUES (1, '2024-06-15T10:30:00')"
-        )
-        engine.sql(
-            "INSERT INTO log (id, ts) VALUES (2, '2024-06-16T14:00:00')"
-        )
+        engine.sql("CREATE TABLE log (id INTEGER, ts TIMESTAMP)")
+        engine.sql("INSERT INTO log (id, ts) VALUES (1, '2024-06-15T10:30:00')")
+        engine.sql("INSERT INTO log (id, ts) VALUES (2, '2024-06-16T14:00:00')")
         result = engine.sql("SELECT COUNT(*) AS cnt FROM log")
         assert result.rows[0]["cnt"] == 2
 
     def test_date_comparison(self, engine):
-        engine.sql(
-            "CREATE TABLE events (id INTEGER, event_date DATE)"
-        )
-        engine.sql(
-            "INSERT INTO events (id, event_date) VALUES (1, '2024-01-01')"
-        )
-        engine.sql(
-            "INSERT INTO events (id, event_date) VALUES (2, '2024-06-15')"
-        )
-        engine.sql(
-            "INSERT INTO events (id, event_date) VALUES (3, '2024-12-31')"
-        )
-        result = engine.sql(
-            "SELECT id FROM events WHERE event_date > '2024-03-01'"
-        )
+        engine.sql("CREATE TABLE events (id INTEGER, event_date DATE)")
+        engine.sql("INSERT INTO events (id, event_date) VALUES (1, '2024-01-01')")
+        engine.sql("INSERT INTO events (id, event_date) VALUES (2, '2024-06-15')")
+        engine.sql("INSERT INTO events (id, event_date) VALUES (3, '2024-12-31')")
+        result = engine.sql("SELECT id FROM events WHERE event_date > '2024-03-01'")
         ids = {r["id"] for r in result.rows}
         assert ids == {2, 3}
 
     def test_date_ordering(self, engine):
-        engine.sql(
-            "CREATE TABLE events (id INTEGER, event_date DATE)"
-        )
-        engine.sql(
-            "INSERT INTO events (id, event_date) VALUES (1, '2024-12-31')"
-        )
-        engine.sql(
-            "INSERT INTO events (id, event_date) VALUES (2, '2024-01-01')"
-        )
-        engine.sql(
-            "INSERT INTO events (id, event_date) VALUES (3, '2024-06-15')"
-        )
-        result = engine.sql(
-            "SELECT id, event_date FROM events ORDER BY event_date ASC"
-        )
+        engine.sql("CREATE TABLE events (id INTEGER, event_date DATE)")
+        engine.sql("INSERT INTO events (id, event_date) VALUES (1, '2024-12-31')")
+        engine.sql("INSERT INTO events (id, event_date) VALUES (2, '2024-01-01')")
+        engine.sql("INSERT INTO events (id, event_date) VALUES (3, '2024-06-15')")
+        result = engine.sql("SELECT id, event_date FROM events ORDER BY event_date ASC")
         ids = [r["id"] for r in result.rows]
         assert ids == [2, 3, 1]
 
@@ -119,86 +90,57 @@ class TestDateTimeFunctions:
 class TestExtractDatePartDateTrunc:
     @pytest.fixture
     def ts_table(self, engine):
-        engine.sql(
-            "CREATE TABLE log (id INTEGER, ts TIMESTAMP)"
-        )
-        engine.sql(
-            "INSERT INTO log (id, ts) "
-            "VALUES (1, '2024-06-15T10:30:45')"
-        )
+        engine.sql("CREATE TABLE log (id INTEGER, ts TIMESTAMP)")
+        engine.sql("INSERT INTO log (id, ts) VALUES (1, '2024-06-15T10:30:45')")
         return engine
 
     def test_extract_year(self, ts_table):
-        result = ts_table.sql(
-            "SELECT EXTRACT(year FROM ts) AS y FROM log"
-        )
+        result = ts_table.sql("SELECT EXTRACT(year FROM ts) AS y FROM log")
         assert result.rows[0]["y"] == 2024
 
     def test_extract_month(self, ts_table):
-        result = ts_table.sql(
-            "SELECT EXTRACT(month FROM ts) AS m FROM log"
-        )
+        result = ts_table.sql("SELECT EXTRACT(month FROM ts) AS m FROM log")
         assert result.rows[0]["m"] == 6
 
     def test_extract_day(self, ts_table):
-        result = ts_table.sql(
-            "SELECT EXTRACT(day FROM ts) AS d FROM log"
-        )
+        result = ts_table.sql("SELECT EXTRACT(day FROM ts) AS d FROM log")
         assert result.rows[0]["d"] == 15
 
     def test_extract_hour(self, ts_table):
-        result = ts_table.sql(
-            "SELECT EXTRACT(hour FROM ts) AS h FROM log"
-        )
+        result = ts_table.sql("SELECT EXTRACT(hour FROM ts) AS h FROM log")
         assert result.rows[0]["h"] == 10
 
     def test_extract_dow(self, ts_table):
-        result = ts_table.sql(
-            "SELECT EXTRACT(dow FROM ts) AS dow FROM log"
-        )
+        result = ts_table.sql("SELECT EXTRACT(dow FROM ts) AS dow FROM log")
         # 2024-06-15 is a Saturday -> PostgreSQL dow=6
         assert result.rows[0]["dow"] == 6
 
     def test_extract_epoch(self, ts_table):
-        result = ts_table.sql(
-            "SELECT EXTRACT(epoch FROM ts) AS e FROM log"
-        )
+        result = ts_table.sql("SELECT EXTRACT(epoch FROM ts) AS e FROM log")
         assert isinstance(result.rows[0]["e"], float)
 
     def test_date_part(self, ts_table):
-        result = ts_table.sql(
-            "SELECT DATE_PART('year', ts) AS y FROM log"
-        )
+        result = ts_table.sql("SELECT DATE_PART('year', ts) AS y FROM log")
         assert result.rows[0]["y"] == 2024
 
     def test_date_trunc_year(self, ts_table):
-        result = ts_table.sql(
-            "SELECT DATE_TRUNC('year', ts) AS t FROM log"
-        )
+        result = ts_table.sql("SELECT DATE_TRUNC('year', ts) AS t FROM log")
         assert result.rows[0]["t"].startswith("2024-01-01")
 
     def test_date_trunc_month(self, ts_table):
-        result = ts_table.sql(
-            "SELECT DATE_TRUNC('month', ts) AS t FROM log"
-        )
+        result = ts_table.sql("SELECT DATE_TRUNC('month', ts) AS t FROM log")
         assert result.rows[0]["t"].startswith("2024-06-01")
 
     def test_date_trunc_day(self, ts_table):
-        result = ts_table.sql(
-            "SELECT DATE_TRUNC('day', ts) AS t FROM log"
-        )
+        result = ts_table.sql("SELECT DATE_TRUNC('day', ts) AS t FROM log")
         assert result.rows[0]["t"].startswith("2024-06-15T00:00:00")
 
     def test_extract_quarter(self, ts_table):
-        result = ts_table.sql(
-            "SELECT EXTRACT(quarter FROM ts) AS q FROM log"
-        )
+        result = ts_table.sql("SELECT EXTRACT(quarter FROM ts) AS q FROM log")
         assert result.rows[0]["q"] == 2
 
     def test_extract_week(self, ts_table):
-        result = ts_table.sql(
-            "SELECT EXTRACT(week FROM ts) AS w FROM log"
-        )
+        result = ts_table.sql("SELECT EXTRACT(week FROM ts) AS w FROM log")
         assert isinstance(result.rows[0]["w"], int)
         assert 1 <= result.rows[0]["w"] <= 53
 
