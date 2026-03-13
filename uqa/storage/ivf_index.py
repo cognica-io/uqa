@@ -109,8 +109,7 @@ class IVFIndex(VectorIndex):
             f")"
         )
         self._conn.execute(
-            f'CREATE INDEX IF NOT EXISTS "{lt}_cid" '
-            f'ON "{lt}" (centroid_id)'
+            f'CREATE INDEX IF NOT EXISTS "{lt}_cid" ON "{lt}" (centroid_id)'
         )
         self._conn.commit()
 
@@ -284,8 +283,7 @@ class IVFIndex(VectorIndex):
         scored.sort(key=lambda x: x[1], reverse=True)
         actual_k = min(k, len(scored))
         entries = [
-            PostingEntry(did, Payload(score=sim))
-            for did, sim in scored[:actual_k]
+            PostingEntry(did, Payload(score=sim)) for did, sim in scored[:actual_k]
         ]
         return PostingList(entries)
 
@@ -327,8 +325,7 @@ class IVFIndex(VectorIndex):
         scored.sort(key=lambda x: x[1], reverse=True)
         actual_k = min(k, len(scored))
         entries = [
-            PostingEntry(did, Payload(score=sim))
-            for did, sim in scored[:actual_k]
+            PostingEntry(did, Payload(score=sim)) for did, sim in scored[:actual_k]
         ]
         return PostingList(entries)
 
@@ -391,8 +388,7 @@ class IVFIndex(VectorIndex):
         for j, doc_id in enumerate(doc_ids):
             cid = int(best[j])
             self._conn.execute(
-                f'UPDATE "{self._lists_table}" '
-                f"SET centroid_id = ? WHERE doc_id = ?",
+                f'UPDATE "{self._lists_table}" SET centroid_id = ? WHERE doc_id = ?',
                 (cid, doc_id),
             )
 

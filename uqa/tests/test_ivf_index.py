@@ -564,12 +564,7 @@ class TestEngineIntegration:
 
         db = str(tmp_path / "test.db")
         with Engine(db_path=db) as engine:
-            engine.sql(
-                "CREATE TABLE docs ("
-                "  id SERIAL PRIMARY KEY,"
-                "  emb VECTOR(8)"
-                ")"
-            )
+            engine.sql("CREATE TABLE docs (  id SERIAL PRIMARY KEY,  emb VECTOR(8))")
             engine.sql("CREATE INDEX idx_emb ON docs USING hnsw (emb)")
 
             for i in range(1, 11):

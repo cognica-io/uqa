@@ -182,9 +182,7 @@ class TestVectorIndex:
 
         def build() -> int:
             conn = sqlite3.connect(":memory:")
-            vi = IVFIndex(
-                conn, "bench", "emb", dimensions=128, nlist=16, nprobe=4
-            )
+            vi = IVFIndex(conn, "bench", "emb", dimensions=128, nlist=16, nprobe=4)
             for i in range(n):
                 vi.add(i + 1, vecs[i])
             count = vi.count()
@@ -216,9 +214,7 @@ class TestVectorIndex:
         n = min(200, len(vecs))
         conn = sqlite3.connect(":memory:")
         # nlist=256 ensures train_threshold > n, so stays UNTRAINED.
-        vi = IVFIndex(
-            conn, "bench", "emb", dimensions=128, nlist=256, nprobe=4
-        )
+        vi = IVFIndex(conn, "bench", "emb", dimensions=128, nlist=256, nprobe=4)
         for i in range(n):
             vi.add(i + 1, vecs[i])
 
@@ -237,9 +233,7 @@ class TestVectorIndex:
         vecs = gen.vectors(dim=128)
         n = min(500, len(vecs))
         conn = sqlite3.connect(":memory:")
-        vi = IVFIndex(
-            conn, "bench", "emb", dimensions=128, nlist=16, nprobe=4
-        )
+        vi = IVFIndex(conn, "bench", "emb", dimensions=128, nlist=16, nprobe=4)
         for i in range(n):
             vi.add(i + 1, vecs[i])
 
@@ -257,9 +251,7 @@ class TestVectorIndex:
         vecs = gen.vectors(dim=128)
         n = min(500, len(vecs))
         conn = sqlite3.connect(":memory:")
-        vi = IVFIndex(
-            conn, "bench", "emb", dimensions=128, nlist=16, nprobe=4
-        )
+        vi = IVFIndex(conn, "bench", "emb", dimensions=128, nlist=16, nprobe=4)
         for i in range(n):
             vi.add(i + 1, vecs[i])
 
@@ -276,9 +268,7 @@ class TestVectorIndex:
         vecs = gen.vectors(dim=128)
         n = min(500, len(vecs))
         conn = sqlite3.connect(":memory:")
-        vi = IVFIndex(
-            conn, "bench", "emb", dimensions=128, nlist=16, nprobe=4
-        )
+        vi = IVFIndex(conn, "bench", "emb", dimensions=128, nlist=16, nprobe=4)
         for i in range(n):
             vi.add(i + 1, vecs[i])
 
@@ -299,9 +289,7 @@ class TestVectorIndex:
         def train() -> int:
             conn = sqlite3.connect(":memory:")
             # nlist=1024 ensures train_threshold > n, so no auto-train.
-            vi = IVFIndex(
-                conn, "bench", "emb", dimensions=128, nlist=1024, nprobe=4
-            )
+            vi = IVFIndex(conn, "bench", "emb", dimensions=128, nlist=1024, nprobe=4)
             for i in range(n):
                 vi.add(i + 1, vecs[i])
             vi._train()
@@ -317,18 +305,14 @@ class TestVectorIndex:
 
         db = str(tmp_path / "bench_vec.db")
         conn_w = sqlite3.connect(db)
-        vi_w = IVFIndex(
-            conn_w, "bench", "emb", dimensions=128, nlist=16, nprobe=4
-        )
+        vi_w = IVFIndex(conn_w, "bench", "emb", dimensions=128, nlist=16, nprobe=4)
         for i in range(n):
             vi_w.add(i + 1, vecs[i])
         conn_w.close()
 
         def reload() -> int:
             conn_r = sqlite3.connect(db)
-            vi_r = IVFIndex(
-                conn_r, "bench", "emb", dimensions=128, nlist=16, nprobe=4
-            )
+            vi_r = IVFIndex(conn_r, "bench", "emb", dimensions=128, nlist=16, nprobe=4)
             count = vi_r.count()
             conn_r.close()
             return count
