@@ -237,6 +237,179 @@ class TestFusion:
         assert all(0 <= s <= 1 for s in scores)
 
 
+class TestCoverageBasedDefault:
+    """Test coverage-based default probability in fusion operators."""
+
+    def test_coverage_based_default_formula(self):
+        from uqa.operators.hybrid import _coverage_based_default
+
+        # Zero coverage: fully neutral
+        assert _coverage_based_default(0, 10) == pytest.approx(0.5)
+        assert _coverage_based_default(0, 0) == pytest.approx(0.5)
+
+        # Full coverage: floor value
+        assert _coverage_based_default(10, 10) == pytest.approx(0.01)
+
+        # 50% coverage: midpoint
+        assert _coverage_based_default(5, 10) == pytest.approx(0.255)
+
+        # 10% coverage: mostly neutral
+        assert _coverage_based_default(1, 10) == pytest.approx(0.451)
+
+        # Monotonically decreasing as coverage increases
+        values = [_coverage_based_default(i, 10) for i in range(11)]
+        for i in range(len(values) - 1):
+            assert values[i] > values[i + 1]
+
+    def test_log_odds_zero_coverage_preserves_knn_ranking(self):
+        """When BM25 has zero coverage, KNN ranking should be preserved."""
+        from uqa.core.posting_list import PostingList
+        from uqa.core.types import Payload, PostingEntry
+        from uqa.operators.base import ExecutionContext, Operator
+        from uqa.operators.hybrid import LogOddsFusionOperator
+
+        class FixedOperator(Operator):
+            def __init__(self, entries):
+                self._entries = entries
+
+            def execute(self, context):
+                return PostingList.from_sorted(self._entries)
+
+            def cost_estimate(self, stats):
+                return 1.0
+
+        # BM25 returns nothing
+        bm25 = FixedOperator([])
+
+        # KNN returns 5 docs with decreasing scores
+        knn = FixedOperator([
+            PostingEntry(0, Payload(score=0.9)),
+            PostingEntry(1, Payload(score=0.8)),
+            PostingEntry(2, Payload(score=0.7)),
+            PostingEntry(3, Payload(score=0.6)),
+            PostingEntry(4, Payload(score=0.5)),
+        ])
+
+        ctx = ExecutionContext(document_store=None, inverted_index=None)
+        fusion = LogOddsFusionOperator([bm25, knn])
+        result = fusion.execute(ctx)
+        scores = {e.doc_id: e.payload.score for e in result}
+
+        # Ranking must be preserved
+        assert scores[0] > scores[1] > scores[2] > scores[3] > scores[4]
+
+        # Scores should NOT be crushed below 0.5 for highly relevant docs
+        assert scores[0] > 0.5, (
+            f"Doc 0 (KNN=0.9) fused to {scores[0]:.4f}, "
+            f"expected > 0.5 with zero BM25 coverage"
+        )
+
+    def test_log_odds_full_coverage_penalizes_missing(self):
+        """When a signal has full coverage, missing docs get strong penalty."""
+        from uqa.core.posting_list import PostingList
+        from uqa.core.types import Payload, PostingEntry
+        from uqa.operators.base import ExecutionContext, Operator
+        from uqa.operators.hybrid import LogOddsFusionOperator
+
+        class FixedOperator(Operator):
+            def __init__(self, entries):
+                self._entries = entries
+
+            def execute(self, context):
+                return PostingList.from_sorted(self._entries)
+
+            def cost_estimate(self, stats):
+                return 1.0
+
+        # Signal A covers all 3 docs
+        sig_a = FixedOperator([
+            PostingEntry(0, Payload(score=0.8)),
+            PostingEntry(1, Payload(score=0.7)),
+            PostingEntry(2, Payload(score=0.6)),
+        ])
+
+        # Signal B covers only doc 0
+        sig_b = FixedOperator([
+            PostingEntry(0, Payload(score=0.85)),
+        ])
+
+        ctx = ExecutionContext(document_store=None, inverted_index=None)
+        fusion = LogOddsFusionOperator([sig_a, sig_b])
+        result = fusion.execute(ctx)
+        scores = {e.doc_id: e.payload.score for e in result}
+
+        # Doc 0 (both signals match) should score highest
+        assert scores[0] > scores[1]
+        assert scores[0] > scores[2]
+
+    def test_log_odds_partial_coverage_moderate_penalty(self):
+        """Partial coverage gives a gentler penalty than full coverage."""
+        from bayesian_bm25 import log_odds_conjunction
+        from uqa.operators.hybrid import _coverage_based_default
+
+        # Same KNN score for a missing doc
+        knn_score = 0.8
+
+        # Full coverage: 10/10 -> default near 0.01
+        default_full = _coverage_based_default(10, 10)
+        fused_full = float(log_odds_conjunction(
+            np.array([default_full, knn_score]), alpha=0.5
+        ))
+
+        # Partial: 5/10 -> default near 0.255
+        default_partial = _coverage_based_default(5, 10)
+        fused_partial = float(log_odds_conjunction(
+            np.array([default_partial, knn_score]), alpha=0.5
+        ))
+
+        # Zero coverage: 0/10 -> default = 0.5
+        default_zero = _coverage_based_default(0, 10)
+        fused_zero = float(log_odds_conjunction(
+            np.array([default_zero, knn_score]), alpha=0.5
+        ))
+
+        # Zero coverage should preserve score most, full coverage penalizes most
+        assert fused_zero > fused_partial > fused_full
+
+    def test_prob_bool_coverage_default(self):
+        """ProbBoolFusionOperator also uses coverage-based defaults."""
+        from uqa.core.posting_list import PostingList
+        from uqa.core.types import Payload, PostingEntry
+        from uqa.operators.base import ExecutionContext, Operator
+        from uqa.operators.hybrid import ProbBoolFusionOperator
+
+        class FixedOperator(Operator):
+            def __init__(self, entries):
+                self._entries = entries
+
+            def execute(self, context):
+                return PostingList.from_sorted(self._entries)
+
+            def cost_estimate(self, stats):
+                return 1.0
+
+        # Signal A: zero coverage
+        sig_a = FixedOperator([])
+
+        # Signal B: has results
+        sig_b = FixedOperator([
+            PostingEntry(0, Payload(score=0.8)),
+            PostingEntry(1, Payload(score=0.6)),
+        ])
+
+        ctx = ExecutionContext(document_store=None, inverted_index=None)
+        fusion = ProbBoolFusionOperator([sig_a, sig_b], mode="and")
+        result = fusion.execute(ctx)
+        scores = {e.doc_id: e.payload.score for e in result}
+
+        # With zero-coverage signal A, prob_and(0.5, 0.8) > prob_and(0.01, 0.8)
+        # (0.5 * 0.8 = 0.4 vs 0.01 * 0.8 = 0.008)
+        assert scores[0] > 0.1, (
+            f"prob_and with zero-coverage signal gave {scores[0]:.4f}, "
+            f"expected > 0.1"
+        )
+
+
 class TestGraphQueries:
     """Test graph operations through the API."""
 

@@ -19,6 +19,27 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 
+def _coverage_based_default(n_hits: int, n_total: int, *, floor: float = 0.01) -> float:
+    """Compute default probability for missing entries based on signal coverage.
+
+    Interpolates between neutral (0.5) and negative evidence (floor) based on
+    how many documents the signal actually returned:
+
+        default = 0.5 * (1 - r) + floor * r
+
+    where r = n_hits / n_total is the signal's coverage ratio.
+
+    When a signal returns nothing (r=0), absence of a document is not
+    informative, so the default is 0.5 (neutral in log-odds space,
+    logit(0.5) = 0).  When a signal covers all candidate documents (r=1),
+    absence is strong negative evidence, so the default equals *floor*.
+    """
+    if n_total == 0:
+        return 0.5
+    ratio = n_hits / n_total
+    return 0.5 * (1.0 - ratio) + floor * ratio
+
+
 class HybridTextVectorOperator(Operator):
     """Definition 3.3.1: Hybrid_{t,q,theta} = T(t) AND V_theta(q)."""
 
@@ -74,18 +95,21 @@ class LogOddsFusionOperator(Operator):
     - knn_match: cosine similarity -> P_vector = (1 + sim) / 2
     - traverse_match: graph reachability -> 0.9 (reachable)
 
-    Documents missing from a signal receive default_prob (no evidence).
+    Documents missing from a signal receive a coverage-based default
+    probability.  When a signal returns nothing (vocabulary gap), the
+    default is 0.5 (neutral — logit(0.5) = 0, no contribution to fusion).
+    When a signal has full coverage, missing documents receive 0.01
+    (strong negative evidence).  Partial coverage interpolates between
+    the two extremes.
     """
 
     def __init__(
         self,
         signals: list[Operator],
         alpha: float = 0.5,
-        default_prob: float = 0.01,
     ) -> None:
         self.signals = signals
         self.alpha = alpha
-        self.default_prob = default_prob
 
     def execute(self, context: ExecutionContext) -> PostingList:
         from bayesian_bm25 import log_odds_conjunction
@@ -112,15 +136,16 @@ class LogOddsFusionOperator(Operator):
         if num_docs == 0:
             return PostingList()
 
-        # Build (num_docs, num_signals) probability matrix in one allocation.
-        prob_matrix = np.full(
-            (num_docs, num_signals), self.default_prob, dtype=np.float64
-        )
+        # Compute per-signal default probability based on coverage ratio.
+        defaults = [_coverage_based_default(len(smap), num_docs) for smap in score_maps]
+
+        # Build (num_docs, num_signals) probability matrix.
+        prob_matrix = np.empty((num_docs, num_signals), dtype=np.float64)
         for j, smap in enumerate(score_maps):
+            default_j = defaults[j]
             for i, doc_id in enumerate(sorted_ids):
                 score = smap.get(doc_id)
-                if score is not None:
-                    prob_matrix[i, j] = score
+                prob_matrix[i, j] = score if score is not None else default_j
 
         # Fuse each row using log_odds_conjunction.
         entries: list[PostingEntry] = []
@@ -144,17 +169,18 @@ class ProbBoolFusionOperator(Operator):
 
     Combines signals using probabilistic AND or OR.
     All signal operators MUST produce calibrated probabilities in (0, 1).
+
+    Documents missing from a signal receive a coverage-based default
+    probability, following the same interpolation as LogOddsFusionOperator.
     """
 
     def __init__(
         self,
         signals: list[Operator],
         mode: str = "and",
-        default_prob: float = 0.01,
     ) -> None:
         self.signals = signals
         self.mode = mode
-        self.default_prob = default_prob
 
     def execute(self, context: ExecutionContext) -> PostingList:
         from uqa.fusion.boolean import ProbabilisticBoolean
@@ -174,14 +200,19 @@ class ProbBoolFusionOperator(Operator):
                 all_doc_ids.add(entry.doc_id)
             score_maps.append(smap)
 
+        sorted_ids = sorted(all_doc_ids)
+        num_docs = len(sorted_ids)
+
+        defaults = [_coverage_based_default(len(smap), num_docs) for smap in score_maps]
+
         fuse_fn = (
             ProbabilisticBoolean.prob_and
             if self.mode == "and"
             else ProbabilisticBoolean.prob_or
         )
         entries: list[PostingEntry] = []
-        for doc_id in sorted(all_doc_ids):
-            probs = [smap.get(doc_id, self.default_prob) for smap in score_maps]
+        for doc_id in sorted_ids:
+            probs = [smap.get(doc_id, defaults[j]) for j, smap in enumerate(score_maps)]
             fused = fuse_fn(probs)
             entries.append(PostingEntry(doc_id, Payload(score=fused)))
 

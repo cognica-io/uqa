@@ -292,16 +292,12 @@ class QueryOptimizer:
         if isinstance(op, LogOddsFusionOperator):
             signals = [self._reorder_fusion_signals(s) for s in op.signals]
             signals.sort(key=lambda s: self.estimator.estimate(s, self.stats))
-            return LogOddsFusionOperator(
-                signals, alpha=op.alpha, default_prob=op.default_prob
-            )
+            return LogOddsFusionOperator(signals, alpha=op.alpha)
 
         if isinstance(op, ProbBoolFusionOperator):
             signals = [self._reorder_fusion_signals(s) for s in op.signals]
             signals.sort(key=lambda s: self.estimator.estimate(s, self.stats))
-            return ProbBoolFusionOperator(
-                signals, mode=op.mode, default_prob=op.default_prob
-            )
+            return ProbBoolFusionOperator(signals, mode=op.mode)
 
         return self._recurse_fusion(op)
 
@@ -413,13 +409,11 @@ class QueryOptimizer:
                 return LogOddsFusionOperator(
                     [self.optimize(s) for s in sigs],
                     alpha=op.alpha,
-                    default_prob=op.default_prob,
                 )
             case ProbBoolFusionOperator(signals=sigs):
                 return ProbBoolFusionOperator(
                     [self.optimize(s) for s in sigs],
                     mode=op.mode,
-                    default_prob=op.default_prob,
                 )
             case ProbNotOperator(signal=sig):
                 return ProbNotOperator(

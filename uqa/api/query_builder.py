@@ -524,21 +524,26 @@ class _FusionOperator:
     def execute(self, context: Any) -> Any:
         from uqa.core.posting_list import PostingList
         from uqa.core.types import Payload, PostingEntry
+        from uqa.operators.hybrid import _coverage_based_default
 
-        results = [src.execute(context) for src in self.sources]
+        posting_lists = [src.execute(context) for src in self.sources]
 
-        doc_scores: dict[int, list[float]] = {}
-        for result in results:
-            for entry in result:
-                if entry.doc_id not in doc_scores:
-                    doc_scores[entry.doc_id] = []
-                doc_scores[entry.doc_id].append(entry.payload.score)
+        all_doc_ids: set[int] = set()
+        score_maps: list[dict[int, float]] = []
+        for pl in posting_lists:
+            smap: dict[int, float] = {}
+            for entry in pl:
+                smap[entry.doc_id] = entry.payload.score
+                all_doc_ids.add(entry.doc_id)
+            score_maps.append(smap)
+
+        num_docs = len(all_doc_ids)
+        defaults = [_coverage_based_default(len(smap), num_docs) for smap in score_maps]
 
         entries = []
-        for doc_id, scores in doc_scores.items():
-            while len(scores) < len(results):
-                scores.append(0.5)
-            fused_score = self.fusion.fuse(scores)
+        for doc_id in sorted(all_doc_ids):
+            probs = [smap.get(doc_id, defaults[j]) for j, smap in enumerate(score_maps)]
+            fused_score = self.fusion.fuse(probs)
             entries.append(PostingEntry(doc_id, Payload(score=fused_score)))
 
         return PostingList(entries)
@@ -565,24 +570,31 @@ class _ProbBooleanOperator:
         from uqa.core.posting_list import PostingList
         from uqa.core.types import Payload, PostingEntry
         from uqa.fusion.boolean import ProbabilisticBoolean
+        from uqa.operators.hybrid import _coverage_based_default
 
-        results = [src.execute(context) for src in self.sources]
+        posting_lists = [src.execute(context) for src in self.sources]
 
-        doc_scores: dict[int, list[float]] = {}
-        for result in results:
-            for entry in result:
-                if entry.doc_id not in doc_scores:
-                    doc_scores[entry.doc_id] = []
-                doc_scores[entry.doc_id].append(entry.payload.score)
+        all_doc_ids: set[int] = set()
+        score_maps: list[dict[int, float]] = []
+        for pl in posting_lists:
+            smap: dict[int, float] = {}
+            for entry in pl:
+                smap[entry.doc_id] = entry.payload.score
+                all_doc_ids.add(entry.doc_id)
+            score_maps.append(smap)
 
+        num_docs = len(all_doc_ids)
+        defaults = [_coverage_based_default(len(smap), num_docs) for smap in score_maps]
+
+        fuse_fn = (
+            ProbabilisticBoolean.prob_and
+            if self.mode == "and"
+            else ProbabilisticBoolean.prob_or
+        )
         entries = []
-        for doc_id, scores in doc_scores.items():
-            if self.mode == "and":
-                while len(scores) < len(results):
-                    scores.append(0.0)
-                fused = ProbabilisticBoolean.prob_and(scores)
-            else:
-                fused = ProbabilisticBoolean.prob_or(scores)
+        for doc_id in sorted(all_doc_ids):
+            probs = [smap.get(doc_id, defaults[j]) for j, smap in enumerate(score_maps)]
+            fused = fuse_fn(probs)
             entries.append(PostingEntry(doc_id, Payload(score=fused)))
 
         return PostingList(entries)
