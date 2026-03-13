@@ -4,14 +4,16 @@
 # Copyright (c) 2023-2026 Cognica, Inc.
 #
 
-"""Tests for Section 3.2.3: Persistent HNSW Index (SQLiteVectorIndex).
+"""Tests for IVF (Inverted File Index) vector index.
 
 Covers:
-- Write-through persistence for vectors
-- Loading from SQLite on construction
+- Write-through persistence
 - Search correctness (KNN and threshold)
-- Persistence across reconnection
 - Delete support
+- Persistence across reconnection
+- k-means convergence and auto-train
+- Centroid persistence
+- Retrain on stale state
 - Engine integration
 """
 
@@ -20,7 +22,7 @@ from __future__ import annotations
 import numpy as np
 
 from uqa.storage.catalog import Catalog
-from uqa.storage.sqlite_vector_index import SQLiteVectorIndex
+from uqa.storage.ivf_index import IVFIndex
 
 # -- Helpers ---------------------------------------------------------------
 
@@ -32,14 +34,26 @@ def _make_catalog(tmp_path) -> Catalog:
 
 def _random_vector(dim: int = 8, seed: int = 42) -> np.ndarray:
     rng = np.random.RandomState(seed)
-    return rng.randn(dim).astype(np.float32)
+    v = rng.randn(dim).astype(np.float32)
+    return v
 
 
 def _make_index(
     conn,
+    table_name: str = "test",
+    field_name: str = "emb",
     dimensions: int = 8,
-) -> SQLiteVectorIndex:
-    return SQLiteVectorIndex(conn, dimensions=dimensions)
+    nlist: int = 4,
+    nprobe: int = 4,
+) -> IVFIndex:
+    return IVFIndex(
+        conn,
+        table_name=table_name,
+        field_name=field_name,
+        dimensions=dimensions,
+        nlist=nlist,
+        nprobe=nprobe,
+    )
 
 
 # ======================================================================
@@ -55,11 +69,10 @@ class TestWriteThrough:
         idx.add(1, vec)
 
         row = catalog.conn.execute(
-            "SELECT doc_id, dimensions FROM _vectors WHERE doc_id = 1"
+            'SELECT doc_id FROM "_ivf_lists_test_emb" WHERE doc_id = 1'
         ).fetchone()
         assert row is not None
         assert row[0] == 1
-        assert row[1] == 8
         catalog.close()
 
     def test_add_multiple_vectors(self, tmp_path):
@@ -69,7 +82,9 @@ class TestWriteThrough:
         for i in range(1, 6):
             idx.add(i, _random_vector(8, seed=i))
 
-        count = catalog.conn.execute("SELECT COUNT(*) FROM _vectors").fetchone()[0]
+        count = catalog.conn.execute(
+            'SELECT COUNT(*) FROM "_ivf_lists_test_emb"'
+        ).fetchone()[0]
         assert count == 5
         assert idx.count() == 5
         catalog.close()
@@ -82,10 +97,12 @@ class TestWriteThrough:
         idx.add(1, vec)
 
         row = catalog.conn.execute(
-            "SELECT embedding FROM _vectors WHERE doc_id = 1"
+            'SELECT embedding FROM "_ivf_lists_test_emb" WHERE doc_id = 1'
         ).fetchone()
         restored = np.frombuffer(row[0], dtype=np.float32).copy()
-        np.testing.assert_array_equal(restored, vec)
+        # Vectors are normalized on add, so compare normalized versions.
+        expected = vec / np.linalg.norm(vec)
+        np.testing.assert_allclose(restored, expected, atol=1e-6)
         catalog.close()
 
 
@@ -127,6 +144,14 @@ class TestSearchCorrectness:
         assert 2 not in doc_ids
         catalog.close()
 
+    def test_knn_empty_index(self, tmp_path):
+        catalog = _make_catalog(tmp_path)
+        idx = _make_index(catalog.conn)
+        query = np.array([1.0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
+        result = idx.search_knn(query, k=5)
+        assert len(result.entries) == 0
+        catalog.close()
+
 
 # ======================================================================
 # Delete
@@ -143,7 +168,7 @@ class TestDelete:
         idx.delete(1)
 
         row = catalog.conn.execute(
-            "SELECT COUNT(*) FROM _vectors WHERE doc_id = 1"
+            'SELECT COUNT(*) FROM "_ivf_lists_test_emb" WHERE doc_id = 1'
         ).fetchone()
         assert row[0] == 0
         assert idx.count() == 1
@@ -240,14 +265,124 @@ class TestPersistence:
 
 
 # ======================================================================
+# k-means and Auto-Train
+# ======================================================================
+
+
+class TestAutoTrain:
+    def test_cold_start_brute_force(self, tmp_path):
+        """With few vectors, index stays in UNTRAINED state and uses brute force."""
+        catalog = _make_catalog(tmp_path)
+        idx = _make_index(catalog.conn, nlist=4)
+
+        # Add fewer vectors than train_threshold
+        for i in range(1, 6):
+            idx.add(i, _random_vector(8, seed=i))
+
+        from uqa.storage.ivf_index import _State
+
+        assert idx._state == _State.UNTRAINED
+
+        # Search still works via brute force
+        query = _random_vector(8, seed=3)
+        result = idx.search_knn(query, k=1)
+        assert result.entries[0].doc_id == 3
+        catalog.close()
+
+    def test_auto_train_triggers(self, tmp_path):
+        """When enough vectors accumulate, training triggers automatically."""
+        catalog = _make_catalog(tmp_path)
+        # nlist=4 -> train_threshold = max(8, 256) = 256
+        # Use small nlist so threshold is just 256.
+        idx = _make_index(catalog.conn, nlist=4)
+
+        from uqa.storage.ivf_index import _State
+
+        for i in range(1, 257):
+            idx.add(i, _random_vector(8, seed=i))
+
+        assert idx._state == _State.TRAINED
+        assert idx._centroids is not None
+        assert len(idx._centroids) == 4
+
+        # Verify centroids are persisted in SQLite
+        row = catalog.conn.execute(
+            'SELECT COUNT(*) FROM "_ivf_centroids_test_emb"'
+        ).fetchone()
+        assert row[0] == 4
+        catalog.close()
+
+    def test_centroid_persistence(self, tmp_path):
+        """Centroids survive reconnection."""
+        db = str(tmp_path / "persist.db")
+
+        cat1 = Catalog(db)
+        idx1 = _make_index(cat1.conn, nlist=4)
+        for i in range(1, 257):
+            idx1.add(i, _random_vector(8, seed=i))
+
+        from uqa.storage.ivf_index import _State
+
+        assert idx1._state == _State.TRAINED
+        old_centroids = idx1._centroids.copy()
+        cat1.close()
+
+        cat2 = Catalog(db)
+        idx2 = _make_index(cat2.conn, nlist=4)
+        assert idx2._state == _State.TRAINED
+        np.testing.assert_array_equal(idx2._centroids, old_centroids)
+        cat2.close()
+
+    def test_stale_triggers_retrain(self, tmp_path):
+        """Deleting >20% of vectors marks state as STALE, and next search retrains."""
+        catalog = _make_catalog(tmp_path)
+        idx = _make_index(catalog.conn, nlist=4)
+
+        # Insert enough to train
+        for i in range(1, 257):
+            idx.add(i, _random_vector(8, seed=i))
+
+        from uqa.storage.ivf_index import _State
+
+        assert idx._state == _State.TRAINED
+
+        # Delete >20% of vectors (delete 60 out of 256)
+        for i in range(1, 61):
+            idx.delete(i)
+
+        assert idx._state == _State.STALE
+
+        # Next search triggers retrain
+        query = _random_vector(8, seed=100)
+        idx.search_knn(query, k=1)
+        assert idx._state == _State.TRAINED
+        catalog.close()
+
+    def test_clear_resets_state(self, tmp_path):
+        catalog = _make_catalog(tmp_path)
+        idx = _make_index(catalog.conn, nlist=4)
+
+        for i in range(1, 257):
+            idx.add(i, _random_vector(8, seed=i))
+
+        from uqa.storage.ivf_index import _State
+
+        assert idx._state == _State.TRAINED
+        idx.clear()
+        assert idx._state == _State.UNTRAINED
+        assert idx.count() == 0
+        catalog.close()
+
+
+# ======================================================================
 # Engine Integration
 # ======================================================================
 
 
 class TestEngineIntegration:
     def test_create_index_using_hnsw(self, tmp_path):
+        """'USING hnsw' maps to IVF for backward compatibility."""
         from uqa.engine import Engine
-        from uqa.storage.vector_index import HNSWIndex
 
         db = str(tmp_path / "test.db")
         with Engine(db_path=db) as engine:
@@ -256,19 +391,30 @@ class TestEngineIntegration:
 
             engine.sql("CREATE INDEX idx_emb ON docs USING hnsw (emb)")
             assert "emb" in engine._tables["docs"].vector_indexes
-            assert isinstance(engine._tables["docs"].vector_indexes["emb"], HNSWIndex)
+            assert isinstance(engine._tables["docs"].vector_indexes["emb"], IVFIndex)
 
-    def test_vector_stored_in_document_store(self):
+    def test_create_index_using_ivf(self, tmp_path):
         from uqa.engine import Engine
 
-        with Engine() as engine:
+        db = str(tmp_path / "test.db")
+        with Engine(db_path=db) as engine:
+            engine.sql("CREATE TABLE docs (  id SERIAL PRIMARY KEY,  emb VECTOR(8))")
+            engine.sql("CREATE INDEX idx_emb ON docs USING ivf (emb)")
+            assert "emb" in engine._tables["docs"].vector_indexes
+            assert isinstance(engine._tables["docs"].vector_indexes["emb"], IVFIndex)
+
+    def test_vector_stored_in_document_store(self, tmp_path):
+        from uqa.engine import Engine
+
+        db = str(tmp_path / "test.db")
+        with Engine(db_path=db) as engine:
             engine.sql("CREATE TABLE docs (  id SERIAL PRIMARY KEY,  emb VECTOR(4))")
             engine.sql("INSERT INTO docs (emb) VALUES (ARRAY[1.0, 0, 0, 0])")
             doc = engine._tables["docs"].document_store.get(1)
             assert doc is not None
             assert doc["emb"] == [1.0, 0.0, 0.0, 0.0]
 
-    def test_sql_insert_with_hnsw_index(self, tmp_path):
+    def test_sql_insert_with_ivf_index(self, tmp_path):
         from uqa.engine import Engine
 
         db = str(tmp_path / "test.db")
@@ -287,17 +433,18 @@ class TestEngineIntegration:
             engine.sql(f"INSERT INTO docs (title, emb) VALUES ('test', {arr})")
 
             vec_idx = engine._tables["docs"].vector_indexes["emb"]
-            assert len(vec_idx._doc_id_to_internal) == 1
+            assert vec_idx.count() == 1
 
             query = np.array([1.0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
             result = vec_idx.search_knn(query, k=1)
             assert len(result.entries) == 1
             assert result.entries[0].doc_id == 1
 
-    def test_brute_force_knn_without_index(self):
+    def test_brute_force_knn_without_index(self, tmp_path):
         from uqa.engine import Engine
 
-        with Engine() as engine:
+        db = str(tmp_path / "test.db")
+        with Engine(db_path=db) as engine:
             engine.sql(
                 "CREATE TABLE docs ("
                 "  id SERIAL PRIMARY KEY,"
@@ -309,7 +456,7 @@ class TestEngineIntegration:
             arr = "ARRAY[" + ",".join(str(float(v)) for v in vec) + "]"
             engine.sql(f"INSERT INTO docs (title, emb) VALUES ('test', {arr})")
 
-            # No HNSW index -- knn_match falls back to brute-force
+            # No vector index -- knn_match falls back to brute-force
             result = engine.sql(
                 "SELECT title FROM docs WHERE knn_match(emb, $1, 1)",
                 params=[vec],
@@ -403,10 +550,54 @@ class TestEngineIntegration:
             )
             assert result.rows[0]["id"] == 3
 
-            # Create HNSW index on existing data
+            # Create index on existing data
             engine.sql("CREATE INDEX idx_emb ON docs USING hnsw (emb)")
             vec_idx = engine._tables["docs"].vector_indexes["emb"]
-            assert len(vec_idx._doc_id_to_internal) == 5
+            assert vec_idx.count() == 5
 
             result2 = vec_idx.search_knn(query, k=1)
             assert result2.entries[0].doc_id == 3
+
+    def test_ivf_index_persists_across_restart(self, tmp_path):
+        """IVF index and its vectors are fully restored on engine restart."""
+        from uqa.engine import Engine
+
+        db = str(tmp_path / "test.db")
+        with Engine(db_path=db) as engine:
+            engine.sql(
+                "CREATE TABLE docs ("
+                "  id SERIAL PRIMARY KEY,"
+                "  emb VECTOR(8)"
+                ")"
+            )
+            engine.sql("CREATE INDEX idx_emb ON docs USING hnsw (emb)")
+
+            for i in range(1, 11):
+                vec = _random_vector(8, seed=i)
+                arr = "ARRAY[" + ",".join(str(float(v)) for v in vec) + "]"
+                engine.sql(f"INSERT INTO docs (emb) VALUES ({arr})")
+
+        with Engine(db_path=db) as engine:
+            vec_idx = engine._tables["docs"].vector_indexes.get("emb")
+            assert vec_idx is not None
+            assert isinstance(vec_idx, IVFIndex)
+            assert vec_idx.count() == 10
+
+            query = _random_vector(8, seed=5)
+            result = vec_idx.search_knn(query, k=1)
+            assert result.entries[0].doc_id == 5
+
+    def test_ivf_with_custom_params(self, tmp_path):
+        from uqa.engine import Engine
+
+        db = str(tmp_path / "test.db")
+        with Engine(db_path=db) as engine:
+            engine.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, emb VECTOR(8))")
+            engine.sql(
+                "CREATE INDEX idx_emb ON docs "
+                "USING ivf (emb) WITH (nlist = 8, nprobe = 4)"
+            )
+            vec_idx = engine._tables["docs"].vector_indexes["emb"]
+            assert isinstance(vec_idx, IVFIndex)
+            assert vec_idx._nlist == 8
+            assert vec_idx._nprobe == 4

@@ -101,8 +101,8 @@ class IndexManager:
         by the engine which has access to the Table objects.
         """
         for name, idx_type, tbl, cols, params in self._catalog.load_indexes():
-            # HNSW and RTREE are managed by Engine/Table, not IndexManager.
-            if idx_type in ("hnsw", "rtree"):
+            # IVF, HNSW, and RTREE are managed by Engine/Table, not IndexManager.
+            if idx_type in ("ivf", "hnsw", "rtree"):
                 continue
             index_def = IndexDef(
                 name=name,

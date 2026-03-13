@@ -1410,16 +1410,18 @@ class SQLCompiler:
 
         access_method = (stmt.accessMethod or "btree").lower()
 
-        if access_method == "hnsw":
-            # HNSW vector index: CREATE INDEX ... USING hnsw
+        if access_method in ("hnsw", "ivf"):
+            # IVF vector index: CREATE INDEX ... USING hnsw|ivf
+            # "hnsw" is accepted for backward compatibility and maps to IVF.
             if len(columns) != 1:
-                raise ValueError("HNSW index must be created on exactly one column")
+                raise ValueError("Vector index must be created on exactly one column")
             col_name = columns[0]
             col_def = table.columns[col_name]
             if col_def.vector_dimensions is None:
                 raise ValueError(f"Column '{col_name}' is not a VECTOR column")
 
-            # Parse WITH parameters: ef_construction, m
+            # Parse WITH parameters: nlist, nprobe
+            # (ef_construction, m are silently ignored for backward compat)
             params: dict[str, int] = {}
             if stmt.options:
                 from pglast.ast import DefElem
@@ -1427,25 +1429,35 @@ class SQLCompiler:
                 for opt in stmt.options:
                     if isinstance(opt, DefElem):
                         key = opt.defname.lower()
-                        if key in ("ef_construction", "m"):
+                        if key in ("nlist", "nprobe"):
                             val = opt.arg
                             if hasattr(val, "ival"):
                                 params[key] = val.ival
                             elif hasattr(val, "sval"):
                                 params[key] = int(val.sval)
 
-            # Build HNSW index with custom parameters
-            from uqa.storage.vector_index import HNSWIndex
+            from uqa.storage.ivf_index import IVFIndex
 
-            kwargs: dict[str, Any] = {
+            catalog_conn = getattr(
+                getattr(self._engine, "_catalog", None), "conn", None
+            )
+            if catalog_conn is None:
+                raise ValueError(
+                    "IVF vector index requires a persistent engine (db_path)"
+                )
+
+            ivf_kwargs: dict[str, Any] = {
+                "conn": catalog_conn,
+                "table_name": table_name,
+                "field_name": col_name,
                 "dimensions": col_def.vector_dimensions,
             }
-            if "ef_construction" in params:
-                kwargs["ef_construction"] = params["ef_construction"]
-            if "m" in params:
-                kwargs["m"] = params["m"]
+            if "nlist" in params:
+                ivf_kwargs["nlist"] = params["nlist"]
+            if "nprobe" in params:
+                ivf_kwargs["nprobe"] = params["nprobe"]
 
-            hnsw = HNSWIndex(**kwargs)
+            ivf = IVFIndex(**ivf_kwargs)
 
             # Re-index existing vectors from the document store
             for doc_id in table.document_store.doc_ids:
@@ -1454,16 +1466,16 @@ class SQLCompiler:
                     import numpy as np
 
                     vec = np.asarray(doc[col_name], dtype=np.float32)
-                    hnsw.add(doc_id, vec)
+                    ivf.add(doc_id, vec)
 
-            table.vector_indexes[col_name] = hnsw
+            table.vector_indexes[col_name] = ivf
 
             # Persist index definition if catalog is available
             index_manager = getattr(self._engine, "_index_manager", None)
             if index_manager is not None:
                 index_def = IndexDef(
                     name=index_name,
-                    index_type=IndexType.HNSW,
+                    index_type=IndexType.IVF,
                     table_name=table_name,
                     columns=tuple(columns),
                     parameters=params,

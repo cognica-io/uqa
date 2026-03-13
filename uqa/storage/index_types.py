@@ -17,6 +17,7 @@ class IndexType(enum.Enum):
     BTREE = "btree"
     INVERTED = "inverted"
     HNSW = "hnsw"
+    IVF = "ivf"
     GRAPH = "graph"
     RTREE = "rtree"
 

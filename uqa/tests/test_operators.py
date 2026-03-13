@@ -59,7 +59,8 @@ from uqa.operators.primitive import (
 )
 from uqa.storage.document_store import DocumentStore
 from uqa.storage.inverted_index import InvertedIndex
-from uqa.storage.vector_index import HNSWIndex
+from uqa.storage.ivf_index import IVFIndex
+from uqa.storage.vector_index import VectorIndex
 
 if TYPE_CHECKING:
     from uqa.core.hierarchical import HierarchicalDocument
@@ -87,9 +88,12 @@ def inv_index(sample_documents: list[dict]) -> InvertedIndex:
 
 
 @pytest.fixture
-def vec_index(sample_vectors: dict[int, np.ndarray]) -> HNSWIndex:
+def vec_index(sample_vectors: dict[int, np.ndarray]) -> VectorIndex:
+    import sqlite3
+
     dim = 64
-    index = HNSWIndex(dimensions=dim)
+    conn = sqlite3.connect(":memory:")
+    index = IVFIndex(conn, "test", "emb", dimensions=dim, nlist=4, nprobe=4)
     for doc_id, vector in sample_vectors.items():
         index.add(doc_id, vector)
     return index
@@ -99,7 +103,7 @@ def vec_index(sample_vectors: dict[int, np.ndarray]) -> HNSWIndex:
 def context(
     doc_store: DocumentStore,
     inv_index: InvertedIndex,
-    vec_index: HNSWIndex,
+    vec_index: VectorIndex,
 ) -> ExecutionContext:
     return ExecutionContext(
         document_store=doc_store,
@@ -506,10 +510,13 @@ class TestInvertedIndex:
         assert stats.avg_doc_length > 0
 
 
-class TestHNSWIndex:
+class TestVectorIndex:
     def test_add_and_knn(self) -> None:
+        import sqlite3
+
         rng = np.random.RandomState(42)
-        idx = HNSWIndex(dimensions=16)
+        conn = sqlite3.connect(":memory:")
+        idx = IVFIndex(conn, "test", "emb", dimensions=16, nlist=4, nprobe=4)
         vectors = {i: rng.randn(16).astype(np.float32) for i in range(1, 6)}
         for doc_id, vec in vectors.items():
             idx.add(doc_id, vec)
@@ -518,8 +525,11 @@ class TestHNSWIndex:
         assert 1 in result.doc_ids
 
     def test_search_threshold(self) -> None:
+        import sqlite3
+
         rng = np.random.RandomState(42)
-        idx = HNSWIndex(dimensions=16)
+        conn = sqlite3.connect(":memory:")
+        idx = IVFIndex(conn, "test", "emb", dimensions=16, nlist=4, nprobe=4)
         vectors = {i: rng.randn(16).astype(np.float32) for i in range(1, 6)}
         for doc_id, vec in vectors.items():
             idx.add(doc_id, vec)

@@ -271,8 +271,14 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         self._conn.execute(f'DROP TABLE IF EXISTS "_graph_vertices_{name}"')
         self._conn.execute(f'DROP TABLE IF EXISTS "_graph_edges_{name}"')
 
-        # Drop all per-field inverted, skip, and block-max tables
-        for prefix in (f"_inverted_{name}_", f"_skip_{name}_", f"_blockmax_{name}_"):
+        # Drop all per-field inverted, skip, block-max, and IVF tables
+        for prefix in (
+            f"_inverted_{name}_",
+            f"_skip_{name}_",
+            f"_blockmax_{name}_",
+            f"_ivf_centroids_{name}_",
+            f"_ivf_lists_{name}_",
+        ):
             rows = self._conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?",
                 (prefix + "%",),

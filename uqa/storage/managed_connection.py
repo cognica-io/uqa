@@ -7,7 +7,7 @@
 """Connection proxy that suppresses auto-commits during user transactions.
 
 All SQLite-backed stores (``SQLiteDocumentStore``, ``SQLiteInvertedIndex``,
-``SQLiteGraphStore``, ``SQLiteVectorIndex``) call ``conn.commit()`` after
+``SQLiteGraphStore``, ``IVFIndex``) call ``conn.commit()`` after
 every write.  During a user transaction (``BEGIN`` ... ``COMMIT``), these
 auto-commits must be suppressed so the user controls transaction
 boundaries.

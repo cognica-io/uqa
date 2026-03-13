@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from uqa.storage.index_manager import IndexManager
     from uqa.storage.inverted_index import InvertedIndex
     from uqa.storage.spatial_index import SpatialIndex
-    from uqa.storage.vector_index import HNSWIndex
+    from uqa.storage.vector_index import VectorIndex
 
 
 @dataclass
@@ -29,7 +29,7 @@ class ExecutionContext:
 
     document_store: DocumentStore | None = None
     inverted_index: InvertedIndex | None = None
-    vector_indexes: dict[str, HNSWIndex] = field(default_factory=dict)
+    vector_indexes: dict[str, VectorIndex] = field(default_factory=dict)
     spatial_indexes: dict[str, SpatialIndex] = field(default_factory=dict)
     graph_store: Any = None
     block_max_index: BlockMaxIndex | None = None

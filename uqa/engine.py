@@ -197,6 +197,32 @@ class Engine:
         if self._index_manager is not None:
             self._index_manager.load_from_catalog()
 
+        # -- IVF vector indexes ----------------------------------------
+        # IVF tables persist in SQLite, so we reconstruct the IVFIndex
+        # wrapper and attach it to the table.
+        from uqa.storage.ivf_index import IVFIndex
+
+        for _name, idx_type, tbl_name, cols, params in catalog.load_indexes():
+            if idx_type not in ("ivf", "hnsw"):
+                continue
+            tbl = self._tables.get(tbl_name)
+            if tbl is None:
+                continue
+            col_name = cols[0] if cols else None
+            if col_name is None:
+                continue
+            ivf_kwargs: dict[str, Any] = {
+                "conn": catalog.conn,
+                "table_name": tbl_name,
+                "field_name": col_name,
+                "dimensions": tbl.columns[col_name].vector_dimensions or 0,
+            }
+            if "nlist" in params:
+                ivf_kwargs["nlist"] = params["nlist"]
+            if "nprobe" in params:
+                ivf_kwargs["nprobe"] = params["nprobe"]
+            tbl.vector_indexes[col_name] = IVFIndex(**ivf_kwargs)
+
         # -- R*Tree spatial indexes ------------------------------------
         # R*Tree virtual table data persists in SQLite, so we only need
         # to reconstruct the SpatialIndex wrapper and attach it to the

@@ -29,7 +29,7 @@ from uqa.storage.sqlite_inverted_index import SQLiteInvertedIndex
 
 if TYPE_CHECKING:
     from uqa.storage.managed_connection import SQLiteConnection
-    from uqa.storage.vector_index import HNSWIndex
+    from uqa.storage.vector_index import VectorIndex
 
 _SQL_TYPE_MAP: dict[str, type] = {
     "integer": int,
@@ -199,8 +199,8 @@ class Table:
             self.graph_store = GraphStore()
             self.block_max_index = BlockMaxIndex()
 
-        # Per-field HNSW vector indexes, created via CREATE INDEX ... USING hnsw.
-        self.vector_indexes: dict[str, HNSWIndex] = {}
+        # Per-field vector indexes, created via CREATE INDEX ... USING hnsw/ivf.
+        self.vector_indexes: dict[str, VectorIndex] = {}
         # Per-field R*Tree spatial indexes, created via CREATE INDEX ... USING rtree.
         self.spatial_indexes: dict[str, Any] = {}
 
