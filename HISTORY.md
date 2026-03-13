@@ -1,5 +1,33 @@
 # History
 
+## 0.14.0 (2026-03-13)
+
+Replace HNSW with IVF (Inverted File Index) backed by SQLite, aligning vector search with UQA's posting-list-as-universal-abstraction thesis and eliminating the hnswlib C++ dependency.
+
+### Vector Search
+
+- **IVF (Inverted File Index)**: replaced HNSW with a pure-numpy IVF implementation that persists natively to SQLite; centroids stay in memory while posting lists are lazy-loaded per query
+- **VectorIndex ABC**: new abstract base class (`uqa/storage/vector_index.py`) decouples operators from the concrete index implementation
+- **IVFIndex**: k-means++ initialization with Lloyd's iterations (max 25, tolerance 1e-4); vectors L2-normalized on add so cosine similarity reduces to dot product
+- **Three-state lifecycle**: UNTRAINED (brute-force scan), TRAINED (IVF search), STALE (>20% deletes triggers retrain on next search)
+- **Auto-train**: training triggers automatically when vector count reaches `max(2 * nlist, 256)`
+- **SQLite persistence**: two tables per index (`_ivf_centroids_{table}_{field}`, `_ivf_lists_{table}_{field}`); centroids and posting lists survive engine restart without O(N log N) rebuild
+- **Backward-compatible SQL syntax**: `CREATE INDEX ... USING hnsw` maps to IVF; `USING ivf` also accepted; WITH parameters: `nlist`, `nprobe` (old `ef_construction`, `m` silently ignored)
+
+### Dependencies
+
+- **Removed `hnswlib >= 0.8`**: no more C++ extension dependency; vector search is pure Python + numpy
+- **Lowered `pyarrow` minimum from 20.0 to 10.0**: all pyarrow APIs used are stable since 6.0; 10.0 provides a comfortable margin
+
+### Benchmarks
+
+- **IVF vector benchmarks**: 7 new benchmarks in `bench_storage.py` covering add, build, brute-force vs trained KNN, threshold search, delete, k-means training, and persistence roundtrip
+- 192 benchmarks across 8 files (was 185)
+
+### Tests
+
+- 1962 tests across 49 test files (28 new IVF tests)
+
 ## 0.13.0 (2026-03-13)
 
 Dual analyzer support: Elasticsearch-style index/search analyzer split per field with synonym expansion, catalog persistence, and production tooling.

@@ -35,7 +35,7 @@ def __getattr__(name: str):
     raise AttributeError(f"module 'uqa' has no attribute {name!r}")
 
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 
 __all__ = [
     "Edge",

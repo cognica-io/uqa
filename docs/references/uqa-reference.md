@@ -260,7 +260,7 @@ Returns: PostingList with `_score` as a calibrated probability in $[0, 1]$.
 
 #### `knn_match(field, vector, k)`
 
-K-nearest neighbor vector search. Uses the HNSW index if one exists on the column (created via `CREATE INDEX ... USING hnsw`), otherwise falls back to brute-force exact cosine similarity scan. The vector argument accepts either an `ARRAY[...]` literal or a `$N` parameter reference.
+K-nearest neighbor vector search. Uses the IVF index if one exists on the column (created via `CREATE INDEX ... USING hnsw` or `USING ivf`), otherwise falls back to brute-force exact cosine similarity scan. The vector argument accepts either an `ARRAY[...]` literal or a `$N` parameter reference.
 
 ```python
 # Option A: parameter binding
@@ -841,7 +841,7 @@ graph TD
 
     PAR --> DS[Document Store<br/>SQLite]
     PAR --> II[Inverted Index<br/>SQLite + Analyzer]
-    PAR --> VI[Vector Index<br/>HNSW (optional)]
+    PAR --> VI[Vector Index<br/>IVF (optional)]
     PAR --> SI[Spatial Index<br/>R*Tree]
     PAR --> GS[Graph Store<br/>SQLite]
 
@@ -868,7 +868,7 @@ All storage backends have two implementations: an in-memory variant for ephemera
 
 **InvertedIndex / SQLiteInvertedIndex**: Maps (field, term) pairs to posting lists. Includes skip pointers for fast forward-seeking during intersection and block-max indexes for WAND pruning. Per-table, per-field SQLite tables: `_inverted_{table}_{field}`. Text analysis is handled by pluggable Analyzers (Lucene-style pipeline: CharFilter -> Tokenizer -> TokenFilter) with per-field analyzer assignment.
 
-**HNSWIndex / SQLiteVectorIndex**: Hierarchical Navigable Small World graph for approximate nearest neighbor search. Created explicitly via `CREATE INDEX ... USING hnsw (column)`. Cosine distance metric. Default configuration: ef_construction=200, M=16 (customizable via `WITH` clause). Auto-resizing capacity (no `max_elements` parameter). Vectors are stored in the document store as JSON arrays; the HNSW index is a secondary structure that can be dropped and recreated.
+**IVFIndex**: Inverted File Index for approximate nearest neighbor search, backed by SQLite. Created explicitly via `CREATE INDEX ... USING hnsw (column)` or `USING ivf (column)`. Cosine similarity metric (vectors L2-normalized on add, similarity = dot product). Default configuration: nlist=100, nprobe=10 (customizable via `WITH (nlist, nprobe)` clause). Three-state lifecycle: UNTRAINED (brute-force scan when fewer than `max(2*nlist, 256)` vectors), TRAINED (IVF search with k-means++ centroids), STALE (automatic retrain after >20% deletes). Centroids held in memory; posting lists persisted in SQLite tables (`_ivf_centroids_{table}_{field}`, `_ivf_lists_{table}_{field}`) for instant restart without O(N log N) rebuild.
 
 **SpatialIndex**: R*Tree spatial index for POINT columns. Uses SQLite's built-in R*Tree virtual table module for O(log N) bounding box queries. Each point is stored as a degenerate bounding box (min == max). Range queries use a two-pass approach: (1) coarse R*Tree bounding box filter using spherical law of cosines for accurate longitude delta, (2) fine Haversine great-circle distance verification. Created via `CREATE INDEX ... USING rtree (column)`. Per-table, per-field R*Tree tables: `_rtree_{table}_{field}`.
 
@@ -908,7 +908,7 @@ The optimizer applies equivalence-preserving rewrite rules:
 
 1. **Filter pushdown**: Pushes FilterOperator through IntersectOperator to reduce intermediate result sizes early.
 2. **Graph pattern filter pushdown**: Incorporates filter predicates into vertex pattern constraints, pruning during matching rather than post-filtering.
-3. **Vector threshold merge**: Combines multiple vector similarity operators with the same query vector into a single search (HNSW if indexed, brute-force otherwise).
+3. **Vector threshold merge**: Combines multiple vector similarity operators with the same query vector into a single search (IVF if indexed, brute-force otherwise).
 4. **Intersect operand reordering**: Sorts operands by estimated cardinality (cheapest first) for optimal two-pointer intersection.
 5. **Fusion signal reordering**: Sorts signals by cost estimate for early termination.
 6. **R*Tree spatial index scan**: Uses the R*Tree index for POINT column range queries when available.
@@ -947,7 +947,7 @@ pip install -e .
 pip install -e ".[dev]"
 ```
 
-Requirements: Python 3.12+, numpy >= 1.26, pyarrow >= 20.0, bayesian-bm25 >= 0.8.0, hnswlib >= 0.8, pglast >= 7.0.
+Requirements: Python 3.12+, numpy >= 1.26, pyarrow >= 10.0, bayesian-bm25 >= 0.8.0, pglast >= 7.0.
 
 ### 6.2 Creating an Engine
 
@@ -989,7 +989,7 @@ CREATE TABLE papers (
 );
 ```
 
-Supported column types: `INTEGER`, `BIGINT`, `SERIAL`, `BIGSERIAL`, `TEXT`, `VARCHAR`, `REAL`, `FLOAT`, `DOUBLE PRECISION`, `NUMERIC(p,s)`, `BOOLEAN`, `DATE`, `TIME`, `TIMESTAMP`, `TIMESTAMPTZ`, `INTERVAL`, `JSON`, `JSONB`, `UUID`, `BYTEA`, `INTEGER[]` (arrays), `VECTOR(N)`. The `VECTOR(N)` type defines an N-dimensional vector column. Vectors are stored in the document store. For fast approximate search, create an HNSW index with `CREATE INDEX ... USING hnsw (column)`. Without an index, `knn_match()` uses brute-force exact cosine similarity.
+Supported column types: `INTEGER`, `BIGINT`, `SERIAL`, `BIGSERIAL`, `TEXT`, `VARCHAR`, `REAL`, `FLOAT`, `DOUBLE PRECISION`, `NUMERIC(p,s)`, `BOOLEAN`, `DATE`, `TIME`, `TIMESTAMP`, `TIMESTAMPTZ`, `INTERVAL`, `JSON`, `JSONB`, `UUID`, `BYTEA`, `INTEGER[]` (arrays), `VECTOR(N)`. The `VECTOR(N)` type defines an N-dimensional vector column. Vectors are stored in the document store. For fast approximate search, create an IVF index with `CREATE INDEX ... USING ivf (column)` (or `USING hnsw` for backward compatibility). Without an index, `knn_match()` uses brute-force exact cosine similarity.
 
 #### Data Manipulation
 

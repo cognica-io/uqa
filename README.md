@@ -189,7 +189,7 @@ graph TD
 
     PAR --> DS[Document Store<br/>SQLite]
     PAR --> II[Inverted Index<br/>SQLite + Analyzer]
-    PAR --> VI["Vector Index<br/>HNSW (optional)"]
+    PAR --> VI["Vector Index<br/>IVF (optional)"]
     PAR --> SI[Spatial Index<br/>R*Tree]
     PAR --> GS[Graph Store<br/>SQLite]
 
@@ -214,7 +214,7 @@ graph TD
 uqa/
   core/           PostingList, types, hierarchical documents
   analysis/       Text analysis pipeline: CharFilter, Tokenizer, TokenFilter, Analyzer, dual index/search analyzers
-  storage/        SQLite-backed stores: documents, inverted index, vectors, spatial (R*Tree), graph
+  storage/        SQLite-backed stores: documents, inverted index, vectors (IVF), spatial (R*Tree), graph
   operators/      Operator algebra (boolean, primitive, hybrid, aggregation, hierarchical)
   scoring/        BM25, Bayesian BM25, VectorScorer, WAND/BlockMaxWAND (via bayesian-bm25)
   fusion/         Log-odds conjunction, probabilistic boolean (via bayesian-bm25)
@@ -226,8 +226,8 @@ uqa/
   planner/        Cost model, cardinality estimator, optimizer, DPccp join enumerator, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          1941 tests across 49 test files
-benchmarks/       185 pytest-benchmark tests across 8 files (posting list, storage, compiler, execution,
+  tests/          1962 tests across 49 test files
+benchmarks/       192 pytest-benchmark tests across 8 files (posting list, storage, compiler, execution,
                   planner, scoring, graph, end-to-end SQL)
 ```
 
@@ -326,7 +326,7 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 | Inverted Index | `_inverted_{table}_{field}` | Per-table per-field posting lists |
 | Field Stats | `_field_stats_{table}` | Per-table field-level statistics (BM25) |
 | Doc Lengths | `_doc_lengths_{table}` | Per-table per-document token lengths (BM25) |
-| Vectors | `_data_{table}` (document store) | Stored as JSON arrays; HNSW index via `CREATE INDEX ... USING hnsw` |
+| Vectors | `_ivf_centroids_{table}_{field}`, `_ivf_lists_{table}_{field}` | IVF index via `CREATE INDEX ... USING hnsw` or `USING ivf`; centroids in memory, posting lists in SQLite |
 | Spatial | `_rtree_{table}_{field}` | R*Tree virtual table for POINT columns; created via `CREATE INDEX ... USING rtree` |
 | Graph | `_graph_vertices_{table}`, `_graph_edges_{table}` | Per-table adjacency-indexed graph with vertex labels |
 | Named Graphs | `_named_graphs`, `_graph_{name}_*` | Isolated graph namespaces for Cypher queries |
@@ -378,10 +378,9 @@ engine = Engine(parallel_workers=0)                   # disable parallelism
 
 - Python 3.12+
 - numpy >= 1.26
-- pyarrow >= 20.0
+- pyarrow >= 10.0
 - bayesian-bm25 >= 0.8.0
 - duckdb >= 1.0
-- hnswlib >= 0.8
 - pglast >= 7.0
 - prompt-toolkit >= 3.0
 - pygments >= 2.17
