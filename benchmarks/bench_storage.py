@@ -6,7 +6,7 @@
 
 """Benchmarks for the SQLite-backed storage layer.
 
-Covers SQLiteDocumentStore, SQLiteInvertedIndex, SQLiteVectorIndex,
+Covers SQLiteDocumentStore, SQLiteInvertedIndex, IVFIndex,
 and SQLiteGraphStore throughput.
 """
 
@@ -20,9 +20,9 @@ import pytest
 from benchmarks.data.generators import BenchmarkDataGenerator
 from benchmarks.data.schemas import BENCH_TABLE_COLUMNS
 from uqa.graph.store import GraphStore
+from uqa.storage.ivf_index import IVFIndex
 from uqa.storage.sqlite_document_store import SQLiteDocumentStore
 from uqa.storage.sqlite_inverted_index import SQLiteInvertedIndex
-from uqa.storage.sqlite_vector_index import SQLiteVectorIndex
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -175,18 +175,16 @@ class TestInvertedIndex:
 
 
 class TestVectorIndex:
-    def test_build_index(self, benchmark) -> None:
+    def test_build_500(self, benchmark) -> None:
         gen = BenchmarkDataGenerator(scale_factor=1, seed=42)
         vecs = gen.vectors(dim=128)
         n = min(500, len(vecs))
 
         def build() -> int:
             conn = sqlite3.connect(":memory:")
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS _vectors "
-                "(doc_id INTEGER PRIMARY KEY, dimensions INTEGER, embedding BLOB)"
+            vi = IVFIndex(
+                conn, "bench", "emb", dimensions=128, nlist=16, nprobe=4
             )
-            vi = SQLiteVectorIndex(conn, dimensions=128)
             for i in range(n):
                 vi.add(i + 1, vecs[i])
             count = vi.count()
@@ -196,17 +194,31 @@ class TestVectorIndex:
         count = benchmark(build)
         assert count == n
 
-    @pytest.mark.parametrize("k", [10, 50])
-    def test_knn_search(self, benchmark, k: int) -> None:
+    def test_add_single(self, benchmark) -> None:
         gen = BenchmarkDataGenerator(scale_factor=1, seed=42)
         vecs = gen.vectors(dim=128)
-        n = min(500, len(vecs))
         conn = sqlite3.connect(":memory:")
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS _vectors "
-            "(doc_id INTEGER PRIMARY KEY, dimensions INTEGER, embedding BLOB)"
+        vi = IVFIndex(conn, "bench", "emb", dimensions=128, nlist=16, nprobe=4)
+        counter = [0]
+
+        def add_one() -> None:
+            i = counter[0] % len(vecs)
+            vi.add(counter[0] + 1, vecs[i])
+            counter[0] += 1
+
+        benchmark(add_one)
+        conn.close()
+
+    @pytest.mark.parametrize("k", [10, 50])
+    def test_knn_brute_force(self, benchmark, k: int) -> None:
+        gen = BenchmarkDataGenerator(scale_factor=1, seed=42)
+        vecs = gen.vectors(dim=128)
+        n = min(200, len(vecs))
+        conn = sqlite3.connect(":memory:")
+        # nlist=256 ensures train_threshold > n, so stays UNTRAINED.
+        vi = IVFIndex(
+            conn, "bench", "emb", dimensions=128, nlist=256, nprobe=4
         )
-        vi = SQLiteVectorIndex(conn, dimensions=128)
         for i in range(n):
             vi.add(i + 1, vecs[i])
 
@@ -218,6 +230,111 @@ class TestVectorIndex:
         count = benchmark(search)
         assert count == k
         conn.close()
+
+    @pytest.mark.parametrize("k", [10, 50])
+    def test_knn_trained(self, benchmark, k: int) -> None:
+        gen = BenchmarkDataGenerator(scale_factor=1, seed=42)
+        vecs = gen.vectors(dim=128)
+        n = min(500, len(vecs))
+        conn = sqlite3.connect(":memory:")
+        vi = IVFIndex(
+            conn, "bench", "emb", dimensions=128, nlist=16, nprobe=4
+        )
+        for i in range(n):
+            vi.add(i + 1, vecs[i])
+
+        query = gen.query_vector(dim=128)
+
+        def search() -> int:
+            return len(vi.search_knn(query, k))
+
+        count = benchmark(search)
+        assert count == k
+        conn.close()
+
+    def test_threshold_search(self, benchmark) -> None:
+        gen = BenchmarkDataGenerator(scale_factor=1, seed=42)
+        vecs = gen.vectors(dim=128)
+        n = min(500, len(vecs))
+        conn = sqlite3.connect(":memory:")
+        vi = IVFIndex(
+            conn, "bench", "emb", dimensions=128, nlist=16, nprobe=4
+        )
+        for i in range(n):
+            vi.add(i + 1, vecs[i])
+
+        query = gen.query_vector(dim=128)
+
+        def search() -> int:
+            return len(vi.search_threshold(query, threshold=0.3))
+
+        benchmark(search)
+        conn.close()
+
+    def test_delete(self, benchmark) -> None:
+        gen = BenchmarkDataGenerator(scale_factor=1, seed=42)
+        vecs = gen.vectors(dim=128)
+        n = min(500, len(vecs))
+        conn = sqlite3.connect(":memory:")
+        vi = IVFIndex(
+            conn, "bench", "emb", dimensions=128, nlist=16, nprobe=4
+        )
+        for i in range(n):
+            vi.add(i + 1, vecs[i])
+
+        counter = [1]
+
+        def delete_one() -> None:
+            vi.delete(counter[0])
+            counter[0] += 1
+
+        benchmark(delete_one)
+        conn.close()
+
+    def test_train(self, benchmark) -> None:
+        gen = BenchmarkDataGenerator(scale_factor=1, seed=42)
+        vecs = gen.vectors(dim=128)
+        n = min(500, len(vecs))
+
+        def train() -> int:
+            conn = sqlite3.connect(":memory:")
+            # nlist=1024 ensures train_threshold > n, so no auto-train.
+            vi = IVFIndex(
+                conn, "bench", "emb", dimensions=128, nlist=1024, nprobe=4
+            )
+            for i in range(n):
+                vi.add(i + 1, vecs[i])
+            vi._train()
+            conn.close()
+            return n
+
+        benchmark(train)
+
+    def test_persistence_roundtrip(self, benchmark, tmp_path) -> None:
+        gen = BenchmarkDataGenerator(scale_factor=1, seed=42)
+        vecs = gen.vectors(dim=128)
+        n = min(500, len(vecs))
+
+        db = str(tmp_path / "bench_vec.db")
+        conn_w = sqlite3.connect(db)
+        vi_w = IVFIndex(
+            conn_w, "bench", "emb", dimensions=128, nlist=16, nprobe=4
+        )
+        for i in range(n):
+            vi_w.add(i + 1, vecs[i])
+        conn_w.close()
+
+        def reload() -> int:
+            conn_r = sqlite3.connect(db)
+            vi_r = IVFIndex(
+                conn_r, "bench", "emb", dimensions=128, nlist=16, nprobe=4
+            )
+            count = vi_r.count()
+            conn_r.close()
+            return count
+
+        count = benchmark(reload)
+        assert count == n
 
 
 # ---------------------------------------------------------------------------
