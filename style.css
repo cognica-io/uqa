@@ -186,6 +186,14 @@ tr:last-child td { border-bottom: none; }
 .tag-python { background: #ecfdf5; color: #059669; }
 .tag-shell { background: #fff7ed; color: #c2410c; }
 
+/* --- Paper metadata --- */
+.paper-meta {
+  font-size: 0.88rem;
+  color: var(--muted);
+  margin-top: -0.5rem;
+  margin-bottom: 1.25rem;
+}
+
 /* --- Footer --- */
 footer {
   border-top: 1px solid var(--border);

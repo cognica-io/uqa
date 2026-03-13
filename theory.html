@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Theory &mdash; UQA</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body, {delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}]});">
+</script>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
+</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ====== Hero ====== -->
+<header class="hero hero-compact">
+  <h1><span>UQA</span> Theoretical Foundations</h1>
+  <p class="tagline">Four papers establish the mathematical theory behind the unified query algebra &mdash;
+    from posting-list Boolean algebra to the analytical emergence of neural network structure.</p>
+</header>
+
+<!-- ====== Nav ====== -->
+<nav>
+  <ul>
+    <li><a href="index.html">Overview</a></li>
+    <li><a href="docs.html">Docs</a></li>
+    <li><a href="examples.html">Examples</a></li>
+    <li><a href="theory.html" class="active">Theory</a></li>
+    <li><a href="benchmarks-data/">Benchmarks</a></li>
+  </ul>
+</nav>
+
+<div class="page-with-toc">
+
+<!-- ====== TOC ====== -->
+<aside class="toc">
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#paper1">I. Unified Framework</a></li>
+    <li class="toc-h3"><a href="#posting-lists">Posting Lists</a></li>
+    <li class="toc-h3"><a href="#boolean-algebra">Boolean Algebra</a></li>
+    <li class="toc-h3"><a href="#primitive-ops">Primitive Operators</a></li>
+    <li class="toc-h3"><a href="#joins">Cross-Paradigm Joins</a></li>
+    <li class="toc-h3"><a href="#category">Category Theory</a></li>
+    <li><a href="#paper2">II. Graph Extension</a></li>
+    <li class="toc-h3"><a href="#graph-iso">Graph Isomorphism</a></li>
+    <li class="toc-h3"><a href="#graph-ops">Graph Operations</a></li>
+    <li class="toc-h3"><a href="#rpq">Regular Path Queries</a></li>
+    <li class="toc-h3"><a href="#graph-cross">Cross-Paradigm</a></li>
+    <li><a href="#paper3">III. Bayesian BM25</a></li>
+    <li class="toc-h3"><a href="#bm25-problem">The Problem</a></li>
+    <li class="toc-h3"><a href="#sigmoid-calibration">Sigmoid Calibration</a></li>
+    <li class="toc-h3"><a href="#base-rate">Base Rate Prior</a></li>
+    <li class="toc-h3"><a href="#hybrid-fusion">Hybrid Fusion</a></li>
+    <li class="toc-h3"><a href="#wand">WAND Compatibility</a></li>
+    <li><a href="#paper4">IV. Neural Emergence</a></li>
+    <li class="toc-h3"><a href="#shrinkage">Conjunction Shrinkage</a></li>
+    <li class="toc-h3"><a href="#log-odds">Log-Odds Conjunction</a></li>
+    <li class="toc-h3"><a href="#neural-structure">Neural Structure</a></li>
+    <li class="toc-h3"><a href="#activations">Activation Functions</a></li>
+    <li class="toc-h3"><a href="#attention">Attention Mechanism</a></li>
+    <li class="toc-h3"><a href="#depth">Depth and Inference</a></li>
+    <li><a href="#connections">Connections</a></li>
+  </ul>
+</aside>
+
+<!-- ====== Content ====== -->
+<div class="content">
+
+<!-- ============ Overview ============ -->
+<section id="overview">
+  <h2>Overview</h2>
+  <p>
+    UQA is built on four interconnected theoretical papers that establish a mathematical
+    foundation spanning database theory, information retrieval, probabilistic inference,
+    and neural computation. Each paper extends the previous one, forming a chain of
+    derivations from first principles.
+  </p>
+
+  <pre class="mermaid">
+graph LR
+    P1["Paper I<br/>Unified Framework<br/>(Dec 2023)"] --> P2["Paper II<br/>Graph Extension<br/>(Dec 2024)"]
+    P1 --> P3["Paper III<br/>Bayesian BM25<br/>(Jan 2026)"]
+    P3 --> P4["Paper IV<br/>Neural Emergence<br/>(Feb 2026)"]
+    P2 --> P4
+  </pre>
+
+  <div class="grid">
+    <div class="card">
+      <h3>I. Unified Framework</h3>
+      <p>Posting lists as universal abstraction. Complete Boolean algebra over relational,
+        text, and vector paradigms. Category-theoretic soundness.</p>
+    </div>
+    <div class="card">
+      <h3>II. Graph Extension</h3>
+      <p>Graph-posting list isomorphism. Traversal, pattern matching, and regular path
+        queries integrated into the Boolean algebra.</p>
+    </div>
+    <div class="card">
+      <h3>III. Bayesian BM25</h3>
+      <p>BM25 scores transformed to calibrated probabilities via Bayesian inference.
+        Sigmoid likelihood, composite prior, base rate calibration.</p>
+    </div>
+    <div class="card">
+      <h3>IV. Neural Emergence</h3>
+      <p>Neural network structure emerges analytically from multi-signal Bayesian
+        inference. Activation functions as probabilistic answers.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ Paper I ============ -->
+<section id="paper1">
+  <h2>I. A Unified Mathematical Framework for Query Algebras</h2>
+  <p class="paper-meta">
+    Jaepil Jeong, Cognica, Inc. &mdash; December 2023
+    &middot; <a href="https://github.com/cognica-io/uqa/blob/main/docs/papers/1.%20A%20Unified%20Mathematical%20Framework%20for%20Query%20Algebras%20Across%20Heterogeneous%20Data%20Paradigms.pdf">PDF</a>
+  </p>
+
+  <p>
+    The foundational paper establishes that posting lists &mdash; sorted sequences of
+    $(id, payload)$ pairs &mdash; can serve as a <strong>universal abstraction</strong>
+    for representing result sets across relational, text retrieval, and vector search
+    paradigms. This observation enables a single algebraic structure that preserves
+    the expressivity of each paradigm while supporting cross-paradigm composition.
+  </p>
+
+  <h3 id="posting-lists">Posting Lists as Universal Abstraction</h3>
+  <p>
+    A <strong>posting list</strong> is an ordered sequence where document identifiers
+    are sorted in ascending order:
+  </p>
+  <div class="math-block">
+    $$L = [(id_1, payload_1),\ (id_2, payload_2),\ \ldots,\ (id_n, payload_n)]
+    \quad\text{where } id_i < id_j \text{ for all } i < j$$
+  </div>
+  <p>
+    A bijective mapping $PL: 2^{\mathcal{D}} \rightarrow \mathcal{L}$ converts document
+    sets to posting lists and back. This bijection is the key insight: any operation
+    on document sets has a corresponding operation on posting lists, and vice versa.
+    The sorted-order invariant enables efficient two-pointer merge algorithms for
+    all Boolean operations.
+  </p>
+
+  <h3 id="boolean-algebra">Complete Boolean Algebra</h3>
+  <p>
+    The structure $(\mathcal{L},\ \cup,\ \cap,\ \overline{\cdot},\ \emptyset,\ \mathcal{D})$
+    forms a <strong>complete Boolean algebra</strong>, satisfying:
+  </p>
+  <ul>
+    <li><strong>Commutativity</strong>: $A \cup B = B \cup A$ and $A \cap B = B \cap A$</li>
+    <li><strong>Associativity</strong>: $A \cup (B \cup C) = (A \cup B) \cup C$</li>
+    <li><strong>Distributivity</strong>: $A \cap (B \cup C) = (A \cap B) \cup (A \cap C)$</li>
+    <li><strong>Identity</strong>: $A \cup \emptyset = A$ and $A \cap PL(\mathcal{D}) = A$</li>
+    <li><strong>Complement</strong>: $A \cup \overline{A} = PL(\mathcal{D})$ and $A \cap \overline{A} = \emptyset$</li>
+  </ul>
+  <p>
+    Completeness means that for any family of posting lists $\{L_i\}_{i \in I}$,
+    both $\bigvee_{i \in I} L_i$ and $\bigwedge_{i \in I} L_i$ exist.
+    This is critical: it guarantees that arbitrary Boolean combinations of queries
+    across different paradigms are algebraically well-defined, and that optimization
+    can exploit lattice-theoretic rewrite rules (e.g., De Morgan's laws, absorption,
+    distributivity) to restructure query plans.
+  </p>
+
+  <h3 id="primitive-ops">Primitive Operators</h3>
+  <p>
+    Each data paradigm maps into the posting list space through primitive operators.
+    Because every operator produces a posting list, they compose freely:
+  </p>
+
+  <table>
+    <thead>
+      <tr><th>Operator</th><th>Definition</th><th>Paradigm</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>$T(t)$</td>
+        <td>$PL(\lbrace d \in \mathcal{D} \mid t \in term(d, f) \rbrace)$</td>
+        <td>Text retrieval</td>
+      </tr>
+      <tr>
+        <td>$V_\theta(q)$</td>
+        <td>$PL(\lbrace d \in \mathcal{D} \mid sim(vec(d, f), q) \geq \theta \rbrace)$</td>
+        <td>Vector search</td>
+      </tr>
+      <tr>
+        <td>$KNN_k(q)$</td>
+        <td>$PL(D_k)$ where $|D_k| = k$, ranked by similarity</td>
+        <td>Vector search</td>
+      </tr>
+      <tr>
+        <td>$Filter_{f,v}(L)$</td>
+        <td>$L \cap PL(\lbrace d \in \mathcal{D} \mid d.f = v \rbrace)$</td>
+        <td>Relational</td>
+      </tr>
+      <tr>
+        <td>$Score_q(L)$</td>
+        <td>$(L, [s_1, \ldots, s_{|L|}])$</td>
+        <td>Scoring</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>
+    A hybrid text + vector search is simply a Boolean intersection:
+    $Hybrid_{t,q,\theta} = T(t) \cap V_\theta(q)$.
+    More complex compositions &mdash; "documents matching query terms AND near a vector AND
+    in category X" &mdash; are equally natural because all operators share the posting list
+    type. The paper proves <strong>compositional completeness</strong> (Theorem 3.3.5):
+    any query expressible as a combination of relational, text, and vector operations
+    has a representation in the unified algebra.
+  </p>
+
+  <h3 id="joins">Cross-Paradigm Join Operations</h3>
+  <p>
+    The framework extends posting lists to <strong>generalized posting lists</strong>
+    with tuple-valued identifiers to support join operations:
+  </p>
+  <div class="math-block">
+    $$\text{Join}_{f_1=f_2}(L_1, L_2) = PL'(\lbrace(d_1, d_2) \mid d_1 \in doc'(L_1),\ d_2 \in doc'(L_2),\ val(d_1, f_1) = val(d_2, f_2)\rbrace)$$
+  </div>
+  <p>
+    Inner, left outer, right outer, full outer, cross, and similarity joins are all
+    defined within this framework. The paper proves commutativity, associativity, and
+    distributivity of join operations over Boolean operations &mdash; properties essential
+    for join order optimization.
+  </p>
+
+  <h3 id="category">Category-Theoretic Foundation</h3>
+  <p>
+    The paper establishes a category $\mathcal{C}$ where objects are posting lists
+    and morphisms are query operators. A functor $F: \mathcal{C} \rightarrow \mathbf{Set}$
+    maps posting lists to their document sets and operators to functions on sets.
+    A query monad $(T, \eta, \mu)$ provides the formal foundation for operator composition
+    and optimization. This machinery guarantees that optimization rewrites
+    (e.g., filter pushdown, intersection reordering) are semantics-preserving
+    transformations, not ad-hoc heuristics.
+  </p>
+</section>
+
+<!-- ============ Paper II ============ -->
+<section id="paper2">
+  <h2>II. Extending the Framework to Graph Data Structures</h2>
+  <p class="paper-meta">
+    Jaepil Jeong, Cognica, Inc. &mdash; December 2024
+    &middot; <a href="https://github.com/cognica-io/uqa/blob/main/docs/papers/2.%20Extending%20the%20Unified%20Mathematical%20Framework%20to%20Support%20Graph%20Data%20Structures.pdf">PDF</a>
+  </p>
+
+  <p>
+    The second paper incorporates graph data structures into the unified algebra. The
+    key challenge is showing that graph operations &mdash; traversal, pattern matching,
+    regular path queries &mdash; can be represented within the existing Boolean algebra
+    without breaking its completeness properties.
+  </p>
+
+  <h3 id="graph-iso">Graph-Posting List Isomorphism</h3>
+  <p>
+    A <strong>graph posting list</strong> pairs identifiers with graph structures:
+    $L_G = [(id_1, G_1), (id_2, G_2), \ldots, (id_n, G_n)]$.
+    The isomorphism $\Phi: \mathcal{L}_G \rightarrow \mathcal{L}$ maps graph posting
+    lists to standard posting lists via a bijective mapping
+    $\phi_{G \rightarrow D}: \mathcal{G} \rightarrow 2^{\mathcal{D}}$ between graphs
+    and document sets:
+  </p>
+  <div class="math-block">
+    $$\Phi(L_G) = PL\!\left(\bigcup_{i=1}^{n} \phi_{G \rightarrow D}(G_i)\right)$$
+  </div>
+  <p>
+    This isomorphism preserves Boolean operations:
+    $\Phi(L_G^1 \cup_G L_G^2) = \Phi(L_G^1) \cup \Phi(L_G^2)$
+    and $\Phi(L_G^1 \cap_G L_G^2) = \Phi(L_G^1) \cap \Phi(L_G^2)$.
+    The extended structure $(\mathcal{L}_G,\ \cup_G,\ \cap_G,\ \overline{\cdot}_G,\ \emptyset_G,\ \mathcal{G})$
+    forms a Boolean algebra isomorphic to the original. Graph operations thus
+    integrate seamlessly with relational, text, and vector operations without
+    requiring a separate query engine.
+  </p>
+
+  <h3 id="graph-ops">Graph-Specific Operations</h3>
+  <p>
+    Three operators extend the algebra to handle graph-specific queries:
+  </p>
+  <ul>
+    <li><strong>Graph Traversal</strong>: $Traverse_{v,l,k}(L_G)$ &mdash;
+      returns all subgraphs reachable from vertex $v$ via edges with label $l$ up to $k$ hops.
+      Cost: $O(\sum_{i=1}^{k} d^i)$ where $d$ is the average degree.</li>
+    <li><strong>Pattern Matching</strong>: $GMatch_P(L_G)$ &mdash;
+      finds all subgraph isomorphisms matching pattern $P$.
+      NP-complete in general; $O(|V_G|^{|V_P|})$ worst case.</li>
+    <li><strong>Vertex Aggregation</strong>: $VertexAgg_{p,agg}(L_G)$ &mdash;
+      applies aggregation function $agg$ to property $p$ across all vertices.</li>
+  </ul>
+
+  <h3 id="rpq">Regular Path Queries</h3>
+  <p>
+    <strong>Regular path expressions</strong> extend graph traversal with the full
+    power of regular languages. Given an expression $R$ over edge labels
+    (supporting concatenation $R_1 \cdot R_2$, alternation $R_1 | R_2$,
+    and Kleene star $R_1^*$), the operator $RPQ_R(L_G)$ returns all vertex pairs
+    connected by paths matching $R$. The evaluation complexity is
+    $O(|V_G|^2 \cdot |R|)$ using dynamic programming on the NFA structure.
+  </p>
+  <p>
+    The paper establishes an expressivity hierarchy:
+    $\text{Relational} \subsetneq \text{Relational + Graph} \subsetneq \text{Relational + Graph + RPQ}$.
+    Path reachability queries cannot be expressed in standard relational algebra
+    with a fixed number of joins, so graph operations genuinely extend the algebra's
+    expressive power.
+  </p>
+
+  <h3 id="graph-cross">Cross-Paradigm Integration</h3>
+  <p>
+    The graph extension defines integration operators for every paradigm combination:
+  </p>
+  <ul>
+    <li><strong>Graph-Relational</strong>: $ToGraph_{v_f, e_f}$ constructs graphs from relational data;
+      $FromGraph_{v_f, e_f}$ flattens graphs back to relations.</li>
+    <li><strong>Graph-Vector</strong>: $VectorMatch_{P,q,\theta}$ finds subgraphs that both match
+      a structural pattern $P$ and have vector similarity above $\theta$.</li>
+    <li><strong>Graph-Text</strong>: $TextToGraph$ constructs co-occurrence graphs from text;
+      $SemanticGraphSearch_{q,\theta}$ finds subgraphs semantically related to a query.</li>
+  </ul>
+  <p>
+    A category-theoretic functor $F_G: \mathcal{C}_G \rightarrow \mathcal{C}$
+    preserves the algebraic structure, and a graph monad $(T_G, \eta_G, \mu_G)$
+    provides the composition semantics. The adjunction $T_G \dashv F_G$
+    formally connects graph operations to the base query algebra.
+  </p>
+</section>
+
+<!-- ============ Paper III ============ -->
+<section id="paper3">
+  <h2>III. Bayesian BM25: A Probabilistic Framework for Hybrid Search</h2>
+  <p class="paper-meta">
+    Jaepil Jeong, Cognica, Inc. &mdash; January 2026
+    &middot; <a href="https://github.com/cognica-io/uqa/blob/main/docs/papers/3.%20Bayesian%20BM25%20-%20A%20Probabilistic%20Framework%20for%20Hybrid%20Text%20and%20Vector%20Search.pdf">PDF</a>
+  </p>
+
+  <p>
+    The third paper addresses a fundamental problem in hybrid search: BM25 scores are
+    unbounded real numbers that cannot be directly combined with bounded signals like
+    cosine similarity. Bayesian BM25 transforms BM25 scores into calibrated probabilities
+    in $[0, 1]$, enabling principled multi-signal fusion.
+  </p>
+
+  <h3 id="bm25-problem">The BM25 Score Interpretation Problem</h3>
+  <p>
+    BM25 scores are defined as:
+  </p>
+  <div class="math-block">
+    $$\text{BM25}(D, Q) = \sum_{t \in Q} \text{IDF}(t) \cdot \frac{f(t, D) \cdot (k_1 + 1)}{f(t, D) + k_1 \cdot B(D)}$$
+  </div>
+  <p>
+    These scores have range $[0, +\infty)$, vary with query length and term specificity,
+    depend on corpus statistics, and cannot be meaningfully combined with bounded signals.
+    The paper also demonstrates that Reciprocal Rank Fusion (RRF) &mdash; the most common
+    alternative &mdash; suffers from information loss (discarding score magnitudes),
+    rank sensitivity, non-commutativity with filtering, and an arbitrary constant $k=60$
+    with no theoretical justification.
+  </p>
+
+  <h3 id="sigmoid-calibration">Sigmoid Calibration via Bayesian Inference</h3>
+  <p>
+    The paper derives the sigmoid transformation from Bayes' theorem. Given a binary
+    relevance variable $R \in \{0, 1\}$ and observed score $s$, the likelihood model
+    $P(s \mid R = 1) = \sigma(\alpha(s - \beta))$ with the symmetric assumption
+    $P(s \mid R = 0) = 1 - P(s \mid R = 1)$ yields the posterior:
+  </p>
+  <div class="math-block">
+    $$P(R = 1 \mid s) = \frac{L \cdot p}{L \cdot p + (1 - L) \cdot (1 - p)}$$
+  </div>
+  <p>
+    where $L = \sigma(\alpha(s - \beta))$ is the likelihood and $p$ is the prior.
+    The parameters $\alpha$ (steepness) and $\beta$ (midpoint) are estimated from the
+    score distribution, requiring no relevance labels. A <strong>composite prior</strong>
+    combines term frequency and document length signals to encode a document quality signal
+    distinct from the BM25 relevance score &mdash; an empirical Bayes approach.
+  </p>
+  <p>
+    A key property is <strong>monotonicity preservation</strong>: for fixed prior $p$ and $\alpha > 0$,
+    $s_1 > s_2 \implies P(R = 1 \mid s_1) > P(R = 1 \mid s_2)$. The Bayesian
+    transformation preserves BM25's ranking while producing calibrated probability outputs.
+  </p>
+
+  <h3 id="base-rate">Three-Term Posterior with Base Rate Prior</h3>
+  <p>
+    A corpus-level base rate $b_r$ captures the global probability that a random
+    document is relevant to a random query. The full posterior decomposes into
+    three additive terms in log-odds space:
+  </p>
+  <div class="math-block">
+    $$\text{logit}(P(R = 1 \mid s, f, \hat{n})) = \underbrace{\text{logit}(L)}_{\text{score evidence}} + \underbrace{\text{logit}(b_r)}_{\text{corpus base rate}} + \underbrace{\text{logit}(p)}_{\text{document quality}}$$
+  </div>
+  <p>
+    The additivity in log-odds space is a consequence of sequential Bayes updates &mdash;
+    the same property that the fourth paper identifies as the mathematical structure
+    underlying neural network hidden layers. The base rate reduces expected calibration
+    error by 68&ndash;77% without requiring relevance labels, and when $b_r = 0.5$
+    the term vanishes ($\text{logit}(0.5) = 0$), recovering the two-term posterior.
+  </p>
+
+  <h3 id="hybrid-fusion">Hybrid Search Fusion</h3>
+  <p>
+    With all signals calibrated to probabilities, the paper defines Boolean
+    combination operations:
+  </p>
+  <ul>
+    <li><strong>Probabilistic AND</strong>: $P(\text{AND}) = \prod_{i=1}^{n} p_i$ (product rule under independence)</li>
+    <li><strong>Probabilistic OR</strong>: $P(\text{OR}) = 1 - \prod_{i=1}^{n} (1 - p_i)$ (inclusion-exclusion)</li>
+    <li><strong>Probabilistic NOT</strong>: $P(\text{NOT}) = 1 - p$ (complement)</li>
+  </ul>
+  <p>
+    All operations are performed in log-space for numerical stability.
+    The fourth paper identifies a fundamental problem with the product rule (AND) &mdash;
+    <em>conjunction shrinkage</em> &mdash; and derives the log-odds conjunction as the
+    solution.
+  </p>
+
+  <h3 id="wand">WAND and Block-Max WAND Compatibility</h3>
+  <p>
+    The paper proves that the Bayesian transformation preserves safe document pruning
+    in WAND (Weak AND) and BMW (Block-Max WAND) algorithms. The key insight is that the
+    sigmoid is a monotonically increasing function, so an upper bound on the raw score
+    implies an upper bound on the posterior probability. Modified upper bounds account for
+    the prior's variability across documents, ensuring that no relevant document is
+    incorrectly pruned.
+  </p>
+</section>
+
+<!-- ============ Paper IV ============ -->
+<section id="paper4">
+  <h2>IV. From Bayesian Inference to Neural Computation</h2>
+  <p class="paper-meta">
+    Jaepil Jeong, Cognica, Inc. &mdash; February 2026
+    &middot; <a href="https://github.com/cognica-io/uqa/blob/main/docs/papers/4.%20From%20Bayesian%20Inference%20to%20Neural%20Computation.pdf">PDF</a>
+  </p>
+
+  <p>
+    The fourth paper demonstrates that feedforward neural network structure
+    <strong>emerges analytically</strong> from multi-signal Bayesian inference
+    over binary relevance judgments. Starting from the question
+    <em>"what is the probability that a document is relevant given multiple evidence
+    signals?"</em>, the paper applies Bayes' theorem and arrives at a neural network
+    &mdash; not by design, but as a mathematical consequence.
+  </p>
+
+  <h3 id="shrinkage">The Conjunction Shrinkage Problem</h3>
+  <p>
+    The product rule from Paper III has a fundamental deficiency when applied to
+    evidence accumulation. For $n$ independent signals each reporting probability $p$:
+  </p>
+  <div class="math-block">
+    $$\prod_{i=1}^{n} p = p^n \xrightarrow{n \to \infty} 0$$
+  </div>
+  <p>
+    The probability monotonically decreases with the number of confirming signals.
+    This violates the intuition of evidence accumulation: <em>agreement among
+    independent sources should increase confidence, not decrease it</em>.
+    The product rule answers "what is the probability that all conditions are
+    simultaneously satisfied?" but the question a search system poses is
+    "how confident should we be given that multiple signals concur?"
+    These are semantically distinct questions.
+  </p>
+
+  <h3 id="log-odds">Log-Odds Conjunction</h3>
+  <p>
+    The resolution works in the <strong>log-odds domain</strong> &mdash; the natural
+    parameter space of the Bernoulli exponential family. The log-odds mean aggregates
+    evidence without conjunction shrinkage:
+  </p>
+  <div class="math-block">
+    $$\bar{\ell} = \frac{1}{n}\sum_{i=1}^{n} \text{logit}(P_i) = \frac{1}{n}\sum_{i=1}^{n} \log \frac{P_i}{1 - P_i}$$
+  </div>
+  <p>
+    The log-odds mean is proven to be the exact normalized form of the
+    <strong>Logarithmic Opinion Pool</strong> (Log-OP), also known as the
+    <strong>Product of Experts</strong> (Hinton, 2002). It is scale-neutral:
+    if $P_i = p$ for all $i$, then $\sigma(\bar{\ell}) = p$ regardless of $n$.
+    A confidence scaling factor $n^{\alpha}$ (with $\alpha = 0.5$ encoding the
+    classical $\sqrt{n}$ law) amplifies the magnitude while preserving sign:
+  </p>
+  <div class="math-block">
+    $$P_{\text{final}} = \sigma\!\left(\frac{1}{n^{1-\alpha}}\sum_{i=1}^{n} \text{logit}(P_i)\right)$$
+  </div>
+
+  <div class="note">
+    <strong>Structural guarantee:</strong> The multiplicative form
+    $\ell_{\text{adjusted}} = \bar{\ell} \cdot n^{\alpha}$ preserves the sign of
+    $\bar{\ell}$. If all signals report irrelevance ($P_i < 0.5$ for all $i$),
+    then $P_{\text{final}} < 0.5$ for all $n$ and all $\alpha \geq 0$.
+    No amount of agreement among irrelevant signals can produce a relevance judgment.
+    This guarantee is structural &mdash; it cannot be violated by any parameter choice.
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>$P_{\text{text}}$</th><th>$P_{\text{vec}}$</th><th>Product Rule</th><th>Log-Odds Conjunction</th><th>Interpretation</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>0.9</td><td>0.9</td><td>0.81</td><td>0.96</td><td>Agreement amplified</td></tr>
+      <tr><td>0.7</td><td>0.7</td><td>0.49</td><td>0.77</td><td>Moderate agreement preserved</td></tr>
+      <tr><td>0.7</td><td>0.3</td><td>0.21</td><td>0.50</td><td>Exact neutrality (logits cancel)</td></tr>
+      <tr><td>0.3</td><td>0.3</td><td>0.09</td><td>0.23</td><td>Irrelevance preserved</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="neural-structure">Emergence of Neural Network Structure</h3>
+  <p>
+    The full computation for multi-signal relevance estimation has three stages:
+  </p>
+  <ol>
+    <li><strong>Calibration</strong>: Each signal produces a probability $P_i \in (0, 1)$
+      via sigmoid calibration (BM25), linear calibration (cosine similarity),
+      or external calibration (neural rankers).</li>
+    <li><strong>Log-Odds Aggregation</strong>: Probabilities are mapped to log-odds
+      and aggregated as a weighted sum (normalized Log-OP).</li>
+    <li><strong>Final Posterior</strong>: The result passes through a sigmoid to return
+      to probability space.</li>
+  </ol>
+
+  <pre class="mermaid">
+graph LR
+    S1["Signal 1<br/>BM25 score"] -->|"sigmoid"| P1["P<sub>1</sub>"]
+    S2["Signal 2<br/>cosine sim"] -->|"linear"| P2["P<sub>2</sub>"]
+    S3["Signal 3<br/>graph score"] -->|"sigmoid"| P3["P<sub>3</sub>"]
+    P1 -->|"logit"| L1["l<sub>1</sub>"]
+    P2 -->|"logit"| L2["l<sub>2</sub>"]
+    P3 -->|"logit"| L3["l<sub>3</sub>"]
+    L1 --> SUM["Weighted Sum<br/>1/n^(1-a)"]
+    L2 --> SUM
+    L3 --> SUM
+    SUM -->|"sigmoid"| OUT["P<sub>final</sub>"]
+  </pre>
+
+  <p>
+    The paper identifies this as a <strong>feedforward neural network</strong>:
+    inputs are calibrated to probabilities (first layer), pass through the logit
+    nonlinearity (hidden layer), undergo linear aggregation, and pass through a
+    sigmoid activation (output layer). This identification is stated as a theorem:
+  </p>
+  <div class="math-block">
+    $$\boxed{P_{\text{final}} = \sigma\!\left(\frac{1}{n^{1-\alpha}} \sum_{i=1}^{n} \text{logit}(P_i)\right)}$$
+  </div>
+
+  <p>
+    When all signals share sigmoid calibration (e.g., multiple BM25 fields),
+    the logit-sigmoid identity $\text{logit}(\sigma(x)) = x$ collapses the hidden layer,
+    reducing the computation to <strong>logistic regression</strong> &mdash; the classical
+    equivalence between Bayesian posterior computation and logistic regression,
+    arrived at from a new direction. When signals have <strong>heterogeneous
+    calibrations</strong> (the practically important case of hybrid search combining
+    BM25 and cosine similarity), the logit performs a genuine nonlinear transformation,
+    yielding a true two-layer network:
+  </p>
+  <ul>
+    <li><strong>Linear pathway</strong> for sigmoid-calibrated signals (logit-sigmoid cancellation)</li>
+    <li><strong>Nonlinear pathway</strong> for differently-calibrated signals (logit as genuine nonlinearity)</li>
+  </ul>
+
+  <h3 id="activations">Activation Functions as Probabilistic Answers</h3>
+  <p>
+    The paper independently derives each major activation function from a
+    complementary probabilistic question:
+  </p>
+
+  <table>
+    <thead>
+      <tr><th>Activation</th><th>Probabilistic Question</th><th>Derivation</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Sigmoid</strong> $\sigma(x) = \frac{1}{1 + e^{-x}}$</td>
+        <td>"How probable?" &mdash; posterior for binary relevance</td>
+        <td>Canonical link of Bernoulli exponential family. Uniquely satisfies: maps $\mathbb{R} \to (0,1)$,
+          inverse of logit, self-referential derivative, symmetric evidence, maximum entropy.</td>
+      </tr>
+      <tr>
+        <td><strong>ReLU</strong> $\max(0, x)$</td>
+        <td>"How much?" &mdash; MAP estimate under sparse non-negative prior</td>
+        <td>Given signal $z = x + \epsilon$ with exponential prior $p(x) = \lambda e^{-\lambda x}$
+          for $x \geq 0$ and Gaussian noise, the MAP estimate is $\hat{x}_{MAP} = \max(0, z - \lambda\tau^2)$.
+          With unit-absorbed parameters: $\text{ReLU}(z) = \max(0, z)$.</td>
+      </tr>
+      <tr>
+        <td><strong>Swish</strong> $x \cdot \sigma(\beta x)$</td>
+        <td>"What is the expected relevant amount?" &mdash; Bayesian posterior mean</td>
+        <td>Under the same sparse gating structure as ReLU, the posterior mean (instead of posterior mode)
+          yields $\mathbb{E}[x \mid z] = z \cdot \sigma(\beta z)$. The MAP-to-Bayes duality of classical
+          statistics manifests as the ReLU-to-Swish transition.</td>
+      </tr>
+      <tr>
+        <td><strong>GELU</strong> $x \cdot \Phi(x)$</td>
+        <td>Gaussian approximation of Swish</td>
+        <td>Replacing the logistic sigmoid with the probit function $\Phi(x)$ gives GELU.
+          The well-known approximation $\Phi(x) \approx \sigma(1.702x)$ establishes
+          GELU $\approx$ Swish$_{1.702}$.</td>
+      </tr>
+      <tr>
+        <td><strong>Softmax</strong></td>
+        <td>Multi-class posterior &mdash; categorical exponential family</td>
+        <td>Extension of the sigmoid to $K$-class classification via the categorical
+          canonical link.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>
+    The sigmoid's dual appearance &mdash; as individual signal calibrator and as
+    final output activation &mdash; is a consequence of the exponential family
+    structure of Bernoulli random variables. Any system processing binary evidence
+    under the natural constraints of probability will arrive at the same function.
+  </p>
+
+  <h3 id="attention">Attention as Logarithmic Opinion Pooling</h3>
+  <p>
+    Relaxing the assumption of uniform signal reliability &mdash; allowing weights
+    to depend on the query-signal interaction &mdash; extends the derived feedforward
+    structure to the <strong>attention mechanism</strong>. Attention is identified as
+    a form of context-dependent Logarithmic Opinion Pooling, mathematically equivalent
+    to Hinton's Product of Experts (PoE, 2002).
+  </p>
+  <p>
+    This provides a probabilistic answer to <em>why</em> attention computes a weighted sum:
+    Product-of-Experts combination is multiplicative in probability space, which is
+    additive in log-odds space. The weighted sum is not an arbitrary aggregation &mdash;
+    it is the mathematically necessary operation for Log-OP combination.
+  </p>
+  <p>
+    The paper further proves that WAND-style token-level pruning and BMW-style head-level
+    pruning are <strong>provably exact</strong> for attention with sigmoid-bounded value
+    vectors &mdash; the first theoretically grounded framework for exact sparse attention.
+  </p>
+
+  <h3 id="depth">Depth as Recursive Bayesian Inference</h3>
+  <p>
+    The derived inference unit is the atomic building block of arbitrarily deep networks.
+    <strong>Depth arises from iterated marginalization over latent variables</strong>:
+    each layer constructs the evidence required by the next. A deep network is a chain
+    of recursive Bayesian inference:
+  </p>
+  <div class="math-block">
+    $$P(R \mid \text{data}) = \int P(R \mid z_L) \cdot P(z_L \mid z_{L-1}) \cdots P(z_1 \mid \text{data})\ dz_1 \cdots dz_L$$
+  </div>
+  <p>
+    Each layer constructs intermediate evidence that does not exist in the raw data
+    but is needed for higher-level judgments. The correspondence between activation
+    functions and probabilistic questions reframes architecture design as
+    <strong>question sequencing</strong> &mdash; choosing the order of probabilistic
+    questions posed to the data.
+  </p>
+
+  <div class="note">
+    <strong>Convergence of three traditions:</strong> Probability theory asks
+    "given evidence, what is the posterior?" Information retrieval asks
+    "given query and document features, how relevant?" Neural computation asks
+    "given inputs and parameters, what is the output activation?"
+    All three produce the same core operation: linear combination followed by
+    the logistic sigmoid.
+    $$\text{inputs} \xrightarrow{\text{calibrate}} P_i \xrightarrow{\text{logit}} \ell_i \xrightarrow{\text{linear}} \sigma \xrightarrow{} \text{output}$$
+  </div>
+</section>
+
+<!-- ============ Connections ============ -->
+<section id="connections">
+  <h2>Connections Across Papers</h2>
+  <p>
+    The four papers form a coherent theoretical arc. Here are the key connections
+    between them.
+  </p>
+
+  <h3>From Algebra to Probability</h3>
+  <p>
+    Paper I establishes posting lists as the universal abstraction with Boolean algebra.
+    Paper III asks: what happens when we attach <em>calibrated probabilities</em> to
+    posting list entries? The answer is Bayesian BM25 &mdash; and the fusion operations
+    from Paper I (union, intersection) acquire probabilistic semantics
+    (OR = $1 - \prod(1-p_i)$, AND = $\prod p_i$).
+  </p>
+
+  <h3>From Probability to Neural Structure</h3>
+  <p>
+    Paper III's product-rule AND has a defect (conjunction shrinkage). Paper IV
+    resolves it through log-odds conjunction and discovers that the end-to-end
+    computation is a neural network. The fix for a practical information retrieval
+    problem turns out to be the mathematical structure that a separate scientific
+    tradition calls a "neuron."
+  </p>
+
+  <h3>Graph Operations in the Probabilistic Framework</h3>
+  <p>
+    Paper II integrates graph traversal and pattern matching into Paper I's Boolean
+    algebra via the graph-posting list isomorphism. In UQA's implementation, graph
+    traversal operators assign a probability score (0.9) to reachable vertices,
+    allowing graph signals to participate in the log-odds fusion framework of Paper IV
+    alongside BM25 and vector signals.
+  </p>
+
+  <h3>Coverage-Based Fusion Defaults</h3>
+  <p>
+    A practical consequence of the theory: when a fusion signal has zero coverage
+    (e.g., BM25 cannot find a query term in its vocabulary), the default probability
+    should be 0.5 &mdash; neutral in log-odds space ($\text{logit}(0.5) = 0$).
+    A fixed default of 0.01 encodes strong negative evidence ($\text{logit}(0.01) = -4.6$),
+    causing extreme score drops. UQA's implementation uses a coverage-based interpolation:
+  </p>
+  <div class="math-block">
+    $$p_{\text{default}} = 0.5 \cdot (1 - r) + 0.01 \cdot r \quad\text{where } r = \frac{\text{signal hits}}{\text{total docs}}$$
+  </div>
+  <p>
+    At zero coverage, $p_{\text{default}} = 0.5$ (absence of evidence, not evidence of absence).
+    At full coverage, $p_{\text{default}} = 0.01$ (a missing document is genuinely penalized).
+  </p>
+
+  <h3>Robertson's Completed Circle</h3>
+  <p>
+    In 1977, Robertson introduced the Probability Ranking Principle, opening a door
+    between probability theory and information retrieval. BM25 was derived from this
+    probabilistic foundation, yet its scores are not probabilities. For nearly fifty years,
+    this circle remained unclosed.
+  </p>
+  <p>
+    Paper III (Bayesian BM25) closes the circle by returning BM25 scores to probability space.
+    Paper IV reveals what lies on the other side: the computational structure that a
+    separate scientific tradition, developed over different decades and for different purposes,
+    calls a <em>neural network</em>.
+  </p>
+  <p>
+    The mathematics does not care what we call things. Whether we say "Bayesian posterior"
+    or "sigmoid neuron," "sparse feature detector" or "ReLU unit,"
+    "evidence accumulation" or "attention" &mdash; the same structures appear wherever
+    information is processed under uncertainty.
+  </p>
+</section>
+
+</div><!-- .content -->
+</div><!-- .page-with-toc -->
+
+<!-- ====== Footer ====== -->
+<footer>
+  <div class="container">
+    <p>
+      UQA &mdash; Unified Query Algebra
+      &middot; <a href="https://github.com/cognica-io/uqa">GitHub</a>
+      &middot; <a href="https://pypi.org/project/uqa/">PyPI</a>
+      &middot; <a href="https://cognica.io">Cognica</a>
+      &middot; AGPL-3.0
+    </p>
+    <p style="margin-top:0.5rem; font-size:0.8rem; color:#94a3b8;">
+      The unified query algebra theory is implemented in production as
+      <a href="https://cognica.io" style="color:#94a3b8;">Cognica Database</a>,
+      a commercial multi-paradigm database engine built in C++20/23.
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

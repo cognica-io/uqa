@@ -28,7 +28,7 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
     <a class="primary" href="https://github.com/cognica-io/uqa">GitHub</a>
     <a class="secondary" href="https://pypi.org/project/uqa/">PyPI</a>
     <a class="secondary" href="benchmarks-data/">Benchmarks</a>
-    <a class="secondary" href="https://github.com/cognica-io/uqa/tree/main/docs/papers">Papers</a>
+    <a class="secondary" href="theory.html">Theory</a>
   </div>
 </header>
 
@@ -38,7 +38,7 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
     <li><a href="index.html" class="active">Overview</a></li>
     <li><a href="docs.html">Docs</a></li>
     <li><a href="examples.html">Examples</a></li>
-    <li><a href="#theory">Theory</a></li>
+    <li><a href="theory.html">Theory</a></li>
     <li><a href="#architecture">Architecture</a></li>
     <li><a href="#operators">Operators</a></li>
     <li><a href="#optimizer">Optimizer</a></li>
@@ -52,43 +52,39 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
 <div class="container">
   <h2>Core Theory</h2>
 
-  <h3>Posting Lists as Universal Abstraction</h3>
   <p>
-    The core insight is that <strong>posting lists</strong> &mdash; sorted sequences
-    of $(id, payload)$ pairs &mdash; can represent result sets from any data paradigm.
-    A bijection $PL: 2^{\mathcal{D}} \rightarrow \mathcal{L}$ maps document sets
-    to posting lists and back, so set-theoretic reasoning carries over directly.
+    UQA is built on four interconnected theoretical papers that establish a mathematical
+    foundation spanning database theory, information retrieval, probabilistic inference,
+    and neural computation.
   </p>
-  <div class="math-block">
-    $$L = [(id_1, payload_1),\ (id_2, payload_2),\ \ldots,\ (id_n, payload_n)]
-    \quad\text{where } id_i < id_j \text{ for all } i < j$$
+
+  <div class="grid">
+    <div class="card">
+      <h3>Posting Lists as Universal Abstraction</h3>
+      <p>Sorted sequences of $(id, payload)$ pairs form a complete Boolean algebra.
+        Any combination of AND, OR, NOT across paradigms is algebraically well-defined.</p>
+    </div>
+    <div class="card">
+      <h3>Graph-Posting List Isomorphism</h3>
+      <p>Graph traversals and pattern matches map to posting lists via a structure-preserving
+        isomorphism, integrating seamlessly with text and vector operations.</p>
+    </div>
+    <div class="card">
+      <h3>Bayesian BM25</h3>
+      <p>BM25 scores transform to calibrated probabilities via Bayesian inference,
+        enabling principled multi-signal fusion without ad-hoc normalization.</p>
+    </div>
+    <div class="card">
+      <h3>Neural Emergence</h3>
+      <p>Neural network structure emerges analytically from multi-signal Bayesian inference.
+        Activation functions are derived as answers to probabilistic questions.</p>
+    </div>
   </div>
 
-  <h3>Boolean Algebra</h3>
-  <p>
-    The structure
-    $(\mathcal{L},\ \cup,\ \cap,\ \overline{\cdot},\ \emptyset,\ \mathcal{D})$
-    forms a <strong>complete Boolean algebra</strong>, satisfying commutativity,
-    associativity, distributivity, identity, and complement laws.
-    Any combination of AND, OR, NOT across paradigms is algebraically well-defined,
-    and optimization exploits lattice-theoretic rewrite rules.
-  </p>
-
-  <h3>Compositional Completeness</h3>
-  <p>
-    Any query expressible as a combination of relational, text, vector, and graph
-    operations has a representation in the unified algebra
-    (<strong>Theorem 3.3.5</strong>). Cross-paradigm queries are first-class
-    operations with well-defined optimization rules &mdash; not merely an interface
-    unification.
-  </p>
-
-  <h3>Graph-Posting List Isomorphism</h3>
-  <p>
-    A graph posting list $L_G = [(id_1, G_1), \ldots, (id_n, G_n)]$ maps to
-    standard posting lists via $\Phi(L_G) = PL\bigl(\bigcup_i \phi_{G \rightarrow D}(G_i)\bigr)$.
-    This isomorphism preserves Boolean operations, so graph traversals and pattern
-    matches integrate seamlessly with text, vector, and relational operations.
+  <p style="text-align:center; margin-top: 0.5rem;">
+    <a href="theory.html" style="font-weight:600; font-size:1.05rem;">
+      Read the full theoretical foundations &rarr;
+    </a>
   </p>
 </div>
 </section>
@@ -111,7 +107,7 @@ graph TD
 
     PAR --> DS["Document Store &mdash; SQLite"]
     PAR --> II["Inverted Index &mdash; SQLite + Analyzer"]
-    PAR --> VI["Vector Index &mdash; HNSW (optional)"]
+    PAR --> VI["Vector Index &mdash; IVF"]
     PAR --> GS["Graph Store &mdash; SQLite"]
 
     subgraph Scoring
@@ -148,7 +144,7 @@ graph TD
     <div class="card">
       <h3>Storage Layer</h3>
       <p>SQLite-backed persistence for documents, inverted indexes, vectors
-        (HNSW), and graph adjacency. Per-table isolation, ACID transactions.</p>
+        (IVF), and graph adjacency. Per-table isolation, ACID transactions.</p>
     </div>
     <div class="card">
       <h3>Text Analysis</h3>
