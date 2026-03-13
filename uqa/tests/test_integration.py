@@ -282,13 +282,15 @@ class TestCoverageBasedDefault:
         bm25 = FixedOperator([])
 
         # KNN returns 5 docs with decreasing scores
-        knn = FixedOperator([
-            PostingEntry(0, Payload(score=0.9)),
-            PostingEntry(1, Payload(score=0.8)),
-            PostingEntry(2, Payload(score=0.7)),
-            PostingEntry(3, Payload(score=0.6)),
-            PostingEntry(4, Payload(score=0.5)),
-        ])
+        knn = FixedOperator(
+            [
+                PostingEntry(0, Payload(score=0.9)),
+                PostingEntry(1, Payload(score=0.8)),
+                PostingEntry(2, Payload(score=0.7)),
+                PostingEntry(3, Payload(score=0.6)),
+                PostingEntry(4, Payload(score=0.5)),
+            ]
+        )
 
         ctx = ExecutionContext(document_store=None, inverted_index=None)
         fusion = LogOddsFusionOperator([bm25, knn])
@@ -322,16 +324,20 @@ class TestCoverageBasedDefault:
                 return 1.0
 
         # Signal A covers all 3 docs
-        sig_a = FixedOperator([
-            PostingEntry(0, Payload(score=0.8)),
-            PostingEntry(1, Payload(score=0.7)),
-            PostingEntry(2, Payload(score=0.6)),
-        ])
+        sig_a = FixedOperator(
+            [
+                PostingEntry(0, Payload(score=0.8)),
+                PostingEntry(1, Payload(score=0.7)),
+                PostingEntry(2, Payload(score=0.6)),
+            ]
+        )
 
         # Signal B covers only doc 0
-        sig_b = FixedOperator([
-            PostingEntry(0, Payload(score=0.85)),
-        ])
+        sig_b = FixedOperator(
+            [
+                PostingEntry(0, Payload(score=0.85)),
+            ]
+        )
 
         ctx = ExecutionContext(document_store=None, inverted_index=None)
         fusion = LogOddsFusionOperator([sig_a, sig_b])
@@ -345,6 +351,7 @@ class TestCoverageBasedDefault:
     def test_log_odds_partial_coverage_moderate_penalty(self):
         """Partial coverage gives a gentler penalty than full coverage."""
         from bayesian_bm25 import log_odds_conjunction
+
         from uqa.operators.hybrid import _coverage_based_default
 
         # Same KNN score for a missing doc
@@ -352,21 +359,21 @@ class TestCoverageBasedDefault:
 
         # Full coverage: 10/10 -> default near 0.01
         default_full = _coverage_based_default(10, 10)
-        fused_full = float(log_odds_conjunction(
-            np.array([default_full, knn_score]), alpha=0.5
-        ))
+        fused_full = float(
+            log_odds_conjunction(np.array([default_full, knn_score]), alpha=0.5)
+        )
 
         # Partial: 5/10 -> default near 0.255
         default_partial = _coverage_based_default(5, 10)
-        fused_partial = float(log_odds_conjunction(
-            np.array([default_partial, knn_score]), alpha=0.5
-        ))
+        fused_partial = float(
+            log_odds_conjunction(np.array([default_partial, knn_score]), alpha=0.5)
+        )
 
         # Zero coverage: 0/10 -> default = 0.5
         default_zero = _coverage_based_default(0, 10)
-        fused_zero = float(log_odds_conjunction(
-            np.array([default_zero, knn_score]), alpha=0.5
-        ))
+        fused_zero = float(
+            log_odds_conjunction(np.array([default_zero, knn_score]), alpha=0.5)
+        )
 
         # Zero coverage should preserve score most, full coverage penalizes most
         assert fused_zero > fused_partial > fused_full
@@ -392,10 +399,12 @@ class TestCoverageBasedDefault:
         sig_a = FixedOperator([])
 
         # Signal B: has results
-        sig_b = FixedOperator([
-            PostingEntry(0, Payload(score=0.8)),
-            PostingEntry(1, Payload(score=0.6)),
-        ])
+        sig_b = FixedOperator(
+            [
+                PostingEntry(0, Payload(score=0.8)),
+                PostingEntry(1, Payload(score=0.6)),
+            ]
+        )
 
         ctx = ExecutionContext(document_store=None, inverted_index=None)
         fusion = ProbBoolFusionOperator([sig_a, sig_b], mode="and")
@@ -405,8 +414,7 @@ class TestCoverageBasedDefault:
         # With zero-coverage signal A, prob_and(0.5, 0.8) > prob_and(0.01, 0.8)
         # (0.5 * 0.8 = 0.4 vs 0.01 * 0.8 = 0.008)
         assert scores[0] > 0.1, (
-            f"prob_and with zero-coverage signal gave {scores[0]:.4f}, "
-            f"expected > 0.1"
+            f"prob_and with zero-coverage signal gave {scores[0]:.4f}, expected > 0.1"
         )
 
 
