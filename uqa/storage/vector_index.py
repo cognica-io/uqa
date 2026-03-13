@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
-from uqa.core.posting_list import PostingList
-from uqa.core.types import DocId
+    from uqa.core.posting_list import PostingList
+    from uqa.core.types import DocId
 
 
 class VectorIndex(ABC):

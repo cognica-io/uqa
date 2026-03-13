@@ -60,10 +60,10 @@ from uqa.operators.primitive import (
 from uqa.storage.document_store import DocumentStore
 from uqa.storage.inverted_index import InvertedIndex
 from uqa.storage.ivf_index import IVFIndex
-from uqa.storage.vector_index import VectorIndex
 
 if TYPE_CHECKING:
     from uqa.core.hierarchical import HierarchicalDocument
+    from uqa.storage.vector_index import VectorIndex
 
 
 @pytest.fixture

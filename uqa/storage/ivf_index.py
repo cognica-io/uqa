@@ -310,7 +310,7 @@ class IVFIndex(VectorIndex):
 
         # Also scan the untrained bucket (-1) for vectors added since
         # the last train.
-        centroid_ids_with_untrained = centroid_ids + [_UNTRAINED_CENTROID_ID]
+        centroid_ids_with_untrained = [*centroid_ids, _UNTRAINED_CENTROID_ID]
 
         scored: list[tuple[int, float]] = []
         for cid in centroid_ids_with_untrained:
@@ -334,7 +334,7 @@ class IVFIndex(VectorIndex):
 
     def _ivf_threshold(self, q: NDArray, threshold: float) -> PostingList:
         centroid_ids = self._nearest_centroids(q, self._nprobe)
-        centroid_ids_with_untrained = centroid_ids + [_UNTRAINED_CENTROID_ID]
+        centroid_ids_with_untrained = [*centroid_ids, _UNTRAINED_CENTROID_ID]
 
         entries: list[PostingEntry] = []
         for cid in centroid_ids_with_untrained:
