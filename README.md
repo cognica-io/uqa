@@ -226,7 +226,7 @@ uqa/
   planner/        Cost model, cardinality estimator, optimizer, DPccp join enumerator, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          1962 tests across 49 test files
+  tests/          1967 tests across 49 test files
 benchmarks/       192 pytest-benchmark tests across 8 files (posting list, storage, compiler, execution,
                   planner, scoring, graph, end-to-end SQL)
 ```

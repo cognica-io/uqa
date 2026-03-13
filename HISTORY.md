@@ -1,5 +1,23 @@
 # History
 
+## 0.14.1 (2026-03-13)
+
+Fix log-odds fusion scoring when one signal has zero coverage (e.g., BM25 vocabulary gap for out-of-vocabulary terms), and clean up linting across IVF-related files.
+
+### Fusion
+
+- **Coverage-based default probability**: replace fixed `default_prob=0.01` with a per-signal default derived from coverage ratio — `default = 0.5 * (1 - r) + 0.01 * r` where `r = signal_hits / total_docs`
+  - At zero coverage (vocabulary gap), the default is 0.5 — neutral in log-odds space (`logit(0.5) = 0`), contributing no evidence rather than strong negative evidence (`logit(0.01) = -4.6`)
+  - At full coverage, the default remains 0.01 — a missing document is genuinely penalized
+  - Partial coverage interpolates smoothly between the two extremes
+- **All three fusion code paths updated**: `LogOddsFusionOperator` (SQL), `_FusionOperator` (fluent API), and `ProbBoolFusionOperator` (prob-boolean)
+- **5 new tests**: formula boundary values, zero/full/partial coverage behavior, prob-boolean coverage defaults
+
+### Code Quality
+
+- Fix ruff lint errors in IVF implementation (unused imports, bare `assert`, simplifiable expressions)
+- Fix ruff format errors in IVF-related files
+
 ## 0.14.0 (2026-03-13)
 
 Replace HNSW with IVF (Inverted File Index) backed by SQLite, aligning vector search with UQA's posting-list-as-universal-abstraction thesis and eliminating the hnswlib C++ dependency.
