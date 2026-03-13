@@ -47,9 +47,10 @@ class InvertedIndex:
         from uqa.analysis.analyzer import DEFAULT_ANALYZER
 
         self._analyzer = analyzer or DEFAULT_ANALYZER
-        self._field_analyzers: dict[str, Any] = (
+        self._index_field_analyzers: dict[str, Any] = (
             dict(field_analyzers) if field_analyzers else {}
         )
+        self._search_field_analyzers: dict[str, Any] = {}
         self._index: dict[tuple[str, str], dict[DocId, PostingEntry]] = {}
         self._doc_terms: dict[DocId, set[tuple[str, str]]] = {}
         self._doc_lengths: dict[DocId, dict[FieldName, int]] = {}
@@ -62,15 +63,38 @@ class InvertedIndex:
 
     @property
     def field_analyzers(self) -> dict[str, Any]:
-        return self._field_analyzers
+        return self._index_field_analyzers
 
-    def set_field_analyzer(self, field: str, analyzer: Any) -> None:
-        """Set a per-field analyzer override."""
-        self._field_analyzers[field] = analyzer
+    def set_field_analyzer(
+        self, field: str, analyzer: Any, phase: str = "both"
+    ) -> None:
+        """Set a per-field analyzer override.
+
+        ``phase`` controls which phase the analyzer applies to:
+        ``"index"`` for indexing only, ``"search"`` for search only,
+        or ``"both"`` (default) for both phases.
+        """
+        if phase not in ("index", "search", "both"):
+            raise ValueError(
+                f"phase must be 'index', 'search', or 'both', got '{phase}'"
+            )
+        if phase in ("index", "both"):
+            self._index_field_analyzers[field] = analyzer
+        if phase in ("search", "both"):
+            self._search_field_analyzers[field] = analyzer
 
     def get_field_analyzer(self, field: str) -> Any:
-        """Get the analyzer for a specific field."""
-        return self._field_analyzers.get(field, self._analyzer)
+        """Get the index-time analyzer for a specific field."""
+        return self._index_field_analyzers.get(field, self._analyzer)
+
+    def get_search_analyzer(self, field: str) -> Any:
+        """Get the search-time analyzer for a specific field.
+
+        Falls back to the index-time analyzer, then the default analyzer.
+        """
+        return self._search_field_analyzers.get(
+            field, self._index_field_analyzers.get(field, self._analyzer)
+        )
 
     def add_document(self, doc_id: DocId, fields: dict[FieldName, str]) -> IndexedTerms:
         """Index a document by tokenizing each field.
@@ -90,7 +114,7 @@ class InvertedIndex:
             self._doc_terms[doc_id] = doc_term_set
 
         for field_name, text in fields.items():
-            field_analyzer = self._field_analyzers.get(field_name, self._analyzer)
+            field_analyzer = self._index_field_analyzers.get(field_name, self._analyzer)
             tokens = field_analyzer.analyze(text)
             length = len(tokens)
             self._doc_lengths[doc_id][field_name] = length

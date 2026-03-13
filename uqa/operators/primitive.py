@@ -103,8 +103,8 @@ class TermOperator(Operator):
         if idx is None:
             return PostingList()
 
-        # Analyze the query term using the same analyzer that indexed the field
-        analyzer = idx.get_field_analyzer(self.field) if self.field else idx.analyzer
+        # Use search-time analyzer (falls back to index-time, then default)
+        analyzer = idx.get_search_analyzer(self.field) if self.field else idx.analyzer
         tokens = analyzer.analyze(self.term)
         if not tokens:
             return PostingList()
@@ -114,10 +114,10 @@ class TermOperator(Operator):
         else:
             lists = [idx.get_posting_list_any_field(t) for t in tokens]
 
-        # Single token: return directly; multiple tokens: intersect
+        # Union posting lists so synonym-expanded tokens match any variant
         result = lists[0]
         for pl in lists[1:]:
-            result = result.intersect(pl)
+            result = result.union(pl)
         return result
 
     def cost_estimate(self, stats: IndexStats) -> float:

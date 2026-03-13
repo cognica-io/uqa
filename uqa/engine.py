@@ -126,7 +126,11 @@ class Engine:
             self._tables[name] = table
 
         # -- Analyzers -------------------------------------------------
-        from uqa.analysis.analyzer import Analyzer, register_analyzer
+        from uqa.analysis.analyzer import (
+            Analyzer,
+            get_analyzer,
+            register_analyzer,
+        )
 
         for name, config in catalog.load_analyzers():
             analyzer = Analyzer.from_dict(config)
@@ -134,6 +138,22 @@ class Engine:
                 register_analyzer(name, analyzer)
             except ValueError:
                 pass  # already registered (built-in or duplicate)
+
+        # -- Field-to-analyzer mappings --------------------------------
+        for (
+            tbl_name,
+            field,
+            phase,
+            analyzer_name,
+        ) in catalog.load_table_field_analyzers():
+            tbl = self._tables.get(tbl_name)
+            if tbl is None:
+                continue
+            try:
+                analyzer = get_analyzer(analyzer_name)
+            except ValueError:
+                continue
+            tbl.inverted_index.set_field_analyzer(field, analyzer, phase=phase)
 
         # -- Named graphs ----------------------------------------------
         for graph_name in catalog.load_named_graphs():
@@ -408,26 +428,55 @@ class Engine:
             self._catalog.drop_analyzer(name)
 
     def set_table_analyzer(
-        self, table_name: str, field: str, analyzer_name: str
+        self,
+        table_name: str,
+        field: str,
+        analyzer_name: str,
+        phase: str = "both",
     ) -> None:
-        """Assign a named analyzer to a table field for indexing and search."""
+        """Assign a named analyzer to a table field.
+
+        ``phase`` controls which phase the analyzer applies to:
+        ``"index"`` for indexing only, ``"search"`` for search only,
+        or ``"both"`` (default) for both phases.
+        """
         from uqa.analysis.analyzer import get_analyzer
 
+        if phase not in ("index", "search", "both"):
+            raise ValueError(
+                f"phase must be 'index', 'search', or 'both', got '{phase}'"
+            )
         tbl = self._tables.get(table_name)
         if tbl is None:
             raise ValueError(f"Table '{table_name}' does not exist")
         analyzer = get_analyzer(analyzer_name)
-        tbl.inverted_index.set_field_analyzer(field, analyzer)
+        tbl.inverted_index.set_field_analyzer(field, analyzer, phase=phase)
+        if self._catalog is not None:
+            if phase == "both":
+                self._catalog.save_table_field_analyzer(
+                    table_name, field, "index", analyzer_name
+                )
+                self._catalog.save_table_field_analyzer(
+                    table_name, field, "search", analyzer_name
+                )
+            else:
+                self._catalog.save_table_field_analyzer(
+                    table_name, field, phase, analyzer_name
+                )
 
-    def get_table_analyzer(self, table_name: str, field: str) -> Any:
+    def get_table_analyzer(
+        self, table_name: str, field: str, phase: str = "index"
+    ) -> Any:
         """Return the analyzer assigned to a table field.
 
-        Returns the field-specific analyzer if one has been set via
-        :meth:`set_table_analyzer`, otherwise the default analyzer.
+        ``phase`` selects whether to return the index-time or
+        search-time analyzer.  Defaults to ``"index"``.
         """
         tbl = self._tables.get(table_name)
         if tbl is None:
             raise ValueError(f"Table '{table_name}' does not exist")
+        if phase == "search":
+            return tbl.inverted_index.get_search_analyzer(field)
         return tbl.inverted_index.get_field_analyzer(field)
 
     # -- Scoring parameters (Papers 3-4) -------------------------------

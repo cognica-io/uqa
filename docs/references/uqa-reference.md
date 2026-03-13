@@ -686,15 +686,142 @@ SELECT * FROM drop_analyzer('english_stem');
 | `name` | string | Analyzer name |
 | `config` | string | JSON configuration with `tokenizer`, `token_filters`, and `char_filters` arrays |
 
-**Available tokenizers**: `whitespace`, `standard` (Unicode-aware), `keyword` (no splitting), `letter`, `pattern` (regex-based), `ngram` (n-gram generation)
+##### Tokenizers
 
-**Available token filters**: `lowercase`, `uppercase`, `stop` (stop word removal), `porter_stem` (Porter stemmer), `length` (min/max filtering), `ngram` (character n-grams with `keep_short` option), `edge_ngram` (prefix n-grams), `ascii_folding` (Unicode-to-ASCII normalization), `synonym` (synonym expansion)
+A tokenizer splits raw text into a sequence of tokens. Each analyzer has exactly one tokenizer.
 
-**Built-in analyzer presets**: `whitespace` (WhitespaceTokenizer + LowerCase), `standard` (StandardTokenizer + LowerCase + ASCIIFolding + StopWord + PorterStem), `standard_cjk` (standard + NGram(2, 3, keep_short=True)), `keyword` (no splitting, no filters). `DEFAULT_ANALYZER` uses the `standard` preset.
+| Type | Description | Parameters |
+|------|-------------|------------|
+| `whitespace` | Split on whitespace (`str.split()`) | (none) |
+| `standard` | Unicode word-boundary tokenizer (`\w+` regex); keeps alphanumeric and underscore sequences | (none) |
+| `keyword` | Emit the entire input as a single token, unmodified | (none) |
+| `letter` | Extract runs of ASCII letters only (`[a-zA-Z]+`) | (none) |
+| `pattern` | Split text using a regex delimiter | `pattern` (default `\W+`) |
+| `ngram` | Split on whitespace, then generate all character n-grams per word | `min_gram` (default 1), `max_gram` (default 2) |
 
-**Available character filters**: `html_strip` (HTML tag removal), `mapping` (character mapping), `pattern_replace` (regex replacement)
+##### Token Filters
+
+Token filters transform the token stream produced by the tokenizer. Multiple filters are chained in order.
+
+| Type | Description | Parameters |
+|------|-------------|------------|
+| `lowercase` | Convert all tokens to lowercase | (none) |
+| `stop` | Remove stop words | `language` (default `"english"`), `custom_words` (optional list) |
+| `porter_stem` | Apply the Porter stemming algorithm (suffix stripping) | (none) |
+| `ascii_folding` | Fold Unicode characters to ASCII equivalents (NFKD normalization) | (none) |
+| `synonym` | Expand tokens with synonyms; original token is kept, alternatives appended | `synonyms` (dict) or `synonyms_path` (file path); mutually exclusive |
+| `ngram` | Generate character n-grams from each token | `min_gram` (default 2), `max_gram` (default 3), `keep_short` (default false) |
+| `edge_ngram` | Generate prefix n-grams from each token (autocomplete/typeahead) | `min_gram` (default 1), `max_gram` (default 20) |
+| `length` | Keep tokens within a length range | `min_length` (default 0), `max_length` (default 0 = no limit) |
+
+##### Character Filters
+
+Character filters transform raw text before tokenization. Multiple character filters are chained in order.
+
+| Type | Description | Parameters |
+|------|-------------|------------|
+| `html_strip` | Strip HTML tags and convert common HTML entities (`&amp;`, `&lt;`, etc.) | (none) |
+| `mapping` | Apply string-level character replacements (longest-match-first) | `mapping` (dict of old -> new) |
+| `pattern_replace` | Replace text matching a regular expression | `pattern`, `replacement` (default `""`) |
+
+##### Built-in Analyzer Presets
+
+Four built-in analyzers are registered by default and cannot be overwritten or dropped.
+
+| Name | Pipeline | Description |
+|------|----------|-------------|
+| `whitespace` | WhitespaceTokenizer -> LowerCaseFilter | Simple lowercase split; equivalent to `text.lower().split()` |
+| `standard` | StandardTokenizer -> LowerCaseFilter -> ASCIIFoldingFilter -> StopWordFilter("english") -> PorterStemFilter | Full-featured analyzer for Latin-script languages |
+| `standard_cjk` | StandardTokenizer -> LowerCaseFilter -> ASCIIFoldingFilter -> StopWordFilter("english") -> PorterStemFilter -> NGramFilter(2, 3, keep_short=True) | Standard pipeline extended with bigram/trigram generation for CJK scripts |
+| `keyword` | KeywordTokenizer (no filters) | Entire input becomes a single token, unmodified |
+
+`DEFAULT_ANALYZER` uses the `standard` preset. When no analyzer is explicitly assigned to a field, the default analyzer is used for both indexing and searching.
+
+##### JSON Configuration Format
+
+The `create_analyzer` function accepts a JSON string with three keys:
+
+```json
+{
+    "tokenizer": {"type": "<tokenizer_type>", ...params},
+    "token_filters": [
+        {"type": "<filter_type>", ...params},
+        ...
+    ],
+    "char_filters": [
+        {"type": "<char_filter_type>", ...params},
+        ...
+    ]
+}
+```
+
+Example — inline synonyms:
+
+```json
+{
+    "tokenizer": {"type": "standard"},
+    "token_filters": [
+        {"type": "lowercase"},
+        {"type": "synonym", "synonyms": {
+            "car": ["automobile", "vehicle", "auto"],
+            "fast": ["quick", "speedy"]
+        }}
+    ]
+}
+```
+
+Example — file-based synonyms:
+
+```json
+{
+    "tokenizer": {"type": "standard"},
+    "token_filters": [
+        {"type": "lowercase"},
+        {"type": "synonym", "synonyms_path": "/path/to/synonyms.txt"}
+    ]
+}
+```
+
+The synonym file uses Solr/Elasticsearch format (one rule per line):
+
+```text
+# Explicit mapping (one-directional): only "car" expands
+car => automobile, vehicle, auto
+
+# Equivalent synonyms (bidirectional): each term expands to the others
+fast, quick, speedy
+```
 
 Custom analyzers are persisted to the SQLite catalog (`_analyzers` table) and automatically restored when the engine is reopened.
+
+#### `set_table_analyzer(table, field, analyzer[, phase])`
+
+Assigns a named analyzer to a specific table field with an optional phase parameter. This enables the Elasticsearch-style dual analyzer pattern where index-time and search-time processing differ.
+
+```sql
+-- Assign an analyzer for both index and search (default)
+SELECT * FROM set_table_analyzer('products', 'body', 'english_stem');
+
+-- Assign separate index and search analyzers
+SELECT * FROM set_table_analyzer('products', 'body', 'plain_index', 'index');
+SELECT * FROM set_table_analyzer('products', 'body', 'synonym_search', 'search');
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `table` | string | Target table name |
+| `field` | string | Target text field |
+| `analyzer` | string | Name of a registered analyzer |
+| `phase` | string | `'index'`, `'search'`, or `'both'` (default: `'both'`) |
+
+**Dual analyzer pattern**: Separate index-time and search-time analyzers per field enable two synonym strategies:
+
+- **Search-time expansion**: Index with a plain analyzer; at query time, the search analyzer expands "car" to "car OR automobile OR vehicle". No re-indexing needed when synonyms change.
+- **Index-time expansion**: Index with a synonym analyzer so "car" creates postings for "car", "automobile", and "vehicle". Queries match without expansion, but synonym changes require re-indexing.
+
+The search-time analyzer fallback chain is: search analyzer -> index analyzer -> default analyzer.
+
+Field-to-analyzer assignments are persisted in the `_table_field_analyzers` catalog table and automatically restored on engine restart.
 
 
 ## 5. Architecture
@@ -768,7 +895,7 @@ The SQL compiler uses pglast (PostgreSQL parser) to parse SQL into an AST, then 
 - **Table functions**: GENERATE_SERIES, UNNEST, REGEXP_SPLIT_TO_TABLE, JSON_EACH/JSON_EACH_TEXT, JSON_ARRAY_ELEMENTS/JSON_ARRAY_ELEMENTS_TEXT
 - **Graph functions**: cypher() (Apache AGE compatible openCypher), create_graph(), drop_graph()
 - **FDW**: CREATE/DROP SERVER, CREATE/DROP FOREIGN TABLE, DuckDB FDW (Parquet/CSV/JSON), Arrow Flight SQL FDW, Hive partitioning (`hive_partitioning` option), predicate pushdown (=, !=, <, >, IN, LIKE, ILIKE, BETWEEN)
-- **Analysis functions**: create_analyzer(), drop_analyzer(), list_analyzers()
+- **Analysis functions**: create_analyzer(), drop_analyzer(), list_analyzers(), set_table_analyzer()
 - **System catalogs**: information_schema.columns, pg_catalog.pg_tables, pg_catalog.pg_views, pg_catalog.pg_indexes, pg_catalog.pg_type
 - **Transactions**: BEGIN, COMMIT, ROLLBACK, SAVEPOINT
 - **Utility**: EXPLAIN, ANALYZE

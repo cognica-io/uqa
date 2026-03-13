@@ -54,9 +54,10 @@ class SQLiteInvertedIndex:
         self._conn = conn
         self._table_name = table_name
         self._analyzer = analyzer or DEFAULT_ANALYZER
-        self._field_analyzers: dict[str, Any] = (
+        self._index_field_analyzers: dict[str, Any] = (
             dict(field_analyzers) if field_analyzers else {}
         )
+        self._search_field_analyzers: dict[str, Any] = {}
         self._known_fields: set[str] = set()
         self._has_atomic_fetch = hasattr(conn, "execute_fetchall")
         self._cached_stats: IndexStats | None = None
@@ -164,22 +165,45 @@ class SQLiteInvertedIndex:
 
     @property
     def field_analyzers(self) -> dict[str, Any]:
-        return self._field_analyzers
+        return self._index_field_analyzers
 
-    def set_field_analyzer(self, field: str, analyzer: Any) -> None:
-        """Set a per-field analyzer override."""
-        self._field_analyzers[field] = analyzer
+    def set_field_analyzer(
+        self, field: str, analyzer: Any, phase: str = "both"
+    ) -> None:
+        """Set a per-field analyzer override.
+
+        ``phase`` controls which phase the analyzer applies to:
+        ``"index"`` for indexing only, ``"search"`` for search only,
+        or ``"both"`` (default) for both phases.
+        """
+        if phase not in ("index", "search", "both"):
+            raise ValueError(
+                f"phase must be 'index', 'search', or 'both', got '{phase}'"
+            )
+        if phase in ("index", "both"):
+            self._index_field_analyzers[field] = analyzer
+        if phase in ("search", "both"):
+            self._search_field_analyzers[field] = analyzer
 
     def get_field_analyzer(self, field: str) -> Any:
-        """Get the analyzer for a specific field."""
-        return self._field_analyzers.get(field, self._analyzer)
+        """Get the index-time analyzer for a specific field."""
+        return self._index_field_analyzers.get(field, self._analyzer)
+
+    def get_search_analyzer(self, field: str) -> Any:
+        """Get the search-time analyzer for a specific field.
+
+        Falls back to the index-time analyzer, then the default analyzer.
+        """
+        return self._search_field_analyzers.get(
+            field, self._index_field_analyzers.get(field, self._analyzer)
+        )
 
     # -- Tokenization --------------------------------------------------
 
     def _tokenize(self, text: str, field: str | None = None) -> list[str]:
         """Tokenize text using the appropriate field analyzer."""
         analyzer = (
-            self._field_analyzers.get(field, self._analyzer)
+            self._index_field_analyzers.get(field, self._analyzer)
             if field
             else self._analyzer
         )

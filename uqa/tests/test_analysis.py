@@ -257,6 +257,116 @@ class TestSynonymFilter:
         restored = TokenFilter.from_dict(d)
         assert isinstance(restored, SynonymFilter)
 
+    def test_requires_synonyms_or_path(self):
+        with pytest.raises(ValueError, match="must be provided"):
+            SynonymFilter()
+
+    def test_cannot_specify_both(self):
+        with pytest.raises(ValueError, match="not both"):
+            SynonymFilter(synonyms={"a": ["b"]}, synonyms_path="/tmp/s.txt")
+
+
+class TestSynonymFilterFile:
+    """Test file-based synonym loading."""
+
+    def test_explicit_mapping(self, tmp_path: Path):
+        syn_file = tmp_path / "synonyms.txt"
+        syn_file.write_text(
+            "# vehicle synonyms\ncar => automobile, vehicle\nfast => quick, speedy\n"
+        )
+        f = SynonymFilter(synonyms_path=syn_file)
+        assert f.filter(["car"]) == ["car", "automobile", "vehicle"]
+        assert f.filter(["fast"]) == ["fast", "quick", "speedy"]
+        assert f.filter(["slow"]) == ["slow"]
+
+    def test_equivalent_synonyms(self, tmp_path: Path):
+        syn_file = tmp_path / "synonyms.txt"
+        syn_file.write_text("car, automobile, vehicle\n")
+        f = SynonymFilter(synonyms_path=syn_file)
+        assert f.filter(["car"]) == ["car", "automobile", "vehicle"]
+        assert f.filter(["automobile"]) == ["automobile", "car", "vehicle"]
+        assert f.filter(["vehicle"]) == ["vehicle", "car", "automobile"]
+
+    def test_mixed_formats(self, tmp_path: Path):
+        syn_file = tmp_path / "synonyms.txt"
+        syn_file.write_text(
+            "# explicit\nbig => large\n\n# equivalent\nfast, quick, speedy\n"
+        )
+        f = SynonymFilter(synonyms_path=syn_file)
+        assert f.filter(["big"]) == ["big", "large"]
+        assert f.filter(["large"]) == ["large"]  # explicit is one-way
+        assert f.filter(["fast"]) == ["fast", "quick", "speedy"]
+        assert f.filter(["quick"]) == ["quick", "fast", "speedy"]
+
+    def test_blank_lines_and_comments(self, tmp_path: Path):
+        syn_file = tmp_path / "synonyms.txt"
+        syn_file.write_text("# this is a comment\n\n   \n# another comment\na => b\n")
+        f = SynonymFilter(synonyms_path=syn_file)
+        assert f.filter(["a"]) == ["a", "b"]
+
+    def test_deduplication(self, tmp_path: Path):
+        syn_file = tmp_path / "synonyms.txt"
+        syn_file.write_text("car => automobile\ncar => automobile, vehicle\n")
+        f = SynonymFilter(synonyms_path=syn_file)
+        assert f.filter(["car"]) == ["car", "automobile", "vehicle"]
+
+    def test_serialization_roundtrip(self, tmp_path: Path):
+        syn_file = tmp_path / "synonyms.txt"
+        syn_file.write_text("car => automobile\n")
+        f = SynonymFilter(synonyms_path=syn_file)
+        d = f.to_dict()
+        assert "synonyms_path" in d
+        assert "synonyms" not in d
+
+        from uqa.analysis.token_filter import TokenFilter
+
+        restored = TokenFilter.from_dict(d)
+        assert isinstance(restored, SynonymFilter)
+        assert restored.filter(["car"]) == ["car", "automobile"]
+
+    def test_inline_does_not_serialize_path(self):
+        f = SynonymFilter(synonyms={"a": ["b"]})
+        d = f.to_dict()
+        assert "synonyms" in d
+        assert "synonyms_path" not in d
+
+    def test_file_not_found(self, tmp_path: Path):
+        with pytest.raises(FileNotFoundError):
+            SynonymFilter(synonyms_path=tmp_path / "nonexistent.txt")
+
+    def test_single_term_line_ignored(self, tmp_path: Path):
+        syn_file = tmp_path / "synonyms.txt"
+        syn_file.write_text("lonely\ncar, automobile\n")
+        f = SynonymFilter(synonyms_path=syn_file)
+        assert f.filter(["lonely"]) == ["lonely"]
+        assert f.filter(["car"]) == ["car", "automobile"]
+
+    def test_sql_create_analyzer_with_path(self, tmp_path: Path):
+        syn_file = tmp_path / "synonyms.txt"
+        syn_file.write_text("car, automobile, vehicle\n")
+        from uqa.engine import Engine
+
+        engine = Engine()
+        config = json.dumps(
+            {
+                "tokenizer": {"type": "standard"},
+                "token_filters": [
+                    {"type": "lowercase"},
+                    {"type": "synonym", "synonyms_path": str(syn_file)},
+                ],
+            }
+        )
+        engine.sql(f"SELECT * FROM create_analyzer('file_syn', '{config}')")
+        engine.sql("CREATE TABLE docs (id INT, body TEXT)")
+        engine.set_table_analyzer("docs", "body", "file_syn", phase="search")
+        engine.sql("INSERT INTO docs (id, body) VALUES (1, 'a fast car for commuting')")
+        # "automobile" expands to ["automobile", "car", "vehicle"] at search time
+        result = engine.sql("SELECT id FROM docs WHERE text_match(body, 'automobile')")
+        assert len(result.rows) == 1
+        from uqa.analysis.analyzer import drop_analyzer
+
+        drop_analyzer("file_syn")
+
 
 class TestNGramFilter:
     def test_default(self):
@@ -762,3 +872,287 @@ class TestAnalyzerCatalogPersistence:
             drop_analyzer("persistent_test_analyzer")
         except ValueError:
             pass
+
+
+# ---- Dual (index/search) analyzer tests --------------------------------
+
+
+class TestDualAnalyzer:
+    """Test index-time vs search-time analyzer separation."""
+
+    def test_inverted_index_default_phase(self):
+        """set_field_analyzer with phase='both' sets both dicts."""
+        from uqa.analysis.analyzer import standard_analyzer
+        from uqa.storage.inverted_index import InvertedIndex
+
+        idx = InvertedIndex()
+        analyzer = standard_analyzer()
+        idx.set_field_analyzer("body", analyzer, phase="both")
+        assert idx.get_field_analyzer("body") is analyzer
+        assert idx.get_search_analyzer("body") is analyzer
+
+    def test_inverted_index_separate_phases(self):
+        """Index and search analyzers can differ for the same field."""
+        from uqa.analysis.analyzer import Analyzer
+        from uqa.analysis.token_filter import LowerCaseFilter, SynonymFilter
+        from uqa.analysis.tokenizer import WhitespaceTokenizer
+        from uqa.storage.inverted_index import InvertedIndex
+
+        idx_analyzer = Analyzer(WhitespaceTokenizer(), [LowerCaseFilter()])
+        search_analyzer = Analyzer(
+            WhitespaceTokenizer(),
+            [LowerCaseFilter(), SynonymFilter({"car": ["automobile"]})],
+        )
+        idx = InvertedIndex()
+        idx.set_field_analyzer("body", idx_analyzer, phase="index")
+        idx.set_field_analyzer("body", search_analyzer, phase="search")
+
+        assert idx.get_field_analyzer("body") is idx_analyzer
+        assert idx.get_search_analyzer("body") is search_analyzer
+
+    def test_search_falls_back_to_index(self):
+        """When no search analyzer is set, fall back to index analyzer."""
+        from uqa.analysis.analyzer import standard_analyzer
+        from uqa.storage.inverted_index import InvertedIndex
+
+        idx = InvertedIndex()
+        analyzer = standard_analyzer()
+        idx.set_field_analyzer("body", analyzer, phase="index")
+        assert idx.get_search_analyzer("body") is analyzer
+
+    def test_search_falls_back_to_default(self):
+        """When neither search nor index analyzer is set, use default."""
+        from uqa.storage.inverted_index import InvertedIndex
+
+        idx = InvertedIndex()
+        default = idx.analyzer
+        assert idx.get_search_analyzer("body") is default
+
+    def test_invalid_phase(self):
+        from uqa.analysis.analyzer import standard_analyzer
+        from uqa.storage.inverted_index import InvertedIndex
+
+        idx = InvertedIndex()
+        with pytest.raises(ValueError, match="phase must be"):
+            idx.set_field_analyzer("body", standard_analyzer(), phase="bad")
+
+    def test_sqlite_inverted_index_dual_analyzer(self):
+        """SQLiteInvertedIndex supports the same dual-analyzer API."""
+        from uqa.analysis.analyzer import Analyzer
+        from uqa.analysis.token_filter import LowerCaseFilter, SynonymFilter
+        from uqa.analysis.tokenizer import WhitespaceTokenizer
+        from uqa.storage.sqlite_inverted_index import SQLiteInvertedIndex
+
+        conn = sqlite3.connect(":memory:")
+        idx = SQLiteInvertedIndex(conn, "test")
+
+        idx_analyzer = Analyzer(WhitespaceTokenizer(), [LowerCaseFilter()])
+        search_analyzer = Analyzer(
+            WhitespaceTokenizer(),
+            [LowerCaseFilter(), SynonymFilter({"car": ["auto"]})],
+        )
+        idx.set_field_analyzer("body", idx_analyzer, phase="index")
+        idx.set_field_analyzer("body", search_analyzer, phase="search")
+
+        assert idx.get_field_analyzer("body") is idx_analyzer
+        assert idx.get_search_analyzer("body") is search_analyzer
+        conn.close()
+
+    def test_backward_compat_no_phase(self):
+        """Calling set_field_analyzer without phase sets both (backward compat)."""
+        from uqa.analysis.analyzer import standard_analyzer
+        from uqa.storage.inverted_index import InvertedIndex
+
+        idx = InvertedIndex()
+        analyzer = standard_analyzer()
+        idx.set_field_analyzer("body", analyzer)
+        assert idx.get_field_analyzer("body") is analyzer
+        assert idx.get_search_analyzer("body") is analyzer
+
+
+class TestTermOperatorSynonymUnion:
+    """Test that TermOperator unions synonym-expanded tokens."""
+
+    def test_synonym_expansion_finds_documents(self):
+        """Search-time synonym expansion via TermOperator uses union."""
+        from uqa.analysis.analyzer import Analyzer
+        from uqa.analysis.token_filter import LowerCaseFilter, SynonymFilter
+        from uqa.analysis.tokenizer import WhitespaceTokenizer
+        from uqa.operators.base import ExecutionContext
+        from uqa.operators.primitive import TermOperator
+        from uqa.storage.inverted_index import InvertedIndex
+
+        idx = InvertedIndex()
+        idx_analyzer = Analyzer(WhitespaceTokenizer(), [LowerCaseFilter()])
+        search_analyzer = Analyzer(
+            WhitespaceTokenizer(),
+            [LowerCaseFilter(), SynonymFilter({"automobile": ["car"]})],
+        )
+        idx.set_field_analyzer("body", idx_analyzer, phase="index")
+        idx.set_field_analyzer("body", search_analyzer, phase="search")
+
+        # Index with "car" (no synonym expansion at index time)
+        idx.add_document(1, {"body": "used car for sale"})
+        idx.add_document(2, {"body": "new bike for sale"})
+
+        ctx = ExecutionContext(inverted_index=idx)
+        op = TermOperator("automobile", field="body")
+        result = op.execute(ctx)
+
+        # "automobile" expands to ["automobile", "car"] via search analyzer
+        # "car" matches doc 1; "automobile" matches nothing
+        # Union: doc 1 found
+        doc_ids = [e.doc_id for e in result]
+        assert 1 in doc_ids
+        assert 2 not in doc_ids
+
+    def test_no_synonym_single_token(self):
+        """Single token (no expansion) still works correctly."""
+        from uqa.operators.base import ExecutionContext
+        from uqa.operators.primitive import TermOperator
+        from uqa.storage.inverted_index import InvertedIndex
+
+        idx = InvertedIndex()
+        idx.add_document(1, {"body": "used car for sale"})
+
+        ctx = ExecutionContext(inverted_index=idx)
+        op = TermOperator("car", field="body")
+        result = op.execute(ctx)
+        doc_ids = [e.doc_id for e in result]
+        assert 1 in doc_ids
+
+
+class TestDualAnalyzerCatalogPersistence:
+    """Test that field-to-analyzer mappings survive engine restart."""
+
+    def test_field_analyzer_persisted(self, tmp_path: Path):
+        from uqa.analysis.analyzer import drop_analyzer
+        from uqa.engine import Engine
+
+        db = str(tmp_path / "test.db")
+
+        # Session 1: create analyzer + assign to field
+        with Engine(db_path=db) as engine:
+            engine.sql(
+                "SELECT * FROM create_analyzer('my_stem', "
+                '\'{"tokenizer": {"type": "standard"}, '
+                '"token_filters": [{"type": "lowercase"}, '
+                '{"type": "porter_stem"}]}\')'
+            )
+            engine.sql("CREATE TABLE docs (id INT, body TEXT)")
+            engine.set_table_analyzer("docs", "body", "my_stem", phase="index")
+
+        # Session 2: verify it was restored
+        with Engine(db_path=db) as engine:
+            analyzer = engine.get_table_analyzer("docs", "body", phase="index")
+            result = analyzer.analyze("running connections")
+            assert "run" in result
+            assert "connect" in result
+
+        try:
+            drop_analyzer("my_stem")
+        except ValueError:
+            pass
+
+    def test_search_analyzer_persisted(self, tmp_path: Path):
+        from uqa.analysis.analyzer import drop_analyzer
+        from uqa.engine import Engine
+
+        db = str(tmp_path / "test.db")
+
+        with Engine(db_path=db) as engine:
+            engine.sql(
+                "SELECT * FROM create_analyzer('syn_search', "
+                '\'{"tokenizer": {"type": "whitespace"}, '
+                '"token_filters": [{"type": "lowercase"}, '
+                '{"type": "synonym", "synonyms": '
+                '{"car": ["automobile"]}}]}\')'
+            )
+            engine.sql("CREATE TABLE docs (id INT, body TEXT)")
+            engine.set_table_analyzer("docs", "body", "syn_search", phase="search")
+
+        with Engine(db_path=db) as engine:
+            analyzer = engine.get_table_analyzer("docs", "body", phase="search")
+            result = analyzer.analyze("car")
+            assert "automobile" in result
+
+        try:
+            drop_analyzer("syn_search")
+        except ValueError:
+            pass
+
+    def test_drop_table_removes_field_analyzers(self, tmp_path: Path):
+        from uqa.analysis.analyzer import drop_analyzer
+        from uqa.engine import Engine
+
+        db = str(tmp_path / "test.db")
+
+        with Engine(db_path=db) as engine:
+            engine.sql(
+                "SELECT * FROM create_analyzer('my_a', "
+                '\'{"tokenizer": {"type": "standard"}, '
+                '"token_filters": [{"type": "lowercase"}]}\')'
+            )
+            engine.sql("CREATE TABLE docs (id INT, body TEXT)")
+            engine.set_table_analyzer("docs", "body", "my_a")
+            engine.sql("DROP TABLE docs")
+
+        # Reopen: no crash, table is gone
+        with Engine(db_path=db) as engine:
+            assert "docs" not in engine._tables
+
+        try:
+            drop_analyzer("my_a")
+        except ValueError:
+            pass
+
+
+class TestSetTableAnalyzerSQL:
+    """Test the SQL set_table_analyzer() table function."""
+
+    def test_set_table_analyzer_default_phase(self):
+        from uqa.engine import Engine
+
+        engine = Engine()
+        engine.sql(
+            "SELECT * FROM create_analyzer('test_lower', "
+            '\'{"tokenizer": {"type": "standard"}, '
+            '"token_filters": [{"type": "lowercase"}]}\')'
+        )
+        engine.sql("CREATE TABLE t (id INT, body TEXT)")
+        result = engine.sql(
+            "SELECT * FROM set_table_analyzer('t', 'body', 'test_lower')"
+        )
+        assert len(result) == 1
+        assert "assigned" in str(result.rows[0])
+
+        from uqa.analysis.analyzer import drop_analyzer
+
+        drop_analyzer("test_lower")
+
+    def test_set_table_analyzer_with_phase(self):
+        from uqa.engine import Engine
+
+        engine = Engine()
+        engine.sql(
+            "SELECT * FROM create_analyzer('test_syn', "
+            '\'{"tokenizer": {"type": "whitespace"}, '
+            '"token_filters": [{"type": "lowercase"}, '
+            '{"type": "synonym", "synonyms": '
+            '{"fast": ["quick"]}}]}\')'
+        )
+        engine.sql("CREATE TABLE t (id INT, body TEXT)")
+        result = engine.sql(
+            "SELECT * FROM set_table_analyzer('t', 'body', 'test_syn', 'search')"
+        )
+        assert len(result) == 1
+        assert "phase=search" in str(result.rows[0])
+
+        # Verify search analyzer is set
+        analyzer = engine.get_table_analyzer("t", "body", phase="search")
+        tokens = analyzer.analyze("fast")
+        assert "quick" in tokens
+
+        from uqa.analysis.analyzer import drop_analyzer
+
+        drop_analyzer("test_syn")

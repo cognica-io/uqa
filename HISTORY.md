@@ -1,5 +1,33 @@
 # History
 
+## 0.13.0 (2026-03-13)
+
+Dual analyzer support: Elasticsearch-style index/search analyzer split per field with synonym expansion, catalog persistence, and production tooling.
+
+### Text Analysis
+
+- **Dual analyzer per field**: separate index-time and search-time analyzers with fallback chain (search -> index -> default), following the Elasticsearch/Lucene pattern
+- **`set_table_analyzer()` SQL table function**: `SELECT * FROM set_table_analyzer('table', 'field', 'analyzer'[, 'phase'])` assigns analyzers with `'index'`, `'search'`, or `'both'` phase
+- **Search-time synonym expansion**: SynonymFilter in the search pipeline expands query terms at read time (e.g., "car" -> "car OR automobile OR vehicle OR auto")
+- **Index-time synonym expansion**: SynonymFilter in the index pipeline creates postings for all synonym variants at write time
+- **TermOperator multi-token union**: analyzer output with multiple tokens (e.g., from synonym expansion) now uses union instead of intersect, enabling correct synonym search semantics
+- **`_table_field_analyzers` catalog table**: persists `(table_name, field, phase, analyzer_name)` tuples to SQLite; restored on engine restart
+- **`Engine.set_table_analyzer()`**: Python API with `phase` parameter (`"index"`, `"search"`, or `"both"`) and automatic catalog persistence
+- **`Engine.get_table_analyzer()`**: Python API with `phase` parameter for retrieving field-specific analyzers
+
+### Production Tooling
+
+- **Ruff linting and formatting**: integrated ruff for code quality and consistent formatting
+- **Pyright type checking**: zero errors and zero warnings across the entire codebase
+- **CI/CD workflows**: GitHub Actions for lint checks and PyPI publishing via OIDC Trusted Publisher
+- **Pre-commit hooks**: automated lint and format checks before each commit
+- **PEP 561 `py.typed` marker**: enables downstream type checking for UQA as a library
+
+### Tests and Examples
+
+- **14 new tests**: `TestDualAnalyzer` (7), `TestTermOperatorSynonymUnion` (2), `TestDualAnalyzerCatalogPersistence` (3), `TestSetTableAnalyzerSQL` (2)
+- **`examples/sql/synonyms.py`**: 12-section example demonstrating search-time and index-time synonym expansion, dual analyzers, multi-term queries, BM25 scoring with synonyms, hybrid search + filter, and catalog persistence
+
 ## 0.12.0 (2026-03-12)
 
 Geospatial support: POINT column type with R*Tree spatial indexing, spatial query functions, and cross-paradigm fusion.

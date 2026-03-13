@@ -213,7 +213,7 @@ graph TD
 ```
 uqa/
   core/           PostingList, types, hierarchical documents
-  analysis/       Text analysis pipeline: CharFilter, Tokenizer, TokenFilter, Analyzer
+  analysis/       Text analysis pipeline: CharFilter, Tokenizer, TokenFilter, Analyzer, dual index/search analyzers
   storage/        SQLite-backed stores: documents, inverted index, vectors, spatial (R*Tree), graph
   operators/      Operator algebra (boolean, primitive, hybrid, aggregation, hierarchical)
   scoring/        BM25, Bayesian BM25, VectorScorer, WAND/BlockMaxWAND (via bayesian-bm25)
@@ -226,7 +226,7 @@ uqa/
   planner/        Cost model, cardinality estimator, optimizer, DPccp join enumerator, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          1927 tests across 49 test files
+  tests/          1941 tests across 49 test files
 benchmarks/       185 pytest-benchmark tests across 8 files (posting list, storage, compiler, execution,
                   planner, scoring, graph, end-to-end SQL)
 ```
@@ -313,6 +313,7 @@ benchmarks/       185 pytest-benchmark tests across 8 files (posting list, stora
 | `cypher('graph', $$ query $$) AS (cols)` | Execute openCypher query on a named graph |
 | `create_analyzer('name', 'config')` | Create a custom text analyzer (JSON config) |
 | `drop_analyzer('name')` | Drop a custom text analyzer |
+| `set_table_analyzer('tbl', 'field', 'name'[, 'phase'])` | Assign index/search analyzer to a field |
 | `list_analyzers()` | List all registered analyzers |
 
 ### Persistence
@@ -331,6 +332,7 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 | Named Graphs | `_named_graphs`, `_graph_{name}_*` | Isolated graph namespaces for Cypher queries |
 | B-tree Indexes | SQLite indexes on `_data_{table}` | `CREATE INDEX` support |
 | Analyzers | `_analyzers` | Custom text analyzer configurations |
+| Field Analyzers | `_table_field_analyzers` | Per-field index/search analyzer assignments |
 | Foreign Servers | `_foreign_servers` | FDW server definitions (type, connection options) |
 | Foreign Tables | `_foreign_tables` | FDW table definitions (columns, source, options) |
 | Statistics | `_column_stats` | Per-table histograms and MCVs for optimizer |
@@ -544,7 +546,8 @@ python examples/sql/joins_and_subqueries.py   # JOINs, derived tables, set opera
 python examples/sql/analytics.py              # Aggregates, window functions, JSON, date/time, UPSERT
 python examples/sql/analysis.py               # Text analyzers via SQL: create, list, drop, persistence
 python examples/sql/export.py                 # Arrow/Parquet export from SQL queries
-python examples/sql/spatial.py                 # Geospatial: POINT, R*Tree, spatial_within, ST_Distance, fusion
+python examples/sql/spatial.py                # Geospatial: POINT, R*Tree, spatial_within, ST_Distance, fusion
+python examples/sql/synonyms.py               # Synonym search: dual analyzers, index/search-time expansion
 python examples/sql/fdw.py                    # Foreign Data Wrappers, Hive partitioning, predicate pushdown
 ```
 

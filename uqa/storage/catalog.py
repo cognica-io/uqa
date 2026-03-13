@@ -129,6 +129,13 @@ CREATE TABLE IF NOT EXISTS _foreign_tables (
     columns_json TEXT NOT NULL,
     options      TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS _table_field_analyzers (
+    table_name    TEXT NOT NULL,
+    field         TEXT NOT NULL,
+    phase         TEXT NOT NULL,
+    analyzer_name TEXT NOT NULL,
+    PRIMARY KEY (table_name, field, phase)
+);
 CREATE INDEX IF NOT EXISTS _graph_vertices_label ON _graph_vertices (label);
 CREATE INDEX IF NOT EXISTS _graph_edges_out ON _graph_edges (source_id, label);
 CREATE INDEX IF NOT EXISTS _graph_edges_in ON _graph_edges (target_id, label);
@@ -141,6 +148,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         raw.execute("PRAGMA foreign_keys=ON")
         raw.executescript(self._SCHEMA_SQL)
         self._migrate_column_stats(raw)
+        self._migrate_table_field_analyzers(raw)
         raw.commit()
         self._conn = ManagedConnection(raw)
         self._in_transaction = False
@@ -162,6 +170,26 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
                     f"ALTER TABLE _column_stats "
                     f"ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}"
                 )
+
+    @staticmethod
+    def _migrate_table_field_analyzers(conn: SQLiteConnection) -> None:
+        """Create _table_field_analyzers table if missing (for existing DBs)."""
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "_table_field_analyzers" not in tables:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS _table_field_analyzers ("
+                "    table_name    TEXT NOT NULL,"
+                "    field         TEXT NOT NULL,"
+                "    phase         TEXT NOT NULL,"
+                "    analyzer_name TEXT NOT NULL,"
+                "    PRIMARY KEY (table_name, field, phase)"
+                ")"
+            )
 
     @property
     def conn(self) -> ManagedConnection:
@@ -260,6 +288,9 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         self._conn.execute("DELETE FROM _postings WHERE table_name = ?", (name,))
         self._conn.execute("DELETE FROM _doc_lengths WHERE table_name = ?", (name,))
         self._conn.execute("DELETE FROM _column_stats WHERE table_name = ?", (name,))
+        self._conn.execute(
+            "DELETE FROM _table_field_analyzers WHERE table_name = ?", (name,)
+        )
         self._auto_commit()
 
     def load_table_schemas(self) -> list[tuple[str, list[dict[str, Any]]]]:
@@ -615,6 +646,36 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         """Return ``[(name, config_dict), ...]`` for all persisted analyzers."""
         rows = self._conn.execute("SELECT name, config_json FROM _analyzers").fetchall()
         return [(name, json.loads(cfg)) for name, cfg in rows]
+
+    # -- Table field analyzers -----------------------------------------
+
+    def save_table_field_analyzer(
+        self, table_name: str, field: str, phase: str, analyzer_name: str
+    ) -> None:
+        """Persist a field-to-analyzer mapping for a specific phase."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO _table_field_analyzers "
+            "(table_name, field, phase, analyzer_name) VALUES (?, ?, ?, ?)",
+            (table_name, field, phase, analyzer_name),
+        )
+        self._auto_commit()
+
+    def load_table_field_analyzers(
+        self,
+    ) -> list[tuple[str, str, str, str]]:
+        """Return ``[(table_name, field, phase, analyzer_name), ...]``."""
+        rows = self._conn.execute(
+            "SELECT table_name, field, phase, analyzer_name FROM _table_field_analyzers"
+        ).fetchall()
+        return [(r[0], r[1], r[2], r[3]) for r in rows]
+
+    def drop_table_field_analyzers(self, table_name: str) -> None:
+        """Remove all field-analyzer mappings for a table."""
+        self._conn.execute(
+            "DELETE FROM _table_field_analyzers WHERE table_name = ?",
+            (table_name,),
+        )
+        self._auto_commit()
 
     # -- Foreign servers -----------------------------------------------
 

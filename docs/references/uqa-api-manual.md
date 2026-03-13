@@ -112,11 +112,24 @@ Manage named graphs for Cypher queries. Named graphs are persisted via the SQLit
 ```python
 engine.create_analyzer(name: str, config: dict[str, Any]) -> None
 engine.drop_analyzer(name: str) -> None
-engine.set_table_analyzer(table_name: str, field: str, analyzer_name: str) -> None
-engine.get_table_analyzer(table_name: str, field: str) -> Any
+engine.set_table_analyzer(table_name: str, field: str, analyzer_name: str, phase: str = "both") -> None
+engine.get_table_analyzer(table_name: str, field: str, phase: str = "index") -> Any
 ```
 
 Create named analyzers and assign them to table fields for custom tokenization.
+
+The `phase` parameter in `set_table_analyzer` controls when the analyzer is applied:
+- `"index"` — used during document indexing (controls what tokens are stored)
+- `"search"` — used during query processing (controls how query terms are expanded)
+- `"both"` — assigned to both phases (default)
+
+The `phase` parameter in `get_table_analyzer` selects which phase's analyzer to retrieve (`"index"` by default). The search-time analyzer falls back to the index-time analyzer, which falls back to the default analyzer.
+
+```python
+# Dual analyzer: index without synonyms, search with synonym expansion
+engine.set_table_analyzer("products", "body", "plain_analyzer", phase="index")
+engine.set_table_analyzer("products", "body", "synonym_analyzer", phase="search")
+```
 
 ### Scoring Parameters
 
@@ -596,14 +609,16 @@ tokens = analyzer.analyze("The quick brown fox")  # ['quick', 'brown', 'fox']
 
 ### Built-in Analyzers
 
-| Function | Pipeline |
-|----------|----------|
-| `standard_analyzer()` | StandardTokenizer + LowerCase + ASCIIFolding + StopWord + PorterStem |
-| `whitespace_analyzer()` | WhitespaceTokenizer + LowerCase |
-| `keyword_analyzer()` | KeywordTokenizer (no filtering) |
-| `standard_cjk_analyzer()` | Standard + NGram(2,3) for CJK text |
+Four built-in analyzers are registered by default under names `"whitespace"`, `"standard"`, `"standard_cjk"`, and `"keyword"`. They cannot be overwritten or dropped.
 
-`DEFAULT_ANALYZER` is `standard_analyzer()`.
+| Name | Factory | Pipeline |
+|------|---------|----------|
+| `"standard"` | `standard_analyzer(language="english")` | StandardTokenizer -> LowerCaseFilter -> ASCIIFoldingFilter -> StopWordFilter -> PorterStemFilter |
+| `"whitespace"` | `whitespace_analyzer()` | WhitespaceTokenizer -> LowerCaseFilter |
+| `"standard_cjk"` | `standard_cjk_analyzer(language="english")` | StandardTokenizer -> LowerCaseFilter -> ASCIIFoldingFilter -> StopWordFilter -> PorterStemFilter -> NGramFilter(2, 3, keep_short=True) |
+| `"keyword"` | `keyword_analyzer()` | KeywordTokenizer (no filters) |
+
+`DEFAULT_ANALYZER` is `standard_analyzer()`. When no analyzer is assigned to a field, the default analyzer is used for both indexing and searching.
 
 ### Tokenizers
 
@@ -614,14 +629,14 @@ from uqa.analysis.tokenizer import (
 )
 ```
 
-| Class | Description |
-|-------|-------------|
-| `WhitespaceTokenizer` | Split on whitespace |
-| `StandardTokenizer` | Unicode word boundaries |
-| `LetterTokenizer` | ASCII letters only |
-| `NGramTokenizer(min_gram, max_gram)` | Character n-grams |
-| `PatternTokenizer(pattern)` | Split by regex pattern |
-| `KeywordTokenizer` | Entire input as single token |
+| Class | Description | Parameters |
+|-------|-------------|------------|
+| `WhitespaceTokenizer` | Split on whitespace (`str.split()`) | (none) |
+| `StandardTokenizer` | Unicode word-boundary tokenizer (`\w+` regex) | (none) |
+| `LetterTokenizer` | Extract runs of ASCII letters only (`[a-zA-Z]+`) | (none) |
+| `NGramTokenizer(min_gram, max_gram)` | Split on whitespace, then generate character n-grams per word | `min_gram` (default 1), `max_gram` (default 2) |
+| `PatternTokenizer(pattern)` | Split text using a regex delimiter | `pattern` (default `r"\W+"`) |
+| `KeywordTokenizer` | Entire input as a single token, unmodified | (none) |
 
 ### Token Filters
 
@@ -633,16 +648,16 @@ from uqa.analysis.token_filter import (
 )
 ```
 
-| Class | Description |
-|-------|-------------|
-| `LowerCaseFilter` | Lowercase all tokens |
-| `StopWordFilter(language)` | Remove stop words |
-| `PorterStemFilter` | Porter stemming algorithm |
-| `ASCIIFoldingFilter` | Fold Unicode to ASCII |
-| `SynonymFilter(synonyms)` | Expand synonyms |
-| `NGramFilter(min_gram, max_gram)` | Token-level n-grams |
-| `EdgeNGramFilter(min_gram, max_gram)` | Prefix n-grams (autocomplete) |
-| `LengthFilter(min_length, max_length)` | Filter by token length |
+| Class | Description | Parameters |
+|-------|-------------|------------|
+| `LowerCaseFilter` | Convert all tokens to lowercase | (none) |
+| `StopWordFilter(language, custom_words)` | Remove stop words from the token stream | `language` (default `"english"`), `custom_words` (optional `set[str]`) |
+| `PorterStemFilter` | Apply the Porter stemming algorithm (suffix stripping) | (none) |
+| `ASCIIFoldingFilter` | Fold Unicode characters to ASCII equivalents (NFKD normalization) | (none) |
+| `SynonymFilter(synonyms, synonyms_path)` | Expand tokens with synonyms; original token kept, alternatives appended | `synonyms`: `dict[str, list[str]]` or `synonyms_path`: file path (mutually exclusive) |
+| `NGramFilter(min_gram, max_gram, keep_short)` | Generate character n-grams from each token | `min_gram` (default 2), `max_gram` (default 3), `keep_short` (default False) |
+| `EdgeNGramFilter(min_gram, max_gram)` | Generate prefix n-grams (autocomplete/typeahead) | `min_gram` (default 1), `max_gram` (default 20) |
+| `LengthFilter(min_length, max_length)` | Keep tokens within a length range | `min_length` (default 0), `max_length` (default 0 = no limit) |
 
 ### Character Filters
 
@@ -652,11 +667,11 @@ from uqa.analysis.char_filter import (
 )
 ```
 
-| Class | Description |
-|-------|-------------|
-| `HTMLStripCharFilter` | Strip HTML tags, convert entities |
-| `MappingCharFilter(mapping)` | Character-level replacements |
-| `PatternReplaceCharFilter(pattern, replacement)` | Regex-based replacement |
+| Class | Description | Parameters |
+|-------|-------------|------------|
+| `HTMLStripCharFilter` | Strip HTML tags and convert common HTML entities | (none) |
+| `MappingCharFilter(mapping)` | Apply string-level character replacements (longest-match-first) | `mapping`: `dict[str, str]` |
+| `PatternReplaceCharFilter(pattern, replacement)` | Replace text matching a regular expression | `pattern`: regex string, `replacement` (default `""`) |
 
 ### Analyzer Registry
 

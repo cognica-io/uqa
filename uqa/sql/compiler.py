@@ -4325,6 +4325,8 @@ class SQLCompiler:
             return self._build_drop_analyzer(args)
         if name == "list_analyzers":
             return self._build_list_analyzers()
+        if name == "set_table_analyzer":
+            return self._build_set_table_analyzer(args)
         raise ValueError(f"Unknown table function: {name}")
 
     @staticmethod
@@ -4547,6 +4549,37 @@ class SQLCompiler:
         self._expanded_views.append("_list_analyzers")
         return table, None
 
+    def _build_set_table_analyzer(self, args: tuple) -> tuple[Table | None, Any]:
+        """Handle ``SELECT * FROM set_table_analyzer('table', 'field', 'name'[, 'phase'])``."""
+        from uqa.sql.table import ColumnDef as SQLColumnDef
+
+        if len(args) < 3:
+            raise ValueError(
+                "set_table_analyzer() requires (table, field, analyzer_name[, phase])"
+            )
+        table_name = self._extract_string_value(args[0])
+        field = self._extract_string_value(args[1])
+        analyzer_name = self._extract_string_value(args[2])
+        phase = self._extract_string_value(args[3]) if len(args) > 3 else "both"
+        self._engine.set_table_analyzer(table_name, field, analyzer_name, phase=phase)
+        table = Table(
+            "_set_table_analyzer",
+            [
+                SQLColumnDef(
+                    name="set_table_analyzer",
+                    type_name="text",
+                    python_type=str,
+                ),
+            ],
+        )
+        msg = f"analyzer '{analyzer_name}' assigned to {table_name}.{field}"
+        if phase != "both":
+            msg += f" (phase={phase})"
+        table.insert({"set_table_analyzer": msg})
+        self._engine._tables["_set_table_analyzer"] = table
+        self._expanded_views.append("_set_table_analyzer")
+        return table, None
+
     def _build_cypher_from(
         self, node: RangeFunction, args: tuple
     ) -> tuple[Table | None, Any]:
@@ -4615,7 +4648,7 @@ class SQLCompiler:
                 raise ValueError(f"Table '{table_name}' does not exist")
         ctx = self._context_for_table(table)
         analyzer = (
-            ctx.inverted_index.get_field_analyzer(field_name)
+            ctx.inverted_index.get_search_analyzer(field_name)
             if field_name
             else ctx.inverted_index.analyzer
         )
@@ -5420,7 +5453,7 @@ class SQLCompiler:
         from uqa.operators.boolean import UnionOperator
         from uqa.operators.primitive import ScoreOperator, TermOperator
 
-        analyzer = ctx.inverted_index.get_field_analyzer(field_name)
+        analyzer = ctx.inverted_index.get_search_analyzer(field_name)
         terms = analyzer.analyze(query)
         term_ops = [TermOperator(t, field_name) for t in terms]
         retrieval = term_ops[0] if len(term_ops) == 1 else UnionOperator(term_ops)

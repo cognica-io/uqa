@@ -14,7 +14,11 @@ from __future__ import annotations
 
 import unicodedata
 from abc import ABC, abstractmethod
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import os
 
 
 class TokenFilter(ABC):
@@ -413,15 +417,92 @@ class ASCIIFoldingFilter(TokenFilter):
         return cls()
 
 
+def _parse_synonym_file(path: str | os.PathLike[str]) -> dict[str, list[str]]:
+    """Parse a Solr/Elasticsearch-format synonym file.
+
+    Supported formats (one rule per line):
+
+    Explicit mapping::
+
+        car => automobile, vehicle
+
+    Equivalent synonyms (bidirectional)::
+
+        car, automobile, vehicle
+
+    Lines starting with ``#`` are comments.  Blank lines are skipped.
+    All terms are stripped of surrounding whitespace.
+    """
+    synonyms: dict[str, list[str]] = {}
+    with open(path, encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            if "=>" in line:
+                # Explicit mapping: lhs => rhs1, rhs2, ...
+                lhs, rhs = line.split("=>", 1)
+                key = lhs.strip()
+                values = [v.strip() for v in rhs.split(",") if v.strip()]
+                if key and values:
+                    synonyms.setdefault(key, []).extend(values)
+            else:
+                # Equivalent synonyms: a, b, c  (each maps to the others)
+                terms = [t.strip() for t in line.split(",") if t.strip()]
+                if len(terms) < 2:
+                    continue
+                for term in terms:
+                    others = [t for t in terms if t != term]
+                    synonyms.setdefault(term, []).extend(others)
+
+    # Deduplicate values while preserving order
+    for key in synonyms:
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for v in synonyms[key]:
+            if v not in seen:
+                seen.add(v)
+                deduped.append(v)
+        synonyms[key] = deduped
+
+    return synonyms
+
+
 class SynonymFilter(TokenFilter):
     """Expand tokens with synonyms.
 
     For each token matching a synonym key, appends the synonym
     alternatives to the token stream.  The original token is kept.
+
+    Synonyms can be provided as:
+    - An inline dict: ``{"car": ["automobile", "vehicle"]}``
+    - A file path (``synonyms_path``) to a Solr/Elasticsearch-format file
+
+    File format (one rule per line)::
+
+        # Comment lines start with #
+        car => automobile, vehicle       # explicit mapping
+        fast, quick, speedy              # equivalent (bidirectional)
     """
 
-    def __init__(self, synonyms: dict[str, list[str]]) -> None:
-        self._synonyms = synonyms
+    def __init__(
+        self,
+        synonyms: dict[str, list[str]] | None = None,
+        synonyms_path: str | os.PathLike[str] | None = None,
+    ) -> None:
+        if synonyms is not None and synonyms_path is not None:
+            raise ValueError("Specify either 'synonyms' or 'synonyms_path', not both")
+        if synonyms is None and synonyms_path is None:
+            raise ValueError("Either 'synonyms' or 'synonyms_path' must be provided")
+
+        self._synonyms_path: str | None = None
+        if synonyms_path is not None:
+            self._synonyms_path = str(Path(synonyms_path).resolve())
+            self._synonyms = _parse_synonym_file(self._synonyms_path)
+        else:
+            assert synonyms is not None
+            self._synonyms = synonyms
 
     def filter(self, tokens: list[str]) -> list[str]:
         result: list[str] = []
@@ -432,11 +513,15 @@ class SynonymFilter(TokenFilter):
         return result
 
     def to_dict(self) -> dict[str, Any]:
+        if self._synonyms_path is not None:
+            return {"type": "synonym", "synonyms_path": self._synonyms_path}
         return {"type": "synonym", "synonyms": self._synonyms}
 
     @classmethod
     def _from_dict(cls, d: dict[str, Any]) -> SynonymFilter:
-        return cls(d["synonyms"])
+        if "synonyms_path" in d:
+            return cls(synonyms_path=d["synonyms_path"])
+        return cls(synonyms=d["synonyms"])
 
 
 class NGramFilter(TokenFilter):
