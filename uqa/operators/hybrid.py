@@ -108,10 +108,12 @@ class LogOddsFusionOperator(Operator):
         signals: list[Operator],
         alpha: float = 0.5,
         top_k: int | None = None,
+        gating: str | None = None,
     ) -> None:
         self.signals = signals
         self.alpha = alpha
         self.top_k = top_k
+        self.gating = gating
 
     def execute(self, context: ExecutionContext) -> PostingList:
         from bayesian_bm25 import log_odds_conjunction
@@ -136,7 +138,11 @@ class LogOddsFusionOperator(Operator):
                 upper_bounds.append(ub)
 
             scorer = FusionWANDScorer(
-                posting_lists, upper_bounds, alpha=self.alpha, k=self.top_k
+                posting_lists,
+                upper_bounds,
+                alpha=self.alpha,
+                k=self.top_k,
+                gating=self.gating,
             )
             return scorer.score_top_k()
 
@@ -175,7 +181,9 @@ class LogOddsFusionOperator(Operator):
             if num_signals == 1:
                 fused = float(row[0])
             else:
-                fused = float(log_odds_conjunction(row, alpha=alpha))
+                fused = float(
+                    log_odds_conjunction(row, alpha=alpha, gating=self.gating or "none")
+                )
             entries.append(PostingEntry(doc_id, Payload(score=fused)))
 
         return PostingList.from_sorted(entries)

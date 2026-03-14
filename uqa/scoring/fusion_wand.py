@@ -48,11 +48,13 @@ class FusionWANDScorer:
         signal_upper_bounds: list[float],
         alpha: float = 0.5,
         k: int = 10,
+        gating: str | None = None,
     ) -> None:
         self.signal_posting_lists = signal_posting_lists
         self.signal_upper_bounds = signal_upper_bounds
         self.alpha = alpha
         self.k = k
+        self.gating = gating
 
     def _compute_fused_upper_bound(self, active_ubs: list[float]) -> float:
         """Compute fused upper bound from per-signal upper bounds.
@@ -61,7 +63,13 @@ class FusionWANDScorer:
         """
         if not active_ubs:
             return 0.0
-        return float(log_odds_conjunction(np.array(active_ubs), alpha=self.alpha))
+        return float(
+            log_odds_conjunction(
+                np.array(active_ubs),
+                alpha=self.alpha,
+                gating=self.gating or "none",
+            )
+        )
 
     def score_top_k(self) -> PostingList:
         """Execute WAND-style top-k with fused scoring.
@@ -117,7 +125,13 @@ class FusionWANDScorer:
             if num_signals == 1:
                 fused = probs[0]
             else:
-                fused = float(log_odds_conjunction(np.array(probs), alpha=self.alpha))
+                fused = float(
+                    log_odds_conjunction(
+                        np.array(probs),
+                        alpha=self.alpha,
+                        gating=self.gating or "none",
+                    )
+                )
 
             if len(top_k_heap) < self.k:
                 heapq.heappush(top_k_heap, (fused, doc_id))

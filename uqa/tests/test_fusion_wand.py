@@ -90,6 +90,26 @@ class TestFusionWANDScorer:
             r2.entries[0].payload.score, abs=1e-3
         )
 
+    def test_wand_gating_relu(self) -> None:
+        """WAND with relu gating produces valid results."""
+        pl1 = _make_posting_list([(1, 0.7), (2, 0.6)])
+        pl2 = _make_posting_list([(1, 0.8), (2, 0.5)])
+        scorer = FusionWANDScorer([pl1, pl2], [0.8, 0.8], k=5, gating="relu")
+        result = scorer.score_top_k()
+        assert len(result) > 0
+        for entry in result:
+            assert 0.0 <= entry.payload.score <= 1.0
+
+    def test_wand_gating_swish(self) -> None:
+        """WAND with swish gating produces valid results."""
+        pl1 = _make_posting_list([(1, 0.7), (2, 0.6)])
+        pl2 = _make_posting_list([(1, 0.8), (2, 0.5)])
+        scorer = FusionWANDScorer([pl1, pl2], [0.8, 0.8], k=5, gating="swish")
+        result = scorer.score_top_k()
+        assert len(result) > 0
+        for entry in result:
+            assert 0.0 <= entry.payload.score <= 1.0
+
 
 class TestLogOddsFusionTopK:
     """Tests for LogOddsFusionOperator with top_k parameter."""
@@ -171,5 +191,23 @@ class TestFusionWANDSQL:
             "SELECT * FROM docs WHERE "
             "fuse_log_odds(bayesian_match(content, 'learning'), "
             "bayesian_match(content, 'algorithms'))"
+        )
+        assert result is not None
+
+    def test_log_odds_with_gating_relu(self, engine: Engine) -> None:
+        """SQL: fuse_log_odds with 'relu' gating parameter."""
+        result = engine.sql(
+            "SELECT * FROM docs WHERE "
+            "fuse_log_odds(bayesian_match(content, 'learning'), "
+            "bayesian_match(content, 'algorithms'), 0.5, 'relu')"
+        )
+        assert result is not None
+
+    def test_log_odds_with_gating_swish(self, engine: Engine) -> None:
+        """SQL: fuse_log_odds with 'swish' gating parameter."""
+        result = engine.sql(
+            "SELECT * FROM docs WHERE "
+            "fuse_log_odds(bayesian_match(content, 'learning'), "
+            "bayesian_match(content, 'algorithms'), 'swish')"
         )
         assert result is not None

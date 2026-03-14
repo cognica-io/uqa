@@ -97,6 +97,25 @@ class TestLogOddsFusion:
         result = fusion_1.fuse(probs)
         assert 0.0 < result < 1.0
 
+    def test_gating_none_matches_default(self) -> None:
+        """gating=None produces same result as default."""
+        f_default = LogOddsFusion(confidence_alpha=0.5)
+        f_none = LogOddsFusion(confidence_alpha=0.5, gating=None)
+        probs = [0.8, 0.6, 0.7]
+        assert f_default.fuse(probs) == pytest.approx(f_none.fuse(probs))
+
+    def test_gating_relu(self) -> None:
+        """gating='relu' produces valid result."""
+        f = LogOddsFusion(confidence_alpha=0.5, gating="relu")
+        result = f.fuse([0.8, 0.6, 0.7])
+        assert 0.0 <= result <= 1.0
+
+    def test_gating_swish(self) -> None:
+        """gating='swish' produces valid result."""
+        f = LogOddsFusion(confidence_alpha=0.5, gating="swish")
+        result = f.fuse([0.8, 0.6, 0.7])
+        assert 0.0 <= result <= 1.0
+
 
 # -- ProbabilisticBoolean Tests --
 

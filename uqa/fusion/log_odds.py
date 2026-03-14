@@ -22,13 +22,18 @@ class LogOddsFusion:
     - Relevance preservation (Theorem 4.5.1 iv): all P_i > 0.5 => P_final > 0.5
     """
 
-    def __init__(self, confidence_alpha: float = 0.5) -> None:
+    def __init__(
+        self, confidence_alpha: float = 0.5, gating: str | None = None
+    ) -> None:
         """
         Args:
             confidence_alpha: Confidence scaling exponent.
                 alpha=0.5 yields the sqrt(n) scaling law (Theorem 4.4.1).
+            gating: Gating mechanism for log-odds signals.
+                "none" (default), "relu", or "swish".
         """
         self.alpha = confidence_alpha
+        self.gating = gating
 
     def fuse(self, probabilities: list[float]) -> float:
         """Combine calibrated probability signals via log-odds conjunction."""
@@ -37,13 +42,20 @@ class LogOddsFusion:
             return 0.5
         if n == 1:
             return probabilities[0]
+        gating = self.gating or "none"
         if n <= 4:
             return float(
                 log_odds_conjunction(
-                    np.asarray(probabilities, dtype=np.float64), alpha=self.alpha
+                    np.asarray(probabilities, dtype=np.float64),
+                    alpha=self.alpha,
+                    gating=gating,
                 )
             )
-        return float(log_odds_conjunction(np.array(probabilities), alpha=self.alpha))
+        return float(
+            log_odds_conjunction(
+                np.array(probabilities), alpha=self.alpha, gating=gating
+            )
+        )
 
     def fuse_weighted(self, probabilities: list[float], weights: list[float]) -> float:
         """Weighted log-odds conjunction (attention-like, Section 8, Paper 4)."""
@@ -55,5 +67,6 @@ class LogOddsFusion:
                 np.array(probabilities),
                 alpha=self.alpha,
                 weights=np.array(weights),
+                gating=self.gating or "none",
             )
         )
