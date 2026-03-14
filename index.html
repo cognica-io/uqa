@@ -21,9 +21,8 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
 <header class="hero">
   <h1><span>UQA</span> &mdash; Unified Query Algebra</h1>
   <p class="tagline">
-    A multi-paradigm database engine that unifies relational, text retrieval,
-    vector search, graph query, and geospatial paradigms under a single
-    algebraic structure, using posting lists as the universal abstraction.
+    A database prototype that unifies relational, text retrieval, vector search,
+    and graph query paradigms under a single algebraic structure.
   </p>
   <div class="badges">
     <a class="primary" href="https://github.com/cognica-io/uqa">GitHub</a>
@@ -109,16 +108,15 @@ graph TD
     PAR --> DS["Document Store &mdash; SQLite"]
     PAR --> II["Inverted Index &mdash; SQLite + Analyzer"]
     PAR --> VI["Vector Index &mdash; IVF"]
-    PAR --> SI["Spatial Index &mdash; R*Tree"]
     PAR --> GS["Graph Store &mdash; SQLite"]
 
-    subgraph Scoring ["Scoring (bayesian-bm25)"]
+    subgraph Scoring
         BM25[BM25]
         BBFS[Bayesian BM25]
         VS[Vector Scorer]
     end
 
-    subgraph Fusion ["Fusion (bayesian-bm25)"]
+    subgraph Fusion
         LO[Log-Odds]
         PB[Probabilistic Boolean]
     end
@@ -146,7 +144,7 @@ graph TD
     <div class="card">
       <h3>Storage Layer</h3>
       <p>SQLite-backed persistence for documents, inverted indexes, vectors
-        (IVF), spatial (R*Tree), and graph adjacency. Per-table isolation, ACID transactions.</p>
+        (IVF), and graph adjacency. Per-table isolation, ACID transactions.</p>
     </div>
     <div class="card">
       <h3>Text Analysis</h3>
@@ -157,6 +155,11 @@ graph TD
       <h3>Parallel Execution</h3>
       <p>Independent branches (Union, Intersect, Fusion) run concurrently via
         ThreadPoolExecutor. Configurable worker count.</p>
+    </div>
+    <div class="card">
+      <h3>Graph Centrality</h3>
+      <p>PageRank, HITS, and betweenness centrality with SQL functions for
+        both WHERE-clause scoring and FROM-clause table sources. Named graph support.</p>
     </div>
   </div>
 </div>
@@ -197,11 +200,6 @@ graph TD
         <td>Relational</td>
       </tr>
       <tr>
-        <td>$Spatial_r(c)$</td>
-        <td>$PL(\lbrace d \in \mathcal{D} \mid haversine(d.f, c) \leq r \rbrace)$</td>
-        <td>Geospatial</td>
-      </tr>
-      <tr>
         <td>$Score_q(L)$</td>
         <td>$(L, [s_1, \ldots, s_{|L|}])$</td>
         <td>Scoring</td>
@@ -235,9 +233,10 @@ graph TD
       <tr><td><code>fuse_prob_and(s1, s2, ...)</code></td><td>$P = \prod P_i$</td></tr>
       <tr><td><code>fuse_prob_or(s1, s2, ...)</code></td><td>$P = 1 - \prod(1 - P_i)$</td></tr>
       <tr><td><code>fuse_prob_not(signal)</code></td><td>$P = 1 - P_{signal}$</td></tr>
-      <tr><td><code>fuse_attention(s1, s2, ...)</code></td><td>Attention-weighted log-odds fusion</td></tr>
-      <tr><td><code>fuse_learned(s1, s2, ...)</code></td><td>Learned-weight log-odds fusion</td></tr>
-      <tr><td><code>staged_retrieval(s1, k1, s2, k2, ...)</code></td><td>Multi-stage cascading retrieval pipeline</td></tr>
+      <tr><td><code>fuse_log_odds(s1, s2, 'relu')</code></td><td>Log-odds with ReLU/Swish gating</td></tr>
+      <tr><td><code>pagerank() / hits() / betweenness()</code></td><td>Graph centrality as FROM or WHERE signal</td></tr>
+      <tr><td><code>progressive_fusion(s1, s2, k, ...)</code></td><td>Cascading multi-stage WAND pruning</td></tr>
+      <tr><td><code>weighted_rpq('expr', start, 'prop')</code></td><td>RPQ with cumulative edge weight tracking</td></tr>
     </tbody>
   </table>
 </div>
@@ -286,15 +285,13 @@ graph TD
     <li><strong>Histogram-aware selectivity:</strong> equi-depth histograms + Most Common Values (MCV) from <code>ANALYZE</code></li>
     <li><strong>Filter pushdown</strong> into intersections</li>
     <li><strong>Cardinality-ordered intersections:</strong> cheapest-first operand reordering</li>
-    <li><strong>Fusion signal reordering:</strong> cheapest-first signal evaluation</li>
     <li><strong>B-tree index scan substitution:</strong> replace full scans when profitable</li>
-    <li><strong>R*Tree spatial index scan:</strong> for POINT column range queries</li>
-    <li><strong>FDW predicate pushdown:</strong> comparison, IN, LIKE, ILIKE, BETWEEN pushed to DuckDB/Arrow Flight SQL</li>
-    <li><strong>Cross-paradigm cardinality:</strong> text, vector, graph, fusion, temporal, and GNN operators</li>
-    <li><strong>CTE inlining:</strong> for single-reference non-recursive CTEs</li>
-    <li><strong>Predicate pushdown:</strong> into views and derived tables</li>
-    <li><strong>Path index acceleration:</strong> for simple Concat-of-Labels RPQ expressions</li>
-    <li><strong>Implicit cross join reordering:</strong> via DPccp when equijoin predicates exist in WHERE</li>
+    <li><strong>FDW predicate pushdown:</strong> comparison, IN, LIKE, ILIKE pushed to DuckDB/Arrow Flight SQL</li>
+    <li><strong>Cross-paradigm cardinality:</strong> text, vector, graph, and fusion operators</li>
+    <li><strong>Edge filter pushdown:</strong> graph edge property filters into pattern constraints</li>
+    <li><strong>Join-pattern fusion:</strong> merge intersected pattern matches with shared variables</li>
+    <li><strong>Threshold-aware vector selectivity:</strong> 4-tier estimation buckets</li>
+    <li><strong>Temporal cardinality correction:</strong> timestamp/range selectivity for temporal graphs</li>
   </ul>
 </div>
 </section>
@@ -340,37 +337,15 @@ graph TD
     ORDER BY p.name
 $$</span>) <span class="kw">AS</span> (name agtype, friend agtype, age agtype);</code></pre>
 
-  <h3>Full-Text Search (@@ Operator)</h3>
-<pre><code><span class="cm">&mdash; Query string mini-language: boolean, phrase, field targeting</span>
-<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> articles
-<span class="kw">WHERE</span> title <span class="fn">@@</span> <span class="st">'database AND query'</span> <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+  <h3>Graph Centrality</h3>
+<pre><code><span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> <span class="fn">pagerank</span>()
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
 
-<span class="cm">&mdash; Hybrid text + vector fusion via @@</span>
-<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> articles
-<span class="kw">WHERE</span> _all <span class="fn">@@</span> <span class="st">'body:search AND embedding:[0.1, 0.9, 0.0, 0.0]'</span>
-<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
-
-  <h3>Geospatial Query</h3>
-<pre><code><span class="kw">CREATE TABLE</span> restaurants (
-    id <span class="kw">SERIAL PRIMARY KEY</span>,
-    name <span class="kw">TEXT NOT NULL</span>,
-    cuisine <span class="kw">TEXT NOT NULL</span>,
-    location <span class="kw">POINT</span>
-);
-
-<span class="kw">CREATE INDEX</span> idx_loc <span class="kw">ON</span> restaurants <span class="kw">USING</span> rtree (location);
-
-<span class="kw">SELECT</span> name, <span class="fn">ROUND</span>(<span class="fn">ST_Distance</span>(location, <span class="fn">POINT</span>(-73.9857, 40.7484)), 0) <span class="kw">AS</span> dist_m
-<span class="kw">FROM</span> restaurants
-<span class="kw">WHERE</span> <span class="fn">spatial_within</span>(location, <span class="fn">POINT</span>(-73.9857, 40.7484), 5000)
-<span class="kw">ORDER BY</span> dist_m;</code></pre>
-
-  <h3>Spatial + Text + Vector Fusion</h3>
-<pre><code><span class="kw">SELECT</span> name, _score <span class="kw">FROM</span> restaurants
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
 <span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
-    <span class="fn">text_match</span>(description, <span class="st">'pizza'</span>),
-    <span class="fn">spatial_within</span>(location, <span class="fn">POINT</span>(-73.9969, 40.7306), 3000),
-    <span class="fn">knn_match</span>(embedding, $1, 5)
+    <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
+    <span class="fn">pagerank</span>(),
+    <span class="st">'relu'</span>
 ) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
 
   <h3>Foreign Data Wrapper</h3>
@@ -428,7 +403,7 @@ $$</span>) <span class="kw">AS</span> (name agtype, friend agtype, age agtype);<
 <div class="container">
   <h2>Benchmarks</h2>
   <p>
-    269 pytest-benchmark tests across 13 subsystems track performance across commits.
+    295 pytest-benchmark tests across 14 subsystems track performance across commits.
     The CI pipeline detects regressions with a 150% threshold and blocks PRs
     that exceed it.
   </p>
@@ -470,34 +445,14 @@ $$</span>) <span class="kw">AS</span> (name agtype, friend agtype, age agtype);<
         regular path queries on social-graph topologies.</p>
     </div>
     <div class="card">
+      <h3>Graph Centrality</h3>
+      <p>PageRank, HITS, betweenness, bounded RPQ, weighted paths,
+        subgraph index, incremental matching, and progressive fusion.</p>
+    </div>
+    <div class="card">
       <h3>End-to-End SQL</h3>
       <p>Full query lifecycle: parse, optimize, execute, and materialize
         for analytical and hybrid queries.</p>
-    </div>
-    <div class="card">
-      <h3>Calibration</h3>
-      <p>ECE, Brier score, reliability diagrams, and parameter learning
-        for Bayesian BM25 posterior calibration.</p>
-    </div>
-    <div class="card">
-      <h3>Multi-Field</h3>
-      <p>Per-field Bayesian BM25 scoring with weighted log-odds conjunction
-        across title, body, and abstract fields.</p>
-    </div>
-    <div class="card">
-      <h3>External Prior</h3>
-      <p>Recency and authority prior injection into Bayesian BM25 posterior
-        via log-odds decomposition.</p>
-    </div>
-    <div class="card">
-      <h3>Advanced Scoring</h3>
-      <p>Sparse thresholding, attention fusion, learned fusion,
-        and multi-stage cascading retrieval pipelines.</p>
-    </div>
-    <div class="card">
-      <h3>Advanced Graph</h3>
-      <p>Temporal traversal, message passing aggregation,
-        structural graph embeddings, and delta operations.</p>
     </div>
   </div>
 
