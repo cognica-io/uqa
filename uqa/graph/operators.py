@@ -54,14 +54,12 @@ class TraverseOperator:
             next_frontier: set[int] = set()
             for v in frontier:
                 # Collect edges and neighbors
+                adj = graph._adj_out.get(v, set())
                 if self.label is not None:
-                    edge_ids = [
-                        eid
-                        for eid in (graph._adj_out.get(v, []))
-                        if graph._edges[eid].label == self.label
-                    ]
+                    label_eids = graph._label_index.get(self.label, set())
+                    edge_ids = adj & label_eids
                 else:
-                    edge_ids = list(graph._adj_out.get(v, []))
+                    edge_ids = adj
                 for eid in edge_ids:
                     edge = graph._edges[eid]
                     neighbor = edge.target_id
@@ -77,12 +75,14 @@ class TraverseOperator:
         # Build GraphPostingList: each reached vertex (excluding start) is an entry
         entries: list[PostingEntry] = []
         graph_payloads: dict[int, GraphPayload] = {}
+        frozen_visited = frozenset(visited)
+        frozen_edges = frozenset(all_edges)
         for vid in sorted(visited):
             entry = PostingEntry(vid, Payload(score=0.9))
             entries.append(entry)
             graph_payloads[vid] = GraphPayload(
-                subgraph_vertices=frozenset(visited),
-                subgraph_edges=frozenset(all_edges),
+                subgraph_vertices=frozen_visited,
+                subgraph_edges=frozen_edges,
             )
 
         gpl = GraphPostingList(entries, graph_payloads)
@@ -418,23 +418,25 @@ class RegularPathQueryOperator:
         # For each start vertex, simulate NFA across graph
         # State = (graph_vertex, nfa_state)
         # BFS until reaching accepting states
-        result_pairs: list[tuple[int, int]] = []  # (start, end) pairs
+        result_pairs: set[tuple[int, int]] = set()  # (start, end) pairs
+
+        # Build state_id -> _NFAState lookup once for all start vertices.
+        all_nfa_states = self._collect_nfa_states(nfa)
+        state_map = {s.state_id: s for s in all_nfa_states}
+
+        initial_nfa_states = _epsilon_closure({nfa.start})
+        initial_ids = frozenset(s.state_id for s in initial_nfa_states)
+        accept_id = nfa.accept.state_id
 
         for sv in start_vertices:
-            initial_nfa_states = _epsilon_closure({nfa.start})
             # Queue: (graph_vertex, nfa_states_set_as_frozenset)
             queue: deque[tuple[int, frozenset[int]]] = deque()
-            initial_ids = frozenset(s.state_id for s in initial_nfa_states)
             queue.append((sv, initial_ids))
             visited_configs: set[tuple[int, frozenset[int]]] = {(sv, initial_ids)}
 
-            # Build state_id -> _NFAState lookup
-            all_nfa_states = self._collect_nfa_states(nfa)
-            state_map = {s.state_id: s for s in all_nfa_states}
-
             # Check if start is already accepting
-            if nfa.accept.state_id in initial_ids:
-                result_pairs.append((sv, sv))
+            if accept_id in initial_ids:
+                result_pairs.add((sv, sv))
 
             while queue:
                 gv, nfa_state_ids = queue.popleft()
@@ -460,11 +462,8 @@ class RegularPathQueryOperator:
                     next_nfa = _epsilon_closure(next_nfa)
                     next_ids = frozenset(s.state_id for s in next_nfa)
 
-                    if (
-                        nfa.accept.state_id in next_ids
-                        and (sv, neighbor) not in result_pairs
-                    ):
-                        result_pairs.append((sv, neighbor))
+                    if accept_id in next_ids:
+                        result_pairs.add((sv, neighbor))
 
                     config = (neighbor, next_ids)
                     if config not in visited_configs:

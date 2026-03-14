@@ -19,16 +19,16 @@ class GraphStore:
     def __init__(self) -> None:
         self._vertices: dict[int, Vertex] = {}
         self._edges: dict[int, Edge] = {}
-        self._adj_out: dict[int, list[int]] = defaultdict(list)
-        self._adj_in: dict[int, list[int]] = defaultdict(list)
-        self._label_index: dict[str, list[int]] = defaultdict(list)
-        self._vertex_label_index: dict[str, list[int]] = defaultdict(list)
+        self._adj_out: dict[int, set[int]] = defaultdict(set)
+        self._adj_in: dict[int, set[int]] = defaultdict(set)
+        self._label_index: dict[str, set[int]] = defaultdict(set)
+        self._vertex_label_index: dict[str, set[int]] = defaultdict(set)
         self._next_vertex_id: int = 1
         self._next_edge_id: int = 1
 
     def add_vertex(self, vertex: Vertex) -> None:
         self._vertices[vertex.vertex_id] = vertex
-        self._vertex_label_index[vertex.label].append(vertex.vertex_id)
+        self._vertex_label_index[vertex.label].add(vertex.vertex_id)
         if vertex.vertex_id >= self._next_vertex_id:
             self._next_vertex_id = vertex.vertex_id + 1
 
@@ -38,37 +38,37 @@ class GraphStore:
         if vertex is None:
             return
         # Remove from vertex label index
-        vids = self._vertex_label_index.get(vertex.label, [])
-        if vertex_id in vids:
-            vids.remove(vertex_id)
+        vids = self._vertex_label_index.get(vertex.label)
+        if vids is not None:
+            vids.discard(vertex_id)
 
         # Remove all incident edges (both directions)
-        out_eids = list(self._adj_out.pop(vertex_id, []))
-        in_eids = list(self._adj_in.pop(vertex_id, []))
+        out_eids = list(self._adj_out.pop(vertex_id, set()))
+        in_eids = list(self._adj_in.pop(vertex_id, set()))
         for eid in out_eids:
             edge = self._edges.pop(eid, None)
             if edge is not None:
-                self._adj_in.get(edge.target_id, []).remove(
-                    eid
-                ) if eid in self._adj_in.get(edge.target_id, []) else None
-                lbl_list = self._label_index.get(edge.label, [])
-                if eid in lbl_list:
-                    lbl_list.remove(eid)
+                adj_in = self._adj_in.get(edge.target_id)
+                if adj_in is not None:
+                    adj_in.discard(eid)
+                lbl_set = self._label_index.get(edge.label)
+                if lbl_set is not None:
+                    lbl_set.discard(eid)
         for eid in in_eids:
             edge = self._edges.pop(eid, None)
             if edge is not None:
-                adj = self._adj_out.get(edge.source_id, [])
-                if eid in adj:
-                    adj.remove(eid)
-                lbl_list = self._label_index.get(edge.label, [])
-                if eid in lbl_list:
-                    lbl_list.remove(eid)
+                adj = self._adj_out.get(edge.source_id)
+                if adj is not None:
+                    adj.discard(eid)
+                lbl_set = self._label_index.get(edge.label)
+                if lbl_set is not None:
+                    lbl_set.discard(eid)
 
     def add_edge(self, edge: Edge) -> None:
         self._edges[edge.edge_id] = edge
-        self._adj_out[edge.source_id].append(edge.edge_id)
-        self._adj_in[edge.target_id].append(edge.edge_id)
-        self._label_index[edge.label].append(edge.edge_id)
+        self._adj_out[edge.source_id].add(edge.edge_id)
+        self._adj_in[edge.target_id].add(edge.edge_id)
+        self._label_index[edge.label].add(edge.edge_id)
         if edge.edge_id >= self._next_edge_id:
             self._next_edge_id = edge.edge_id + 1
 
@@ -77,15 +77,15 @@ class GraphStore:
         edge = self._edges.pop(edge_id, None)
         if edge is None:
             return
-        adj_out = self._adj_out.get(edge.source_id, [])
-        if edge_id in adj_out:
-            adj_out.remove(edge_id)
-        adj_in = self._adj_in.get(edge.target_id, [])
-        if edge_id in adj_in:
-            adj_in.remove(edge_id)
-        lbl_list = self._label_index.get(edge.label, [])
-        if edge_id in lbl_list:
-            lbl_list.remove(edge_id)
+        adj_out = self._adj_out.get(edge.source_id)
+        if adj_out is not None:
+            adj_out.discard(edge_id)
+        adj_in = self._adj_in.get(edge.target_id)
+        if adj_in is not None:
+            adj_in.discard(edge_id)
+        lbl_set = self._label_index.get(edge.label)
+        if lbl_set is not None:
+            lbl_set.discard(edge_id)
 
     def next_vertex_id(self) -> int:
         """Return and advance the next available vertex ID."""
@@ -124,9 +124,9 @@ class GraphStore:
             List of neighbor vertex IDs.
         """
         if direction == "out":
-            edge_ids = self._adj_out.get(vertex_id, [])
+            edge_ids = self._adj_out.get(vertex_id, set())
         else:
-            edge_ids = self._adj_in.get(vertex_id, [])
+            edge_ids = self._adj_in.get(vertex_id, set())
 
         result: list[int] = []
         for eid in edge_ids:

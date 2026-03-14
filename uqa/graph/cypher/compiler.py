@@ -73,6 +73,19 @@ if TYPE_CHECKING:
 # (int), or scalar values.
 BindingFields = dict[str, Any]
 
+
+class _VertexRef(int):
+    """Marker subclass of int tagging a value as a vertex ID."""
+
+    __slots__ = ()
+
+
+class _EdgeRef(int):
+    """Marker subclass of int tagging a value as an edge ID."""
+
+    __slots__ = ()
+
+
 # Sentinel for "no binding" (distinct from None which is a valid Cypher NULL)
 _UNBOUND = object()
 
@@ -252,7 +265,7 @@ class CypherCompiler:
             assert first.variable is not None
             if first.variable in fields and fields[first.variable] != vtx.vertex_id:
                 continue
-            new_fields[first.variable] = vtx.vertex_id
+            new_fields[first.variable] = _VertexRef(vtx.vertex_id)
             current.append(new_fields)
 
         # Process (rel, node) pairs
@@ -401,14 +414,14 @@ class CypherCompiler:
                     and fields[rel_pat.variable] != edge.edge_id
                 ):
                     continue
-                new_fields[rel_pat.variable] = edge.edge_id
+                new_fields[rel_pat.variable] = _EdgeRef(edge.edge_id)
             if next_node.variable:
                 if (
                     next_node.variable in fields
                     and fields[next_node.variable] != neighbor.vertex_id
                 ):
                     continue
-                new_fields[next_node.variable] = neighbor.vertex_id
+                new_fields[next_node.variable] = _VertexRef(neighbor.vertex_id)
             results.append(new_fields)
 
         return results
@@ -529,7 +542,7 @@ class CypherCompiler:
                 vtx = self._create_vertex(elem, fields)
                 created_vids.add(vtx.vertex_id)
                 if elem.variable:
-                    fields[elem.variable] = vtx.vertex_id
+                    fields[elem.variable] = _VertexRef(vtx.vertex_id)
 
             elif isinstance(elem, RelPattern):
                 next_node = elements[i + 1]
@@ -539,7 +552,7 @@ class CypherCompiler:
                     vtx = self._create_vertex(next_node, fields)
                     created_vids.add(vtx.vertex_id)
                     if next_node.variable:
-                        fields[next_node.variable] = vtx.vertex_id
+                        fields[next_node.variable] = _VertexRef(vtx.vertex_id)
 
                 prev_node = elements[i - 1]
                 assert isinstance(prev_node, NodePattern)
@@ -551,7 +564,7 @@ class CypherCompiler:
                 edge = self._create_edge(elem, src_vid, tgt_vid, fields)
                 created_eids.add(edge.edge_id)
                 if elem.variable:
-                    fields[elem.variable] = edge.edge_id
+                    fields[elem.variable] = _EdgeRef(edge.edge_id)
 
     def _create_vertex(self, pat: NodePattern, fields: BindingFields) -> Vertex:
         vid = self._graph.next_vertex_id()
@@ -657,7 +670,11 @@ class CypherCompiler:
             if vid_or_eid is None:
                 return
 
-            vtx = self._graph.get_vertex(vid_or_eid)
+            vtx = (
+                self._graph.get_vertex(vid_or_eid)
+                if not isinstance(vid_or_eid, _EdgeRef)
+                else None
+            )
             if vtx is not None:
                 new_props = dict(vtx.properties)
                 if item.operator == "+=" and isinstance(value, dict):
@@ -673,7 +690,11 @@ class CypherCompiler:
                 self._graph.add_vertex(new_vtx)
                 return
 
-            edge = self._graph.get_edge(vid_or_eid)
+            edge = (
+                self._graph.get_edge(vid_or_eid)
+                if not isinstance(vid_or_eid, _VertexRef)
+                else None
+            )
             if edge is not None:
                 new_props = dict(edge.properties)
                 if item.operator == "+=" and isinstance(value, dict):
@@ -693,7 +714,7 @@ class CypherCompiler:
             vid = fields.get(item.target.name)
             if vid is None:
                 return
-            vtx = self._graph.get_vertex(vid)
+            vtx = self._graph.get_vertex(vid) if not isinstance(vid, _EdgeRef) else None
             if vtx is not None and isinstance(value, dict):
                 if item.operator == "+=":
                     new_props = dict(vtx.properties)
@@ -721,7 +742,11 @@ class CypherCompiler:
                 val = self._eval(expr, fields)
                 if val is None:
                     continue
-                if isinstance(val, int):
+                if isinstance(val, _VertexRef):
+                    to_delete_vertices.append(val)
+                elif isinstance(val, _EdgeRef):
+                    to_delete_edges.append(val)
+                elif isinstance(val, int):
                     if self._graph.get_vertex(val) is not None:
                         to_delete_vertices.append(val)
                     elif self._graph.get_edge(val) is not None:
@@ -935,6 +960,26 @@ class CypherCompiler:
             return None
         if isinstance(val, bool):
             return val
+        if isinstance(val, _VertexRef):
+            vtx = self._graph.get_vertex(val)
+            if vtx is not None:
+                return {
+                    "id": vtx.vertex_id,
+                    "label": vtx.label,
+                    "properties": dict(vtx.properties),
+                }
+            return int(val)
+        if isinstance(val, _EdgeRef):
+            edge = self._graph.get_edge(val)
+            if edge is not None:
+                return {
+                    "id": edge.edge_id,
+                    "label": edge.label,
+                    "start": edge.source_id,
+                    "end": edge.target_id,
+                    "properties": dict(edge.properties),
+                }
+            return int(val)
         if isinstance(val, int):
             vtx = self._graph.get_vertex(val)
             if vtx is not None:
@@ -1031,7 +1076,15 @@ class CypherCompiler:
             if val is None:
                 return None
             # Resolve through graph objects if val is an ID
-            if isinstance(val, int):
+            if isinstance(val, _VertexRef):
+                obj = self._graph.get_vertex(val)
+                if obj is not None:
+                    val = obj
+            elif isinstance(val, _EdgeRef):
+                obj = self._graph.get_edge(val)
+                if obj is not None:
+                    val = obj
+            elif isinstance(val, int):
                 obj = self._graph.get_vertex(val) or self._graph.get_edge(val)
                 if obj is not None:
                     val = obj
