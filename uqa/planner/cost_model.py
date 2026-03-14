@@ -32,6 +32,7 @@ class CostModel:
             RegularPathQueryOperator,
             TraverseOperator,
             VertexAggregationOperator,
+            WeightedPathQueryOperator,
         )
         from uqa.graph.temporal_pattern_match import TemporalPatternMatchOperator
         from uqa.graph.temporal_traverse import TemporalTraverseOperator
@@ -133,6 +134,12 @@ class CostModel:
                 if labels is not None:
                     return float(stats.total_docs) * 0.1
                 return float(stats.total_docs) ** 2
+            case WeightedPathQueryOperator():
+                # Same cost as RPQ
+                labels = RegularPathQueryOperator._extract_label_sequence(op.path_expr)
+                if labels is not None:
+                    return float(stats.total_docs) * 0.1
+                return float(stats.total_docs) ** 2
             case SparseThresholdOperator(source=src):
                 return self.estimate(src, stats) * 0.5
             case MultiFieldSearchOperator():
@@ -144,4 +151,43 @@ class CostModel:
             case MultiStageOperator():
                 return op.cost_estimate(stats)
             case _:
-                return float(stats.total_docs)
+                from uqa.graph.centrality import (
+                    BetweennessCentralityOperator,
+                    HITSOperator,
+                    PageRankOperator,
+                )
+                from uqa.joins.cross_paradigm import (
+                    CrossParadigmJoinOperator,
+                    GraphJoinOperator,
+                    HybridJoinOperator,
+                    TextSimilarityJoinOperator,
+                    VectorSimilarityJoinOperator,
+                )
+
+                n = float(stats.total_docs)
+
+                if isinstance(op, PageRankOperator):
+                    return n * op.max_iterations * 0.1
+                if isinstance(op, HITSOperator):
+                    return n * op.max_iterations * 0.2
+                if isinstance(op, BetweennessCentralityOperator):
+                    return n**2 * 0.5
+                if isinstance(op, TextSimilarityJoinOperator):
+                    return 2.0 * n * max(stats.dimensions, 10)
+                if isinstance(op, VectorSimilarityJoinOperator):
+                    return n * n * max(stats.dimensions, 1)
+                if isinstance(op, GraphJoinOperator):
+                    return n * 10.0
+                if isinstance(op, HybridJoinOperator):
+                    return n + n * max(stats.dimensions, 1)
+                if isinstance(op, CrossParadigmJoinOperator):
+                    return n * 10.0
+
+                from uqa.operators.progressive_fusion import (
+                    ProgressiveFusionOperator,
+                )
+
+                if isinstance(op, ProgressiveFusionOperator):
+                    return op.cost_estimate(stats)
+
+                return n

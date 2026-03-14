@@ -87,7 +87,7 @@ class QueryOptimizer:
         matching rather than post-filtered.
         """
         from uqa.graph.operators import PatternMatchOperator
-        from uqa.graph.pattern import GraphPattern, VertexPattern
+        from uqa.graph.pattern import EdgePattern, GraphPattern, VertexPattern
         from uqa.operators.primitive import FilterOperator
 
         if isinstance(op, FilterOperator) and op.source is not None:
@@ -131,6 +131,49 @@ class QueryOptimizer:
                     )
                     return cast("Operator", PatternMatchOperator(new_pattern))
 
+                # Edge pushdown: field like "a_b.since" matches edge (a -> b)
+                if not pushed:
+                    # Try edge variable: "src_tgt.prop"
+                    edge_var_map = {
+                        f"{ep.source_var}_{ep.target_var}": ep
+                        for ep in pattern.edge_patterns
+                    }
+                    dot_parts = field.split(".", 1)
+                    if len(dot_parts) == 2:
+                        edge_key, prop = dot_parts
+                        ep = edge_var_map.get(edge_key)
+                        if ep is not None:
+
+                            def edge_constraint(e, f=prop, p=predicate):
+                                return f in e.properties and p.evaluate(e.properties[f])
+
+                            new_edge_patterns = []
+                            for orig_ep in pattern.edge_patterns:
+                                if (
+                                    orig_ep.source_var == ep.source_var
+                                    and orig_ep.target_var == ep.target_var
+                                    and orig_ep.label == ep.label
+                                ):
+                                    new_ep = EdgePattern(
+                                        orig_ep.source_var,
+                                        orig_ep.target_var,
+                                        orig_ep.label,
+                                        [*orig_ep.constraints, edge_constraint],
+                                    )
+                                    new_edge_patterns.append(new_ep)
+                                    pushed = True
+                                else:
+                                    new_edge_patterns.append(orig_ep)
+
+                            if pushed:
+                                new_pattern = GraphPattern(
+                                    pattern.vertex_patterns, new_edge_patterns
+                                )
+                                return cast(
+                                    "Operator",
+                                    PatternMatchOperator(new_pattern),
+                                )
+
         # Recurse into children
         return self._recurse_graph_pattern(op)
 
@@ -167,17 +210,11 @@ class QueryOptimizer:
         return op
 
     def _fuse_join_pattern(self, op: Operator) -> Operator:
-        """Fuse join + pattern match into a single filtered pattern.
+        """Fuse intersected pattern matches into a single pattern.
 
-        Theorem 6.1.2, Paper 2: When a join result is immediately
-        pattern-matched, we can push the join's vertex mapping into
-        the pattern constraints, eliminating the intermediate
-        materialization.
-
-        Specifically, if InnerJoinOperator feeds into PatternMatchOperator
-        where join keys map to pattern variables, we replace the join
-        with an augmented pattern that checks the join condition as a
-        vertex constraint.
+        Theorem 6.1.2, Paper 2: When IntersectOperator has 2+ PatternMatchOperator
+        children sharing vertex variables, merge into single PatternMatchOperator
+        to eliminate intermediate materialization.
         """
         from uqa.graph.operators import PatternMatchOperator
         from uqa.operators.base import ComposedOperator
@@ -188,22 +225,38 @@ class QueryOptimizer:
         )
         from uqa.operators.primitive import FilterOperator
 
-        if isinstance(op, ComposedOperator) and len(op.operators) == 2:
-            first, second = op.operators
-            if isinstance(second, PatternMatchOperator):
-                # The first operator cannot be safely folded into pattern
-                # constraints without deep analysis of its semantics.
-                # Recurse into both children instead of discarding the first.
-                return ComposedOperator(
-                    [
-                        self._fuse_join_pattern(first),
-                        self._fuse_join_pattern(second),
-                    ]
-                )
-
-        # Recurse
         if isinstance(op, IntersectOperator):
-            return IntersectOperator([self._fuse_join_pattern(o) for o in op.operands])
+            # Recursively optimize children first
+            children = [self._fuse_join_pattern(o) for o in op.operands]
+
+            # Separate PatternMatchOperators from others
+            pattern_ops: list[PatternMatchOperator] = []
+            other_ops: list[Operator] = []
+            for child in children:
+                if isinstance(child, PatternMatchOperator):
+                    pattern_ops.append(child)
+                else:
+                    other_ops.append(child)
+
+            # Try pairwise merging of pattern ops
+            if len(pattern_ops) >= 2:
+                merged = [pattern_ops[0]]
+                for pm in pattern_ops[1:]:
+                    fused = self._merge_patterns(merged[-1], pm)
+                    if fused is not None:
+                        merged[-1] = fused
+                    else:
+                        merged.append(pm)
+                pattern_ops = merged
+
+            all_ops: list[Operator] = other_ops + [
+                cast("Operator", p) for p in pattern_ops
+            ]
+            if len(all_ops) == 1:
+                return all_ops[0]
+            return IntersectOperator(all_ops)
+
+        # Recurse into other operator types
         if isinstance(op, UnionOperator):
             return UnionOperator([self._fuse_join_pattern(o) for o in op.operands])
         if isinstance(op, ComplementOperator):
@@ -217,6 +270,53 @@ class QueryOptimizer:
         if isinstance(op, ComposedOperator):
             return ComposedOperator([self._fuse_join_pattern(o) for o in op.operators])
         return op
+
+    @staticmethod
+    def _merge_patterns(pm1: object, pm2: object) -> object | None:
+        """Merge two PatternMatchOperators if they share vertex variables.
+
+        Returns merged PatternMatchOperator or None if no shared variables.
+        """
+        from uqa.graph.operators import PatternMatchOperator
+        from uqa.graph.pattern import GraphPattern, VertexPattern
+
+        if not isinstance(pm1, PatternMatchOperator) or not isinstance(
+            pm2, PatternMatchOperator
+        ):
+            return None
+
+        p1 = pm1.pattern
+        p2 = pm2.pattern
+
+        vars1 = {vp.variable for vp in p1.vertex_patterns}
+        vars2 = {vp.variable for vp in p2.vertex_patterns}
+
+        shared = vars1 & vars2
+        if not shared:
+            return None
+
+        # Merge vertex patterns: deduplicate by variable, combine constraints
+        merged_vps: dict[str, VertexPattern] = {}
+        for vp in p1.vertex_patterns:
+            merged_vps[vp.variable] = vp
+        for vp in p2.vertex_patterns:
+            if vp.variable in merged_vps:
+                existing = merged_vps[vp.variable]
+                merged_vps[vp.variable] = VertexPattern(
+                    vp.variable,
+                    [*existing.constraints, *vp.constraints],
+                )
+            else:
+                merged_vps[vp.variable] = vp
+
+        # Concatenate edge patterns
+        merged_edges = list(p1.edge_patterns) + list(p2.edge_patterns)
+
+        merged_pattern = GraphPattern(
+            list(merged_vps.values()),
+            merged_edges,
+        )
+        return PatternMatchOperator(merged_pattern)
 
     def _merge_vector_thresholds(self, op: Operator) -> Operator:
         """Merge V_theta1(q) AND V_theta2(q) into V_max(theta1,theta2)(q)."""
@@ -292,7 +392,7 @@ class QueryOptimizer:
         if isinstance(op, LogOddsFusionOperator):
             signals = [self._reorder_fusion_signals(s) for s in op.signals]
             signals.sort(key=lambda s: self.estimator.estimate(s, self.stats))
-            return LogOddsFusionOperator(signals, alpha=op.alpha)
+            return LogOddsFusionOperator(signals, alpha=op.alpha, gating=op.gating)
 
         if isinstance(op, ProbBoolFusionOperator):
             signals = [self._reorder_fusion_signals(s) for s in op.signals]
@@ -412,6 +512,7 @@ class QueryOptimizer:
                 return LogOddsFusionOperator(
                     [self.optimize(s) for s in sigs],
                     alpha=op.alpha,
+                    gating=op.gating,
                 )
             case ProbBoolFusionOperator(signals=sigs):
                 return ProbBoolFusionOperator(

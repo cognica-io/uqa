@@ -14,6 +14,10 @@ if TYPE_CHECKING:
     from uqa.operators.base import Operator
     from uqa.sql.table import ColumnStats
 
+JACCARD_JOIN_SELECTIVITY = 0.05
+VECTOR_JOIN_SELECTIVITY = 0.1
+GRAPH_AVG_DEGREE_DEFAULT = 10.0
+
 
 @dataclass
 class GraphStats:
@@ -28,6 +32,8 @@ class GraphStats:
     num_edges: int = 0
     label_counts: dict[str, int] = field(default_factory=dict)
     avg_out_degree: float = 0.0
+    min_timestamp: float | None = None
+    max_timestamp: float | None = None
 
     @classmethod
     def from_graph_store(cls, graph_store: object) -> GraphStats:
@@ -80,9 +86,11 @@ class CardinalityEstimator:
         self,
         column_stats: dict[str, ColumnStats] | None = None,
         graph_stats: GraphStats | None = None,
+        graph_store: object | None = None,
     ) -> None:
         self._column_stats = column_stats or {}
         self._graph_stats = graph_stats
+        self._graph_store = graph_store
 
     def estimate(self, op: Operator, stats: IndexStats) -> float:
         from uqa.operators.boolean import (
@@ -105,7 +113,7 @@ class CardinalityEstimator:
                 field_name = f or "_default"
                 return float(stats.doc_freq(field_name, t))
             case VectorSimilarityOperator():
-                return n * 0.1
+                return n * self._vector_selectivity(op.threshold)
             case KNNOperator(k=k):
                 return float(k)
             case FilterOperator(field=f, predicate=pred):
@@ -251,11 +259,93 @@ class CardinalityEstimator:
         if isinstance(op, RegularPathQueryOperator):
             return self._estimate_rpq(op, n)
 
+        # Weighted RPQ: RPQ estimate with selectivity factor for predicate
+        from uqa.graph.operators import WeightedPathQueryOperator
+
+        if isinstance(op, WeightedPathQueryOperator):
+            rpq_est = self._estimate_rpq(op, n)
+            return rpq_est * 0.5  # Selectivity factor for predicate
+
         if isinstance(op, MessagePassingOperator):
             return n
 
         if isinstance(op, GraphEmbeddingOperator):
             return n
+
+        # Centrality operators: one score per vertex
+        from uqa.graph.centrality import (
+            BetweennessCentralityOperator,
+            HITSOperator,
+            PageRankOperator,
+        )
+
+        if isinstance(
+            op, (PageRankOperator, HITSOperator, BetweennessCentralityOperator)
+        ):
+            if self._graph_stats is not None:
+                return float(self._graph_stats.num_vertices)
+            return n
+
+        # Cross-paradigm join operators
+        from uqa.joins.cross_paradigm import (
+            CrossParadigmJoinOperator,
+            GraphJoinOperator,
+            HybridJoinOperator,
+            TextSimilarityJoinOperator,
+            VectorSimilarityJoinOperator,
+        )
+
+        if isinstance(op, TextSimilarityJoinOperator):
+            left = self.estimate(op.left, stats) if hasattr(op.left, "execute") else n
+            right = (
+                self.estimate(op.right, stats) if hasattr(op.right, "execute") else n
+            )
+            return left * right * JACCARD_JOIN_SELECTIVITY
+
+        if isinstance(op, VectorSimilarityJoinOperator):
+            left = self.estimate(op.left, stats) if hasattr(op.left, "execute") else n
+            right = (
+                self.estimate(op.right, stats) if hasattr(op.right, "execute") else n
+            )
+            return left * right * VECTOR_JOIN_SELECTIVITY
+
+        if isinstance(op, GraphJoinOperator):
+            left = self.estimate(op.left, stats) if hasattr(op.left, "execute") else n
+            avg_degree = (
+                self._graph_stats.avg_out_degree
+                if self._graph_stats
+                else GRAPH_AVG_DEGREE_DEFAULT
+            )
+            label_sel = (
+                self._graph_stats.label_selectivity(op.label)
+                if self._graph_stats
+                else 1.0
+            )
+            return left * avg_degree * label_sel
+
+        if isinstance(op, HybridJoinOperator):
+            left = self.estimate(op.left, stats) if hasattr(op.left, "execute") else n
+            right = (
+                self.estimate(op.right, stats) if hasattr(op.right, "execute") else n
+            )
+            return left * right / n if n > 0 else 0.0
+
+        if isinstance(op, CrossParadigmJoinOperator):
+            left = self.estimate(op.left, stats) if hasattr(op.left, "execute") else n
+            avg_degree = (
+                self._graph_stats.avg_out_degree
+                if self._graph_stats
+                else GRAPH_AVG_DEGREE_DEFAULT
+            )
+            label_sel = 1.0  # CrossParadigmJoinOperator doesn't have label attribute
+            return left * avg_degree * label_sel
+
+        # Progressive fusion: cardinality = last stage k
+        from uqa.operators.progressive_fusion import ProgressiveFusionOperator
+
+        if isinstance(op, ProgressiveFusionOperator):
+            _, last_k = op.stages[-1]
+            return float(last_k)
 
         return n
 
@@ -275,7 +365,13 @@ class CardinalityEstimator:
         else:
             branching = min(n * 0.1, 10.0)
 
-        return min(n, branching**hops)
+        result = min(n, branching**hops)
+
+        temporal_filter = getattr(op, "temporal_filter", None)
+        if temporal_filter is not None and self._graph_stats is not None:
+            result *= self._temporal_selectivity(temporal_filter, self._graph_stats)
+
+        return result
 
     def _estimate_pattern_match(self, op: object, n: float) -> float:
         """Pattern match cardinality using graph statistics (Theorem 6.3.2, Paper 2).
@@ -296,6 +392,13 @@ class CardinalityEstimator:
         if self._graph_stats is not None:
             gs = self._graph_stats
             nv = float(gs.num_vertices) if gs.num_vertices > 0 else n
+
+            # Use sampling for large graphs (Section 6.3, Paper 2)
+            if nv > 10000 and self._graph_store is not None:
+                sampled = self._sample_graph_cardinality(pattern)
+                if sampled >= 0.0:
+                    return max(1.0, sampled)
+
             density = gs.edge_density()
 
             label_sel = 1.0
@@ -336,9 +439,23 @@ class CardinalityEstimator:
                 label_sel *= gs.label_selectivity(ep.label)
 
             estimate = (nv**k) * (density**e) * label_sel
-            return max(1.0, min(nv, estimate))
+            estimate = max(1.0, min(nv, estimate))
 
-        return min(n, n**1.5)
+            # Apply temporal selectivity if temporal filter available
+            temporal_filter = getattr(op, "temporal_filter", None)
+            if temporal_filter is not None:
+                estimate *= self._temporal_selectivity(temporal_filter, gs)
+
+            return estimate
+
+        estimate = min(n, n**1.5)
+
+        # Apply temporal selectivity if temporal filter available
+        temporal_filter = getattr(op, "temporal_filter", None)
+        if temporal_filter is not None and self._graph_stats is not None:
+            estimate *= self._temporal_selectivity(temporal_filter, self._graph_stats)
+
+        return estimate
 
     def _estimate_rpq(self, op: object, n: float) -> float:
         """RPQ cardinality using graph statistics (Theorem 6.3.2, Paper 2).
@@ -358,6 +475,117 @@ class CardinalityEstimator:
         # graph stats are available.  RPQs can reach any (start, end) pair
         # so result size is between n (single hop) and n^2 (all pairs).
         return min(n, n**1.5)
+
+    @staticmethod
+    def _vector_selectivity(threshold: float) -> float:
+        """Estimate vector selectivity based on threshold (Paper 1, Section 5.3)."""
+        if threshold >= 0.9:
+            return 0.01
+        if threshold >= 0.7:
+            return 0.05
+        if threshold >= 0.5:
+            return 0.1
+        return 0.2
+
+    def _sample_graph_cardinality(
+        self,
+        pattern: object,
+        sample_size: int = 100,
+    ) -> float:
+        """Approximate cardinality via random walk sampling (Section 6.3, Paper 2).
+
+        Returns estimated number of pattern matches, or -1.0 if sampling
+        is unavailable (no graph_store or empty graph).
+        """
+        import random
+
+        graph_store = self._graph_store
+        if graph_store is None:
+            return -1.0
+
+        vertices = getattr(graph_store, "_vertices", {})
+        if not vertices:
+            return 0.0
+
+        vertex_patterns = getattr(pattern, "vertex_patterns", [])
+        edge_patterns = getattr(pattern, "edge_patterns", [])
+        k = len(vertex_patterns)
+        if k == 0:
+            return 0.0
+
+        vertex_ids = list(vertices.keys())
+        n = len(vertex_ids)
+        successes = 0
+
+        for _ in range(sample_size):
+            # Pick random start vertex
+            start_vid = random.choice(vertex_ids)
+            vertex = vertices.get(start_vid)
+            if vertex is None:
+                continue
+
+            # Check first variable constraints
+            vp0 = vertex_patterns[0]
+            if not all(c(vertex) for c in vp0.constraints):
+                continue
+
+            # Try to extend assignment via random neighbor walks
+            assignment = {vp0.variable: start_vid}
+            valid = True
+
+            for vi in range(1, k):
+                vp = vertex_patterns[vi]
+                # Find edges connecting to already-assigned variables
+                neighbor_found = False
+                for ep in edge_patterns:
+                    src_id = assignment.get(ep.source_var)
+                    if src_id is not None and ep.target_var == vp.variable:
+                        adj_out = getattr(graph_store, "_adj_out", {})
+                        edges_dict = getattr(graph_store, "_edges", {})
+                        candidates = []
+                        for eid in adj_out.get(src_id, []):
+                            edge = edges_dict.get(eid)
+                            if edge is None:
+                                continue
+                            if ep.label is not None and edge.label != ep.label:
+                                continue
+                            tgt = vertices.get(edge.target_id)
+                            if tgt is not None and all(c(tgt) for c in vp.constraints):
+                                candidates.append(edge.target_id)
+                        if candidates:
+                            assignment[vp.variable] = random.choice(candidates)
+                            neighbor_found = True
+                            break
+                if not neighbor_found:
+                    valid = False
+                    break
+
+            if valid and len(assignment) == k:
+                successes += 1
+
+        success_rate = successes / sample_size
+        return success_rate * float(n) ** k
+
+    def _temporal_selectivity(self, temporal_filter: object, gs: GraphStats) -> float:
+        """Estimate temporal selectivity (Paper 2, Section 8)."""
+        if gs.min_timestamp is None or gs.max_timestamp is None:
+            return 1.0
+
+        total_range = gs.max_timestamp - gs.min_timestamp
+        if total_range <= 0:
+            return 1.0
+
+        timestamp = getattr(temporal_filter, "timestamp", None)
+        time_range = getattr(temporal_filter, "time_range", None)
+
+        if timestamp is not None:
+            return min(1.0, 1.0 / total_range)
+
+        if time_range is not None:
+            query_span = time_range[1] - time_range[0]
+            return min(1.0, query_span / total_range)
+
+        return 1.0
 
     def estimate_join(
         self,
