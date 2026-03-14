@@ -243,9 +243,7 @@ class Batch:
         if n == 0:
             return []
 
-        pydict = self._rb.to_pydict()
-        names = self._rb.schema.names
-        return [{name: pydict[name][i] for name in names} for i in range(n)]
+        return self._rb.to_pylist()
 
     @classmethod
     def from_rows(

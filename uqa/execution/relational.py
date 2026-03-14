@@ -275,11 +275,13 @@ class ExprProjectOp(PhysicalOperator):
         targets: list[tuple[str, Any]],
         subquery_executor: Any = None,
         sequences: dict | None = None,
+        outer_row: dict[str, Any] | None = None,
     ) -> None:
         self._child = child
         self._targets = targets
         self._subquery_executor = subquery_executor
         self._sequences = sequences
+        self._outer_row = outer_row
 
     def open(self) -> None:
         self._child.open()
@@ -288,6 +290,7 @@ class ExprProjectOp(PhysicalOperator):
         self._evaluator = ExprEvaluator(
             subquery_executor=self._subquery_executor,
             sequences=self._sequences,
+            outer_row=self._outer_row,
         )
 
     def next(self) -> Batch | None:
@@ -503,17 +506,28 @@ class SortOp(PhysicalOperator):
     ) -> None:
         if SortOp._try_arrow_sort(rows, sort_keys):
             return
-        for col_name, desc, nulls_first in reversed(sort_keys):
-            # XOR nulls_first with desc: reverse flips the null-position
-            # bit too, so we pre-flip it to compensate.
-            null_pos_flag = nulls_first != desc
-            rows.sort(
-                key=lambda r, c=col_name, npf=null_pos_flag: (
-                    (r.get(c) is not None) if npf else (r.get(c) is None),
-                    r.get(c),
-                ),
-                reverse=desc,
-            )
+
+        import functools
+
+        def _cmp(a: dict[str, Any], b: dict[str, Any]) -> int:
+            for col_name, desc, nulls_first in sort_keys:
+                va = a.get(col_name)
+                vb = b.get(col_name)
+                a_null = va is None
+                b_null = vb is None
+                if a_null and b_null:
+                    continue
+                if a_null:
+                    return -1 if nulls_first else 1
+                if b_null:
+                    return 1 if nulls_first else -1
+                if va < vb:
+                    return 1 if desc else -1
+                if va > vb:
+                    return -1 if desc else 1
+            return 0
+
+        rows.sort(key=functools.cmp_to_key(_cmp))
 
     def open(self) -> None:
         self._child.open()
@@ -700,7 +714,126 @@ class HashAggOp(PhysicalOperator):
         self._offset = 0
         self._filter_evaluator: Any = None
 
+    # Aggregates that can be computed incrementally without
+    # materializing all rows per group.
+    _INCREMENTAL_AGGS = frozenset(
+        {"count", "sum", "avg", "min", "max", "bool_and", "bool_or"}
+    )
+
+    def _can_stream(self) -> bool:
+        """Return True if all agg specs can use incremental accumulators."""
+        for spec in self._agg_specs:
+            func_name = spec[1]
+            distinct = spec[3] if len(spec) > 3 else False
+            filter_node = spec[5] if len(spec) > 5 else None
+            order_keys = spec[6] if len(spec) > 6 else None
+            if func_name not in self._INCREMENTAL_AGGS:
+                return False
+            if distinct or filter_node is not None or order_keys:
+                return False
+        return True
+
     def _aggregate_rows(self, rows_iter: Any) -> list[dict[str, Any]]:
+        if self._can_stream():
+            return self._aggregate_rows_streaming(rows_iter)
+        return self._aggregate_rows_materialized(rows_iter)
+
+    def _aggregate_rows_streaming(self, rows_iter: Any) -> list[dict[str, Any]]:
+        """Incremental aggregation without per-group row materialization."""
+        # Per-group accumulators: {group_key: [(count, sum, min, max, bool_and, bool_or), ...]}
+        # For each agg spec, maintain: (count_nonnull, total, min_val, max_val)
+        n_aggs = len(self._agg_specs)
+        # accumulators[key] = list of [count, total, min_val, max_val] per agg
+        accumulators: dict[tuple, list[list[Any]]] = {}
+        group_keys_order: list[tuple] = []
+
+        for row in rows_iter:
+            key = tuple(row.get(c) for c in self._group_columns)
+            if key not in accumulators:
+                accumulators[key] = [[0, 0.0, None, None] for _ in range(n_aggs)]
+                group_keys_order.append(key)
+            accs = accumulators[key]
+            for i, spec in enumerate(self._agg_specs):
+                func_name = spec[1]
+                arg_col = spec[2]
+                acc = accs[i]
+                if func_name == "count" and arg_col is None:
+                    acc[0] += 1
+                    continue
+                val = row.get(arg_col) if arg_col is not None else None
+                if func_name == "count":
+                    if val is not None:
+                        acc[0] += 1
+                elif func_name in ("sum", "avg"):
+                    if isinstance(val, (int, float)):
+                        acc[0] += 1
+                        acc[1] += val
+                elif func_name == "min":
+                    if isinstance(val, (int, float)):
+                        acc[0] += 1
+                        if acc[2] is None or val < acc[2]:
+                            acc[2] = val
+                elif func_name == "max":
+                    if isinstance(val, (int, float)):
+                        acc[0] += 1
+                        if acc[3] is None or val > acc[3]:
+                            acc[3] = val
+                elif func_name == "bool_and":
+                    if val is not None:
+                        acc[0] += 1
+                        if acc[2] is None:
+                            acc[2] = bool(val)
+                        else:
+                            acc[2] = acc[2] and bool(val)
+                elif func_name == "bool_or" and val is not None:
+                    acc[0] += 1
+                    if acc[2] is None:
+                        acc[2] = bool(val)
+                    else:
+                        acc[2] = acc[2] or bool(val)
+
+        if not accumulators and not self._group_columns:
+            accumulators[()] = [[0, 0.0, None, None] for _ in range(n_aggs)]
+            group_keys_order.append(())
+
+        result: list[dict[str, Any]] = []
+        for key in group_keys_order:
+            row_out: dict[str, Any] = {}
+            for col, val in zip(self._group_columns, key):
+                row_out[col] = val
+                alias = self._group_aliases.get(col)
+                if alias and alias != col:
+                    row_out[alias] = val
+            accs = accumulators[key]
+            for i, spec in enumerate(self._agg_specs):
+                alias_name = spec[0]
+                func_name = spec[1]
+                arg_col = spec[2]
+                acc = accs[i]
+                cnt = acc[0]
+                if func_name == "count":
+                    value: Any = cnt
+                elif func_name == "sum":
+                    value = acc[1] if cnt > 0 else None
+                elif func_name == "avg":
+                    value = acc[1] / cnt if cnt > 0 else None
+                elif func_name == "min":
+                    value = acc[2]
+                elif func_name == "max":
+                    value = acc[3]
+                elif func_name in ("bool_and", "bool_or"):
+                    value = acc[2]
+                else:
+                    value = None
+                row_out[alias_name] = value
+                natural = func_name if arg_col is None else f"{func_name}_{arg_col}"
+                if natural != alias_name:
+                    row_out[natural] = value
+            result.append(row_out)
+        return result
+
+    def _aggregate_rows_materialized(self, rows_iter: Any) -> list[dict[str, Any]]:
+        """Full-row materialization fallback for complex aggregates."""
         groups: dict[tuple, list[dict[str, Any]]] = {}
         for row in rows_iter:
             key = tuple(row.get(c) for c in self._group_columns)
@@ -712,12 +845,11 @@ class HashAggOp(PhysicalOperator):
             row_out: dict[str, Any] = {}
             for col, val in zip(self._group_columns, key):
                 row_out[col] = val
-                # Add aliased name if different
                 alias = self._group_aliases.get(col)
                 if alias and alias != col:
                     row_out[alias] = val
             for spec in self._agg_specs:
-                alias = spec[0]
+                alias_name = spec[0]
                 func_name = spec[1]
                 arg_col = spec[2]
                 distinct = spec[3] if len(spec) > 3 else False
@@ -726,13 +858,11 @@ class HashAggOp(PhysicalOperator):
                 order_keys = spec[6] if len(spec) > 6 else None
 
                 agg_rows = rows
-                # Apply FILTER (WHERE ...) pre-filter
                 if filter_node is not None:
                     evaluator = self._filter_evaluator
                     agg_rows = [
                         r for r in agg_rows if evaluator.evaluate(filter_node, r)
                     ]
-                # Apply ORDER BY within aggregate
                 if order_keys:
                     agg_rows = list(agg_rows)
                     for col, desc in reversed(order_keys):
@@ -748,10 +878,9 @@ class HashAggOp(PhysicalOperator):
                     distinct=distinct,
                     extra=extra,
                 )
-                row_out[alias] = value
-                # Store under natural name too (for HAVING evaluation)
+                row_out[alias_name] = value
                 natural = func_name if arg_col is None else f"{func_name}_{arg_col}"
-                if natural != alias:
+                if natural != alias_name:
                     row_out[natural] = value
             result.append(row_out)
         return result
@@ -1228,22 +1357,21 @@ def _compute_window_function(
         if n == 0:
             return []
         order_cols = [c for c, _ in spec.order_keys]
-        cume_values: list[float] = []
-        for i in range(n):
-            # Count rows with value <= current
-            cur = partition_rows[i]
-            for j in range(n):
-                if _rows_equal_on_columns(partition_rows[j], cur, order_cols) or j <= i:
-                    # Row j is <= current if it would sort before or equal
-                    pass
-            # Simpler: find the last position of the peer group
-            last_peer = i
-            for j in range(i + 1, n):
-                if _rows_equal_on_columns(partition_rows[j], cur, order_cols):
-                    last_peer = j
-                else:
-                    break
-            cume_values.append((last_peer + 1) / n)
+        # Single linear pass: identify peer group boundaries, then fill.
+        cume_values: list[float] = [0.0] * n
+        i = 0
+        while i < n:
+            # Find end of peer group starting at i.
+            j = i + 1
+            while j < n and _rows_equal_on_columns(
+                partition_rows[i], partition_rows[j], order_cols
+            ):
+                j += 1
+            # All rows in [i, j) get cume_dist = j / n.
+            val = j / n
+            for k in range(i, j):
+                cume_values[k] = val
+            i = j
         return cume_values
 
     if func_name == "nth_value":
@@ -1331,6 +1459,12 @@ def _compute_framed_aggregate(
     if spec.frame_type == "range" and spec.order_keys:
         # RANGE frame: "current_row" means all peers (same ORDER BY value)
         order_col = spec.order_keys[0][0]
+        # Pre-compute order values once for the entire partition.
+        pre_order_vals = [partition_rows[i].get(order_col) for i in range(n)]
+        pre_non_null_vals = [v for v in pre_order_vals if v is not None]
+        pre_non_null_indices = [
+            i for i, v in enumerate(pre_order_vals) if v is not None
+        ]
         for i in range(n):
             start = _resolve_range_frame_index(
                 i,
@@ -1340,6 +1474,9 @@ def _compute_framed_aggregate(
                 spec.frame_start,
                 spec.frame_start_offset,
                 is_start=True,
+                precomputed_order_vals=pre_order_vals,
+                precomputed_non_null_vals=pre_non_null_vals,
+                precomputed_non_null_indices=pre_non_null_indices,
             )
             end = _resolve_range_frame_index(
                 i,
@@ -1349,6 +1486,9 @@ def _compute_framed_aggregate(
                 spec.frame_end,
                 spec.frame_end_offset,
                 is_start=False,
+                precomputed_order_vals=pre_order_vals,
+                precomputed_non_null_vals=pre_non_null_vals,
+                precomputed_non_null_indices=pre_non_null_indices,
             )
             frame_rows = partition_rows[start : end + 1]
             results.append(_compute_aggregate(func_name, arg_col, frame_rows))
@@ -1386,6 +1526,9 @@ def _resolve_range_frame_index(
     offset: int,
     *,
     is_start: bool,
+    precomputed_order_vals: list[Any] | None = None,
+    precomputed_non_null_vals: list[Any] | None = None,
+    precomputed_non_null_indices: list[int] | None = None,
 ) -> int:
     """Resolve a RANGE frame bound using ORDER BY values.
 
@@ -1402,44 +1545,42 @@ def _resolve_range_frame_index(
     if bound == "unbounded_following":
         return n - 1
     if bound == "current_row":
-        cur_val = rows[current].get(order_col)
+        order_vals = precomputed_order_vals
+        if order_vals is None:
+            order_vals = [rows[i].get(order_col) for i in range(n)]
+        cur_val = order_vals[current]
         if is_start:
             idx = current
-            while idx > 0 and rows[idx - 1].get(order_col) == cur_val:
+            while idx > 0 and order_vals[idx - 1] == cur_val:
                 idx -= 1
             return idx
         else:
             idx = current
-            while idx < n - 1 and rows[idx + 1].get(order_col) == cur_val:
+            while idx < n - 1 and order_vals[idx + 1] == cur_val:
                 idx += 1
             return idx
-    if bound == "offset_preceding":
-        cur_val = rows[current].get(order_col)
+    if bound in ("offset_preceding", "offset_following"):
+        order_vals = precomputed_order_vals
+        if order_vals is None:
+            order_vals = [rows[i].get(order_col) for i in range(n)]
+        non_null_vals = precomputed_non_null_vals
+        non_null_indices = precomputed_non_null_indices
+        if non_null_vals is None:
+            non_null_vals = [v for v in order_vals if v is not None]
+            non_null_indices = [i for i, v in enumerate(order_vals) if v is not None]
+        assert non_null_indices is not None
+        cur_val = order_vals[current]
         if cur_val is None:
-            return 0 if is_start else current
-        target = cur_val - offset
-        # Extract order values for bisect (NULLs sort last in ASC order)
-        order_vals = [rows[i].get(order_col) for i in range(n)]
-        non_null_vals = [v for v in order_vals if v is not None]
-        non_null_indices = [i for i, v in enumerate(order_vals) if v is not None]
+            if bound == "offset_preceding":
+                return 0 if is_start else current
+            else:
+                return current if is_start else n - 1
+        target = cur_val - offset if bound == "offset_preceding" else cur_val + offset
         if not non_null_vals:
-            return 0 if is_start else -1
-        if is_start:
-            pos = bisect_left(non_null_vals, target)
-            return non_null_indices[pos] if pos < len(non_null_indices) else n
-        else:
-            pos = bisect_right(non_null_vals, target)
-            return non_null_indices[pos - 1] if pos > 0 else -1
-    if bound == "offset_following":
-        cur_val = rows[current].get(order_col)
-        if cur_val is None:
-            return current if is_start else n - 1
-        target = cur_val + offset
-        order_vals = [rows[i].get(order_col) for i in range(n)]
-        non_null_vals = [v for v in order_vals if v is not None]
-        non_null_indices = [i for i, v in enumerate(order_vals) if v is not None]
-        if not non_null_vals:
-            return n if is_start else -1
+            if bound == "offset_preceding":
+                return 0 if is_start else -1
+            else:
+                return n if is_start else -1
         if is_start:
             pos = bisect_left(non_null_vals, target)
             return non_null_indices[pos] if pos < len(non_null_indices) else n

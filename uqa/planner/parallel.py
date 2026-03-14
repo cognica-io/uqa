@@ -49,10 +49,17 @@ class ParallelExecutor:
 
     def __init__(self, max_workers: int = _DEFAULT_MAX_WORKERS) -> None:
         self._max_workers = max_workers
+        self._pool: ThreadPoolExecutor | None = None
 
     @property
     def enabled(self) -> bool:
         return self._max_workers > 0
+
+    def shutdown(self) -> None:
+        """Shut down the persistent thread pool."""
+        if self._pool is not None:
+            self._pool.shutdown(wait=False)
+            self._pool = None
 
     def execute_branches(
         self,
@@ -68,15 +75,15 @@ class ParallelExecutor:
         if not self.enabled or len(operators) < _MIN_PARALLEL_BRANCHES:
             return [op.execute(context) for op in operators]
 
-        workers = min(self._max_workers, len(operators))
-        results: list[PostingList | None] = [None] * len(operators)
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=self._max_workers)
 
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            future_to_idx = {
-                pool.submit(op.execute, context): i for i, op in enumerate(operators)
-            }
-            for future in as_completed(future_to_idx):
-                idx = future_to_idx[future]
-                results[idx] = future.result()
+        results: list[PostingList | None] = [None] * len(operators)
+        future_to_idx = {
+            self._pool.submit(op.execute, context): i for i, op in enumerate(operators)
+        }
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            results[idx] = future.result()
 
         return results  # type: ignore[return-value]
