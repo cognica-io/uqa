@@ -141,6 +141,47 @@ engine.load_all_scoring_params() -> list[tuple[str, dict[str, Any]]]
 
 Persist and retrieve Bayesian calibration parameters for named scoring signals.
 
+### Calibration and Parameter Learning
+
+```python
+# Calibration diagnostics
+report = engine.calibration_report(table, field, query, labels)
+# Returns dict with ECE, Brier score, etc.
+
+# Batch parameter learning
+learned = engine.learn_scoring_params(table, field, query, labels, mode="balanced")
+# Returns {"alpha": float, "beta": float, "base_rate": float}
+
+# Online parameter update
+engine.update_scoring_params(table, field, score, label)
+```
+
+### Path Index Management
+
+```python
+# Build path index for RPQ acceleration
+engine.build_path_index(graph_name, [["knows"], ["knows", "works_with"]])
+
+# Retrieve path index
+idx = engine.get_path_index(graph_name)
+
+# Drop path index
+engine.drop_path_index(graph_name)
+```
+
+### Graph Delta Operations
+
+```python
+from uqa.graph.delta import GraphDelta
+
+delta = GraphDelta()
+delta.add_vertex(Vertex(1, "person", {"name": "Alice"}))
+delta.add_edge(Edge(1, 1, 2, "knows"))
+
+# Apply delta with version tracking and path index invalidation
+version = engine.apply_graph_delta(graph_name, delta)
+```
+
 ### Transactions
 
 ```python
@@ -303,6 +344,22 @@ for entry in results:
     print(f"doc={entry.doc_id}, score={entry.payload.score:.4f}")
 ```
 
+### Advanced Scoring
+
+```python
+# Sparse thresholding (ReLU-as-MAP)
+.sparse_threshold(threshold: float) -> QueryBuilder
+
+# Multi-field Bayesian BM25
+.score_multi_field_bayesian(query: str, fields: list[str], weights: list[float] | None = None) -> QueryBuilder
+
+# Bayesian BM25 with external prior
+.score_bayesian_with_prior(query: str, field: str | None = None, *, prior_fn: Callable) -> QueryBuilder
+
+# Parameter learning
+.learn_params(query: str, labels: list[int], *, mode: str = "balanced", field: str | None = None) -> dict[str, float]
+```
+
 ### Fusion
 
 ```python
@@ -320,6 +377,19 @@ vec_q = engine.query("papers").knn(query_vec, k=20)
 # Log-odds fusion
 fused = engine.query("papers").fuse_log_odds(text_q, vec_q)
 results = fused.execute()
+```
+
+### Advanced Fusion
+
+```python
+# Attention-weighted fusion
+.fuse_attention(*builders: QueryBuilder, alpha: float = 0.5) -> QueryBuilder
+
+# Learned-weight fusion
+.fuse_learned(*builders: QueryBuilder, alpha: float = 0.5) -> QueryBuilder
+
+# Multi-stage retrieval pipeline
+.multi_stage(stages: list[tuple[QueryBuilder, int | float]]) -> QueryBuilder
 ```
 
 ### Graph Operations
@@ -341,6 +411,18 @@ print(f"Total salary: ${salary.value:,}")
 
 # Regular path query with Kleene star
 reachable = engine.query("org").rpq("manages*", start=1).execute()
+```
+
+### Temporal Graph Operations
+
+```python
+# Temporal traversal with point-in-time filter
+.temporal_traverse(start: int, label: str | None = None, max_hops: int = 1, *,
+                   timestamp: float | None = None, time_range: tuple[float, float] | None = None) -> QueryBuilder
+
+# GNN message passing
+.message_passing(k_layers: int = 2, aggregation: str = "mean",
+                 property_name: str | None = None) -> QueryBuilder
 ```
 
 ### Vector Exclusion
@@ -890,6 +972,53 @@ sim = VectorScorer.cosine_similarity(vec_a, vec_b)
 prob = VectorScorer.similarity_to_probability(sim)  # map [-1,1] to [0,1]
 ```
 
+### Calibration Metrics
+
+```python
+from uqa.scoring.calibration import CalibrationMetrics
+
+ece = CalibrationMetrics.ece(probabilities, labels, n_bins=10)
+brier = CalibrationMetrics.brier(probabilities, labels)
+report = CalibrationMetrics.report(probabilities, labels, n_bins=10)
+diagram = CalibrationMetrics.reliability_diagram(probabilities, labels, n_bins=10)
+```
+
+### Parameter Learner
+
+```python
+from uqa.scoring.parameter_learner import ParameterLearner
+
+learner = ParameterLearner(alpha=1.0, beta=0.0, base_rate=0.5)
+params = learner.fit(scores, labels, mode="balanced")  # batch
+learner.update(score, label)  # online
+current = learner.params()  # {"alpha", "beta", "base_rate"}
+```
+
+### External Prior Scorer
+
+```python
+from uqa.scoring.external_prior import ExternalPriorScorer, recency_prior, authority_prior
+
+scorer = ExternalPriorScorer(params, index_stats, prior_fn)
+score = scorer.score_with_prior(term_freq, doc_length, doc_freq, doc_fields)
+
+# Built-in prior factories
+fn = recency_prior("timestamp", decay_days=30.0)
+fn = authority_prior("level", levels={"high": 0.8, "medium": 0.6, "low": 0.4})
+```
+
+### Multi-Field Scorer
+
+```python
+from uqa.scoring.multi_field import MultiFieldBayesianScorer
+
+scorer = MultiFieldBayesianScorer(
+    [("title", BayesianBM25Params(), 2.0), ("body", BayesianBM25Params(), 1.0)],
+    index_stats,
+)
+score = scorer.score_document(doc_id, tf_per_field, dl_per_field, df_per_field)
+```
+
 ---
 
 ## 10. Query Planning
@@ -1002,6 +1131,52 @@ from uqa.graph.operators import (
 | `RegularPathQueryOperator(path_expr, start)` | NFA-based path query |
 | `VertexAggregationOperator(source, property, agg_fn)` | Aggregate vertex properties |
 
+### Advanced Scoring Operators
+
+| Operator | Constructor | Description |
+|----------|------------|-------------|
+| `SparseThresholdOperator` | `(source, threshold)` | ReLU thresholding: max(0, score - threshold) |
+| `MultiFieldSearchOperator` | `(fields, query, weights)` | Multi-field Bayesian BM25 with log-odds fusion |
+
+### Advanced Fusion Operators
+
+| Operator | Constructor | Description |
+|----------|------------|-------------|
+| `AttentionFusionOperator` | `(signals, attention, query_features)` | Attention-weighted log-odds conjunction |
+| `LearnedFusionOperator` | `(signals, learned)` | Learned-weight log-odds conjunction |
+| `MultiStageOperator` | `(stages)` | Cascading (operator, cutoff) retrieval pipeline |
+
+### Temporal Graph Operators
+
+| Operator | Constructor | Description |
+|----------|------------|-------------|
+| `TemporalTraverseOperator` | `(start, label, max_hops, temporal_filter)` | BFS with temporal edge filtering |
+| `TemporalPatternMatchOperator` | `(pattern, temporal_filter)` | Pattern match with temporal edge constraints |
+
+### GNN Operators
+
+| Operator | Constructor | Description |
+|----------|------------|-------------|
+| `MessagePassingOperator` | `(k_layers, aggregation, property_name)` | K-layer neighbor aggregation + sigmoid |
+| `GraphEmbeddingOperator` | `(dimensions, k_layers)` | Structural vertex embeddings |
+
+### Graph Maintenance
+
+| Class | Description |
+|-------|-------------|
+| `GraphDelta` | Records mutation operations; `add_vertex()`, `remove_vertex()`, `add_edge()`, `remove_edge()`, `affected_vertex_ids()`, `affected_edge_labels()` |
+| `VersionedGraphStore` | `__init__(base)`, `apply(delta)`, `rollback(to_version)`, `version`, `on_invalidate(callback)` |
+| `TemporalFilter` | `__init__(timestamp=None, time_range=None)`, `is_valid(properties)` |
+
+### Fusion Classes
+
+| Class | Description |
+|-------|-------------|
+| `AttentionFusion` | `__init__(n_signals, n_query_features, alpha)`, `fuse(probs, query_features)`, `fit()`, `update()`, `state_dict()`, `load_state_dict()` |
+| `LearnedFusion` | `__init__(n_signals, alpha)`, `fuse(probs)`, `fit()`, `update()`, `state_dict()`, `load_state_dict()` |
+| `QueryFeatureExtractor` | `__init__(inverted_index)`, `extract(query_terms, field)`, `n_features` (= 6) |
+| `FusionWANDScorer` | `__init__(signal_posting_lists, signal_upper_bounds, alpha, k)`, `score_top_k()` |
+
 ### Hierarchical Operators
 
 ```python
@@ -1041,6 +1216,15 @@ context = ExecutionContext(
     graph_store=graph_store,
 )
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `document_store` | `DocumentStore` | Document storage |
+| `inverted_index` | `InvertedIndex` | Inverted index for term lookups |
+| `vector_indexes` | `dict[str, HNSWIndex]` | Named vector indexes |
+| `spatial_indexes` | `dict[str, SpatialIndex]` | Named spatial indexes |
+| `graph_store` | `GraphStore \| None` | Graph store for traversal operators |
+| `path_index` | `PathIndex \| None` | Pre-computed path index for RPQ acceleration |
 
 ---
 

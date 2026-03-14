@@ -172,6 +172,26 @@ Operators are functions that produce posting lists. They are the building blocks
 | ProbBoolFusionOperator | Probabilistic AND or OR |
 | ProbNotOperator | Probabilistic NOT: $P' = 1 - P$ |
 
+**Advanced fusion operators:**
+
+| Operator | Semantics |
+|----------|-----------|
+| AttentionFusionOperator | Attention-weighted log-odds conjunction using query features |
+| LearnedFusionOperator | Learned per-signal weight log-odds conjunction |
+
+**Scoring operators:**
+
+| Operator | Semantics |
+|----------|-----------|
+| SparseThresholdOperator | ReLU thresholding: max(0, score - threshold) |
+| MultiFieldSearchOperator | Per-field Bayesian BM25 with cross-field log-odds fusion |
+
+**Pipeline operators:**
+
+| Operator | Semantics |
+|----------|-----------|
+| MultiStageOperator | Cascading retrieval with per-stage top-k or threshold cutoffs |
+
 **Graph operators:**
 
 | Operator | Semantics |
@@ -179,6 +199,27 @@ Operators are functions that produce posting lists. They are the building blocks
 | TraverseOperator | BFS traversal from a vertex |
 | PatternMatchOperator | Subgraph isomorphism matching (MRV + arc consistency + incremental edge validation) |
 | RegularPathQueryOperator | NFA-based regular path evaluation |
+
+**Temporal graph operators:**
+
+| Operator | Semantics |
+|----------|-----------|
+| TemporalTraverseOperator | BFS traversal filtered by valid_from/valid_to edge properties |
+| TemporalPatternMatchOperator | Subgraph isomorphism with temporal edge constraints |
+
+**GNN operators:**
+
+| Operator | Semantics |
+|----------|-----------|
+| MessagePassingOperator | K-layer neighbor feature aggregation with sigmoid calibration |
+| GraphEmbeddingOperator | Structural embeddings from degree, labels, and k-hop connectivity |
+
+**Graph maintenance:**
+
+| Operator | Semantics |
+|----------|-----------|
+| GraphDelta | Records add/remove vertex/edge operations for atomic application |
+| VersionedGraphStore | Version-tracked graph with apply/rollback and inverse delta storage |
 
 All operators implement an `execute(context)` method that returns a PostingList, and a `cost_estimate(stats)` method used by the query optimizer.
 
@@ -197,6 +238,12 @@ where $w = \text{boost} \cdot \text{IDF}(t)$ and $\text{inv\_norm}$ encodes docu
 **Bayesian BM25** (calibrated probabilistic scoring): Transforms BM25 raw scores into $P(\text{relevant}) \in [0, 1]$ via Bayesian inference with a sigmoid likelihood model. The posterior decomposes into three additive log-odds terms: likelihood, base rate, and document prior.
 
 **Vector similarity** (semantic scoring): Cosine similarity in $[-1, 1]$ is linearly mapped to probability space: $P = (1 + \text{sim}) / 2$.
+
+**External prior scoring**: Combines BM25 likelihood with document-level prior features (recency, authority) via log-odds addition. The prior maps document metadata to a probability in $(0, 1)$ through user-supplied functions (`recency_prior`, `authority_prior`).
+
+**Multi-field scoring**: Scores each text field independently with Bayesian BM25, then fuses per-field posteriors via weighted log-odds conjunction. Each field can have independent calibration parameters (alpha, beta, base_rate).
+
+**Calibration diagnostics**: Expected Calibration Error (ECE), Brier score, and reliability diagrams measure how well predicted probabilities match actual relevance rates. `ParameterLearner` fits calibration parameters from relevance judgments via batch training or online updates.
 
 ### 3.4 Multi-Signal Fusion
 
@@ -218,6 +265,12 @@ Properties:
 - AND: $P = \prod_i P_i$
 - OR: $P = 1 - \prod_i (1 - P_i)$
 - NOT: $P = 1 - P_{\text{signal}}$
+
+**Attention-weighted fusion**: Uses query-level features (IDF statistics, coverage, query length) to compute per-signal attention weights via softmax over a learned weight matrix. Delegates to `AttentionLogOddsWeights` from the `bayesian_bm25` package. Supports batch training via `.fit()` and online updates via `.update()`, with `state_dict()`/`load_state_dict()` for persistence.
+
+**Learned-weight fusion**: Uses per-signal weights learned from relevance judgments without query features. Delegates to `LearnableLogOddsWeights` from the `bayesian_bm25` package.
+
+**Multi-stage retrieval**: Cascading pipeline where each stage refines the candidate set from the previous stage. Each stage is an (operator, cutoff) pair where cutoff is either top-k (integer) or a score threshold (float). Stage 0 executes fully; subsequent stages re-score surviving documents.
 
 
 ## 4. Function Reference
@@ -366,6 +419,120 @@ result = engine.sql(
 | `k` | integer | Number of nearest neighbors to retrieve |
 | `threshold` | float | Exclusion threshold for negative similarity |
 
+#### `sparse_threshold(signal, threshold)`
+
+ReLU thresholding operator (Paper 4, Section 6.5). Applies `max(0, score - threshold)` to each document score, excluding documents whose adjusted score is zero. Implements the MAP estimation interpretation of ReLU activation.
+
+```sql
+SELECT title, _score FROM papers
+WHERE sparse_threshold(bayesian_match(title, 'attention'), 0.3)
+ORDER BY _score DESC;
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `signal` | signal function | A signal function (bayesian_match, text_match, etc.) |
+| `threshold` | float | Score threshold; documents below this are excluded |
+
+Returns: PostingList with adjusted scores `max(0, score - threshold)`.
+
+#### `multi_field_match(field1, field2, ..., query[, w1, w2, ...])`
+
+Multi-field Bayesian BM25 search (Paper 3, Section 12.2 #1). Scores each field independently with Bayesian BM25, then fuses per-field posteriors via weighted log-odds conjunction. Optional trailing numeric arguments set per-field weights (normalized to sum to 1).
+
+```sql
+-- Equal-weight search across title and abstract
+SELECT title, _score FROM papers
+WHERE multi_field_match(title, abstract, 'attention transformer')
+ORDER BY _score DESC;
+
+-- Title weighted 2x higher than abstract
+SELECT title, _score FROM papers
+WHERE multi_field_match(title, abstract, 'attention', 2.0, 1.0)
+ORDER BY _score DESC;
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `field1, field2, ...` | column names | Text columns to search (at least 2) |
+| `query` | string | Search query |
+| `w1, w2, ...` | floats (optional) | Per-field weights (default: equal) |
+
+Returns: PostingList with fused calibrated probabilities in $[0, 1]$.
+
+#### `bayesian_match_with_prior(field, query, prior_field, prior_mode)`
+
+Bayesian BM25 with external document-level prior (Paper 3, Section 12.2 #6). Combines BM25 likelihood with a prior computed from document metadata via log-odds addition: `logit(posterior) = logit(likelihood) + logit(prior)`.
+
+```sql
+SELECT title, _score FROM papers
+WHERE bayesian_match_with_prior(title, 'attention', 'authority', 'authority')
+ORDER BY _score DESC;
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `field` | column name | Text column to search |
+| `query` | string | Search query |
+| `prior_field` | string | Document field for prior computation |
+| `prior_mode` | string | `'recency'` (exponential decay) or `'authority'` (categorical levels) |
+
+Returns: PostingList with posterior probabilities incorporating the external prior.
+
+#### `temporal_traverse(start, label, hops, timestamp)` / `temporal_traverse(start, label, hops, from_ts, to_ts)`
+
+Time-aware graph traversal (Paper 2, Section 10). Same BFS as `traverse_match` but filters edges by `valid_from`/`valid_to` temporal properties. The 4-argument form checks a single timestamp; the 5-argument form checks interval overlap.
+
+```sql
+-- Point-in-time traversal
+SELECT * FROM temporal_traverse(1, 'knows', 2, 1700000000);
+
+-- Range traversal
+SELECT * FROM temporal_traverse(1, 'knows', 2, 1690000000, 1710000000);
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `start` | integer | Starting vertex ID |
+| `label` | string | Edge label to follow |
+| `hops` | integer | Maximum traversal depth |
+| `timestamp` | float | Point-in-time filter |
+| `from_ts, to_ts` | floats | Time range filter (interval overlap) |
+
+Returns: PostingList of reachable vertices with `_score = 0.9`.
+
+#### `message_passing(k_layers, aggregation, property_name)`
+
+GNN-style k-layer message-passing aggregation (Paper 2 + Paper 4). Each vertex accumulates neighbor feature values over k rounds, then results are calibrated via sigmoid.
+
+```sql
+SELECT * FROM papers
+WHERE message_passing(2, 'mean', 'score');
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `k_layers` | integer | Number of aggregation layers (default: 2) |
+| `aggregation` | string | Aggregation function: `'mean'`, `'sum'`, or `'max'` |
+| `property_name` | string | Vertex property to aggregate (optional) |
+
+Returns: PostingList of all vertices with sigmoid-calibrated aggregated scores.
+
+#### `graph_embedding(dimensions, k_layers)`
+
+Structural graph embedding computation (Paper 2 + Paper 4). Computes per-vertex embeddings from structural features: degree (in/out), edge label distribution, and k-hop connectivity statistics. Embeddings are L2-normalized and stored in the `_embedding` payload field.
+
+```sql
+SELECT * FROM papers WHERE graph_embedding(16, 2);
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `dimensions` | integer | Embedding dimensionality (default: 32) |
+| `k_layers` | integer | Hop depth for connectivity features (default: 2) |
+
+Returns: PostingList with `_embedding` field containing the structural embedding vector.
+
 ### 4.2 Fusion Meta-Functions
 
 Fusion functions combine multiple signal functions into a single relevance score. Each signal argument must be a signal function call (`text_match`, `bayesian_match`, `knn_match`, `traverse_match`, or `spatial_within`). Inside a fusion context, `text_match` is automatically promoted to Bayesian BM25 calibration so all signals produce probabilities in $(0, 1)$.
@@ -423,6 +590,43 @@ Probabilistic NOT. Computes $P = 1 - P_{\text{signal}}$. Takes exactly one signa
 SELECT title, _score FROM papers
 WHERE fuse_prob_not(text_match(title, 'noise'))
 ORDER BY _score DESC;
+```
+
+#### `fuse_attention(signal1, signal2, ...)`
+
+Attention-weighted log-odds fusion (Paper 4, Section 8). Computes per-signal attention weights from query-level features (IDF statistics, coverage, query length) via a learned weight matrix, then fuses via weighted log-odds conjunction.
+
+```sql
+SELECT title, _score FROM papers
+WHERE fuse_attention(
+    bayesian_match(title, 'attention'),
+    bayesian_match(abstract, 'transformer')
+) ORDER BY _score DESC;
+```
+
+#### `fuse_learned(signal1, signal2, ...)`
+
+Learned-weight log-odds fusion (Paper 4, Section 8). Uses per-signal weights learned from relevance judgments (no query features needed).
+
+```sql
+SELECT title, _score FROM papers
+WHERE fuse_learned(
+    bayesian_match(title, 'attention'),
+    knn_match(embedding, ARRAY[0.1, 0.2, ...], 5)
+) ORDER BY _score DESC;
+```
+
+#### `staged_retrieval(signal1, k1, signal2, k2, ...)`
+
+Multi-stage cascading retrieval pipeline (Paper 4, Section 9). Each (signal, cutoff) pair defines a stage. Stage 0 executes fully and retains the top-k (integer cutoff) or above-threshold (float cutoff) documents. Subsequent stages re-score the surviving candidates.
+
+```sql
+-- Two-stage: broad recall (top 50) then precise re-ranking (top 10)
+SELECT title, _score FROM papers
+WHERE staged_retrieval(
+    bayesian_match(title, 'transformer'), 50,
+    bayesian_match(abstract, 'self attention mechanism'), 10
+) ORDER BY _score DESC;
 ```
 
 ### 4.3 SELECT Scalar Functions
@@ -1339,6 +1543,54 @@ plan = engine.query(table="papers").term("attention").explain()
 print(plan)
 ```
 
+```python
+# Sparse thresholding (ReLU-as-MAP)
+result = (
+    engine.query(table="papers")
+    .score_bayesian_bm25("attention", "title")
+    .sparse_threshold(0.3)
+    .execute()
+)
+
+# Multi-field search
+result = (
+    engine.query(table="papers")
+    .score_multi_field_bayesian("attention", ["title", "abstract"], [2.0, 1.0])
+    .execute()
+)
+
+# Attention-weighted fusion
+sig1 = engine.query(table="papers").score_bayesian_bm25("attention", "title")
+sig2 = engine.query(table="papers").score_bayesian_bm25("transformer", "abstract")
+result = engine.query(table="papers").fuse_attention(sig1, sig2).execute()
+
+# Learned-weight fusion
+result = engine.query(table="papers").fuse_learned(sig1, sig2).execute()
+
+# Multi-stage pipeline
+s1 = engine.query(table="papers").score_bayesian_bm25("transformer", "title")
+s2 = engine.query(table="papers").score_bayesian_bm25("attention", "abstract")
+result = engine.query(table="papers").multi_stage([(s1, 50), (s2, 10)]).execute()
+
+# Temporal graph traversal
+result = (
+    engine.query(table="social")
+    .temporal_traverse(1, "knows", max_hops=2, timestamp=1700000000.0)
+    .execute()
+)
+
+# GNN message passing
+result = (
+    engine.query(table="social")
+    .message_passing(k_layers=2, aggregation="mean", property_name="score")
+    .execute()
+)
+
+# Parameter learning
+labels = [1, 1, 0, 0]
+learned = engine.query(table="papers").learn_params("attention", labels, field="title")
+```
+
 ### 6.5 Arrow / Parquet Export
 
 Query results can be exported to Apache Arrow tables and Parquet files. When the result originates from the physical execution engine, Arrow RecordBatches are preserved and `to_arrow()` performs a zero-copy conversion without intermediate dict materialization.
@@ -1520,6 +1772,9 @@ Example scripts are provided in the `examples/` directory:
 | `hierarchical.py` | Nested data, path filters, path aggregation |
 | `analysis.py` | Text analysis pipeline, tokenizers, filters, stemming, per-field analyzers |
 | `export.py` | Arrow/Parquet export from fluent queries, BM25 scoring, round-trip |
+| `scoring.py` | Bayesian BM25, sparse threshold, multi-field, external priors |
+| `fusion_advanced.py` | Attention/learned fusion, multi-stage pipelines |
+| `graph_advanced.py` | Temporal traversal, message passing, path index, graph delta |
 
 ### SQL (`examples/sql/`)
 
@@ -1533,6 +1788,10 @@ Example scripts are provided in the `examples/` directory:
 | `export.py` | Arrow/Parquet export from SQL queries, type preservation, JOIN export |
 | `spatial.py` | Geospatial: POINT, R*Tree, spatial_within, ST_Distance, ST_DWithin, fusion |
 | `fdw.py` | Foreign Data Wrappers, DuckDB (Parquet/CSV/JSON), JOINs, Hive partitioning |
+| `scoring_advanced.py` | Sparse threshold, multi-field match, attention/learned fusion, staged retrieval |
+| `calibration.py` | ECE, Brier score, reliability diagram, parameter learning |
+| `temporal_graph.py` | Temporal traversal, message passing, graph embeddings |
+| `graph_delta.py` | Delta operations, path index invalidation, versioned rollback |
 
 
 ## 9. Testing
@@ -1547,9 +1806,9 @@ python -m pytest uqa/tests/ -v
 python -m pytest uqa/tests/test_sql.py -v
 ```
 
-1879 tests across 47 test files covering core algebra, operators, scoring, fusion, SQL compilation, physical execution, joins, graph operations, openCypher graph queries, SQLite persistence, transactions, cost optimization, parallel execution, PostgreSQL 17 compatibility, text analysis pipeline, Arrow/Parquet export, Foreign Data Wrappers (Hive partitioning, predicate pushdown), interactive SQL shell, and end-to-end integration.
+2230 tests across 62 test files covering core algebra, operators, scoring, fusion, SQL compilation, physical execution, joins, graph operations, openCypher graph queries, SQLite persistence, transactions, cost optimization, parallel execution, PostgreSQL 17 compatibility, text analysis pipeline, Arrow/Parquet export, Foreign Data Wrappers (Hive partitioning, predicate pushdown), interactive SQL shell, calibration metrics, parameter learning, multi-field scoring, attention/learned fusion, multi-signal WAND, multi-stage retrieval, external priors, sparse thresholding, path index, graph delta, temporal graphs, GNN message passing, and end-to-end integration.
 
-Additionally, 185 benchmarks across 8 files (in the `benchmarks/` directory) measure performance of posting list operations, storage backends, SQL compilation, physical execution, DPccp join enumeration, BM25/vector/fusion scoring, graph traversal and pattern matching, and end-to-end SQL queries. Install with `pip install -e ".[benchmark]"` and run with `python -m pytest benchmarks/ --benchmark-sort=name`.
+Additionally, 269 benchmarks across 13 files (in the `benchmarks/` directory) measure performance of posting list operations, storage backends, SQL compilation, physical execution, DPccp join enumeration, BM25/vector/fusion scoring, graph traversal and pattern matching, and end-to-end SQL queries. Install with `pip install -e ".[benchmark]"` and run with `python -m pytest benchmarks/ --benchmark-sort=name`.
 
 
 ## 10. References
