@@ -296,21 +296,17 @@ class CardinalityEstimator:
         )
 
         if isinstance(op, TextSimilarityJoinOperator):
-            left = self.estimate(op.left, stats) if hasattr(op.left, "execute") else n
-            right = (
-                self.estimate(op.right, stats) if hasattr(op.right, "execute") else n
-            )
+            left = self._estimate_join_side(op.left, stats, n)
+            right = self._estimate_join_side(op.right, stats, n)
             return left * right * JACCARD_JOIN_SELECTIVITY
 
         if isinstance(op, VectorSimilarityJoinOperator):
-            left = self.estimate(op.left, stats) if hasattr(op.left, "execute") else n
-            right = (
-                self.estimate(op.right, stats) if hasattr(op.right, "execute") else n
-            )
+            left = self._estimate_join_side(op.left, stats, n)
+            right = self._estimate_join_side(op.right, stats, n)
             return left * right * VECTOR_JOIN_SELECTIVITY
 
         if isinstance(op, GraphJoinOperator):
-            left = self.estimate(op.left, stats) if hasattr(op.left, "execute") else n
+            left = self._estimate_join_side(op.left, stats, n)
             avg_degree = (
                 self._graph_stats.avg_out_degree
                 if self._graph_stats
@@ -324,14 +320,12 @@ class CardinalityEstimator:
             return left * avg_degree * label_sel
 
         if isinstance(op, HybridJoinOperator):
-            left = self.estimate(op.left, stats) if hasattr(op.left, "execute") else n
-            right = (
-                self.estimate(op.right, stats) if hasattr(op.right, "execute") else n
-            )
+            left = self._estimate_join_side(op.left, stats, n)
+            right = self._estimate_join_side(op.right, stats, n)
             return left * right / n if n > 0 else 0.0
 
         if isinstance(op, CrossParadigmJoinOperator):
-            left = self.estimate(op.left, stats) if hasattr(op.left, "execute") else n
+            left = self._estimate_join_side(op.left, stats, n)
             avg_degree = (
                 self._graph_stats.avg_out_degree
                 if self._graph_stats
@@ -486,6 +480,16 @@ class CardinalityEstimator:
         if threshold >= 0.5:
             return 0.1
         return 0.2
+
+    def _estimate_join_side(self, side: object, stats: IndexStats, n: float) -> float:
+        """Estimate cardinality of a join operand, handling untyped objects."""
+        from uqa.operators.base import Operator
+
+        if isinstance(side, Operator):
+            return self.estimate(side, stats)
+        if hasattr(side, "execute"):
+            return n
+        return n
 
     def _sample_graph_cardinality(
         self,

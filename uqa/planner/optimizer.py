@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from uqa.planner.cardinality import CardinalityEstimator
 
@@ -272,7 +272,7 @@ class QueryOptimizer:
         return op
 
     @staticmethod
-    def _merge_patterns(pm1: object, pm2: object) -> object | None:
+    def _merge_patterns(pm1: object, pm2: object) -> Any:
         """Merge two PatternMatchOperators if they share vertex variables.
 
         Returns merged PatternMatchOperator or None if no shared variables.
