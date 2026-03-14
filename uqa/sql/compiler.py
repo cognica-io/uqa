@@ -4770,6 +4770,12 @@ class SQLCompiler:
             return self._build_temporal_traverse_from(args)
         if name == "rpq":
             return self._build_rpq_from(args)
+        if name == "pagerank":
+            return self._build_centrality_from(args, "pagerank")
+        if name == "hits":
+            return self._build_centrality_from(args, "hits")
+        if name == "betweenness":
+            return self._build_centrality_from(args, "betweenness")
         if name == "text_search":
             return self._build_text_search_from(args)
         if name == "generate_series":
@@ -4797,17 +4803,27 @@ class SQLCompiler:
             return self._build_list_analyzers()
         if name == "set_table_analyzer":
             return self._build_set_table_analyzer(args)
+        if name == "graph_add_vertex":
+            return self._build_graph_add_vertex(args)
+        if name == "graph_add_edge":
+            return self._build_graph_add_edge(args)
         raise ValueError(f"Unknown table function: {name}")
 
     @staticmethod
     def _is_graph_operator(op: Any) -> bool:
-        """Return True if op is a graph traversal, RPQ, or Cypher operator."""
+        """Return True if op is a graph traversal, RPQ, centrality, or Cypher operator."""
         if op is None:
             return False
+        from uqa.graph.centrality import (
+            BetweennessCentralityOperator,
+            HITSOperator,
+            PageRankOperator,
+        )
         from uqa.graph.operators import (
             CypherQueryOperator,
             RegularPathQueryOperator,
             TraverseOperator,
+            WeightedPathQueryOperator,
         )
         from uqa.graph.temporal_traverse import TemporalTraverseOperator
 
@@ -4816,7 +4832,11 @@ class SQLCompiler:
             TraverseOperator
             | RegularPathQueryOperator
             | CypherQueryOperator
-            | TemporalTraverseOperator,
+            | TemporalTraverseOperator
+            | PageRankOperator
+            | HITSOperator
+            | BetweennessCentralityOperator
+            | WeightedPathQueryOperator,
         )
 
     @staticmethod
@@ -5006,6 +5026,73 @@ class SQLCompiler:
             raise ValueError(f"Table '{table_name}' does not exist")
         return table, op
 
+    def _build_centrality_from(
+        self, args: tuple, kind: str
+    ) -> tuple[Table | None, Any]:
+        """Build centrality FROM-clause: pagerank(), hits(), betweenness().
+
+        pagerank([damping[, max_iter[, tol[, 'table']]]])
+        hits([max_iter[, tol[, 'table']]])
+        betweenness(['table'])
+        """
+        from uqa.graph.centrality import (
+            BetweennessCentralityOperator,
+            HITSOperator,
+            PageRankOperator,
+        )
+
+        table_name_arg = None
+
+        # Check if the last (or only) arg is a string table/graph source
+        def _is_source_arg(a: object) -> bool:
+            try:
+                val = self._extract_const_value(a)
+                return isinstance(val, str)
+            except (ValueError, TypeError, AttributeError):
+                return False
+
+        if kind == "pagerank":
+            # pagerank([damping[, max_iter[, tol]]][, 'source'])
+            numeric_args = [a for a in args if not _is_source_arg(a)]
+            source_args = [a for a in args if _is_source_arg(a)]
+            damping = float(self._extract_const_value(numeric_args[0])) if len(numeric_args) > 0 else 0.85
+            max_iter = self._extract_int_value(numeric_args[1]) if len(numeric_args) > 1 else 100
+            tol = float(self._extract_const_value(numeric_args[2])) if len(numeric_args) > 2 else 1e-6
+            if source_args:
+                table_name_arg = self._extract_string_value(source_args[0])
+            op = PageRankOperator(damping=damping, max_iterations=max_iter, tolerance=tol)
+        elif kind == "hits":
+            # hits([max_iter[, tol]][, 'source'])
+            numeric_args = [a for a in args if not _is_source_arg(a)]
+            source_args = [a for a in args if _is_source_arg(a)]
+            max_iter = self._extract_int_value(numeric_args[0]) if len(numeric_args) > 0 else 100
+            tol = float(self._extract_const_value(numeric_args[1])) if len(numeric_args) > 1 else 1e-6
+            if source_args:
+                table_name_arg = self._extract_string_value(source_args[0])
+            op = HITSOperator(max_iterations=max_iter, tolerance=tol)
+        else:
+            # betweenness(['source'])
+            if len(args) > 0:
+                table_name_arg = self._extract_string_value(args[0])
+            op = BetweennessCentralityOperator()
+
+        if table_name_arg is not None:
+            if table_name_arg.startswith("graph:"):
+                graph_store = self._engine.get_graph(table_name_arg[6:])
+                return None, _NamedGraphOperatorWrapper(op, graph_store)
+            table = self._engine._tables.get(table_name_arg)
+            if table is None:
+                raise ValueError(f"Table '{table_name_arg}' does not exist")
+            return table, op
+
+        if not self._engine._tables:
+            raise ValueError(f"{kind}() requires a table argument")
+        first_table_name = next(iter(self._engine._tables))
+        table = self._engine._tables.get(first_table_name)
+        if table is None:
+            raise ValueError(f"Table '{first_table_name}' does not exist")
+        return table, op
+
     def _build_create_graph(self, args: tuple) -> tuple[Table | None, Any]:
         """Handle ``SELECT * FROM create_graph('name')``."""
         from uqa.sql.table import ColumnDef as SQLColumnDef
@@ -5139,6 +5226,100 @@ class SQLCompiler:
         self._engine._tables["_set_table_analyzer"] = table
         self._expanded_views.append("_set_table_analyzer")
         return table, None
+
+    def _build_graph_add_vertex(self, args: tuple) -> tuple[Table | None, Any]:
+        """Handle ``SELECT * FROM graph_add_vertex(id, 'label', 'table'[, 'key=val,...'])``.
+
+        Adds a graph vertex to a table's graph store via SQL.
+        """
+        from uqa.core.types import Vertex
+        from uqa.sql.table import ColumnDef as SQLColumnDef
+
+        if len(args) < 3:
+            raise ValueError(
+                "graph_add_vertex(id, 'label', 'table'[, 'key=val,...'])"
+            )
+        vid = self._extract_int_value(args[0])
+        label = self._extract_string_value(args[1])
+        table_name = self._extract_string_value(args[2])
+
+        props: dict[str, object] = {}
+        if len(args) > 3:
+            props_str = self._extract_string_value(args[3])
+            for pair in props_str.split(","):
+                pair = pair.strip()
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    k = k.strip()
+                    v = v.strip()
+                    try:
+                        props[k] = int(v)
+                    except ValueError:
+                        try:
+                            props[k] = float(v)
+                        except ValueError:
+                            props[k] = v
+
+        self._engine.add_graph_vertex(Vertex(vid, label, props), table=table_name)
+
+        result_table = Table(
+            "_graph_add_vertex",
+            [SQLColumnDef(name="result", type_name="text", python_type=str)],
+        )
+        result_table.insert({"result": f"vertex {vid} added to {table_name}"})
+        self._engine._tables["_graph_add_vertex"] = result_table
+        self._expanded_views.append("_graph_add_vertex")
+        return result_table, None
+
+    def _build_graph_add_edge(self, args: tuple) -> tuple[Table | None, Any]:
+        """Handle ``SELECT * FROM graph_add_edge(eid, src, tgt, 'label', 'table'[, 'key=val,...'])``.
+
+        Adds a graph edge to a table's graph store via SQL.
+        """
+        from uqa.core.types import Edge
+        from uqa.sql.table import ColumnDef as SQLColumnDef
+
+        if len(args) < 5:
+            raise ValueError(
+                "graph_add_edge(eid, src, tgt, 'label', 'table'[, 'key=val,...'])"
+            )
+        eid = self._extract_int_value(args[0])
+        src = self._extract_int_value(args[1])
+        tgt = self._extract_int_value(args[2])
+        label = self._extract_string_value(args[3])
+        table_name = self._extract_string_value(args[4])
+
+        props: dict[str, object] = {}
+        if len(args) > 5:
+            props_str = self._extract_string_value(args[5])
+            for pair in props_str.split(","):
+                pair = pair.strip()
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    k = k.strip()
+                    v = v.strip()
+                    try:
+                        props[k] = int(v)
+                    except ValueError:
+                        try:
+                            props[k] = float(v)
+                        except ValueError:
+                            props[k] = v
+
+        self._engine.add_graph_edge(
+            Edge(eid, src, tgt, label, props), table=table_name
+        )
+
+        result_table = Table(
+            "_graph_add_edge",
+            [SQLColumnDef(name="result", type_name="text", python_type=str)],
+        )
+        result_table.insert(
+            {"result": f"edge {eid} ({src}->{tgt} '{label}') added to {table_name}"}
+        )
+        self._engine._tables["_graph_add_edge"] = result_table
+        self._expanded_views.append("_graph_add_edge")
+        return result_table, None
 
     def _build_cypher_from(
         self, node: RangeFunction, args: tuple
@@ -6214,6 +6395,16 @@ class SQLCompiler:
             return self._make_graph_embedding_op(args)
         if name == "staged_retrieval":
             return self._make_staged_retrieval_op(args, ctx)
+        if name == "pagerank":
+            return self._make_pagerank_op(args)
+        if name == "hits":
+            return self._make_hits_op(args)
+        if name == "betweenness":
+            return self._make_betweenness_op(args)
+        if name == "weighted_rpq":
+            return self._make_weighted_rpq_op(args)
+        if name == "progressive_fusion":
+            return self._make_progressive_fusion_op(args, ctx)
         # Fall back to expression-based filter for scalar functions
         # used in WHERE (e.g., ST_DWithin, ST_Within).
         return _ExprFilterOperator(node, subquery_executor=self._compile_select)
@@ -6565,10 +6756,20 @@ class SQLCompiler:
             return self._make_traverse_match_op(args)
         if name == "spatial_within":
             return self._make_spatial_within_op(args)
+        if name == "pagerank":
+            return self._make_pagerank_op(args)
+        if name == "hits":
+            return self._make_hits_op(args)
+        if name == "betweenness":
+            return self._make_betweenness_op(args)
+        if name == "weighted_rpq":
+            return self._make_weighted_rpq_op(args)
+        if name == "message_passing":
+            return self._make_message_passing_op(args)
         raise ValueError(
             f"Unknown signal function for fusion: {name}. "
             f"Use text_match, bayesian_match, knn_match, traverse_match, "
-            f"or spatial_within."
+            f"spatial_within, pagerank, hits, betweenness, or weighted_rpq."
         )
 
     def _make_calibrated_knn_op(self, args: tuple) -> Any:
@@ -6637,13 +6838,17 @@ class SQLCompiler:
 
         signals: list[Any] = []
         alpha = 0.5
+        gating: str | None = None
 
         for arg in args:
             if isinstance(arg, FuncCall):
                 signals.append(self._compile_calibrated_signal(arg, ctx))
             elif isinstance(arg, A_Const) and mode == "log_odds":
-                # Trailing numeric argument = alpha
-                alpha = float(self._extract_const_value(arg))
+                val = self._extract_const_value(arg)
+                if isinstance(val, str):
+                    gating = val
+                else:
+                    alpha = float(val)
             else:
                 raise ValueError(
                     f"Fusion function arguments must be signal functions "
@@ -6654,7 +6859,7 @@ class SQLCompiler:
             raise ValueError("Fusion requires at least 2 signal functions")
 
         if mode == "log_odds":
-            return LogOddsFusionOperator(signals, alpha=alpha)
+            return LogOddsFusionOperator(signals, alpha=alpha, gating=gating)
         if mode == "prob_and":
             return ProbBoolFusionOperator(signals, mode="and")
         return ProbBoolFusionOperator(signals, mode="or")
@@ -6687,6 +6892,118 @@ class SQLCompiler:
             )
 
         return MultiStageOperator(stages)
+
+    def _make_pagerank_op(self, args: tuple) -> Any:
+        """pagerank([damping[, max_iterations[, tolerance]]])
+
+        Graph centrality scoring via power iteration.
+        """
+        from uqa.graph.centrality import PageRankOperator
+
+        damping = float(self._extract_const_value(args[0])) if len(args) > 0 else 0.85
+        max_iter = self._extract_int_value(args[1]) if len(args) > 1 else 100
+        tol = float(self._extract_const_value(args[2])) if len(args) > 2 else 1e-6
+        return PageRankOperator(damping=damping, max_iterations=max_iter, tolerance=tol)
+
+    def _make_hits_op(self, args: tuple) -> Any:
+        """hits([max_iterations[, tolerance]])
+
+        HITS hub/authority scoring.
+        """
+        from uqa.graph.centrality import HITSOperator
+
+        max_iter = self._extract_int_value(args[0]) if len(args) > 0 else 100
+        tol = float(self._extract_const_value(args[1])) if len(args) > 1 else 1e-6
+        return HITSOperator(max_iterations=max_iter, tolerance=tol)
+
+    def _make_betweenness_op(self, _args: tuple) -> Any:
+        """betweenness()
+
+        Betweenness centrality via Brandes algorithm.
+        """
+        from uqa.graph.centrality import BetweennessCentralityOperator
+
+        return BetweennessCentralityOperator()
+
+    def _make_weighted_rpq_op(self, args: tuple) -> Any:
+        """weighted_rpq('path_expr', start, 'weight_prop'[, 'agg_fn'[, threshold]])
+
+        Weighted regular path query with cumulative edge weight tracking.
+        """
+        from uqa.graph.operators import WeightedPathQueryOperator
+        from uqa.graph.pattern import parse_rpq
+
+        if len(args) < 3:
+            raise ValueError(
+                "weighted_rpq() requires at least 3 arguments: "
+                "weighted_rpq('path_expr', start, 'weight_property'"
+                "[, 'agg_fn'[, threshold]])"
+            )
+        expr_str = self._extract_string_value(args[0])
+        start = self._extract_int_value(args[1])
+        weight_prop = self._extract_string_value(args[2])
+        agg_fn = self._extract_string_value(args[3]) if len(args) > 3 else "sum"
+        predicate = None
+        if len(args) > 4:
+            threshold = float(self._extract_const_value(args[4]))
+            predicate = lambda w, t=threshold: w > t
+        return WeightedPathQueryOperator(
+            path_expr=parse_rpq(expr_str),
+            weight_property=weight_prop,
+            aggregate_fn=agg_fn,
+            predicate=predicate,
+            start_vertex=start,
+        )
+
+    def _make_progressive_fusion_op(self, args: tuple, ctx: ExecutionContext) -> Any:
+        """progressive_fusion(signal1, signal2, k1, signal3, k2[, alpha[, 'gating']])
+
+        Progressive multi-stage fusion with WAND pruning.
+        First stage signals come before the first k, subsequent stages
+        alternate between signal and k.
+        Format: progressive_fusion(sig1, sig2, k1, sig3, k2[, alpha][, 'gating'])
+        """
+        from uqa.operators.progressive_fusion import ProgressiveFusionOperator
+
+        # Parse stage signals and cutoffs
+        signals: list[Any] = []
+        stages: list[tuple[list[Any], int]] = []
+        alpha = 0.5
+        gating = None
+
+        for arg in args:
+            if isinstance(arg, FuncCall):
+                signals.append(self._compile_calibrated_signal(arg, ctx))
+            elif isinstance(arg, A_Const):
+                val = self._extract_const_value(arg)
+                if isinstance(val, str):
+                    gating = val
+                elif isinstance(val, float) and not val == int(val):
+                    alpha = val
+                else:
+                    # Integer: this is a k cutoff
+                    k = int(val)
+                    if not signals:
+                        raise ValueError(
+                            "progressive_fusion: k must follow signal functions"
+                        )
+                    stages.append((list(signals), k))
+                    signals = []
+            else:
+                raise ValueError(
+                    f"progressive_fusion: unexpected argument type {type(arg).__name__}"
+                )
+
+        if signals:
+            raise ValueError(
+                "progressive_fusion: trailing signals without k cutoff"
+            )
+        if not stages:
+            raise ValueError(
+                "progressive_fusion requires at least one (signals, k) stage"
+            )
+
+        return ProgressiveFusionOperator(stages=stages, alpha=alpha, gating=gating)
 
     def _make_attention_fusion_op(self, args: tuple, ctx: ExecutionContext) -> Any:
         """fuse_attention(signal1, signal2, ...)"""

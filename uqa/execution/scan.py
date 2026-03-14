@@ -128,20 +128,20 @@ class PostingListScanOp(PhysicalOperator):
                 "_doc_id": doc_id,
                 "_score": entry.payload.score,
             }
-            # For join entries, fields are pre-populated in payload.
-            # Skip document store lookup if fields are already present.
+            # Look up document store first, then overlay payload fields.
+            # This ensures graph operators with extra fields (e.g., HITS
+            # hub_score/authority_score) still get document columns.
+            doc = (
+                self._doc_store.get(doc_id) if self._doc_store is not None else None
+            )
+            if doc is not None:
+                row.update(doc)
+            elif self._graph_store is not None:
+                vertex = self._graph_store.get_vertex(doc_id)
+                if vertex is not None:
+                    row.update(vertex.properties)
             if entry.payload.fields:
                 row.update(entry.payload.fields)
-            else:
-                doc = (
-                    self._doc_store.get(doc_id) if self._doc_store is not None else None
-                )
-                if doc is not None:
-                    row.update(doc)
-                elif self._graph_store is not None:
-                    vertex = self._graph_store.get_vertex(doc_id)
-                    if vertex is not None:
-                        row.update(vertex.properties)
             rows.append(row)
 
         if not rows:
