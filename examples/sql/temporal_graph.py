@@ -203,6 +203,79 @@ for agg in ("mean", "sum", "max"):
         print(f"    score={row['_score']:.4f}  {row['name']}")
 
 
+# ==================================================================
+# 11. Named graph: create and populate via Cypher
+# ==================================================================
+
+engine.sql("SELECT * FROM create_graph('project_net')")
+engine.sql("""
+    SELECT * FROM cypher('project_net', $$
+        CREATE (a:Dev {name: 'Alice', vid: 10})
+        CREATE (b:Dev {name: 'Bob', vid: 11})
+        CREATE (c:Dev {name: 'Carol', vid: 12})
+        CREATE (a)-[:mentors {valid_from: 1, valid_to: 6}]->(b)
+        CREATE (a)-[:mentors {valid_from: 5, valid_to: 12}]->(c)
+        CREATE (b)-[:mentors {valid_from: 3, valid_to: 8}]->(c)
+        RETURN a.name
+    $$) AS (name agtype)
+""")
+
+print("\n--- 11. Named graph 'project_net' created via Cypher ---")
+result = engine.sql("""
+    SELECT * FROM cypher('project_net', $$
+        MATCH (n:Dev) RETURN n.name ORDER BY n.name
+    $$) AS (name agtype)
+""")
+for row in result.rows:
+    print(f"  {row['name']}")
+
+
+# ==================================================================
+# 12. Named graph: temporal_traverse
+# ==================================================================
+
+# Get vertex IDs assigned by Cypher
+vids = engine.sql("""
+    SELECT * FROM cypher('project_net', $$
+        MATCH (n:Dev) RETURN n.name, id(n) AS vid ORDER BY n.name
+    $$) AS (name agtype, vid agtype)
+""")
+alice_id = None
+for row in vids.rows:
+    if row["name"] == "Alice":
+        alice_id = row["vid"]
+        break
+
+if alice_id is not None:
+    show(
+        "12. Named graph: temporal_traverse at month 4 from Alice",
+        engine.sql(
+            f"SELECT * FROM temporal_traverse({alice_id}, 'mentors', 2, 4, "
+            f"'graph:project_net')"
+        ),
+    )
+
+    # ==================================================================
+    # 13. Named graph: traverse (non-temporal)
+    # ==================================================================
+    show(
+        "13. Named graph: traverse from Alice (all edges, 2 hops)",
+        engine.sql(
+            f"SELECT * FROM traverse({alice_id}, 'mentors', 2, 'graph:project_net')"
+        ),
+    )
+
+    # ==================================================================
+    # 14. Named graph: rpq
+    # ==================================================================
+    show(
+        "14. Named graph: rpq('mentors/mentors') from Alice",
+        engine.sql(
+            f"SELECT * FROM rpq('mentors/mentors', {alice_id}, 'graph:project_net')"
+        ),
+    )
+
+
 print("\n" + "=" * 70)
 print("All temporal graph and GNN examples completed successfully.")
 print("=" * 70)

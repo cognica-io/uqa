@@ -12,6 +12,8 @@ graph embeddings, and path index.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from benchmarks.data.generators import BenchmarkDataGenerator
@@ -233,3 +235,55 @@ class TestGraphEmbedding:
         ctx = _GraphContext(gs)
         result = benchmark(op.execute, ctx)
         assert len(result) > 0
+
+
+# ---------------------------------------------------------------------------
+# Named Graph Operations
+# ---------------------------------------------------------------------------
+
+
+def _engine_with_named_graph(name: str = "bench_ng") -> Any:
+    """Create an Engine with a named graph via SQL create_graph()."""
+    from uqa.engine import Engine
+
+    e = Engine()
+    e.sql(f"SELECT * FROM create_graph('{name}')")
+    gen = BenchmarkDataGenerator(scale_factor=1, seed=42)
+    vertices, edges = gen.graph()
+    graph = e.get_graph(name)
+    for v in vertices:
+        graph.add_vertex(v)
+    for edge in edges:
+        graph.add_edge(edge)
+    return e
+
+
+class TestNamedGraphTraverse:
+    def test_traverse_named_graph(self, benchmark) -> None:
+        e = _engine_with_named_graph("bench_ng")
+
+        def run() -> object:
+            return e.sql("SELECT * FROM traverse(1, 'knows', 2, 'graph:bench_ng')")
+
+        result = benchmark(run)
+        assert result is not None
+
+    def test_temporal_traverse_named_graph(self, benchmark) -> None:
+        e = _engine_with_named_graph("bench_tng")
+
+        def run() -> object:
+            return e.sql(
+                "SELECT * FROM temporal_traverse(1, 'knows', 2, 0.5, 'graph:bench_tng')"
+            )
+
+        result = benchmark(run)
+        assert result is not None
+
+    def test_rpq_named_graph(self, benchmark) -> None:
+        e = _engine_with_named_graph("bench_rpq")
+
+        def run() -> object:
+            return e.sql("SELECT * FROM rpq('knows/works_at', 1, 'graph:bench_rpq')")
+
+        result = benchmark(run)
+        assert result is not None

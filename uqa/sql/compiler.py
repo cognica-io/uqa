@@ -4869,36 +4869,46 @@ class SQLCompiler:
     def _build_traverse_from(self, args: tuple) -> tuple[Table | None, Any]:
         """Build traverse() FROM-clause.
 
-        traverse(start, 'label', hops, 'table')   -- per-table graph
-        traverse(start, 'label', hops)             -- requires table
+        Per-table graph:
+            traverse(start, 'label', hops[, 'table'])
+        Named graph:
+            traverse(start, 'label', hops, 'graph:name')
         """
         from uqa.graph.operators import TraverseOperator
 
         start = self._extract_int_value(args[0])
         label = self._extract_string_value(args[1]) if len(args) > 1 else None
         max_hops = self._extract_int_value(args[2]) if len(args) > 2 else 1
+        op = TraverseOperator(start, label, max_hops)
+
         if len(args) > 3:
-            table_name = self._extract_string_value(args[3])
-        else:
-            # Use the first available table's graph store
-            if not self._engine._tables:
-                raise ValueError(
-                    "traverse() requires a table argument or "
-                    "at least one table to exist"
-                )
-            table_name = next(iter(self._engine._tables))
+            source_name = self._extract_string_value(args[3])
+            if source_name.startswith("graph:"):
+                graph_store = self._engine.get_graph(source_name[6:])
+                return None, _NamedGraphOperatorWrapper(op, graph_store)
+            table = self._engine._tables.get(source_name)
+            if table is None:
+                raise ValueError(f"Table '{source_name}' does not exist")
+            return table, op
+
+        if not self._engine._tables:
+            raise ValueError("traverse() requires a table or graph argument")
+        table_name = next(iter(self._engine._tables))
         table = self._engine._tables.get(table_name)
         if table is None:
             raise ValueError(f"Table '{table_name}' does not exist")
-        return table, TraverseOperator(start, label, max_hops)
+        return table, op
 
     def _build_temporal_traverse_from(self, args: tuple) -> tuple[Table | None, Any]:
         """Build temporal_traverse() FROM-clause.
 
-        temporal_traverse(start, 'label', hops, timestamp)
-        temporal_traverse(start, 'label', hops, from_ts, to_ts)
-        temporal_traverse(start, 'label', hops, timestamp, 'table')
-        temporal_traverse(start, 'label', hops, from_ts, to_ts, 'table')
+        Per-table graph:
+            temporal_traverse(start, 'label', hops, timestamp[, 'table'])
+            temporal_traverse(start, 'label', hops, from_ts, to_ts[, 'table'])
+
+        Named graph:
+            temporal_traverse(start, 'label', hops, timestamp, 'graph:name')
+            temporal_traverse(start, 'label', hops, from_ts, to_ts, 'graph:name')
         """
         from uqa.graph.temporal_filter import TemporalFilter
         from uqa.graph.temporal_traverse import TemporalTraverseOperator
@@ -4912,23 +4922,19 @@ class SQLCompiler:
         label = self._extract_string_value(args[1]) if len(args) > 1 else None
         max_hops = self._extract_int_value(args[2]) if len(args) > 2 else 1
 
-        # Determine temporal filter and optional table name.
-        # We try to detect whether arg[4] is a string (table name) or
-        # numeric (to_ts for range query).
-        table_name: str | None = None
+        # Determine temporal filter and optional table/graph name.
+        source_name: str | None = None
         tf: TemporalFilter
 
         if len(args) == 4:
             ts = float(self._extract_const_value(args[3]))
             tf = TemporalFilter(timestamp=ts)
         elif len(args) == 5:
-            # Could be (start, label, hops, ts, table) or
-            # (start, label, hops, from_ts, to_ts)
             arg4 = args[4]
             if self._is_string_const(arg4):
                 ts = float(self._extract_const_value(args[3]))
                 tf = TemporalFilter(timestamp=ts)
-                table_name = self._extract_string_value(arg4)
+                source_name = self._extract_string_value(arg4)
             else:
                 from_ts = float(self._extract_const_value(args[3]))
                 to_ts = float(self._extract_const_value(args[4]))
@@ -4937,21 +4943,30 @@ class SQLCompiler:
             from_ts = float(self._extract_const_value(args[3]))
             to_ts = float(self._extract_const_value(args[4]))
             tf = TemporalFilter(time_range=(from_ts, to_ts))
-            table_name = self._extract_string_value(args[5])
+            source_name = self._extract_string_value(args[5])
         else:
             tf = TemporalFilter()
 
+        op = TemporalTraverseOperator(start, label, max_hops, tf)
+
+        # Named graph: "graph:name" prefix
+        if source_name is not None and source_name.startswith("graph:"):
+            graph_name = source_name[6:]
+            graph_store = self._engine.get_graph(graph_name)
+            return None, _NamedGraphOperatorWrapper(op, graph_store)
+
+        # Per-table graph
+        table_name = source_name
         if table_name is None:
             if not self._engine._tables:
                 raise ValueError(
-                    "temporal_traverse() requires a table argument or "
-                    "at least one table to exist"
+                    "temporal_traverse() requires a table or graph argument"
                 )
             table_name = next(iter(self._engine._tables))
         table = self._engine._tables.get(table_name)
         if table is None:
             raise ValueError(f"Table '{table_name}' does not exist")
-        return table, TemporalTraverseOperator(start, label, max_hops, tf)
+        return table, op
 
     @staticmethod
     def _is_string_const(node: Any) -> bool:
@@ -4961,26 +4976,35 @@ class SQLCompiler:
     def _build_rpq_from(self, args: tuple) -> tuple[Table | None, Any]:
         """Build rpq() FROM-clause.
 
-        rpq('expr', start, 'table')     -- per-table graph
-        rpq('expr', start)              -- requires table
+        Per-table graph:
+            rpq('expr', start[, 'table'])
+        Named graph:
+            rpq('expr', start, 'graph:name')
         """
         from uqa.graph.operators import RegularPathQueryOperator
         from uqa.graph.pattern import parse_rpq
 
         expr = self._extract_string_value(args[0])
         start = self._extract_int_value(args[1]) if len(args) > 1 else None
+        op = RegularPathQueryOperator(parse_rpq(expr), start_vertex=start)
+
         if len(args) > 2:
-            table_name = self._extract_string_value(args[2])
-        else:
-            if not self._engine._tables:
-                raise ValueError(
-                    "rpq() requires a table argument or at least one table to exist"
-                )
-            table_name = next(iter(self._engine._tables))
+            source_name = self._extract_string_value(args[2])
+            if source_name.startswith("graph:"):
+                graph_store = self._engine.get_graph(source_name[6:])
+                return None, _NamedGraphOperatorWrapper(op, graph_store)
+            table = self._engine._tables.get(source_name)
+            if table is None:
+                raise ValueError(f"Table '{source_name}' does not exist")
+            return table, op
+
+        if not self._engine._tables:
+            raise ValueError("rpq() requires a table or graph argument")
+        table_name = next(iter(self._engine._tables))
         table = self._engine._tables.get(table_name)
         if table is None:
             raise ValueError(f"Table '{table_name}' does not exist")
-        return table, RegularPathQueryOperator(parse_rpq(expr), start_vertex=start)
+        return table, op
 
     def _build_create_graph(self, args: tuple) -> tuple[Table | None, Any]:
         """Handle ``SELECT * FROM create_graph('name')``."""
@@ -7408,6 +7432,33 @@ class SQLCompiler:
                 return value if isinstance(value, list) else [value]
             return _cast_value(value, type_name)
         return self._extract_const_value(node)
+
+
+class _NamedGraphOperatorWrapper:
+    """Wraps a graph operator to execute against a named graph store.
+
+    Injects the named graph into the execution context so that graph
+    operators (TemporalTraverseOperator, etc.) that read ctx.graph_store
+    see the named graph instead of the per-table graph.
+    """
+
+    def __init__(self, inner: Any, graph_store: Any) -> None:
+        self.inner = inner
+        self.graph_store = graph_store
+
+    def execute(self, context: Any) -> PostingList:
+        from dataclasses import replace
+
+        from uqa.operators.base import ExecutionContext
+
+        if isinstance(context, ExecutionContext):
+            ctx = replace(context, graph_store=self.graph_store)
+        else:
+            ctx = ExecutionContext(graph_store=self.graph_store)
+        return self.inner.execute(ctx)
+
+    def cost_estimate(self, stats: Any) -> float:
+        return getattr(self.inner, "cost_estimate", lambda _: 100.0)(stats)
 
 
 class _ScanOperator:

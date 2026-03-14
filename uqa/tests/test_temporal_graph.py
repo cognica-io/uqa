@@ -411,3 +411,89 @@ class TestTemporalTraverseQueryBuilder:
         reached = {e.doc_id for e in result}
         assert 2 in reached
         assert 3 in reached
+
+
+class TestNamedGraphTemporalTraverse:
+    """Tests for temporal_traverse on named graphs."""
+
+    def _build_named_graph(self, engine):
+        g = engine.create_graph("temporal_net")
+        g.add_vertex(Vertex(1, "person", {"name": "Alice"}))
+        g.add_vertex(Vertex(2, "person", {"name": "Bob"}))
+        g.add_vertex(Vertex(3, "person", {"name": "Carol"}))
+        g.add_edge(Edge(1, 1, 2, "knows", {"valid_from": 100, "valid_to": 200}))
+        g.add_edge(Edge(2, 1, 3, "knows", {"valid_from": 300, "valid_to": 400}))
+        g.add_edge(Edge(3, 2, 3, "works_with", {"valid_from": 150, "valid_to": 350}))
+        return g
+
+    def test_temporal_traverse_named_graph_sql(self) -> None:
+        from uqa.engine import Engine
+
+        engine = Engine()
+        self._build_named_graph(engine)
+        result = engine.sql(
+            "SELECT * FROM temporal_traverse(1, 'knows', 2, 150, 'graph:temporal_net')"
+        )
+        ids = {row["_doc_id"] for row in result.rows}
+        assert 2 in ids
+        assert 3 not in ids
+
+    def test_temporal_traverse_named_graph_range(self) -> None:
+        from uqa.engine import Engine
+
+        engine = Engine()
+        self._build_named_graph(engine)
+        result = engine.sql(
+            "SELECT * FROM "
+            "temporal_traverse(1, 'knows', 2, 100, 400, 'graph:temporal_net')"
+        )
+        ids = {row["_doc_id"] for row in result.rows}
+        assert 2 in ids
+        assert 3 in ids
+
+    def test_temporal_traverse_named_graph_no_match(self) -> None:
+        from uqa.engine import Engine
+
+        engine = Engine()
+        self._build_named_graph(engine)
+        result = engine.sql(
+            "SELECT * FROM temporal_traverse(1, 'knows', 1, 500, 'graph:temporal_net')"
+        )
+        traversed = {row["_doc_id"] for row in result.rows}
+        assert 2 not in traversed
+        assert 3 not in traversed
+
+
+class TestNamedGraphTraverseAndRPQ:
+    """Tests for traverse() and rpq() on named graphs via graph: prefix."""
+
+    def test_traverse_named_graph(self) -> None:
+        from uqa.engine import Engine
+
+        engine = Engine()
+        g = engine.create_graph("social")
+        g.add_vertex(Vertex(1, "person"))
+        g.add_vertex(Vertex(2, "person"))
+        g.add_vertex(Vertex(3, "person"))
+        g.add_edge(Edge(1, 1, 2, "knows"))
+        g.add_edge(Edge(2, 2, 3, "knows"))
+
+        result = engine.sql("SELECT * FROM traverse(1, 'knows', 2, 'graph:social')")
+        ids = {row["_doc_id"] for row in result.rows}
+        assert 2 in ids
+        assert 3 in ids
+
+    def test_rpq_named_graph(self) -> None:
+        from uqa.engine import Engine
+
+        engine = Engine()
+        g = engine.create_graph("social2")
+        g.add_vertex(Vertex(1, "person"))
+        g.add_vertex(Vertex(2, "person"))
+        g.add_vertex(Vertex(3, "person"))
+        g.add_edge(Edge(1, 1, 2, "knows"))
+        g.add_edge(Edge(2, 2, 3, "works_with"))
+
+        result = engine.sql("SELECT * FROM rpq('knows/works_with', 1, 'graph:social2')")
+        ids = {row["_doc_id"] for row in result.rows}
+        assert 3 in ids
