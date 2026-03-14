@@ -37,6 +37,8 @@
     <li><a href="#joins-subqueries">JOINs &amp; Subqueries</a></li>
     <li><a href="#analytics">Analytics</a></li>
     <li><a href="#graph-queries">Graph Queries</a></li>
+    <li><a href="#geospatial">Geospatial</a></li>
+    <li><a href="#scoring-advanced">Advanced Scoring</a></li>
     <li><a href="#fdw-parquet">FDW &amp; Parquet</a></li>
     <li><a href="#text-analysis">Text Analysis</a></li>
     <li><a href="#arrow-export">Arrow / Parquet Export</a></li>
@@ -100,6 +102,16 @@ engine.close()</code></pre>
   <h2>Full-Text Search</h2>
 
   <span class="example-tag tag-sql">SQL</span>
+  <h3>@@ Query String</h3>
+<pre><code><span class="cm">-- Boolean: AND / OR / NOT, phrase, field targeting</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> articles
+<span class="kw">WHERE</span> title <span class="fn">@@</span> <span class="st">'database AND query'</span> <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Hybrid text + vector fusion via @@</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> articles
+<span class="kw">WHERE</span> _all <span class="fn">@@</span> <span class="st">'body:search AND embedding:[0.1, 0.9, 0.0, 0.0]'</span>
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
   <h3>BM25 Search</h3>
 <pre><code><span class="cm">-- Standard BM25 full-text search</span>
 <span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
@@ -425,6 +437,82 @@ $$</span>) <span class="kw">AS</span> (city agtype, cnt agtype);</code></pre>
 <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
 </section>
 
+<!-- ============ Geospatial ============ -->
+<section id="geospatial">
+  <h2>Geospatial</h2>
+
+  <span class="example-tag tag-sql">SQL</span>
+  <h3>R*Tree Spatial Index</h3>
+<pre><code><span class="cm">-- Create table with POINT column and R*Tree index</span>
+<span class="kw">CREATE TABLE</span> restaurants (
+    id <span class="kw">SERIAL PRIMARY KEY</span>,
+    name <span class="kw">TEXT NOT NULL</span>,
+    cuisine <span class="kw">TEXT NOT NULL</span>,
+    description <span class="kw">TEXT</span>,
+    location <span class="kw">POINT</span>
+);
+
+<span class="kw">CREATE INDEX</span> idx_loc <span class="kw">ON</span> restaurants <span class="kw">USING</span> rtree (location);
+
+<span class="kw">INSERT INTO</span> restaurants (name, cuisine, description, location) <span class="kw">VALUES</span>
+    (<span class="st">'Pizza Palace'</span>,  <span class="st">'Italian'</span>,  <span class="st">'wood-fired pizza'</span>,  <span class="fn">POINT</span>(-73.9857, 40.7484)),
+    (<span class="st">'Sushi Garden'</span>,  <span class="st">'Japanese'</span>, <span class="st">'fresh sushi rolls'</span>,  <span class="fn">POINT</span>(-73.9969, 40.7306)),
+    (<span class="st">'Taco Haven'</span>,    <span class="st">'Mexican'</span>,  <span class="st">'authentic tacos'</span>,   <span class="fn">POINT</span>(-73.9712, 40.7831)),
+    (<span class="st">'Curry House'</span>,   <span class="st">'Indian'</span>,   <span class="st">'spicy curry dishes'</span>, <span class="fn">POINT</span>(-73.9632, 40.7794));
+
+<span class="cm">-- Find restaurants within 5 km of a point</span>
+<span class="kw">SELECT</span> name, cuisine,
+       <span class="fn">ROUND</span>(<span class="fn">ST_Distance</span>(location, <span class="fn">POINT</span>(-73.9857, 40.7484)), 0) <span class="kw">AS</span> dist_m
+<span class="kw">FROM</span> restaurants
+<span class="kw">WHERE</span> <span class="fn">spatial_within</span>(location, <span class="fn">POINT</span>(-73.9857, 40.7484), 5000)
+<span class="kw">ORDER BY</span> dist_m;
+
+<span class="cm">-- Spatial + text + vector fusion</span>
+<span class="kw">SELECT</span> name, _score <span class="kw">FROM</span> restaurants
+<span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
+    <span class="fn">text_match</span>(description, <span class="st">'pizza'</span>),
+    <span class="fn">spatial_within</span>(location, <span class="fn">POINT</span>(-73.9969, 40.7306), 3000)
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+</section>
+
+<!-- ============ Advanced Scoring ============ -->
+<section id="scoring-advanced">
+  <h2>Advanced Scoring</h2>
+
+  <span class="example-tag tag-sql">SQL</span>
+  <h3>Multi-Field Search</h3>
+<pre><code><span class="cm">-- Search across multiple fields with automatic per-field calibration</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">multi_field_match</span>(title, abstract, <span class="st">'attention transformer'</span>)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <h3>Multi-Stage Retrieval</h3>
+<pre><code><span class="cm">-- Broad recall with BM25, then precise re-ranking</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">staged_retrieval</span>(
+    <span class="fn">bayesian_match</span>(title, <span class="st">'transformer attention'</span>), 50,
+    <span class="fn">bayesian_match</span>(abstract, <span class="st">'self attention mechanism'</span>), 10
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <h3>Scoring Calibration</h3>
+<pre><code><span class="cm">-- Check calibration metrics (via Python API)</span>
+<span class="kw">from</span> uqa.scoring.calibration <span class="kw">import</span> CalibrationMetrics
+
+metrics = CalibrationMetrics()
+ece = metrics.expected_calibration_error(predictions, labels)
+brier = metrics.brier_score(predictions, labels)
+diagram = metrics.reliability_diagram(predictions, labels, n_bins=10)</code></pre>
+
+  <span class="example-tag tag-sql">SQL</span>
+  <h3>Temporal Graph</h3>
+<pre><code><span class="cm">-- Time-aware traversal: edges valid at specific timestamp</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">temporal_traverse</span>(1, <span class="st">'knows'</span>, 2, 1700000000);
+
+<span class="cm">-- GNN-style message passing: average neighbor citations</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">message_passing</span>(2, <span class="st">'mean'</span>, <span class="st">'citations'</span>);</code></pre>
+</section>
+
 <!-- ============ FDW ============ -->
 <section id="fdw-parquet">
   <h2>Foreign Data Wrappers &amp; Parquet</h2>
@@ -672,14 +760,14 @@ result = (
       <h3>SQL Examples</h3>
       <p>
         <a href="https://github.com/cognica-io/uqa/tree/main/examples/sql">examples/sql/</a><br>
-        basics, functions, graph, fusion, joins_and_subqueries, analytics, analysis, export, fdw
+        basics, functions, graph, fts_match, fusion, joins_and_subqueries, analytics, analysis, export, spatial, synonyms, scoring_advanced, calibration, temporal_graph, graph_delta, fdw
       </p>
     </div>
     <div class="card">
       <h3>Fluent API Examples</h3>
       <p>
         <a href="https://github.com/cognica-io/uqa/tree/main/examples/fluent">examples/fluent/</a><br>
-        text_search, vector_and_hybrid, graph, hierarchical, multi_paradigm, analysis, export
+        text_search, vector_and_hybrid, graph, hierarchical, multi_paradigm, scoring, fusion_advanced, graph_advanced, analysis, export
       </p>
     </div>
   </div>
@@ -688,22 +776,33 @@ result = (
 <pre><code><span class="cm"># Quickstart</span>
 python examples/quickstart.py
 
-<span class="cm"># Run all examples</span>
+<span class="cm"># SQL examples</span>
 python examples/sql/basics.py
 python examples/sql/functions.py
 python examples/sql/graph.py
+python examples/sql/fts_match.py
 python examples/sql/fusion.py
 python examples/sql/joins_and_subqueries.py
 python examples/sql/analytics.py
 python examples/sql/analysis.py
 python examples/sql/export.py
+python examples/sql/spatial.py
+python examples/sql/synonyms.py
+python examples/sql/scoring_advanced.py
+python examples/sql/calibration.py
+python examples/sql/temporal_graph.py
+python examples/sql/graph_delta.py
 python examples/sql/fdw.py
 
+<span class="cm"># Fluent API examples</span>
 python examples/fluent/text_search.py
 python examples/fluent/vector_and_hybrid.py
 python examples/fluent/graph.py
 python examples/fluent/hierarchical.py
 python examples/fluent/multi_paradigm.py
+python examples/fluent/scoring.py
+python examples/fluent/fusion_advanced.py
+python examples/fluent/graph_advanced.py
 python examples/fluent/analysis.py
 python examples/fluent/export.py</code></pre>
 </section>

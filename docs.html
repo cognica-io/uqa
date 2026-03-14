@@ -46,11 +46,14 @@
     <li><a href="#text-search">Text Search</a></li>
     <li><a href="#graph">Graph Queries</a></li>
     <li><a href="#fusion">Fusion</a></li>
+    <li><a href="#geospatial">Geospatial</a></li>
     <li><a href="#fdw">Foreign Data Wrappers</a></li>
+    <li><a href="#scoring-advanced">Advanced Scoring</a></li>
     <li><a href="#python-api">Python API</a></li>
     <li class="toc-h3"><a href="#engine">Engine</a></li>
     <li class="toc-h3"><a href="#querybuilder">QueryBuilder</a></li>
     <li class="toc-h3"><a href="#analysis">Text Analysis</a></li>
+    <li><a href="#prepared">Prepared Statements</a></li>
     <li><a href="#transactions">Transactions</a></li>
     <li><a href="#explain">EXPLAIN / ANALYZE</a></li>
   </ul>
@@ -129,13 +132,22 @@ engine.close()</code></pre>
 <span class="kw">ALTER TABLE</span> employees <span class="kw">ALTER COLUMN</span> salary <span class="kw">SET DEFAULT</span> 50000;
 <span class="kw">ALTER TABLE</span> employees <span class="kw">ALTER COLUMN</span> salary <span class="kw">SET NOT NULL</span>;</code></pre>
 
+  <h3>TRUNCATE</h3>
+<pre><code><span class="kw">TRUNCATE TABLE</span> employees;</code></pre>
+
   <h3>Indexes</h3>
 <pre><code><span class="cm">-- B-tree index</span>
 <span class="kw">CREATE INDEX</span> idx_dept <span class="kw">ON</span> employees (dept_id);
 
-<span class="cm">-- HNSW vector index (explicit creation required)</span>
+<span class="cm">-- HNSW vector index</span>
 <span class="kw">CREATE INDEX</span> idx_emb <span class="kw">ON</span> papers <span class="kw">USING</span> hnsw (embedding)
     <span class="kw">WITH</span> (ef_construction = 200, m = 16);
+
+<span class="cm">-- IVF vector index</span>
+<span class="kw">CREATE INDEX</span> idx_ivf <span class="kw">ON</span> papers <span class="kw">USING</span> ivf (embedding);
+
+<span class="cm">-- R*Tree spatial index for POINT columns</span>
+<span class="kw">CREATE INDEX</span> idx_loc <span class="kw">ON</span> restaurants <span class="kw">USING</span> rtree (location);
 
 <span class="kw">DROP INDEX</span> idx_dept;
 <span class="kw">DROP INDEX IF EXISTS</span> idx_emb;</code></pre>
@@ -353,6 +365,7 @@ engine.close()</code></pre>
       <tr><td><code>TEXT</code>, <code>VARCHAR(n)</code></td><td>Variable-length text</td></tr>
       <tr><td><code>BOOLEAN</code></td><td><code>TRUE</code> / <code>FALSE</code></td></tr>
       <tr><td><code>DATE</code></td><td>Calendar date (<code>YYYY-MM-DD</code>)</td></tr>
+      <tr><td><code>TIME</code></td><td>Time of day (<code>HH:MM:SS</code>)</td></tr>
       <tr><td><code>TIMESTAMP</code>, <code>TIMESTAMPTZ</code></td><td>Date and time (with optional timezone)</td></tr>
       <tr><td><code>INTERVAL</code></td><td>Time duration</td></tr>
       <tr><td><code>JSON</code>, <code>JSONB</code></td><td>JSON data (access via <code>-></code>, <code>->></code>)</td></tr>
@@ -360,6 +373,7 @@ engine.close()</code></pre>
       <tr><td><code>BYTEA</code></td><td>Binary data</td></tr>
       <tr><td><code>INTEGER[]</code></td><td>Array type</td></tr>
       <tr><td><code>VECTOR(N)</code></td><td>N-dimensional vector (stored as JSON array)</td></tr>
+      <tr><td><code>POINT</code></td><td>Geospatial coordinate (<code>POINT(lon, lat)</code>)</td></tr>
     </tbody>
   </table>
   <div class="note">
@@ -462,6 +476,26 @@ engine.close()</code></pre>
   <h2>Text Search</h2>
   <p>Full-text search with BM25 scoring, powered by an inverted index with configurable text analysis pipelines.</p>
 
+  <h3>@@ Operator (Query String Mini-Language)</h3>
+<pre><code><span class="cm">-- Boolean query: AND / OR / NOT</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> articles
+<span class="kw">WHERE</span> title <span class="fn">@@</span> <span class="st">'database AND query'</span> <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Phrase query</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> articles
+<span class="kw">WHERE</span> title <span class="fn">@@</span> <span class="st">'"machine learning"'</span> <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Field targeting</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> articles
+<span class="kw">WHERE</span> _all <span class="fn">@@</span> <span class="st">'title:attention AND body:transformer'</span>
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Hybrid text + vector fusion via @@</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> articles
+<span class="kw">WHERE</span> _all <span class="fn">@@</span> <span class="st">'body:search AND embedding:[0.1, 0.9, 0.0, 0.0]'</span>
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <h3>Function-Based Search</h3>
 <pre><code><span class="cm">-- BM25 full-text search</span>
 <span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
 <span class="kw">WHERE</span> <span class="fn">text_match</span>(title, <span class="st">'attention transformer'</span>)
@@ -543,12 +577,83 @@ $$</span>) <span class="kw">AS</span> (name agtype);
 )
 <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
 
+<span class="cm">-- Attention-weighted fusion</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_attention</span>(
+    <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
+    <span class="fn">knn_match</span>(embedding, <span class="kw">ARRAY</span>[...], 5)
+)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Learned-weight fusion</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_learned</span>(
+    <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
+    <span class="fn">knn_match</span>(embedding, <span class="kw">ARRAY</span>[...], 5)
+)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Multi-stage retrieval: broad recall -> precise re-ranking</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">staged_retrieval</span>(
+    <span class="fn">bayesian_match</span>(title, <span class="st">'transformer attention'</span>), 50,
+    <span class="fn">bayesian_match</span>(abstract, <span class="st">'self attention mechanism'</span>), 10
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
 <span class="cm">-- EXPLAIN shows fusion plan</span>
 <span class="kw">EXPLAIN SELECT</span> title, _score <span class="kw">FROM</span> papers
 <span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
     <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
     <span class="fn">knn_match</span>(embedding, <span class="kw">ARRAY</span>[...], 5)
 );</code></pre>
+</section>
+
+<!-- ============ Geospatial ============ -->
+<section id="geospatial">
+  <h2>Geospatial</h2>
+  <p>R*Tree spatial index with Haversine great-circle distance for POINT columns.</p>
+
+<pre><code><span class="cm">-- Create table with POINT column</span>
+<span class="kw">CREATE TABLE</span> restaurants (
+    id <span class="kw">SERIAL PRIMARY KEY</span>,
+    name <span class="kw">TEXT NOT NULL</span>,
+    cuisine <span class="kw">TEXT NOT NULL</span>,
+    location <span class="kw">POINT</span>
+);
+
+<span class="cm">-- Create R*Tree spatial index</span>
+<span class="kw">CREATE INDEX</span> idx_loc <span class="kw">ON</span> restaurants <span class="kw">USING</span> rtree (location);
+
+<span class="cm">-- Range query with Haversine distance</span>
+<span class="kw">SELECT</span> name,
+       <span class="fn">ROUND</span>(<span class="fn">ST_Distance</span>(location, <span class="fn">POINT</span>(-73.9857, 40.7484)), 0) <span class="kw">AS</span> dist_m
+<span class="kw">FROM</span> restaurants
+<span class="kw">WHERE</span> <span class="fn">spatial_within</span>(location, <span class="fn">POINT</span>(-73.9857, 40.7484), 5000)
+<span class="kw">ORDER BY</span> dist_m;
+
+<span class="cm">-- Distance predicate</span>
+<span class="kw">SELECT</span> name <span class="kw">FROM</span> restaurants
+<span class="kw">WHERE</span> <span class="fn">ST_Within</span>(location, <span class="fn">POINT</span>(-73.9857, 40.7484), 1000);
+
+<span class="cm">-- Spatial + text + vector fusion</span>
+<span class="kw">SELECT</span> name, _score <span class="kw">FROM</span> restaurants
+<span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
+    <span class="fn">text_match</span>(description, <span class="st">'pizza'</span>),
+    <span class="fn">spatial_within</span>(location, <span class="fn">POINT</span>(-73.9969, 40.7306), 3000),
+    <span class="fn">knn_match</span>(embedding, $1, 5)
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <h3>Spatial Functions</h3>
+  <table>
+    <thead><tr><th>Function</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>ST_Distance(p1, p2)</code></td><td>Haversine great-circle distance in meters</td></tr>
+      <tr><td><code>ST_Within(p1, p2, dist)</code></td><td>Distance predicate (boolean)</td></tr>
+      <tr><td><code>ST_DWithin(p1, p2, dist)</code></td><td>Alias for ST_Within</td></tr>
+      <tr><td><code>POINT(x, y)</code></td><td>Construct a POINT value (longitude, latitude)</td></tr>
+      <tr><td><code>spatial_within(field, point, dist)</code></td><td>WHERE-clause geospatial range query (R*Tree + Haversine)</td></tr>
+    </tbody>
+  </table>
 </section>
 
 <!-- ============ FDW ============ -->
@@ -581,6 +686,46 @@ $$</span>) <span class="kw">AS</span> (name agtype);
 <span class="kw">SELECT</span> s.name, e.dept
 <span class="kw">FROM</span> sales s <span class="kw">JOIN</span> employees e <span class="kw">ON</span> s.rep_id = e.id
 <span class="kw">ORDER BY</span> s.amount <span class="kw">DESC LIMIT</span> 10;</code></pre>
+</section>
+
+<!-- ============ Advanced Scoring ============ -->
+<section id="scoring-advanced">
+  <h2>Advanced Scoring</h2>
+
+  <h3>Sparse Thresholding</h3>
+<pre><code><span class="cm">-- ReLU thresholding: max(0, score - threshold)</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">sparse_threshold</span>(<span class="fn">text_match</span>(title, <span class="st">'attention'</span>), 0.3)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <h3>Multi-Field Search</h3>
+<pre><code><span class="cm">-- Search across title + abstract with per-field scoring</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">multi_field_match</span>(title, abstract, <span class="st">'attention transformer'</span>)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <h3>External Prior</h3>
+<pre><code><span class="cm">-- Bayesian BM25 with recency prior</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">bayesian_match_with_prior</span>(title, <span class="st">'attention'</span>, <span class="st">'published_date'</span>, <span class="st">'recency'</span>)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Bayesian BM25 with authority prior</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">bayesian_match_with_prior</span>(title, <span class="st">'attention'</span>, <span class="st">'source_quality'</span>, <span class="st">'authority'</span>)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <h3>Temporal Graph</h3>
+<pre><code><span class="cm">-- Time-aware graph traversal (edges valid at timestamp)</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">temporal_traverse</span>(1, <span class="st">'knows'</span>, 2, 1700000000);
+
+<span class="cm">-- GNN message passing aggregation</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">message_passing</span>(2, <span class="st">'mean'</span>, <span class="st">'citations'</span>);
+
+<span class="cm">-- Structural graph embeddings</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">graph_embedding</span>(16, 3);</code></pre>
 </section>
 
 <!-- ============ Python API ============ -->
@@ -695,6 +840,17 @@ engine.sql(<span class="st">"""SELECT * FROM create_analyzer('english_stem', '{
     "tokenizer": {"type": "standard"},
     "token_filters": [{"type": "lowercase"}, {"type": "stop"}, {"type": "porter_stem"}]
 }')"""</span>)</code></pre>
+</section>
+
+<!-- ============ Prepared Statements ============ -->
+<section id="prepared">
+  <h2>Prepared Statements</h2>
+<pre><code><span class="kw">PREPARE</span> find_papers <span class="kw">AS</span>
+    <span class="kw">SELECT</span> title, year <span class="kw">FROM</span> papers <span class="kw">WHERE</span> year > $1 <span class="kw">AND</span> citations > $2;
+
+<span class="kw">EXECUTE</span> find_papers(2020, 100);
+
+<span class="kw">DEALLOCATE</span> find_papers;</code></pre>
 </section>
 
 <!-- ============ Transactions ============ -->
