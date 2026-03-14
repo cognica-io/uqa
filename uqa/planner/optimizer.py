@@ -379,6 +379,7 @@ class QueryOptimizer:
 
     def _recurse_children(self, op: Operator) -> Operator:
         """Recursively optimize children of composite operators."""
+        from uqa.operators.attention import AttentionFusionOperator
         from uqa.operators.base import ComposedOperator
         from uqa.operators.boolean import (
             ComplementOperator,
@@ -390,7 +391,9 @@ class QueryOptimizer:
             ProbBoolFusionOperator,
             ProbNotOperator,
         )
+        from uqa.operators.learned_fusion import LearnedFusionOperator
         from uqa.operators.primitive import FilterOperator, ScoreOperator
+        from uqa.operators.sparse import SparseThresholdOperator
 
         match op:
             case IntersectOperator(operands=ops):
@@ -420,6 +423,19 @@ class QueryOptimizer:
                     self.optimize(sig),
                     default_prob=op.default_prob,
                 )
+            case AttentionFusionOperator(signals=sigs):
+                return AttentionFusionOperator(
+                    [self.optimize(s) for s in sigs],
+                    attention=op.attention,
+                    query_features=op.query_features,
+                )
+            case LearnedFusionOperator(signals=sigs):
+                return LearnedFusionOperator(
+                    [self.optimize(s) for s in sigs],
+                    learned=op.learned,
+                )
+            case SparseThresholdOperator(source=src):
+                return SparseThresholdOperator(self.optimize(src), threshold=op.threshold)
             case _:
                 return op
 

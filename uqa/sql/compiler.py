@@ -57,11 +57,15 @@ PlanExecutor with timing stats.
 Extended functions (WHERE clause):
   text_match(field, 'query')         -- full-text search with BM25 scoring
   bayesian_match(field, 'query')     -- Bayesian BM25 calibrated probability
+  bayesian_match_with_prior(field, 'query', prior_field, prior_mode)
+                                     -- Bayesian BM25 with external prior
   knn_match(field, vector, k)        -- KNN vector search
   traverse_match(start, 'label', k)  -- graph reachability as a scored signal
   path_filter('path', value)         -- hierarchical path filter (equality)
   path_filter('path', 'op', value)   -- hierarchical path filter with operator
   vector_exclude(field, pos, neg, k, threshold) -- vector exclusion
+  multi_field_match(field1, field2, ..., 'query' [, w1, w2, ...])
+                                     -- multi-field Bayesian BM25 search
 
   Vector arguments accept ARRAY literals or $N parameter references:
     knn_match(embedding, ARRAY[0.1, 0.2, ...], 5)
@@ -72,6 +76,9 @@ Fusion meta-functions (WHERE clause):
   fuse_prob_and(sig1, sig2, ...)          -- probabilistic AND
   fuse_prob_or(sig1, sig2, ...)           -- probabilistic OR
   fuse_prob_not(signal)                   -- probabilistic NOT (complement)
+  fuse_attention(sig1, sig2, ...)         -- attention-weighted fusion (Paper 4 S8)
+  fuse_learned(sig1, sig2, ...)           -- learned-weight fusion (Paper 4 S8)
+  sparse_threshold(signal, threshold)     -- ReLU thresholding (Paper 4 S6.5)
 
 SELECT scalar functions:
   path_agg('path', 'func')          -- per-row nested array aggregation
@@ -2731,6 +2738,7 @@ class SQLCompiler:
                 if fn in (
                     "text_match",
                     "bayesian_match",
+                    "bayesian_match_with_prior",
                     "knn_match",
                     "traverse_match",
                     "spatial_within",
@@ -2773,7 +2781,7 @@ class SQLCompiler:
             # text_match/bayesian_match -> read _score column
             if isinstance(val, FuncCall):
                 fn = val.funcname[-1].sval.lower()
-                if fn in ("text_match", "bayesian_match"):
+                if fn in ("text_match", "bayesian_match", "bayesian_match_with_prior"):
                     val = ColumnRef(fields=(PgString(sval="_score"),))
             targets.append((output_name, val))
         return targets
@@ -2792,7 +2800,7 @@ class SQLCompiler:
                     None if val.agg_star else (self._extract_column_name(val.args[0]))
                 )
                 return fn if arg_col is None else f"{fn}_{arg_col}"
-            if fn in ("text_match", "bayesian_match"):
+            if fn in ("text_match", "bayesian_match", "bayesian_match_with_prior"):
                 return "_score"
             return fn
         if isinstance(val, TypeCast):
@@ -4760,6 +4768,8 @@ class SQLCompiler:
             return self._build_drop_graph(args)
         if name == "traverse":
             return self._build_traverse_from(args)
+        if name == "temporal_traverse":
+            return self._build_temporal_traverse_from(args)
         if name == "rpq":
             return self._build_rpq_from(args)
         if name == "text_search":
@@ -4801,9 +4811,16 @@ class SQLCompiler:
             RegularPathQueryOperator,
             TraverseOperator,
         )
+        from uqa.graph.temporal_traverse import TemporalTraverseOperator
 
         return isinstance(
-            op, (TraverseOperator, RegularPathQueryOperator, CypherQueryOperator)
+            op,
+            (
+                TraverseOperator,
+                RegularPathQueryOperator,
+                CypherQueryOperator,
+                TemporalTraverseOperator,
+            )
         )
 
     @staticmethod
@@ -4883,6 +4900,72 @@ class SQLCompiler:
         if table is None:
             raise ValueError(f"Table '{table_name}' does not exist")
         return table, TraverseOperator(start, label, max_hops)
+
+    def _build_temporal_traverse_from(self, args: tuple) -> tuple[Table | None, Any]:
+        """Build temporal_traverse() FROM-clause.
+
+        temporal_traverse(start, 'label', hops, timestamp)
+        temporal_traverse(start, 'label', hops, from_ts, to_ts)
+        temporal_traverse(start, 'label', hops, timestamp, 'table')
+        temporal_traverse(start, 'label', hops, from_ts, to_ts, 'table')
+        """
+        from uqa.graph.temporal_filter import TemporalFilter
+        from uqa.graph.temporal_traverse import TemporalTraverseOperator
+
+        if len(args) < 4:
+            raise ValueError(
+                "temporal_traverse() requires at least 4 arguments: "
+                "temporal_traverse(start, label, hops, timestamp)"
+            )
+        start = self._extract_int_value(args[0])
+        label = self._extract_string_value(args[1]) if len(args) > 1 else None
+        max_hops = self._extract_int_value(args[2]) if len(args) > 2 else 1
+
+        # Determine temporal filter and optional table name.
+        # We try to detect whether arg[4] is a string (table name) or
+        # numeric (to_ts for range query).
+        table_name: str | None = None
+        tf: TemporalFilter
+
+        if len(args) == 4:
+            ts = float(self._extract_const_value(args[3]))
+            tf = TemporalFilter(timestamp=ts)
+        elif len(args) == 5:
+            # Could be (start, label, hops, ts, table) or
+            # (start, label, hops, from_ts, to_ts)
+            arg4 = args[4]
+            if self._is_string_const(arg4):
+                ts = float(self._extract_const_value(args[3]))
+                tf = TemporalFilter(timestamp=ts)
+                table_name = self._extract_string_value(arg4)
+            else:
+                from_ts = float(self._extract_const_value(args[3]))
+                to_ts = float(self._extract_const_value(args[4]))
+                tf = TemporalFilter(time_range=(from_ts, to_ts))
+        elif len(args) >= 6:
+            from_ts = float(self._extract_const_value(args[3]))
+            to_ts = float(self._extract_const_value(args[4]))
+            tf = TemporalFilter(time_range=(from_ts, to_ts))
+            table_name = self._extract_string_value(args[5])
+        else:
+            tf = TemporalFilter()
+
+        if table_name is None:
+            if not self._engine._tables:
+                raise ValueError(
+                    "temporal_traverse() requires a table argument or "
+                    "at least one table to exist"
+                )
+            table_name = next(iter(self._engine._tables))
+        table = self._engine._tables.get(table_name)
+        if table is None:
+            raise ValueError(f"Table '{table_name}' does not exist")
+        return table, TemporalTraverseOperator(start, label, max_hops, tf)
+
+    @staticmethod
+    def _is_string_const(node: Any) -> bool:
+        """Return True if node is a string constant (A_Const with PgString)."""
+        return isinstance(node, A_Const) and isinstance(node.val, PgString)
 
     def _build_rpq_from(self, args: tuple) -> tuple[Table | None, Any]:
         """Build rpq() FROM-clause.
@@ -5904,10 +5987,14 @@ class SQLCompiler:
             field_name = self._extract_column_name(args[0])
             query = self._extract_string_value(args[1])
             return self._make_text_search_op(field_name, query, ctx, bayesian=True)
+        if name == "bayesian_match_with_prior":
+            return self._make_bayesian_with_prior_op(args, ctx)
         if name == "knn_match":
             return self._make_knn_op(args)
         if name == "traverse_match":
             return self._make_traverse_match_op(args)
+        if name == "temporal_traverse":
+            return self._make_temporal_traverse_op(args)
         if name == "path_filter":
             return self._make_path_filter_op(args)
         if name == "vector_exclude":
@@ -5922,6 +6009,20 @@ class SQLCompiler:
             return self._make_fusion_op(args, ctx, mode="prob_or")
         if name == "fuse_prob_not":
             return self._make_prob_not_op(args, ctx)
+        if name == "fuse_attention":
+            return self._make_attention_fusion_op(args, ctx)
+        if name == "fuse_learned":
+            return self._make_learned_fusion_op(args, ctx)
+        if name == "sparse_threshold":
+            return self._make_sparse_threshold_op(args, ctx)
+        if name == "multi_field_match":
+            return self._make_multi_field_match_op(args)
+        if name == "message_passing":
+            return self._make_message_passing_op(args)
+        if name == "graph_embedding":
+            return self._make_graph_embedding_op(args)
+        if name == "staged_retrieval":
+            return self._make_staged_retrieval_op(args, ctx)
         # Fall back to expression-based filter for scalar functions
         # used in WHERE (e.g., ST_DWithin, ST_Within).
         return _ExprFilterOperator(node, subquery_executor=self._compile_select)
@@ -5956,6 +6057,120 @@ class SQLCompiler:
 
             scorer = BM25Scorer(BM25Params(), ctx.inverted_index.stats)
         return ScoreOperator(scorer, retrieval, terms, field=field_name)
+
+    def _make_multi_field_match_op(self, args: tuple) -> Any:
+        """multi_field_match(field1, field2, ..., query [, weight1, weight2, ...])
+
+        The last string argument is the query string.  All preceding ColumnRef
+        arguments are field names.  Optional trailing numeric arguments after
+        the query are per-field weights.
+        """
+        from uqa.operators.multi_field import MultiFieldSearchOperator
+
+        if len(args) < 3:
+            raise ValueError(
+                "multi_field_match() requires at least 3 arguments: "
+                "multi_field_match(field1, field2, ..., query)"
+            )
+
+        # Parse: fields..., query_string [, weight1, weight2, ...]
+        fields: list[str] = []
+        query: str | None = None
+        weights: list[float] = []
+
+        for i, arg in enumerate(args):
+            if isinstance(arg, ColumnRef):
+                fields.append(self._extract_column_name(arg))
+            elif isinstance(arg, A_Const):
+                val = self._extract_const_value(arg)
+                if isinstance(val, str) and query is None:
+                    query = val
+                elif isinstance(val, (int, float)):
+                    weights.append(float(val))
+                elif isinstance(val, str):
+                    raise ValueError(
+                        f"Unexpected string argument at position {i}"
+                    )
+
+        if query is None or len(fields) < 2:
+            raise ValueError(
+                "multi_field_match() requires at least 2 field names "
+                "and a query string"
+            )
+
+        if weights and len(weights) != len(fields):
+            raise ValueError(
+                f"Number of weights ({len(weights)}) must match "
+                f"number of fields ({len(fields)})"
+            )
+
+        return MultiFieldSearchOperator(
+            fields, query, weights=weights if weights else None
+        )
+
+    def _make_message_passing_op(self, args: tuple) -> Any:
+        """message_passing(k_layers, aggregation, property_name)"""
+        from uqa.graph.message_passing import MessagePassingOperator
+
+        k = self._extract_int_value(args[0]) if len(args) > 0 else 2
+        agg = self._extract_string_value(args[1]) if len(args) > 1 else "mean"
+        prop = self._extract_string_value(args[2]) if len(args) > 2 else None
+        return MessagePassingOperator(k, agg, prop)
+
+    def _make_graph_embedding_op(self, args: tuple) -> Any:
+        """graph_embedding(dimensions, k_layers)"""
+        from uqa.graph.graph_embedding import GraphEmbeddingOperator
+
+        dims = self._extract_int_value(args[0]) if len(args) > 0 else 32
+        k = self._extract_int_value(args[1]) if len(args) > 1 else 2
+        return GraphEmbeddingOperator(dims, k)
+
+    def _make_bayesian_with_prior_op(self, args: tuple, ctx: ExecutionContext) -> Any:
+        """bayesian_match_with_prior(field, query, prior_field, prior_mode)
+
+        Bayesian BM25 with external prior.
+        prior_mode: 'recency' or 'authority'.
+        """
+        from uqa.operators.primitive import TermOperator
+        from uqa.scoring.bayesian_bm25 import BayesianBM25Params
+        from uqa.scoring.external_prior import (
+            ExternalPriorScorer,
+            authority_prior,
+            recency_prior,
+        )
+
+        if len(args) < 4:
+            raise ValueError(
+                "bayesian_match_with_prior() requires 4 arguments: "
+                "bayesian_match_with_prior(field, query, prior_field, prior_mode)"
+            )
+        field_name = self._extract_column_name(args[0])
+        query = self._extract_string_value(args[1])
+        prior_field = self._extract_string_value(args[2])
+        prior_mode = self._extract_string_value(args[3])
+
+        if prior_mode == "recency":
+            prior_fn = recency_prior(prior_field)
+        elif prior_mode == "authority":
+            prior_fn = authority_prior(prior_field)
+        else:
+            raise ValueError(
+                f"Unknown prior mode: {prior_mode}. "
+                f"Use 'recency' or 'authority'."
+            )
+
+        idx = ctx.inverted_index
+        scorer = ExternalPriorScorer(
+            BayesianBM25Params(), idx.stats, prior_fn
+        )
+
+        analyzer = idx.get_search_analyzer(field_name) if field_name else idx.analyzer
+        terms = analyzer.analyze(query)
+        retrieval = TermOperator(query, field_name)
+
+        return _ExternalPriorSearchOperator(
+            retrieval, scorer, terms, field_name, ctx.document_store
+        )
 
     def _make_knn_op(self, args: tuple) -> Any:
         """knn_match(field, vector, k)
@@ -6048,6 +6263,36 @@ class SQLCompiler:
         label = self._extract_string_value(args[1]) if len(args) > 1 else None
         max_hops = self._extract_int_value(args[2]) if len(args) > 2 else 1
         return TraverseOperator(start, label, max_hops)
+
+    def _make_temporal_traverse_op(self, args: tuple) -> Any:
+        """temporal_traverse(start, label, hops, timestamp) or
+        temporal_traverse(start, label, hops, from_ts, to_ts)
+
+        Returns a posting list of temporally reachable vertices.
+        """
+        from uqa.graph.temporal_filter import TemporalFilter
+        from uqa.graph.temporal_traverse import TemporalTraverseOperator
+
+        if len(args) < 4:
+            raise ValueError(
+                "temporal_traverse() requires at least 4 arguments: "
+                "temporal_traverse(start, label, hops, timestamp)"
+            )
+        start = self._extract_int_value(args[0])
+        label = self._extract_string_value(args[1]) if len(args) > 1 else None
+        max_hops = self._extract_int_value(args[2]) if len(args) > 2 else 1
+
+        if len(args) == 4:
+            ts = float(self._extract_const_value(args[3]))
+            tf = TemporalFilter(timestamp=ts)
+        elif len(args) >= 5:
+            from_ts = float(self._extract_const_value(args[3]))
+            to_ts = float(self._extract_const_value(args[4]))
+            tf = TemporalFilter(time_range=(from_ts, to_ts))
+        else:
+            tf = TemporalFilter()
+
+        return TemporalTraverseOperator(start, label, max_hops, tf)
 
     def _make_path_filter_op(self, args: tuple) -> Any:
         """path_filter('path', value) or path_filter('path', 'op', value).
@@ -6167,6 +6412,26 @@ class SQLCompiler:
         signal = self._compile_calibrated_signal(args[0], ctx)
         return ProbNotOperator(signal)
 
+    def _make_sparse_threshold_op(self, args: tuple, ctx: ExecutionContext) -> Any:
+        """sparse_threshold(signal, threshold)
+
+        Apply ReLU thresholding: max(0, score - threshold).
+        """
+        from uqa.operators.sparse import SparseThresholdOperator
+
+        if len(args) != 2:
+            raise ValueError(
+                "sparse_threshold() requires 2 arguments: "
+                "sparse_threshold(signal, threshold)"
+            )
+        if not isinstance(args[0], FuncCall):
+            raise ValueError(
+                "sparse_threshold() first argument must be a signal function"
+            )
+        signal = self._compile_calibrated_signal(args[0], ctx)
+        threshold = float(self._extract_const_value(args[1]))
+        return SparseThresholdOperator(signal, threshold)
+
     def _make_fusion_op(self, args: tuple, ctx: ExecutionContext, *, mode: str) -> Any:
         """Build a fusion operator from nested function calls.
 
@@ -6208,6 +6473,90 @@ class SQLCompiler:
         if mode == "prob_and":
             return ProbBoolFusionOperator(signals, mode="and")
         return ProbBoolFusionOperator(signals, mode="or")
+
+    def _make_staged_retrieval_op(
+        self, args: tuple, ctx: ExecutionContext
+    ) -> Any:
+        """staged_retrieval(signal1, k1, signal2, k2, ...)
+
+        Each pair of arguments is a (signal_function, cutoff) pair.
+        Cutoff can be int (top-k) or float (threshold).
+        """
+        from uqa.operators.multi_stage import MultiStageOperator
+
+        stages = []
+        i = 0
+        while i < len(args) - 1:
+            if not isinstance(args[i], FuncCall):
+                raise ValueError(
+                    f"staged_retrieval: argument {i} must be a signal function"
+                )
+            signal = self._compile_calibrated_signal(args[i], ctx)
+            cutoff_val = self._extract_const_value(args[i + 1])
+            if isinstance(cutoff_val, float) and cutoff_val == int(cutoff_val):
+                cutoff_val = int(cutoff_val)
+            stages.append((signal, cutoff_val))
+            i += 2
+
+        if not stages:
+            raise ValueError(
+                "staged_retrieval requires at least one "
+                "(signal, cutoff) pair"
+            )
+
+        return MultiStageOperator(stages)
+
+    def _make_attention_fusion_op(self, args: tuple, ctx: ExecutionContext) -> Any:
+        """fuse_attention(signal1, signal2, ...)"""
+        from uqa.fusion.attention import AttentionFusion
+        from uqa.fusion.query_features import QueryFeatureExtractor
+        from uqa.operators.attention import AttentionFusionOperator
+
+        signals: list[Any] = []
+        for arg in args:
+            if isinstance(arg, FuncCall):
+                signals.append(self._compile_calibrated_signal(arg, ctx))
+
+        if len(signals) < 2:
+            raise ValueError("fuse_attention requires at least 2 signals")
+
+        n_signals = len(signals)
+        attention = AttentionFusion(n_signals=n_signals, n_query_features=6)
+
+        # Extract query features from the first text signal
+        import numpy as np
+
+        query_features = np.zeros(6, dtype=np.float64)
+        if ctx.inverted_index is not None:
+            extractor = QueryFeatureExtractor(ctx.inverted_index)
+            # Try to extract terms from the first text signal
+            for arg in args:
+                if isinstance(arg, FuncCall):
+                    fn_name = arg.funcname[-1].sval.lower()
+                    if fn_name in ("text_match", "bayesian_match") and arg.args and len(arg.args) >= 2:
+                        query_str = self._extract_string_value(arg.args[1])
+                        analyzer = ctx.inverted_index.analyzer
+                        terms = analyzer.analyze(query_str)
+                        query_features = extractor.extract(terms)
+                        break
+
+        return AttentionFusionOperator(signals, attention, query_features)
+
+    def _make_learned_fusion_op(self, args: tuple, ctx: ExecutionContext) -> Any:
+        """fuse_learned(signal1, signal2, ...)"""
+        from uqa.fusion.learned import LearnedFusion
+        from uqa.operators.learned_fusion import LearnedFusionOperator
+
+        signals: list[Any] = []
+        for arg in args:
+            if isinstance(arg, FuncCall):
+                signals.append(self._compile_calibrated_signal(arg, ctx))
+
+        if len(signals) < 2:
+            raise ValueError("fuse_learned requires at least 2 signals")
+
+        learned = LearnedFusion(n_signals=len(signals))
+        return LearnedFusionOperator(signals, learned)
 
     # -- Aggregation ---------------------------------------------------
 
@@ -7363,6 +7712,55 @@ class _LateralJoinOperator:
 
     def cost_estimate(self, stats: Any) -> float:
         return 1000.0
+
+
+class _ExternalPriorSearchOperator:
+    """Internal operator for Bayesian BM25 with external prior."""
+
+    def __init__(
+        self,
+        source: Any,
+        scorer: Any,
+        terms: list[str],
+        field: str | None,
+        document_store: Any,
+    ) -> None:
+        self.source = source
+        self.scorer = scorer
+        self.terms = terms
+        self.field = field
+        self.document_store = document_store
+
+    def execute(self, context: Any) -> PostingList:
+        from uqa.core.posting_list import PostingList as PL
+
+        source_pl = self.source.execute(context)
+        doc_store = self.document_store or context.document_store
+        idx = context.inverted_index
+        entries: list[PostingEntry] = []
+
+        for entry in source_pl:
+            doc_id = entry.doc_id
+            doc_fields = doc_store.get(doc_id) if doc_store else {}
+            if doc_fields is None:
+                doc_fields = {}
+            tf = len(entry.payload.positions) if entry.payload.positions else 1
+            field_key = self.field or "_default"
+            doc_length = idx.get_doc_length(doc_id, field_key) if idx else tf
+            doc_freq = len(source_pl)
+
+            score = self.scorer.score_with_prior(
+                tf, doc_length, doc_freq, doc_fields
+            )
+            entries.append(PostingEntry(doc_id, Payload(score=score)))
+
+        return PL.from_sorted(entries)
+
+    def cost_estimate(self, stats: Any) -> float:
+        return (
+            getattr(self.source, "cost_estimate", lambda _: 100.0)(stats)
+            * 1.1
+        )
 
 
 class _CalibratedKNNOperator(Operator):

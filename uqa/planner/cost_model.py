@@ -25,13 +25,18 @@ class CostModel:
     """Operator cost estimation for query optimization (Definition 6.2.1, Paper 1)."""
 
     def estimate(self, op: Operator, stats: IndexStats) -> float:
+        from uqa.graph.graph_embedding import GraphEmbeddingOperator
+        from uqa.graph.message_passing import MessagePassingOperator
         from uqa.graph.operators import (
             PatternMatchOperator,
             RegularPathQueryOperator,
             TraverseOperator,
             VertexAggregationOperator,
         )
+        from uqa.graph.temporal_pattern_match import TemporalPatternMatchOperator
+        from uqa.graph.temporal_traverse import TemporalTraverseOperator
         from uqa.operators.aggregation import AggregateOperator, GroupByOperator
+        from uqa.operators.attention import AttentionFusionOperator
         from uqa.operators.boolean import IntersectOperator, UnionOperator
         from uqa.operators.hybrid import (
             FacetVectorOperator,
@@ -42,6 +47,9 @@ class CostModel:
             SemanticFilterOperator,
             VectorExclusionOperator,
         )
+        from uqa.operators.learned_fusion import LearnedFusionOperator
+        from uqa.operators.multi_field import MultiFieldSearchOperator
+        from uqa.operators.multi_stage import MultiStageOperator
         from uqa.operators.primitive import (
             FilterOperator,
             IndexScanOperator,
@@ -50,6 +58,7 @@ class CostModel:
             TermOperator,
             VectorSimilarityOperator,
         )
+        from uqa.operators.sparse import SparseThresholdOperator
 
         match op:
             case TermOperator(term=t, field=f):
@@ -85,6 +94,10 @@ class CostModel:
                 return sum(self.estimate(s, stats) for s in sigs)
             case ProbBoolFusionOperator(signals=sigs):
                 return sum(self.estimate(s, stats) for s in sigs)
+            case AttentionFusionOperator(signals=sigs):
+                return sum(self.estimate(s, stats) for s in sigs)
+            case LearnedFusionOperator(signals=sigs):
+                return sum(self.estimate(s, stats) for s in sigs)
             case ProbNotOperator(signal=sig):
                 return self.estimate(sig, stats) + float(stats.total_docs)
             case HybridTextVectorOperator():
@@ -110,7 +123,27 @@ class CostModel:
                 return float(stats.total_docs) * TRAVERSE_FRACTION
             case PatternMatchOperator():
                 return float(stats.total_docs) ** 2
-            case RegularPathQueryOperator():
+            case TemporalTraverseOperator():
+                return float(stats.total_docs) * TRAVERSE_FRACTION
+            case TemporalPatternMatchOperator():
                 return float(stats.total_docs) ** 2
+            case RegularPathQueryOperator():
+                # Path-indexable expressions (Concat-of-Labels) are cheaper
+                labels = RegularPathQueryOperator._extract_label_sequence(
+                    op.path_expr
+                )
+                if labels is not None:
+                    return float(stats.total_docs) * 0.1
+                return float(stats.total_docs) ** 2
+            case SparseThresholdOperator(source=src):
+                return self.estimate(src, stats) * 0.5
+            case MultiFieldSearchOperator():
+                return float(stats.total_docs) * len(op.fields)
+            case MessagePassingOperator():
+                return float(stats.total_docs) * op.k_layers
+            case GraphEmbeddingOperator():
+                return float(stats.total_docs) * op.k_layers * 2
+            case MultiStageOperator():
+                return op.cost_estimate(stats)
             case _:
                 return float(stats.total_docs)

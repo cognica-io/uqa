@@ -208,6 +208,26 @@ class QueryBuilder:
         op = TraverseOperator(start, label, max_hops)
         return self._chain(op)
 
+    def temporal_traverse(
+        self,
+        start: int,
+        label: str | None = None,
+        max_hops: int = 1,
+        *,
+        timestamp: float | None = None,
+        time_range: tuple[float, float] | None = None,
+    ) -> QueryBuilder:
+        """Temporal-aware graph traversal (Section 10, Paper 2)."""
+        from uqa.graph.temporal_filter import TemporalFilter
+        from uqa.graph.temporal_traverse import TemporalTraverseOperator
+
+        tf = None
+        if timestamp is not None or time_range is not None:
+            tf = TemporalFilter(timestamp=timestamp, time_range=time_range)
+
+        op = TemporalTraverseOperator(start, label, max_hops, tf)
+        return self._chain(op)
+
     def match_pattern(self, pattern: Any) -> QueryBuilder:
         from uqa.graph.operators import PatternMatchOperator
 
@@ -259,6 +279,34 @@ class QueryBuilder:
         qb = QueryBuilder(self._engine, self._table)
         qb._root = op
         return qb
+
+    # -- Sparse thresholding (Section 6.5, Paper 4) --
+
+    def sparse_threshold(self, threshold: float) -> QueryBuilder:
+        """Apply ReLU thresholding: max(0, score - threshold) (Section 6.5, Paper 4)."""
+        from uqa.operators.sparse import SparseThresholdOperator
+
+        if self._root is None:
+            raise ValueError("sparse_threshold requires a source query")
+
+        op = SparseThresholdOperator(self._root, threshold)
+        qb = QueryBuilder(self._engine, self._table)
+        qb._root = op
+        return qb
+
+    # -- GNN integration (Paper 2 + Paper 4) --
+
+    def message_passing(
+        self,
+        k_layers: int = 2,
+        aggregation: str = "mean",
+        property_name: str | None = None,
+    ) -> QueryBuilder:
+        """K-layer message-passing aggregation (Paper 2 + Paper 4)."""
+        from uqa.graph.message_passing import MessagePassingOperator
+
+        op = MessagePassingOperator(k_layers, aggregation, property_name)
+        return self._chain(op)
 
     # -- Aggregation (Section 5.1, Paper 1) --
 
@@ -430,6 +478,70 @@ class QueryBuilder:
         qb._root = op
         return qb
 
+    def score_multi_field_bayesian(
+        self,
+        query: str,
+        fields: list[str],
+        weights: list[float] | None = None,
+    ) -> QueryBuilder:
+        """Multi-field Bayesian BM25 search (Section 12.2 #1, Paper 3)."""
+        from uqa.operators.multi_field import MultiFieldSearchOperator
+
+        op = MultiFieldSearchOperator(fields, query, weights)
+        qb = QueryBuilder(self._engine, self._table)
+        qb._root = op
+        return qb
+
+    def score_bayesian_with_prior(
+        self,
+        query: str,
+        field: str | None = None,
+        *,
+        prior_fn: Any = None,
+    ) -> QueryBuilder:
+        """Bayesian BM25 scoring with external prior (Section 12.2 #6, Paper 3)."""
+        from uqa.operators.primitive import TermOperator
+        from uqa.scoring.bayesian_bm25 import BayesianBM25Params
+        from uqa.scoring.external_prior import ExternalPriorScorer
+        from uqa.sql.compiler import _ExternalPriorSearchOperator
+
+        if prior_fn is None:
+            raise ValueError("prior_fn is required for score_bayesian_with_prior")
+
+        ctx = self._engine._context_for_table(self._table)
+        idx = ctx.inverted_index
+        analyzer = (
+            idx.get_field_analyzer(field) if field else idx.analyzer
+        )
+        terms = analyzer.analyze(query)
+        scorer = ExternalPriorScorer(BayesianBM25Params(), idx.stats, prior_fn)
+
+        retrieval = self._root if self._root is not None else TermOperator(query, field)
+
+        op = _ExternalPriorSearchOperator(
+            retrieval, scorer, terms, field, ctx.document_store
+        )
+        qb = QueryBuilder(self._engine, self._table)
+        qb._root = op
+        return qb
+
+    def learn_params(
+        self,
+        query: str,
+        labels: list[int],
+        *,
+        mode: str = "balanced",
+        field: str | None = None,
+    ) -> dict[str, float]:
+        """Learn Bayesian BM25 calibration parameters (Section 8, Paper 3).
+
+        Delegates to Engine.learn_scoring_params().
+        """
+        f = field or "_default"
+        return self._engine.learn_scoring_params(
+            self._table, f, query, labels, mode=mode
+        )
+
     # -- Fusion (Paper 4) --
 
     def fuse_log_odds(
@@ -459,6 +571,60 @@ class QueryBuilder:
     def fuse_prob_or(self, *builders: QueryBuilder) -> QueryBuilder:
         qb = QueryBuilder(self._engine, self._table)
         qb._root = _ProbBooleanOperator("or", [b._root for b in builders if b._root])
+        return qb
+
+    def fuse_attention(
+        self, *builders: QueryBuilder, alpha: float = 0.5
+    ) -> QueryBuilder:
+        """Attention-weighted fusion (Section 8, Paper 4)."""
+        import numpy as np
+
+        from uqa.fusion.attention import AttentionFusion
+        from uqa.operators.attention import AttentionFusionOperator
+
+        sources = [b._root for b in builders if b._root is not None]
+        if len(sources) < 2:
+            raise ValueError("fuse_attention requires at least 2 signals")
+
+        n_signals = len(sources)
+        attention = AttentionFusion(n_signals=n_signals, alpha=alpha)
+        query_features = np.zeros(6, dtype=np.float64)
+
+        qb = QueryBuilder(self._engine, self._table)
+        qb._root = AttentionFusionOperator(sources, attention, query_features)
+        return qb
+
+    def fuse_learned(self, *builders: QueryBuilder, alpha: float = 0.5) -> QueryBuilder:
+        """Learned-weight fusion (Section 8, Paper 4)."""
+        from uqa.fusion.learned import LearnedFusion
+        from uqa.operators.learned_fusion import LearnedFusionOperator
+
+        sources = [b._root for b in builders if b._root is not None]
+        if len(sources) < 2:
+            raise ValueError("fuse_learned requires at least 2 signals")
+
+        learned = LearnedFusion(n_signals=len(sources), alpha=alpha)
+        qb = QueryBuilder(self._engine, self._table)
+        qb._root = LearnedFusionOperator(sources, learned)
+        return qb
+
+    # -- Multi-stage pipeline (Section 9, Paper 4) --
+
+    def multi_stage(
+        self, stages: list[tuple[QueryBuilder, int | float]]
+    ) -> QueryBuilder:
+        """Multi-stage retrieval pipeline (Section 9, Paper 4)."""
+        from uqa.operators.multi_stage import MultiStageOperator
+
+        stage_list = []
+        for builder, cutoff in stages:
+            if builder._root is None:
+                raise ValueError("Each stage must have an operator")
+            stage_list.append((builder._root, cutoff))
+
+        op = MultiStageOperator(stage_list)
+        qb = QueryBuilder(self._engine, self._table)
+        qb._root = op
         return qb
 
     # -- Execution --

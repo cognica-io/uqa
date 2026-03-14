@@ -138,12 +138,17 @@ class CardinalityEstimator:
         Handles fusion, hybrid, graph, and other multi-paradigm operators
         that combine signals from different query paradigms.
         """
+        from uqa.graph.graph_embedding import GraphEmbeddingOperator
+        from uqa.graph.message_passing import MessagePassingOperator
         from uqa.graph.operators import (
             PatternMatchOperator,
             RegularPathQueryOperator,
             TraverseOperator,
             VertexAggregationOperator,
         )
+        from uqa.graph.temporal_pattern_match import TemporalPatternMatchOperator
+        from uqa.graph.temporal_traverse import TemporalTraverseOperator
+        from uqa.operators.attention import AttentionFusionOperator
         from uqa.operators.hybrid import (
             FacetVectorOperator,
             HybridTextVectorOperator,
@@ -153,6 +158,31 @@ class CardinalityEstimator:
             SemanticFilterOperator,
             VectorExclusionOperator,
         )
+        from uqa.operators.learned_fusion import LearnedFusionOperator
+        from uqa.operators.multi_field import MultiFieldSearchOperator
+        from uqa.operators.multi_stage import MultiStageOperator
+        from uqa.operators.sparse import SparseThresholdOperator
+
+        if isinstance(op, MultiStageOperator):
+            # Final cardinality is determined by the last stage cutoff
+            _, last_cutoff = op.stages[-1]
+            if isinstance(last_cutoff, int):
+                return float(last_cutoff)
+            return n * 0.5
+
+        if isinstance(op, AttentionFusionOperator):
+            child_cards = [self.estimate(s, stats) for s in op.signals]
+            return min(n, sum(child_cards))
+
+        if isinstance(op, LearnedFusionOperator):
+            child_cards = [self.estimate(s, stats) for s in op.signals]
+            return min(n, sum(child_cards))
+
+        if isinstance(op, MultiFieldSearchOperator):
+            return min(n, n * 0.3 * len(op.fields))
+
+        if isinstance(op, SparseThresholdOperator):
+            return self.estimate(op.source, stats) * 0.5
 
         # VectorExclusion: positive minus negative overlap
         if isinstance(op, VectorExclusionOperator):
@@ -201,6 +231,14 @@ class CardinalityEstimator:
             vec_card = self.estimate(op.vector_op, stats)
             return max(1.0, (src_card * vec_card) / n)
 
+        # Temporal graph traversal: reuses traverse estimation
+        if isinstance(op, TemporalTraverseOperator):
+            return self._estimate_traverse(op, n)
+
+        # Temporal pattern matching: reuses pattern match estimation
+        if isinstance(op, TemporalPatternMatchOperator):
+            return self._estimate_temporal_pattern_match(op, n)
+
         # Graph traversal: statistics-based when available
         if isinstance(op, TraverseOperator):
             return self._estimate_traverse(op, n)
@@ -212,6 +250,12 @@ class CardinalityEstimator:
         # RPQ: statistics-based when available
         if isinstance(op, RegularPathQueryOperator):
             return self._estimate_rpq(op, n)
+
+        if isinstance(op, MessagePassingOperator):
+            return n
+
+        if isinstance(op, GraphEmbeddingOperator):
+            return n
 
         return n
 
@@ -265,6 +309,35 @@ class CardinalityEstimator:
         # Heuristic fallback: n^1.5 captures the super-linear growth of
         # pattern match results (more than linear scan but less than the
         # full n^k cross-product) when no graph statistics are available.
+        return min(n, n**1.5)
+
+    def _estimate_temporal_pattern_match(self, op: object, n: float) -> float:
+        """Temporal pattern match cardinality estimation.
+
+        Uses the same formula as _estimate_pattern_match but works with
+        TemporalPatternMatchOperator which has the same pattern attribute.
+        """
+        from uqa.graph.temporal_pattern_match import TemporalPatternMatchOperator
+
+        if not isinstance(op, TemporalPatternMatchOperator):
+            return min(n, n**1.5)
+
+        pattern = op.pattern
+        k = len(pattern.vertex_patterns)
+        e = len(pattern.edge_patterns)
+
+        if self._graph_stats is not None:
+            gs = self._graph_stats
+            nv = float(gs.num_vertices) if gs.num_vertices > 0 else n
+            density = gs.edge_density()
+
+            label_sel = 1.0
+            for ep in pattern.edge_patterns:
+                label_sel *= gs.label_selectivity(ep.label)
+
+            estimate = (nv**k) * (density**e) * label_sel
+            return max(1.0, min(nv, estimate))
+
         return min(n, n**1.5)
 
     def _estimate_rpq(self, op: object, n: float) -> float:

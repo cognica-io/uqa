@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
     from uqa.fdw.foreign_table import ForeignServer, ForeignTable
     from uqa.fdw.handler import FDWHandler
+    from uqa.graph.index import PathIndex
 from uqa.core.types import DocId, Edge, Payload, PostingEntry, Vertex
 from uqa.graph.store import GraphStore
 from uqa.planner.parallel import ParallelExecutor
@@ -48,6 +49,8 @@ class Engine:
         self._sequences: dict[str, dict[str, int]] = {}
         self._temp_tables: set[str] = set()
         self._named_graphs: dict[str, GraphStore] = {}
+        self._versioned_graphs: dict[str, Any] = {}
+        self._path_indexes: dict[str, PathIndex] = {}
 
         self._foreign_servers: dict[str, ForeignServer] = {}
         self._foreign_tables: dict[str, ForeignTable] = {}
@@ -160,6 +163,16 @@ class Engine:
             self._named_graphs[graph_name] = SQLiteGraphStore(
                 catalog.conn, table_name=f"_graph_{graph_name}"
             )
+
+        # -- Path indexes ----------------------------------------------
+        from uqa.graph.index import PathIndex
+
+        for graph_name, label_sequences in catalog.load_path_indexes():
+            store = self._named_graphs.get(graph_name)
+            if store is not None:
+                self._path_indexes[graph_name] = PathIndex.build(
+                    store, label_sequences
+                )
 
         # -- Foreign servers and tables --------------------------------
         from uqa.fdw.foreign_table import ForeignServer, ForeignTable
@@ -430,6 +443,73 @@ class Engine:
         """Return True if a named graph with *name* exists."""
         return name in self._named_graphs
 
+    # -- Path index management -----------------------------------------
+
+    def build_path_index(
+        self, graph_name: str, label_sequences: list[list[str]]
+    ) -> None:
+        """Build a path index for a named graph (Section 9.1, Paper 2).
+
+        Pre-computes reachable (start, end) vertex pairs for the given
+        label sequences, enabling O(1) RPQ lookups.
+        """
+        from uqa.graph.index import PathIndex
+
+        store = self._named_graphs.get(graph_name)
+        if store is None:
+            raise ValueError(f"Graph '{graph_name}' does not exist")
+        idx = PathIndex.build(store, label_sequences)
+        self._path_indexes[graph_name] = idx
+        if self._catalog is not None:
+            self._catalog.save_path_index(graph_name, label_sequences)
+
+    def get_path_index(self, graph_name: str) -> PathIndex | None:
+        """Return the path index for a named graph, or None."""
+        return self._path_indexes.get(graph_name)
+
+    def drop_path_index(self, graph_name: str) -> None:
+        """Remove the path index for a named graph."""
+        self._path_indexes.pop(graph_name, None)
+        if self._catalog is not None:
+            self._catalog.drop_path_index(graph_name)
+
+    # -- Graph delta management (Section 9.3, Paper 2) -----------------
+
+    def apply_graph_delta(self, graph_name: str, delta: Any) -> int:
+        """Apply a graph delta to a named graph (Section 9.3, Paper 2).
+
+        Applies the delta operations, increments the graph version, and
+        invalidates any path indexes whose label sequences overlap with
+        the delta's affected edge labels.
+        """
+        from uqa.graph.versioned_store import VersionedGraphStore
+
+        store = self._named_graphs.get(graph_name)
+        if store is None:
+            raise ValueError(f"Graph '{graph_name}' does not exist")
+
+        # Wrap in VersionedGraphStore if not already tracked
+        versioned = self._versioned_graphs.get(graph_name)
+        if versioned is None:
+            versioned = VersionedGraphStore(store)
+            self._versioned_graphs[graph_name] = versioned
+
+        version = versioned.apply(delta)
+
+        # Invalidate path index if affected labels overlap
+        path_idx = self._path_indexes.get(graph_name)
+        if path_idx is not None:
+            affected = delta.affected_edge_labels()
+            for indexed_path in path_idx.indexed_paths():
+                path_labels = set(indexed_path.split("/"))
+                if path_labels & affected:
+                    self._path_indexes.pop(graph_name, None)
+                    if self._catalog is not None:
+                        self._catalog.drop_path_index(graph_name)
+                    break
+
+        return version
+
     # -- Analyzer management -------------------------------------------
 
     def create_analyzer(self, name: str, config: dict[str, Any]) -> None:
@@ -527,6 +607,127 @@ class Engine:
         if self._catalog is not None:
             return self._catalog.load_all_scoring_params()
         return []
+
+    def learn_scoring_params(
+        self,
+        table: str,
+        field: str,
+        query: str,
+        labels: list[int],
+        *,
+        mode: str = "balanced",
+    ) -> dict[str, float]:
+        """Learn Bayesian BM25 calibration parameters from relevance judgments.
+
+        Scores every labeled document and fits (alpha, beta, base_rate) to
+        minimize calibration error.  Persists the learned parameters.
+        """
+        from uqa.operators.primitive import ScoreOperator, TermOperator
+        from uqa.scoring.bayesian_bm25 import BayesianBM25Params, BayesianBM25Scorer
+        from uqa.scoring.parameter_learner import ParameterLearner
+
+        tbl = self._tables.get(table)
+        if tbl is None:
+            raise ValueError(f"Table '{table}' does not exist")
+
+        ctx = self._context_for_table(table)
+        idx = ctx.inverted_index
+        analyzer = idx.get_search_analyzer(field) if field else idx.analyzer
+        terms = analyzer.analyze(query)
+        scorer = BayesianBM25Scorer(BayesianBM25Params(), idx.stats)
+
+        retrieval = TermOperator(query, field)
+        score_op = ScoreOperator(scorer, retrieval, terms, field=field)
+        result_pl = score_op.execute(ctx)
+
+        score_map: dict[int, float] = {}
+        for entry in result_pl:
+            score_map[entry.doc_id] = entry.payload.score
+
+        doc_ids = sorted(tbl.document_store.doc_ids)
+        if len(labels) != len(doc_ids):
+            raise ValueError(
+                f"labels length ({len(labels)}) must match "
+                f"document count ({len(doc_ids)})"
+            )
+
+        scores = [score_map.get(did, 0.0) for did in doc_ids]
+        learner = ParameterLearner()
+        learned = learner.fit(scores, labels, mode=mode)
+
+        param_name = f"{table}.{field}.{query}"
+        self.save_scoring_params(param_name, learned)
+        return learned
+
+    def update_scoring_params(
+        self,
+        table: str,
+        field: str,
+        score: float,
+        label: int,
+    ) -> None:
+        """Online update of Bayesian calibration parameters with a single observation."""
+        from uqa.scoring.parameter_learner import ParameterLearner
+
+        param_name = f"{table}.{field}"
+        existing = self.load_scoring_params(param_name)
+
+        if existing is not None:
+            learner = ParameterLearner(
+                alpha=existing.get("alpha", 1.0),
+                beta=existing.get("beta", 0.0),
+                base_rate=existing.get("base_rate", 0.5),
+            )
+        else:
+            learner = ParameterLearner()
+
+        learner.update(score, label)
+        self.save_scoring_params(param_name, learner.params())
+
+    def calibration_report(
+        self,
+        table: str,
+        field: str,
+        query: str,
+        labels: list[int],
+    ) -> dict:
+        """Compute calibration diagnostics for a Bayesian BM25 query.
+
+        Scores every labeled document using Bayesian BM25 and compares
+        predicted probabilities against ground-truth binary labels.
+        """
+        from uqa.scoring.calibration import CalibrationMetrics
+
+        tbl = self._tables.get(table)
+        if tbl is None:
+            raise ValueError(f"Table '{table}' does not exist")
+
+        from uqa.operators.primitive import ScoreOperator, TermOperator
+        from uqa.scoring.bayesian_bm25 import BayesianBM25Params, BayesianBM25Scorer
+
+        ctx = self._context_for_table(table)
+        idx = ctx.inverted_index
+        analyzer = idx.get_search_analyzer(field) if field else idx.analyzer
+        terms = analyzer.analyze(query)
+        scorer = BayesianBM25Scorer(BayesianBM25Params(), idx.stats)
+
+        retrieval = TermOperator(query, field)
+        score_op = ScoreOperator(scorer, retrieval, terms, field=field)
+        result_pl = score_op.execute(ctx)
+
+        score_map: dict[int, float] = {}
+        for entry in result_pl:
+            score_map[entry.doc_id] = entry.payload.score
+
+        doc_ids = sorted(tbl.document_store.doc_ids)
+        if len(labels) != len(doc_ids):
+            raise ValueError(
+                f"labels length ({len(labels)}) must match "
+                f"document count ({len(doc_ids)})"
+            )
+
+        probabilities = [score_map.get(did, 0.0) for did in doc_ids]
+        return CalibrationMetrics.report(probabilities, labels)
 
     # -- Transaction interface -----------------------------------------
 

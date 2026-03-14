@@ -39,6 +39,7 @@ class PlanExecutor:
         return result
 
     def _execute_with_stats(self, op: Operator) -> tuple[PostingList, ExecutionStats]:
+        from uqa.operators.attention import AttentionFusionOperator
         from uqa.operators.base import ComposedOperator
         from uqa.operators.boolean import (
             ComplementOperator,
@@ -50,7 +51,10 @@ class PlanExecutor:
             ProbBoolFusionOperator,
             ProbNotOperator,
         )
+        from uqa.operators.learned_fusion import LearnedFusionOperator
+        from uqa.operators.multi_stage import MultiStageOperator
         from uqa.operators.primitive import FilterOperator, ScoreOperator
+        from uqa.operators.sparse import SparseThresholdOperator
 
         stats = ExecutionStats(operator_name=type(op).__name__)
         child_stats: list[ExecutionStats] = []
@@ -66,6 +70,10 @@ class PlanExecutor:
             for child in op.operators:
                 _, cs = self._execute_with_stats(child)
                 child_stats.append(cs)
+        elif isinstance(op, (AttentionFusionOperator, LearnedFusionOperator)):
+            for sig in op.signals:
+                _, cs = self._execute_with_stats(sig)
+                child_stats.append(cs)
         elif isinstance(op, (LogOddsFusionOperator, ProbBoolFusionOperator)):
             for sig in op.signals:
                 _, cs = self._execute_with_stats(sig)
@@ -79,6 +87,13 @@ class PlanExecutor:
         elif isinstance(op, FilterOperator) and op.source is not None:
             _, cs = self._execute_with_stats(op.source)
             child_stats.append(cs)
+        elif isinstance(op, SparseThresholdOperator):
+            _, cs = self._execute_with_stats(op.source)
+            child_stats.append(cs)
+        elif isinstance(op, MultiStageOperator):
+            for stage_op, _ in op.stages:
+                _, cs = self._execute_with_stats(stage_op)
+                child_stats.append(cs)
 
         start = time.perf_counter()
         result = op.execute(self.context)
@@ -97,12 +112,15 @@ class PlanExecutor:
         return "\n".join(lines)
 
     def _explain_recursive(self, op: Operator, lines: list[str], indent: int) -> None:
+        from uqa.graph.graph_embedding import GraphEmbeddingOperator
+        from uqa.graph.message_passing import MessagePassingOperator
         from uqa.graph.operators import (
             CypherQueryOperator,
             PatternMatchOperator,
             RegularPathQueryOperator,
             TraverseOperator,
         )
+        from uqa.operators.attention import AttentionFusionOperator
         from uqa.operators.base import ComposedOperator
         from uqa.operators.boolean import (
             ComplementOperator,
@@ -114,6 +132,8 @@ class PlanExecutor:
             ProbBoolFusionOperator,
             ProbNotOperator,
         )
+        from uqa.operators.learned_fusion import LearnedFusionOperator
+        from uqa.operators.multi_stage import MultiStageOperator
         from uqa.operators.primitive import (
             FilterOperator,
             IndexScanOperator,
@@ -122,6 +142,7 @@ class PlanExecutor:
             TermOperator,
             VectorSimilarityOperator,
         )
+        from uqa.operators.sparse import SparseThresholdOperator
 
         prefix = "  " * indent
 
@@ -162,6 +183,18 @@ class PlanExecutor:
             case ProbNotOperator(signal=sig):
                 lines.append(f"{prefix}ProbNot")
                 self._explain_recursive(sig, lines, indent + 1)
+            case AttentionFusionOperator(signals=sigs):
+                lines.append(
+                    f"{prefix}AttentionFusion(signals={len(sigs)})"
+                )
+                for sig in sigs:
+                    self._explain_recursive(sig, lines, indent + 1)
+            case LearnedFusionOperator(signals=sigs):
+                lines.append(
+                    f"{prefix}LearnedFusion(signals={len(sigs)})"
+                )
+                for sig in sigs:
+                    self._explain_recursive(sig, lines, indent + 1)
             case TraverseOperator():
                 lines.append(
                     f"{prefix}TraverseOp(start={op.start_vertex}, "
@@ -191,6 +224,22 @@ class PlanExecutor:
                 lines.append(f"{prefix}Composed")
                 for child in ops:
                     self._explain_recursive(child, lines, indent + 1)
+            case SparseThresholdOperator(source=src):
+                lines.append(f"{prefix}SparseThreshold(threshold={op.threshold})")
+                self._explain_recursive(src, lines, indent + 1)
+            case MessagePassingOperator():
+                lines.append(
+                    f"{prefix}MessagePassingOp(k={op.k_layers}, agg={op.aggregation!r})"
+                )
+            case GraphEmbeddingOperator():
+                lines.append(
+                    f"{prefix}GraphEmbeddingOp(dims={op.dimensions}, k={op.k_layers})"
+                )
+            case MultiStageOperator():
+                lines.append(f"{prefix}MultiStage(stages={len(op.stages)})")
+                for i, (stage_op, cutoff) in enumerate(op.stages):
+                    lines.append(f"{prefix}  Stage {i} (cutoff={cutoff}):")
+                    self._explain_recursive(stage_op, lines, indent + 2)
             case _:
                 lines.append(f"{prefix}{type(op).__name__}")
 
