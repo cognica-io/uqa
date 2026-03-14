@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import bisect
 import heapq
 from typing import TYPE_CHECKING
 
@@ -42,12 +43,14 @@ class WANDScorer:
         scorers: list[object],
         k: int,
         posting_lists: list[PostingList],
+        inverted_index: object | None = None,
         fields: list[str] | None = None,
         terms: list[str] | None = None,
     ) -> None:
         self.scorers = scorers
         self.k = k
         self.posting_lists = posting_lists
+        self.inverted_index = inverted_index
         self.fields = fields or [""] * len(posting_lists)
         self.terms = terms or [""] * len(posting_lists)
 
@@ -77,17 +80,19 @@ class WANDScorer:
 
         _INF = float("inf")
 
+        def _cur_doc(i: int) -> float:
+            if positions[i] < len(iterators[i]):
+                return iterators[i][positions[i]].doc_id
+            return _INF
+
+        # Build initial sorted list of (cur_doc_id, term_index) pairs.
+        sorted_terms: list[tuple[float, int]] = sorted(
+            (_cur_doc(i), i) for i in range(num_terms)
+        )
+
         while True:
-            # Build sorted order of term indices by current doc_id
-            def _cur_doc(i: int) -> float:
-                if positions[i] < len(iterators[i]):
-                    return iterators[i][positions[i]].doc_id
-                return _INF
-
-            sorted_terms = sorted(range(num_terms), key=_cur_doc)
-
             # If the smallest current doc_id is infinity, all exhausted
-            if _cur_doc(sorted_terms[0]) == _INF:
+            if sorted_terms[0][0] == _INF:
                 break
 
             # Find pivot: smallest index p where cumulative upper bounds
@@ -95,9 +100,9 @@ class WANDScorer:
             cumulative = 0.0
             pivot = -1
             for idx in range(len(sorted_terms)):
-                ti = sorted_terms[idx]
+                doc_val, ti = sorted_terms[idx]
                 # Skip exhausted terms
-                if _cur_doc(ti) == _INF:
+                if doc_val == _INF:
                     break
                 cumulative += upper_bounds[ti]
                 if cumulative >= threshold:
@@ -108,11 +113,11 @@ class WANDScorer:
                 # Cannot reach threshold with any remaining terms
                 break
 
-            pivot_term = sorted_terms[pivot]
+            _, pivot_term = sorted_terms[pivot]
             pivot_doc = int(_cur_doc(pivot_term))
 
             # Check if all terms 0..pivot point to the same doc_id
-            first_doc = int(_cur_doc(sorted_terms[0]))
+            first_doc = int(sorted_terms[0][0])
 
             if first_doc == pivot_doc:
                 # All terms up to pivot converge on pivot_doc -- score it
@@ -130,7 +135,13 @@ class WANDScorer:
                             else 1
                         )
                         df = len(self.posting_lists[i])
-                        actual_score += self.scorers[i].score(tf, tf, df)  # type: ignore[union-attr]
+                        if self.inverted_index is not None:
+                            doc_length = self.inverted_index.get_doc_length(  # type: ignore[union-attr]
+                                pivot_doc, self.fields[i]
+                            )
+                        else:
+                            doc_length = tf
+                        actual_score += self.scorers[i].score(tf, doc_length, df)  # type: ignore[union-attr]
 
                 if len(top_k_heap) < self.k:
                     heapq.heappush(top_k_heap, (actual_score, pivot_doc))
@@ -140,21 +151,33 @@ class WANDScorer:
                     heapq.heapreplace(top_k_heap, (actual_score, pivot_doc))
                     threshold = top_k_heap[0][0]
 
-                # Advance all cursors pointing at pivot_doc
-                for i in range(num_terms):
+                # Advance all cursors pointing at pivot_doc and
+                # re-insert into sorted list via bisect.
+                to_reinsert: list[tuple[float, int]] = []
+                new_sorted: list[tuple[float, int]] = []
+                for doc_val, ti in sorted_terms:
                     if (
-                        positions[i] < len(iterators[i])
-                        and iterators[i][positions[i]].doc_id == pivot_doc
+                        positions[ti] < len(iterators[ti])
+                        and iterators[ti][positions[ti]].doc_id == pivot_doc
                     ):
-                        positions[i] += 1
+                        positions[ti] += 1
+                        to_reinsert.append((_cur_doc(ti), ti))
+                    else:
+                        new_sorted.append((doc_val, ti))
+                for item in to_reinsert:
+                    bisect.insort(new_sorted, item)
+                sorted_terms = new_sorted
             else:
-                # Advance the first cursor to pivot_doc via binary search
-                first_term = sorted_terms[0]
+                # Advance the first cursor to pivot_doc via binary search.
+                _, first_term = sorted_terms[0]
                 positions[first_term] = _advance_cursor(
                     iterators[first_term],
                     positions[first_term],
                     pivot_doc,
                 )
+                # Re-insert into sorted list.
+                sorted_terms.pop(0)
+                bisect.insort(sorted_terms, (_cur_doc(first_term), first_term))
 
         # Build result posting list
         entries: list[PostingEntry] = []
@@ -176,6 +199,7 @@ class BlockMaxWANDScorer:
         k: int,
         block_max_index: BlockMaxIndex,
         posting_lists: list[PostingList],
+        inverted_index: object | None = None,
         fields: list[str] | None = None,
         terms: list[str] | None = None,
         block_size: int = 128,
@@ -185,6 +209,7 @@ class BlockMaxWANDScorer:
         self.k = k
         self.block_max_index = block_max_index
         self.posting_lists = posting_lists
+        self.inverted_index = inverted_index
         self.fields = fields or [""] * len(posting_lists)
         self.terms = terms or [""] * len(posting_lists)
         self.block_size = block_size
@@ -207,25 +232,27 @@ class BlockMaxWANDScorer:
 
         _INF = float("inf")
 
+        def _cur_doc(i: int) -> float:
+            if positions[i] < len(iterators[i]):
+                return iterators[i][positions[i]].doc_id
+            return _INF
+
+        # Build initial sorted list of (cur_doc_id, term_index) pairs.
+        sorted_terms: list[tuple[float, int]] = sorted(
+            (_cur_doc(i), i) for i in range(num_terms)
+        )
+
         while True:
-            # Build sorted order of term indices by current doc_id
-            def _cur_doc(i: int) -> float:
-                if positions[i] < len(iterators[i]):
-                    return iterators[i][positions[i]].doc_id
-                return _INF
-
-            sorted_terms = sorted(range(num_terms), key=_cur_doc)
-
             # If the smallest current doc_id is infinity, all exhausted
-            if _cur_doc(sorted_terms[0]) == _INF:
+            if sorted_terms[0][0] == _INF:
                 break
 
             # Find pivot using block-max scores
             cumulative = 0.0
             pivot = -1
             for idx in range(len(sorted_terms)):
-                ti = sorted_terms[idx]
-                if _cur_doc(ti) == _INF:
+                doc_val, ti = sorted_terms[idx]
+                if doc_val == _INF:
                     break
                 block_idx = self._get_block_idx(positions[ti])
                 block_max = self.block_max_index.get_block_max(
@@ -242,10 +269,10 @@ class BlockMaxWANDScorer:
             if pivot == -1:
                 break
 
-            pivot_term = sorted_terms[pivot]
+            _, pivot_term = sorted_terms[pivot]
             pivot_doc = int(_cur_doc(pivot_term))
 
-            first_doc = int(_cur_doc(sorted_terms[0]))
+            first_doc = int(sorted_terms[0][0])
 
             if first_doc == pivot_doc:
                 # Score the document fully
@@ -263,7 +290,13 @@ class BlockMaxWANDScorer:
                             else 1
                         )
                         df = len(self.posting_lists[i])
-                        actual_score += self.scorers[i].score(tf, tf, df)  # type: ignore[union-attr]
+                        if self.inverted_index is not None:
+                            doc_length = self.inverted_index.get_doc_length(  # type: ignore[union-attr]
+                                pivot_doc, self.fields[i]
+                            )
+                        else:
+                            doc_length = tf
+                        actual_score += self.scorers[i].score(tf, doc_length, df)  # type: ignore[union-attr]
 
                 if len(top_k_heap) < self.k:
                     heapq.heappush(top_k_heap, (actual_score, pivot_doc))
@@ -273,21 +306,33 @@ class BlockMaxWANDScorer:
                     heapq.heapreplace(top_k_heap, (actual_score, pivot_doc))
                     threshold = top_k_heap[0][0]
 
-                # Advance all cursors pointing at pivot_doc
-                for i in range(num_terms):
+                # Advance all cursors pointing at pivot_doc and
+                # re-insert into sorted list via bisect.
+                to_reinsert: list[tuple[float, int]] = []
+                new_sorted: list[tuple[float, int]] = []
+                for doc_val, ti in sorted_terms:
                     if (
-                        positions[i] < len(iterators[i])
-                        and iterators[i][positions[i]].doc_id == pivot_doc
+                        positions[ti] < len(iterators[ti])
+                        and iterators[ti][positions[ti]].doc_id == pivot_doc
                     ):
-                        positions[i] += 1
+                        positions[ti] += 1
+                        to_reinsert.append((_cur_doc(ti), ti))
+                    else:
+                        new_sorted.append((doc_val, ti))
+                for item in to_reinsert:
+                    bisect.insort(new_sorted, item)
+                sorted_terms = new_sorted
             else:
-                # Advance the first cursor to pivot_doc via binary search
-                first_term = sorted_terms[0]
+                # Advance the first cursor to pivot_doc via binary search.
+                _, first_term = sorted_terms[0]
                 positions[first_term] = _advance_cursor(
                     iterators[first_term],
                     positions[first_term],
                     pivot_doc,
                 )
+                # Re-insert into sorted list.
+                sorted_terms.pop(0)
+                bisect.insort(sorted_terms, (_cur_doc(first_term), first_term))
 
         entries: list[PostingEntry] = []
         for score, doc_id in top_k_heap:
