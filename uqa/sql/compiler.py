@@ -88,9 +88,10 @@ FROM-clause table functions:
 from __future__ import annotations
 
 from collections import OrderedDict
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
-from pglast import parse_sql
+from pglast import parse_sql as _parse_sql_raw
 from pglast.ast import (
     A_ArrayExpr,
     A_Const,
@@ -187,6 +188,11 @@ if TYPE_CHECKING:
     from uqa.engine import Engine
     from uqa.execution.relational import WindowSpec
     from uqa.operators.base import ExecutionContext
+
+
+@lru_cache(maxsize=256)
+def _parse_sql_cached(sql: str) -> tuple:
+    return _parse_sql_raw(sql)
 
 
 # ======================================================================
@@ -433,6 +439,7 @@ class SQLCompiler:
         self._params: list[Any] = []
         self._expanded_views: list[str] = []
         self._shadowed_tables: dict[str, Table] = {}
+        self._inlined_ctes: dict[str, SelectStmt] = {}
 
     def execute(self, sql: str, params: list[Any] | None = None) -> SQLResult:
         """Parse and execute a SQL statement.
@@ -442,7 +449,7 @@ class SQLCompiler:
         (scalars, numpy arrays, etc.).
         """
         self._params = list(params) if params else []
-        stmts = parse_sql(sql)
+        stmts = _parse_sql_cached(sql)
         if not stmts:
             raise ValueError("Empty SQL statement")
         stmt = stmts[0].stmt
@@ -842,11 +849,7 @@ class SQLCompiler:
                         f"FOREIGN KEY constraint violated: "
                         f"referenced table '{_ref_table}' does not exist"
                     )
-                parent_values = {
-                    parent.document_store.get_field(did, _ref_col)
-                    for did in parent.document_store.doc_ids
-                }
-                if value not in parent_values:
+                if not parent.document_store.has_value(_ref_col, value):
                     raise ValueError(
                         f"FOREIGN KEY constraint violated: "
                         f"key ({_fk_col})=({value}) in table "
@@ -874,11 +877,7 @@ class SQLCompiler:
                 child = _engine._tables.get(_child_table)
                 if child is None:
                     return
-                child_fk_values = {
-                    child.document_store.get_field(cid, _fk_col)
-                    for cid in child.document_store.doc_ids
-                }
-                if ref_value in child_fk_values:
+                if child.document_store.has_value(_fk_col, ref_value):
                     raise ValueError(
                         f"FOREIGN KEY constraint violated: "
                         f"key ({_ref_col})=({ref_value}) in table "
@@ -1361,6 +1360,8 @@ class SQLCompiler:
                 si.clear()
             table.graph_store.clear()
             table._next_id = 1
+            for uidx in table._unique_indexes.values():
+                uidx.clear()
         return SQLResult([], [])
 
     # ==================================================================
@@ -1678,7 +1679,10 @@ class SQLCompiler:
         """Execute DO UPDATE SET assignments for an ON CONFLICT clause."""
         from uqa.sql.expr_evaluator import ExprEvaluator
 
-        evaluator = ExprEvaluator(subquery_executor=self._compile_select)
+        evaluator = ExprEvaluator(
+            subquery_executor=self._compile_select,
+            outer_row=getattr(self, "_correlated_outer_row", None),
+        )
 
         old_doc = table.document_store.get(doc_id)
         if old_doc is None:
@@ -1700,7 +1704,12 @@ class SQLCompiler:
                 new_doc.pop(col_name, None)
 
         table.inverted_index.remove_document(doc_id)
+        table.remove_from_unique_indexes(doc_id)
         table.document_store.put(doc_id, new_doc)
+        for col_name_u, uidx in table._unique_indexes.items():
+            val_u = new_doc.get(col_name_u)
+            if val_u is not None:
+                uidx[val_u] = doc_id
         text_fields = {k: v for k, v in new_doc.items() if isinstance(v, str)}
         if text_fields:
             table.inverted_index.add_document(doc_id, text_fields)
@@ -1714,7 +1723,10 @@ class SQLCompiler:
         """Project a document through a RETURNING clause."""
         from uqa.sql.expr_evaluator import ExprEvaluator
 
-        evaluator = ExprEvaluator(subquery_executor=self._compile_select)
+        evaluator = ExprEvaluator(
+            subquery_executor=self._compile_select,
+            outer_row=getattr(self, "_correlated_outer_row", None),
+        )
         result: dict[str, Any] = {}
         for target in returning_list:
             if isinstance(target.val, ColumnRef):
@@ -1789,7 +1801,10 @@ class SQLCompiler:
 
         from uqa.sql.expr_evaluator import ExprEvaluator
 
-        evaluator = ExprEvaluator(subquery_executor=self._compile_select)
+        evaluator = ExprEvaluator(
+            subquery_executor=self._compile_select,
+            outer_row=getattr(self, "_correlated_outer_row", None),
+        )
 
         returning_rows: list[dict[str, Any]] = []
         updated = 0
@@ -1820,8 +1835,17 @@ class SQLCompiler:
             # Remove old inverted index entries
             table.inverted_index.remove_document(doc_id)
 
+            # Update unique indexes: remove old, add new
+            table.remove_from_unique_indexes(doc_id)
+
             # Write updated document
             table.document_store.put(doc_id, new_doc)
+
+            # Update unique indexes with new values
+            for col_name, uidx in table._unique_indexes.items():
+                val = new_doc.get(col_name)
+                if val is not None:
+                    uidx[val] = doc_id
 
             # Re-index text fields
             text_fields = {k: v for k, v in new_doc.items() if isinstance(v, str)}
@@ -1868,7 +1892,10 @@ class SQLCompiler:
                 raise ValueError("UPDATE FROM requires table references")
             from_tables.append((ft, fa or ft.name))
 
-        evaluator = ExprEvaluator(subquery_executor=self._compile_select)
+        evaluator = ExprEvaluator(
+            subquery_executor=self._compile_select,
+            outer_row=getattr(self, "_correlated_outer_row", None),
+        )
 
         # Parse SET clause
         set_targets: list[tuple[str, Any]] = []
@@ -1938,7 +1965,12 @@ class SQLCompiler:
                         new_doc.pop(col_name, None)
 
                 table.inverted_index.remove_document(doc_id)
+                table.remove_from_unique_indexes(doc_id)
                 table.document_store.put(doc_id, new_doc)
+                for col_name_u, uidx in table._unique_indexes.items():
+                    val_u = new_doc.get(col_name_u)
+                    if val_u is not None:
+                        uidx[val_u] = doc_id
                 text_fields = {k: v for k, v in new_doc.items() if isinstance(v, str)}
                 if text_fields:
                     table.inverted_index.add_document(doc_id, text_fields)
@@ -2013,6 +2045,7 @@ class SQLCompiler:
             table.inverted_index.remove_document(doc_id)
             for si in table.spatial_indexes.values():
                 si.delete(doc_id)
+            table.remove_from_unique_indexes(doc_id)
             table.document_store.delete(doc_id)
             deleted += 1
 
@@ -2042,7 +2075,10 @@ class SQLCompiler:
                 raise ValueError("DELETE USING requires table references")
             using_tables.append((ut, ua or ut.name))
 
-        evaluator = ExprEvaluator(subquery_executor=self._compile_select)
+        evaluator = ExprEvaluator(
+            subquery_executor=self._compile_select,
+            outer_row=getattr(self, "_correlated_outer_row", None),
+        )
 
         returning_rows: list[dict[str, Any]] = []
         to_delete: list[int] = []
@@ -2094,6 +2130,7 @@ class SQLCompiler:
             table.inverted_index.remove_document(doc_id)
             for si in table.spatial_indexes.values():
                 si.delete(doc_id)
+            table.remove_from_unique_indexes(doc_id)
             table.document_store.delete(doc_id)
             deleted += 1
 
@@ -3131,18 +3168,37 @@ class SQLCompiler:
     # DQL: SELECT
     # ==================================================================
 
-    def _compile_select(self, stmt: SelectStmt, *, explain: bool = False) -> SQLResult:
+    def _compile_select(
+        self,
+        stmt: SelectStmt,
+        *,
+        explain: bool = False,
+        outer_row: dict[str, Any] | None = None,
+    ) -> SQLResult:
         # 0. Materialize CTEs as temporary in-memory tables
         cte_names: list[str] = []
         if stmt.withClause is not None:
             cte_names = self._materialize_ctes(
                 stmt.withClause.ctes,
                 recursive=bool(stmt.withClause.recursive),
+                main_query=stmt,
             )
+
+        # Save and set correlated outer row context for this subquery.
+        prev_outer_row = getattr(self, "_correlated_outer_row", None)
+        self._correlated_outer_row = outer_row
+
+        prev_inlined = dict(self._inlined_ctes)
 
         try:
             return self._compile_select_body(stmt, explain=explain)
         finally:
+            self._correlated_outer_row = prev_outer_row
+            # Clean up inlined CTEs that were consumed during resolution
+            for name in cte_names:
+                self._inlined_ctes.pop(name, None)
+            # Restore previous inlined CTEs state
+            self._inlined_ctes = prev_inlined
             # Clean up CTE temporary tables
             for name in cte_names:
                 self._engine._tables.pop(name, None)
@@ -3489,13 +3545,20 @@ class SQLCompiler:
         if stmt.op is not None and stmt.op != SetOperation.SETOP_NONE:
             return self._compile_set_operation(stmt)
 
-        # 1. Resolve FROM clause -> (table | None, source_op | None)
-        table, source_op = self._resolve_from(stmt.fromClause)
+        # 1. Predicate pushdown into views/derived tables.
+        #    If FROM is a single view or derived table, push safe WHERE
+        #    predicates into the subquery before materialization.
+        stmt = self._try_predicate_pushdown(stmt)
 
-        # 2. Build execution context from resolved table
+        # 2. Resolve FROM clause -> (table | None, source_op | None)
+        table, source_op = self._resolve_from(
+            stmt.fromClause, where_clause=stmt.whereClause
+        )
+
+        # 3. Build execution context from resolved table
         ctx = self._context_for_table(table)
 
-        # 3. Check if FROM is a graph source (traverse/rpq) or join.
+        # 4. Check if FROM is a graph source (traverse/rpq) or join.
         #    Graph/join-sourced queries defer relational WHERE to the
         #    physical layer because their entries are not single-table
         #    doc_ids from the document store.
@@ -3504,11 +3567,11 @@ class SQLCompiler:
         foreign_source = isinstance(source_op, _ForeignTableScanOperator)
         deferred_where = None
 
-        # 3.5. Constant folding: evaluate compile-time constant expressions
+        # 5. Constant folding: evaluate compile-time constant expressions
         if stmt.whereClause is not None:
             stmt = self._fold_stmt_where(stmt)
 
-        # 4. WHERE clause
+        # 6. WHERE clause
         if stmt.whereClause is not None:
             if foreign_source:
                 # Extract pushable predicates for the FDW handler and
@@ -3537,7 +3600,7 @@ class SQLCompiler:
                     where_op = self._chain_on_source(where_op, source_op)
                 source_op = where_op
 
-        # 5. Optimize and execute operator tree
+        # 7. Optimize and execute operator tree
         if source_op is not None:
             source_op = self._optimize(source_op, ctx, table)
             if explain:
@@ -3546,9 +3609,25 @@ class SQLCompiler:
         else:
             if explain:
                 return SQLResult(["plan"], [{"plan": "Seq Scan (full table)"}])
-            pl = self._scan_all(ctx)
+            # LIMIT pushdown: when there's no WHERE/ORDER BY/GROUP BY/
+            # HAVING/DISTINCT/window, we can limit the scan early.
+            scan_limit = None
+            if (
+                stmt.whereClause is None
+                and stmt.sortClause is None
+                and stmt.groupClause is None
+                and not stmt.distinctClause
+                and stmt.havingClause is None
+                and stmt.windowClause is None
+                and stmt.limitCount is not None
+            ):
+                scan_offset = 0
+                if stmt.limitOffset is not None:
+                    scan_offset = self._extract_int_value(stmt.limitOffset)
+                scan_limit = self._extract_int_value(stmt.limitCount) + scan_offset
+            pl = self._scan_all(ctx, limit=scan_limit)
 
-        # 6-12. Execute relational operations via physical operators
+        # 8. Execute relational operations via physical operators
         return self._execute_relational(
             stmt,
             pl,
@@ -3741,11 +3820,36 @@ class SQLCompiler:
 
     _MAX_RECURSIVE_DEPTH = 1000
 
-    def _materialize_ctes(self, ctes: tuple, *, recursive: bool = False) -> list[str]:
+    def _count_cte_refs(self, name: str, node: Any) -> int:
+        """Count references to a CTE name in an AST tree."""
+        if isinstance(node, RangeVar):
+            return 1 if node.relname == name else 0
+        count = 0
+        if isinstance(node, (tuple, list)):
+            for item in node:
+                count += self._count_cte_refs(name, item)
+            return count
+        if hasattr(node, "__slots__") and isinstance(node.__slots__, dict):
+            for slot in node.__slots__:
+                val = getattr(node, slot, None)
+                if val is not None:
+                    count += self._count_cte_refs(name, val)
+        return count
+
+    def _materialize_ctes(
+        self,
+        ctes: tuple,
+        *,
+        recursive: bool = False,
+        main_query: SelectStmt | None = None,
+    ) -> list[str]:
         """Execute CTE queries and register results as temporary tables.
 
         When *recursive* is True (WITH RECURSIVE), CTEs whose query
         is a UNION/UNION ALL are executed via iterative fixpoint.
+
+        Single-reference non-recursive CTEs are inlined as derived
+        tables when the FROM clause is resolved, avoiding materialization.
 
         Returns the list of CTE names for cleanup after the main query.
         """
@@ -3763,9 +3867,17 @@ class SQLCompiler:
             if is_recursive:
                 self._materialize_recursive_cte(cte)
             else:
-                result = self._compile_select(query)
-                table = self._result_to_table(name, result)
-                self._engine._tables[name] = table
+                # Inline single-reference non-recursive CTEs as derived
+                # tables instead of materializing them.
+                if (
+                    main_query is not None
+                    and self._count_cte_refs(name, main_query) == 1
+                ):
+                    self._inlined_ctes[name] = query
+                else:
+                    result = self._compile_select(query)
+                    table = self._result_to_table(name, result)
+                    self._engine._tables[name] = table
             cte_names.append(name)
 
         return cte_names
@@ -3866,13 +3978,23 @@ class SQLCompiler:
 
     # -- View expansion ------------------------------------------------
 
-    def _expand_view(self, view_name: str, query: SelectStmt) -> tuple[Table, None]:
+    def _expand_view(
+        self,
+        view_name: str,
+        query: SelectStmt,
+        pushed_where: Any = None,
+    ) -> tuple[Table, None]:
         """Materialize a view's stored query into a temporary table.
 
         The temporary table is registered in ``_engine._tables`` and
         tracked in ``_expanded_views`` for cleanup after the enclosing
         query completes.
+
+        When *pushed_where* is provided, it is AND-merged into the
+        subquery's WHERE clause before compilation (predicate pushdown).
         """
+        if pushed_where is not None:
+            query = self._inject_where(query, pushed_where)
         result = self._compile_select(query)
         table = self._result_to_table(view_name, result)
         self._engine._tables[view_name] = table
@@ -3881,10 +4003,15 @@ class SQLCompiler:
 
     # -- Derived table (subquery in FROM) ------------------------------
 
-    def _materialize_derived_table(self, node: RangeSubselect) -> tuple[Table, None]:
+    def _materialize_derived_table(
+        self, node: RangeSubselect, pushed_where: Any = None
+    ) -> tuple[Table, None]:
         """Materialize a subquery in FROM as a temporary table."""
         alias = node.alias.aliasname if node.alias else "_derived"
-        result = self._compile_select(node.subquery)
+        subquery = node.subquery
+        if pushed_where is not None:
+            subquery = self._inject_where(subquery, pushed_where)
+        result = self._compile_select(subquery)
         table = self._result_to_table(alias, result)
         # Save the original table entry if the alias shadows a real table,
         # so it can be restored during cleanup.
@@ -3893,6 +4020,196 @@ class SQLCompiler:
         self._engine._tables[alias] = table
         self._expanded_views.append(alias)
         return table, None
+
+    def _try_predicate_pushdown(self, stmt: SelectStmt) -> SelectStmt:
+        """Push safe WHERE predicates into a view or derived table subquery.
+
+        Only applies when FROM is a single view or derived table and
+        WHERE contains predicates that reference only the subquery's
+        output columns (no aggregates, window functions, or subqueries).
+
+        Returns the (possibly modified) statement with pushed predicates
+        removed from the outer WHERE.
+        """
+        if stmt.whereClause is None or stmt.fromClause is None:
+            return stmt
+        if len(stmt.fromClause) != 1:
+            return stmt
+
+        from_node = stmt.fromClause[0]
+
+        # Identify the subquery and its output columns.
+        subquery: SelectStmt | None = None
+        if isinstance(from_node, RangeVar):
+            table_name = from_node.relname
+            # Check if it's a view
+            view_query = self._engine._views.get(table_name)
+            if view_query is not None:
+                subquery = view_query
+            # Check if it's an inlined CTE
+            elif table_name in self._inlined_ctes:
+                subquery = self._inlined_ctes[table_name]
+        elif isinstance(from_node, RangeSubselect):
+            subquery = from_node.subquery
+
+        if subquery is None:
+            return stmt
+
+        # Do not push predicates into subqueries that have aggregates,
+        # window functions, GROUP BY, DISTINCT, or LIMIT -- pushing
+        # changes the semantics of those operations.
+        if subquery.groupClause is not None:
+            return stmt
+        if subquery.distinctClause:
+            return stmt
+        if subquery.limitCount is not None:
+            return stmt
+        if subquery.targetList and any(
+            isinstance(t.val, FuncCall) and t.val.over is not None
+            for t in subquery.targetList
+        ):
+            return stmt
+        if subquery.targetList and self._has_aggregates(subquery.targetList):
+            return stmt
+
+        # Collect output column names from the subquery's target list.
+        subquery_columns: set[str] = set()
+        if subquery.targetList:
+            for target in subquery.targetList:
+                if target.name:
+                    subquery_columns.add(target.name)
+                elif isinstance(target.val, ColumnRef):
+                    subquery_columns.add(
+                        target.val.fields[-1].sval
+                        if hasattr(target.val.fields[-1], "sval")
+                        else str(target.val.fields[-1])
+                    )
+        if not subquery_columns:
+            return stmt
+
+        # Split WHERE into pushable and remaining predicates.
+        pushable, remaining = self._split_pushable(stmt.whereClause, subquery_columns)
+        if not pushable:
+            return stmt
+
+        # Inject pushable predicates into the subquery.
+        pushed_pred = (
+            pushable[0]
+            if len(pushable) == 1
+            else BoolExpr(boolop=BoolExprType.AND_EXPR, args=tuple(pushable))
+        )
+
+        if isinstance(from_node, RangeVar):
+            view_query = self._engine._views.get(from_node.relname)
+            if view_query is not None:
+                self._engine._views[from_node.relname] = self._inject_where(
+                    view_query, pushed_pred
+                )
+            elif from_node.relname in self._inlined_ctes:
+                self._inlined_ctes[from_node.relname] = self._inject_where(
+                    self._inlined_ctes[from_node.relname], pushed_pred
+                )
+        elif isinstance(from_node, RangeSubselect):
+            new_subquery = self._inject_where(subquery, pushed_pred)
+            # Reconstruct the RangeSubselect with the modified subquery
+            kwargs = {}
+            for slot in from_node.__slots__:
+                kwargs[slot] = getattr(from_node, slot, None)
+            kwargs["subquery"] = new_subquery
+            new_from_node = RangeSubselect(**kwargs)
+            # Reconstruct stmt with modified FROM and reduced WHERE
+            stmt_kwargs = {}
+            for slot in stmt.__slots__:
+                stmt_kwargs[slot] = getattr(stmt, slot, None)
+            stmt_kwargs["fromClause"] = (new_from_node,)
+            stmt_kwargs["whereClause"] = remaining
+            return SelectStmt(**stmt_kwargs)
+
+        # Reconstruct stmt with reduced WHERE
+        stmt_kwargs = {}
+        for slot in stmt.__slots__:
+            stmt_kwargs[slot] = getattr(stmt, slot, None)
+        stmt_kwargs["whereClause"] = remaining
+        return SelectStmt(**stmt_kwargs)
+
+    def _split_pushable(
+        self, where_node: Any, subquery_columns: set[str]
+    ) -> tuple[list[Any], Any]:
+        """Split a WHERE clause into pushable and remaining predicates.
+
+        Returns (pushable_list, remaining_node) where remaining_node
+        is None if all predicates were pushed.
+        """
+        if (
+            isinstance(where_node, BoolExpr)
+            and where_node.boolop == BoolExprType.AND_EXPR
+        ):
+            pushable: list[Any] = []
+            remaining: list[Any] = []
+            for arg in where_node.args:
+                if self._is_pushable_predicate(arg, subquery_columns):
+                    pushable.append(arg)
+                else:
+                    remaining.append(arg)
+            remaining_node: Any = None
+            if len(remaining) == 1:
+                remaining_node = remaining[0]
+            elif len(remaining) > 1:
+                remaining_node = BoolExpr(
+                    boolop=BoolExprType.AND_EXPR, args=tuple(remaining)
+                )
+            return pushable, remaining_node
+
+        # Single predicate (not AND)
+        if self._is_pushable_predicate(where_node, subquery_columns):
+            return [where_node], None
+        return [], where_node
+
+    @staticmethod
+    def _inject_where(query: SelectStmt, predicate: Any) -> SelectStmt:
+        """Return a copy of *query* with *predicate* AND-merged into WHERE."""
+        if query.whereClause is None:
+            new_where = predicate
+        else:
+            new_where = BoolExpr(
+                boolop=BoolExprType.AND_EXPR,
+                args=(query.whereClause, predicate),
+            )
+        kwargs = {}
+        for slot in query.__slots__:
+            kwargs[slot] = getattr(query, slot, None)
+        kwargs["whereClause"] = new_where
+        return SelectStmt(**kwargs)
+
+    @staticmethod
+    def _is_pushable_predicate(node: Any, subquery_columns: set[str]) -> bool:
+        """Check if a WHERE predicate is safe to push into a subquery.
+
+        A predicate is pushable if it only references columns that exist
+        in the subquery output and contains no aggregates, window functions,
+        or subqueries.
+        """
+        if isinstance(node, ColumnRef):
+            col = node.fields[-1].sval if hasattr(node.fields[-1], "sval") else None
+            return col is not None and col in subquery_columns
+        if isinstance(node, A_Const):
+            return True
+        if isinstance(node, (FuncCall, SubLink)):
+            return False
+        if isinstance(node, A_Expr):
+            left_ok = SQLCompiler._is_pushable_predicate(node.lexpr, subquery_columns)
+            right_ok = node.rexpr is None or SQLCompiler._is_pushable_predicate(
+                node.rexpr, subquery_columns
+            )
+            return left_ok and right_ok
+        if isinstance(node, BoolExpr):
+            return all(
+                SQLCompiler._is_pushable_predicate(arg, subquery_columns)
+                for arg in node.args
+            )
+        if isinstance(node, NullTest):
+            return SQLCompiler._is_pushable_predicate(node.arg, subquery_columns)
+        return False
 
     def _result_to_table(self, name: str, result: SQLResult) -> Table:
         """Convert a SQLResult into a temporary in-memory Table.
@@ -4172,14 +4489,19 @@ class SQLCompiler:
 
     # -- FROM clause ---------------------------------------------------
 
-    def _resolve_from(self, from_clause: tuple | None) -> tuple[Table | None, Any]:
+    def _resolve_from(
+        self,
+        from_clause: tuple | None,
+        where_clause: Any = None,
+    ) -> tuple[Table | None, Any]:
         """Resolve FROM clause to (table, source_operator).
 
         Returns (table, None) for ``FROM table_name`` and
         (None, operator) for ``FROM func(...)``.
 
         Multiple FROM sources (``FROM a, b, c``) are treated as
-        implicit CROSS JOINs built into a left-deep join tree.
+        implicit CROSS JOINs.  When equijoin predicates are available
+        in *where_clause*, the join order is optimized using DPccp.
         """
         if from_clause is None:
             return None, None
@@ -4188,7 +4510,17 @@ class SQLCompiler:
             table, op, _alias = self._resolve_from_single(from_clause[0])
             return table, op
 
-        # Multiple FROM sources -> implicit CROSS JOIN chain
+        # Multiple FROM sources: try DPccp join reordering when there
+        # are 3+ base relations and equijoin predicates in WHERE.
+        has_lateral = any(
+            isinstance(node, RangeSubselect) and node.lateral for node in from_clause
+        )
+        if not has_lateral and len(from_clause) >= 3 and where_clause is not None:
+            result = self._try_implicit_join_reorder(from_clause, where_clause)
+            if result is not None:
+                return result
+
+        # Fallback: left-deep cross join chain
         from uqa.joins.cross import CrossJoinOperator
 
         table, op, alias = self._resolve_from_single(from_clause[0])
@@ -4212,6 +4544,115 @@ class SQLCompiler:
 
         return table, op
 
+    def _try_implicit_join_reorder(
+        self,
+        from_clause: tuple,
+        where_clause: Any,
+    ) -> tuple[Table | None, Any] | None:
+        """Attempt DPccp join reordering for implicit cross joins.
+
+        Extracts equijoin predicates from the WHERE clause and uses
+        DPccp to find an optimal join order.  Returns None if there
+        are no equijoin predicates (pure cross join).
+        """
+        # Resolve each FROM item to get relations metadata.
+        relations: list[dict[str, Any]] = []
+        for node in from_clause:
+            table, op, alias = self._resolve_from_single(node)
+            if op is None and table is not None:
+                op = _TableScanOperator(table, alias=alias)
+            elif op is None:
+                op = _ScanOperator()
+
+            cardinality = 1000.0
+            column_stats: dict[str, Any] = {}
+            if table is not None:
+                cardinality = float(len(table.document_store.doc_ids)) or 1.0
+                column_stats = dict(table._stats)
+
+            relations.append(
+                {
+                    "alias": alias,
+                    "operator": op,
+                    "table": table,
+                    "cardinality": cardinality,
+                    "column_stats": column_stats,
+                }
+            )
+
+        # Extract equijoin predicates from the WHERE clause.
+        alias_set = {r["alias"] for r in relations}
+        predicates = self._extract_implicit_equijoin_predicates(
+            where_clause, alias_set, relations
+        )
+        if not predicates:
+            return None
+
+        from uqa.planner.join_order import JoinOrderOptimizer
+
+        optimizer = JoinOrderOptimizer()
+        operator, table = optimizer.optimize(relations, predicates)
+        return table, operator
+
+    def _extract_implicit_equijoin_predicates(
+        self,
+        where_node: Any,
+        alias_set: set[str],
+        relations: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Extract equijoin predicates from WHERE for implicit cross joins."""
+        predicates: list[dict[str, Any]] = []
+        conjuncts = (
+            list(where_node.args)
+            if isinstance(where_node, BoolExpr)
+            and where_node.boolop == BoolExprType.AND_EXPR
+            else [where_node]
+        )
+
+        for node in conjuncts:
+            if not isinstance(node, A_Expr):
+                continue
+            if A_Expr_Kind(node.kind) != A_Expr_Kind.AEXPR_OP:
+                continue
+            op_name = node.name[0].sval if node.name else None
+            if op_name != "=":
+                continue
+            if not isinstance(node.lexpr, ColumnRef) or not isinstance(
+                node.rexpr, ColumnRef
+            ):
+                continue
+
+            left_fields = node.lexpr.fields
+            right_fields = node.rexpr.fields
+
+            # Both sides must be qualified (table.column)
+            if (
+                len(left_fields) < 2
+                or len(right_fields) < 2
+                or not hasattr(left_fields[0], "sval")
+                or not hasattr(right_fields[0], "sval")
+            ):
+                continue
+
+            left_alias = left_fields[0].sval
+            left_col = left_fields[-1].sval
+            right_alias = right_fields[0].sval
+            right_col = right_fields[-1].sval
+
+            if left_alias not in alias_set or right_alias not in alias_set:
+                continue
+
+            predicates.append(
+                {
+                    "left_alias": left_alias,
+                    "right_alias": right_alias,
+                    "left_field": left_col,
+                    "right_field": right_col,
+                }
+            )
+
+        return predicates
+
     def _resolve_from_single(self, node: Any) -> tuple[Table | None, Any, str | None]:
         """Resolve a single FROM clause item.
 
@@ -4231,6 +4672,14 @@ class SQLCompiler:
             table_name = node.relname
             table = self._engine._tables.get(table_name)
             if table is None:
+                # Inline CTE: compile on demand instead of materializing
+                inlined_query = self._inlined_ctes.pop(table_name, None)
+                if inlined_query is not None:
+                    result = self._compile_select(inlined_query)
+                    table = self._result_to_table(table_name, result)
+                    self._engine._tables[table_name] = table
+                    self._expanded_views.append(table_name)
+                    return table, None, alias
                 # Check foreign tables
                 ft = self._engine._foreign_tables.get(table_name)
                 if ft is not None:
@@ -5292,7 +5741,9 @@ class SQLCompiler:
                     _op_to_predicate(op_name, value),
                 )
             # Expression-based comparison (JSON ops, complex expressions, etc.)
-            return _ExprFilterOperator(node, subquery_executor=self._compile_select)
+            return _ExprFilterOperator(
+                node, subquery_executor=self._compile_select, compiler=self
+            )
 
         if kind == A_Expr_Kind.AEXPR_IN:
             field_name = self._extract_column_name(node.lexpr)
@@ -5357,7 +5808,9 @@ class SQLCompiler:
         """
         # Detect correlated subqueries -- route to per-row evaluation
         if self._is_correlated(node.subselect):
-            return _ExprFilterOperator(node, subquery_executor=self._compile_select)
+            return _ExprFilterOperator(
+                node, subquery_executor=self._compile_select, compiler=self
+            )
 
         from uqa.operators.primitive import FilterOperator
 
@@ -6115,12 +6568,14 @@ class SQLCompiler:
 
     # -- Result conversion ---------------------------------------------
 
-    def _scan_all(self, ctx: ExecutionContext) -> PostingList:
+    def _scan_all(self, ctx: ExecutionContext, limit: int | None = None) -> PostingList:
         if ctx.document_store is None:
             # No FROM clause (e.g. SELECT 1 AS val): produce a single
             # dummy row so that expression projection yields one result.
             return PostingList([PostingEntry(0, Payload(score=0.0))])
         all_ids = sorted(ctx.document_store.doc_ids)
+        if limit is not None and limit < len(all_ids):
+            all_ids = all_ids[:limit]
         return PostingList([PostingEntry(d, Payload(score=0.0)) for d in all_ids])
 
     # -- Helpers -------------------------------------------------------
@@ -6872,29 +7327,15 @@ class _LateralJoinOperator:
     def _execute_lateral_subquery(self, left_fields: dict[str, Any]) -> SQLResult:
         """Execute the lateral subquery with left-row columns injected.
 
-        Rewrites the subquery AST by replacing outer ColumnRef nodes
-        (references to columns from the left-side tables) with
-        A_Const nodes containing the actual values from the current
-        left row.  This is the same approach used for correlated
-        subqueries.
+        Passes the left-row values as outer_row context to the subquery
+        compiler, which threads them through to ExprEvaluator for
+        correlated reference resolution -- no AST cloning needed.
         """
-        import copy
+        # Build outer_row with both qualified and unqualified keys
+        # so correlated ColumnRefs resolve correctly.
+        outer_row: dict[str, Any] = dict(left_fields)
 
-        from uqa.sql.expr_evaluator import ExprEvaluator
-
-        evaluator = ExprEvaluator()
-
-        # Build outer_row dict for substitution (unqualified keys)
-        outer_row: dict[str, Any] = {}
-        for k, v in left_fields.items():
-            if "." not in k:
-                outer_row[k] = v
-
-        # Deep-copy the subquery AST and substitute outer references
-        subquery_copy = copy.deepcopy(self._subquery)
-        rewritten = evaluator._substitute_correlated_refs(subquery_copy, outer_row)
-
-        return self._compiler._compile_select(rewritten)
+        return self._compiler._compile_select(self._subquery, outer_row=outer_row)
 
     def cost_estimate(self, stats: Any) -> float:
         return 1000.0
@@ -6946,14 +7387,28 @@ class _ExprFilterOperator:
     ``FilterOperator(field, predicate)`` -- e.g. ``WHERE price * 2 > 100``.
     """
 
-    def __init__(self, expr_node: Any, subquery_executor: Any = None) -> None:
+    def __init__(
+        self,
+        expr_node: Any,
+        subquery_executor: Any = None,
+        compiler: Any = None,
+    ) -> None:
         self.expr_node = expr_node
         self._subquery_executor = subquery_executor
+        self._compiler = compiler
 
     def execute(self, context: Any) -> PostingList:
         from uqa.sql.expr_evaluator import ExprEvaluator
 
-        evaluator = ExprEvaluator(subquery_executor=self._subquery_executor)
+        outer_row = (
+            getattr(self._compiler, "_correlated_outer_row", None)
+            if self._compiler is not None
+            else None
+        )
+        evaluator = ExprEvaluator(
+            subquery_executor=self._subquery_executor,
+            outer_row=outer_row,
+        )
         doc_store = context.document_store
         if doc_store is None:
             return PostingList()

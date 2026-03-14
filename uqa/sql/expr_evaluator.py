@@ -83,34 +83,38 @@ class ExprEvaluator:
     ``IN`` subqueries (``ANY_SUBLINK``).
     """
 
+    _DISPATCH_NAMES: dict[type, str] = {
+        ColumnRef: "_eval_column_ref",
+        A_Const: "_eval_const",
+        A_Expr: "_eval_a_expr",
+        FuncCall: "_eval_func_call",
+        NullTest: "_eval_null_test",
+        BoolExpr: "_eval_bool_expr",
+        CaseExpr: "_eval_case",
+        TypeCast: "_eval_type_cast",
+        CoalesceExpr: "_eval_coalesce",
+        SubLink: "_eval_sublink",
+        A_ArrayExpr: "_eval_a_array_expr",
+        MinMaxExpr: "_eval_min_max",
+        SQLValueFunction: "_eval_sql_value_function",
+    }
+
     def __init__(
         self,
         subquery_executor: Any = None,
         sequences: dict | None = None,
+        outer_row: dict[str, Any] | None = None,
     ) -> None:
         self._subquery_executor = subquery_executor
         self._sequences = sequences
-        self._dispatch: dict[type, Any] = {
-            ColumnRef: self._eval_column_ref,
-            A_Const: self._eval_const,
-            A_Expr: self._eval_a_expr,
-            FuncCall: self._eval_func_call,
-            NullTest: self._eval_null_test,
-            BoolExpr: self._eval_bool_expr,
-            CaseExpr: self._eval_case,
-            TypeCast: self._eval_type_cast,
-            CoalesceExpr: self._eval_coalesce,
-            SubLink: self._eval_sublink,
-            A_ArrayExpr: self._eval_a_array_expr,
-            MinMaxExpr: self._eval_min_max,
-            SQLValueFunction: self._eval_sql_value_function,
-        }
+        self._subquery_cache: dict[int, Any] = {}
+        self._outer_row = outer_row
 
     def evaluate(self, node: Any, row: dict[str, Any]) -> Any:
         """Evaluate *node* against *row* and return the result."""
-        handler = self._dispatch.get(type(node))
-        if handler is not None:
-            return handler(node, row)
+        method_name = self._DISPATCH_NAMES.get(type(node))
+        if method_name is not None:
+            return getattr(self, method_name)(node, row)
 
         # NamedArgExpr: func(name => value) -- evaluate the inner arg
         if type(node).__name__ == "NamedArgExpr":
@@ -126,14 +130,16 @@ class ExprEvaluator:
 
     # -- Leaf nodes ----------------------------------------------------
 
-    @staticmethod
-    def _eval_column_ref(node: ColumnRef, row: dict[str, Any]) -> Any:
+    def _eval_column_ref(self, node: ColumnRef, row: dict[str, Any]) -> Any:
         fields = node.fields
         # Handle qualified references like excluded.col or table.col
         if len(fields) >= 2 and hasattr(fields[0], "sval"):
             qualified = f"{fields[0].sval}.{fields[-1].sval}"
             if qualified in row:
                 return row[qualified]
+            # Correlated reference: resolve from outer row
+            if self._outer_row is not None and qualified in self._outer_row:
+                return self._outer_row[qualified]
         col_name = fields[-1].sval
         return row.get(col_name)
 
@@ -314,50 +320,8 @@ class ExprEvaluator:
 
     # -- SubLink (subquery) --------------------------------------------
 
-    def _eval_sublink(self, node: SubLink, row: dict[str, Any]) -> Any:
-        if self._subquery_executor is None:
-            raise ValueError("Subquery in expression requires a subquery executor")
-
-        # Substitute correlated column references from the outer row
-        subselect = self._substitute_correlated_refs(node.subselect, row)
-
-        link_type = SubLinkType(node.subLinkType)
-
-        if link_type == SubLinkType.EXPR_SUBLINK:
-            # Scalar subquery: (SELECT COUNT(*) FROM ...)
-            result = self._subquery_executor(subselect)
-            if not result.rows:
-                return None
-            first_col = result.columns[0]
-            return result.rows[0][first_col]
-
-        if link_type == SubLinkType.ANY_SUBLINK:
-            # IN subquery: col IN (SELECT ...)
-            left = self.evaluate(node.testexpr, row)
-            if left is None:
-                return False
-            result = self._subquery_executor(subselect)
-            if not result.columns:
-                return False
-            sub_col = result.columns[0]
-            return left in {r[sub_col] for r in result.rows}
-
-        if link_type == SubLinkType.EXISTS_SUBLINK:
-            # EXISTS (SELECT ...)
-            result = self._subquery_executor(subselect)
-            return len(result.rows) > 0
-
-        raise ValueError(f"Unsupported subquery type: {link_type.name}")
-
-    def _substitute_correlated_refs(self, node: Any, outer_row: dict[str, Any]) -> Any:
-        """Replace correlated ColumnRef nodes with constants from the outer row.
-
-        A correlated reference is a multi-part ColumnRef (e.g., ``e.dept``)
-        whose qualifier (first part) does not match any table in the inner
-        query's FROM clause.  Such references are replaced with ``A_Const``
-        values from the outer row.
-        """
-        # Collect inner table names/aliases from the FROM clause
+    def _is_correlated(self, node: Any) -> bool:
+        """Check if a subquery contains correlated references."""
         inner_tables: set[str] = set()
         if isinstance(node, SelectStmt) and node.fromClause:
             for from_item in node.fromClause:
@@ -365,56 +329,155 @@ class ExprEvaluator:
                     if from_item.alias:
                         inner_tables.add(from_item.alias.aliasname)
                     inner_tables.add(from_item.relname)
+        return self._has_correlated_ref(node, inner_tables)
 
-        return self._subst_correlated(node, outer_row, inner_tables)
-
-    def _subst_correlated(
-        self,
-        node: Any,
-        outer_row: dict[str, Any],
-        inner_tables: set[str],
-    ) -> Any:
-        """Recursively walk AST, replacing correlated ColumnRefs."""
+    def _has_correlated_ref(self, node: Any, inner_tables: set[str]) -> bool:
+        """Recursively check if an AST node contains correlated ColumnRefs."""
         if isinstance(node, ColumnRef):
             if len(node.fields) >= 2:
                 qualifier = node.fields[0].sval
-                col_name = node.fields[-1].sval
                 if qualifier not in inner_tables:
-                    # Correlated reference -- substitute with outer value
-                    val = outer_row.get(col_name)
-                    return self._value_to_const(val)
-            return node
-
-        if isinstance(node, tuple):
-            return tuple(
-                self._subst_correlated(item, outer_row, inner_tables) for item in node
-            )
-        if isinstance(node, list):
-            return [
-                self._subst_correlated(item, outer_row, inner_tables) for item in node
-            ]
-
+                    return True
+            return False
+        if isinstance(node, (tuple, list)):
+            return any(self._has_correlated_ref(item, inner_tables) for item in node)
         if hasattr(node, "__slots__") and isinstance(node.__slots__, dict):
-            kwargs = {}
             for slot in node.__slots__:
                 val = getattr(node, slot, None)
-                if val is None:
-                    kwargs[slot] = None
-                elif isinstance(val, (tuple, list)):
-                    kwargs[slot] = type(val)(
-                        self._subst_correlated(item, outer_row, inner_tables)
-                        for item in val
-                    )
-                elif hasattr(val, "__slots__"):
-                    kwargs[slot] = self._subst_correlated(val, outer_row, inner_tables)
-                else:
-                    kwargs[slot] = val
-            try:
-                return node.__class__(**kwargs)
-            except TypeError:
-                return node
+                if val is not None and self._has_correlated_ref(val, inner_tables):
+                    return True
+        return False
 
-        return node
+    def _eval_sublink(self, node: SubLink, row: dict[str, Any]) -> Any:
+        if self._subquery_executor is None:
+            raise ValueError("Subquery in expression requires a subquery executor")
+
+        # Check if the subquery is uncorrelated and can be cached.
+        correlated = self._is_correlated(node.subselect)
+        cache_key = id(node)
+
+        if correlated:
+            # Build qualified outer row context for correlated references.
+            # The inner query's ExprEvaluator resolves qualified ColumnRefs
+            # (e.g., "e1.dept") against this context, eliminating the need
+            # to clone the entire AST per outer row.
+            outer_context = self._build_correlated_context(node.subselect, row)
+            subselect = node.subselect
+            result = self._subquery_executor(subselect, outer_row=outer_context)
+        else:
+            subselect = node.subselect
+
+        link_type = SubLinkType(node.subLinkType)
+
+        if link_type == SubLinkType.EXPR_SUBLINK:
+            # Scalar subquery: (SELECT COUNT(*) FROM ...)
+            if not correlated:
+                cached = self._subquery_cache.get(cache_key)
+                if cached is not None:
+                    return cached
+                result = self._subquery_executor(subselect)
+            if not result.rows:
+                value = None
+            else:
+                first_col = result.columns[0]
+                value = result.rows[0][first_col]
+            if not correlated:
+                self._subquery_cache[cache_key] = value
+            return value
+
+        if link_type == SubLinkType.ANY_SUBLINK:
+            # IN subquery: col IN (SELECT ...)
+            left = self.evaluate(node.testexpr, row)
+            if left is None:
+                return False
+            # For uncorrelated ANY, cache the value set.
+            if not correlated:
+                cached_set = self._subquery_cache.get(cache_key)
+                if isinstance(cached_set, set):
+                    return left in cached_set
+                result = self._subquery_executor(subselect)
+            if not result.columns:
+                return False
+            sub_col = result.columns[0]
+            value_set = {r[sub_col] for r in result.rows}
+            if not correlated:
+                self._subquery_cache[cache_key] = value_set
+            return left in value_set
+
+        if link_type == SubLinkType.EXISTS_SUBLINK:
+            # EXISTS (SELECT ...)
+            if not correlated:
+                cached = self._subquery_cache.get(cache_key)
+                if cached is not None:
+                    return cached
+                result = self._subquery_executor(subselect)
+            value = len(result.rows) > 0
+            if not correlated:
+                self._subquery_cache[cache_key] = value
+            return value
+
+        raise ValueError(f"Unsupported subquery type: {link_type.name}")
+
+    def _build_correlated_context(
+        self, subselect: Any, outer_row: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Build a qualified-key dict for correlated reference resolution.
+
+        For a subquery ``SELECT ... FROM t2 WHERE t2.x = t1.y``, where
+        ``t1`` is the outer table, produces ``{"t1.y": <value>}`` so the
+        inner evaluator can resolve the correlated ColumnRef without AST
+        cloning.
+        """
+        cache_key = id(subselect)
+        cached = self._subquery_cache.get(("_corr_refs", cache_key))
+        if cached is None:
+            inner_tables: set[str] = set()
+            if isinstance(subselect, SelectStmt) and subselect.fromClause:
+                for from_item in subselect.fromClause:
+                    if isinstance(from_item, RangeVar):
+                        if from_item.alias:
+                            inner_tables.add(from_item.alias.aliasname)
+                        inner_tables.add(from_item.relname)
+            refs = self._collect_correlated_refs(subselect, inner_tables)
+            self._subquery_cache[("_corr_refs", cache_key)] = refs
+            cached = refs
+
+        context: dict[str, Any] = {}
+        for qualifier, col_name in cached:
+            qualified_key = f"{qualifier}.{col_name}"
+            val = outer_row.get(qualified_key)
+            if val is None:
+                val = outer_row.get(col_name)
+            context[qualified_key] = val
+        return context
+
+    def _collect_correlated_refs(
+        self, node: Any, inner_tables: set[str]
+    ) -> list[tuple[str, str]]:
+        """Collect all (qualifier, col_name) pairs for correlated ColumnRefs."""
+        refs: list[tuple[str, str]] = []
+        self._walk_for_correlated(node, inner_tables, refs)
+        return refs
+
+    def _walk_for_correlated(
+        self, node: Any, inner_tables: set[str], refs: list[tuple[str, str]]
+    ) -> None:
+        if isinstance(node, ColumnRef):
+            if len(node.fields) >= 2 and hasattr(node.fields[0], "sval"):
+                qualifier = node.fields[0].sval
+                if qualifier not in inner_tables:
+                    col_name = node.fields[-1].sval
+                    refs.append((qualifier, col_name))
+            return
+        if isinstance(node, (tuple, list)):
+            for item in node:
+                self._walk_for_correlated(item, inner_tables, refs)
+            return
+        if hasattr(node, "__slots__") and isinstance(node.__slots__, dict):
+            for slot in node.__slots__:
+                val = getattr(node, slot, None)
+                if val is not None:
+                    self._walk_for_correlated(val, inner_tables, refs)
 
     @staticmethod
     def _value_to_const(val: Any) -> A_Const:
@@ -444,7 +507,6 @@ class ExprEvaluator:
     def _eval_sql_value_function(
         node: SQLValueFunction, row: dict[str, Any] | None = None
     ) -> Any:
-
         op = SQLValueFunctionOp(node.op)
         now = datetime.now(UTC)
         if op == SQLValueFunctionOp.SVFOP_CURRENT_DATE:
@@ -871,7 +933,6 @@ _CAST_MAP: dict[str, type] = {
 
 
 def _cast_value(value: Any, type_name: str) -> Any:
-
     if type_name in ("json", "jsonb"):
         if isinstance(value, (dict, list)):
             return value
