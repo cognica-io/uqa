@@ -227,8 +227,8 @@ uqa/
   sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
   api/            Fluent QueryBuilder
   tests/          1967 tests across 49 test files
-benchmarks/       192 pytest-benchmark tests across 8 files (posting list, storage, compiler, execution,
-                  planner, scoring, graph, end-to-end SQL)
+benchmarks/       192 pytest-benchmark tests across 8 files (posting list, storage, compiler,
+                  execution, planner, scoring, graph, end-to-end SQL)
 ```
 
 ## Key Features
@@ -349,6 +349,9 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 - B-tree index scan substitution (replace full scans when profitable)
 - FDW predicate pushdown (comparison, IN, LIKE, ILIKE, BETWEEN pushed to DuckDB/Arrow Flight SQL for Hive partition pruning)
 - Cross-paradigm cardinality estimation for text, vector, graph, and fusion operators
+- CTE inlining for single-reference non-recursive CTEs
+- Predicate pushdown into views and derived tables
+- Implicit cross join reordering via DPccp when equijoin predicates exist in WHERE
 
 ### Disk Spilling
 

@@ -1,5 +1,74 @@
 # History
 
+## 0.15.0 (2026-03-14)
+
+Comprehensive performance optimization across 4 layers (Core Engine, SQL Compiler, Storage, Graph/Search). 43 optimizations implemented spanning correctness fixes, algorithmic improvements, and architectural refactors. All 1967 tests, 19 examples, and 192 benchmarks pass.
+
+### Correctness
+
+- **WAND doc_length bug fix**: `WANDScorer` and `BlockMaxWANDScorer` were passing term frequency as document length to `BM25Scorer.score()`, producing incorrect BM25 length normalization. Both scorers now accept an optional `inverted_index` parameter and look up actual document lengths per field.
+
+### Storage
+
+- **SQLite PRAGMAs**: add `synchronous=NORMAL`, `cache_size=-8000` (8 MB), `temp_store=MEMORY`, `mmap_size=268435456` (256 MB) for faster I/O
+- **Bulk prefetch**: `ScoreOperator` and `FilterOperator` now batch-fetch doc lengths, term frequencies, and field values via new `get_doc_lengths_bulk`, `get_term_freqs_bulk`, and `get_fields_bulk` methods on both in-memory and SQLite-backed stores, eliminating N+1 query patterns
+- **IVF vectorization**: brute-force KNN and threshold search replaced with NumPy matrix multiplication (`data @ q`) and `np.argpartition` for top-k selection; k-means centroid update uses `np.add.at` and `np.bincount`
+- **IVF batch SQL**: centroid persistence and vector reassignment use `executemany`; IVF KNN/threshold scan uses single `WHERE centroid_id IN (...)` query instead of N per-centroid queries
+- **Block-max index**: `save_to_sqlite` uses `executemany` for batch INSERT
+- **SQLite graph store**: `_load_from_sqlite` uses cursor iteration instead of `fetchall()`
+- **Deferred skip pointer rebuild**: `remove_document` adds affected (field, term) pairs to `_dirty_terms` instead of rebuilding skip pointers immediately; flush happens on next query
+- **Selective skip pointer flush**: `get_posting_list` flushes only the specific (field, term) being queried, not all dirty terms
+- **Cross-field UNION ALL**: `get_total_term_freq` and `doc_freq_any_field` in `SQLiteInvertedIndex` use a single `UNION ALL` query instead of N per-field queries
+
+### Core Engine
+
+- **PostingList.entries**: remove defensive copy (`list(self._entries)` to `self._entries`); all callers are read-only
+- **PostingList.doc_ids cache**: lazy-computed `_doc_ids_cache` populated on first access; PostingList is immutable after construction so cache is always valid
+- **InvertedIndex.stats cache**: `_cached_stats` avoids recomputing `IndexStats` on every access; invalidated by `add_document`, `remove_document`, `add_posting`, `set_doc_count`, `add_total_length`, `clear`
+- **Cross-field secondary index**: in-memory `_term_to_keys` dict maps each term to its (field, term) keys, replacing full `_index` scan in `get_posting_list_any_field`, `get_total_term_freq`, and `doc_freq_any_field`
+- **ASCIIFolding fast-path**: `ASCIIFoldingFilter._fold` short-circuits with `token.isascii()` before NFKD normalization
+- **NGram attribute localization**: `NGramFilter.filter` localizes `_min_gram`, `_max_gram`, `_keep_short`, and `result.append` lookups in the inner loop
+
+### SQL Compiler
+
+- **ExprEvaluator class-level dispatch**: `_DISPATCH_NAMES` dict mapping node types to method name strings is defined once at class level; `evaluate()` uses `getattr(self, method_name)` instead of constructing a 13-entry dict of bound methods per instance
+- **Query parse cache**: `_parse_sql_cached` with `@lru_cache(maxsize=256)` avoids re-parsing identical SQL strings
+- **UNIQUE constraint hash index**: `Table._unique_indexes` provides O(1) duplicate detection on INSERT instead of O(N) scan; maintained incrementally across INSERT, UPDATE, DELETE, TRUNCATE
+- **FK validation direct lookup**: `has_value(field, value)` on `DocumentStore` and `SQLiteDocumentStore` replaces full-set construction with a point query (`SELECT 1 ... LIMIT 1`)
+- **LIMIT pushdown**: when SELECT has no WHERE/ORDER BY/GROUP BY/HAVING/DISTINCT/window, the scan limit is pushed into `_scan_all` to avoid reading unnecessary rows
+- **Single-pass ANALYZE**: `Table.analyze()` fetches each document once via `get()` and collects all column values per doc, instead of calling `get_field()` per column per doc
+- **Persistent ThreadPoolExecutor**: `ParallelExecutor` reuses a single thread pool across queries instead of creating and destroying one per `execute_branches` call
+- **Correlated subquery context injection**: `ExprEvaluator` accepts an `outer_row` parameter; correlated ColumnRefs are resolved at evaluation time via `_eval_column_ref` fallback instead of cloning the entire AST per outer row
+- **Uncorrelated subquery memoization**: `ExprEvaluator._eval_sublink` caches results of uncorrelated EXPR_SUBLINK, ANY_SUBLINK, and EXISTS_SUBLINK by AST node identity
+- **CTE inlining**: single-reference non-recursive CTEs are inlined as derived tables at FROM resolution time instead of being materialized upfront; reference count is computed via `_count_cte_refs` AST walk
+- **Predicate pushdown into views/derived tables**: safe WHERE predicates (no aggregates, window functions, GROUP BY, DISTINCT, LIMIT in subquery) are injected into the subquery's WHERE clause before materialization via `_try_predicate_pushdown`
+- **Join reordering for implicit cross joins**: multi-table FROM clauses with 3+ tables and equijoin predicates in WHERE are optimized via DPccp join enumerator (`_try_implicit_join_reorder`) instead of left-deep cross join chains
+
+### Scoring
+
+- **WAND bisect-based cursor management**: both `WANDScorer` and `BlockMaxWANDScorer` maintain a sorted list of `(cur_doc_id, term_index)` pairs updated via `bisect.insort` on cursor advance, instead of re-sorting all term indices on every iteration
+
+### Execution
+
+- **PyArrow `to_pylist()`**: `Batch.to_rows()` uses `RecordBatch.to_pylist()` (single C++ call) instead of `to_pydict()` + Python list comprehension
+- **Single-pass sort**: `SortOp._sort_rows` uses `functools.cmp_to_key` with a composite comparator handling all sort keys in one pass, instead of K stable sort passes (one per key)
+- **Streaming aggregation**: `HashAggOp` uses incremental accumulators for COUNT, SUM, AVG, MIN, MAX, BOOL_AND, BOOL_OR (no per-group row materialization); complex aggregates (ARRAY_AGG, STRING_AGG with ORDER BY, JSON_AGG, FILTER, DISTINCT, percentiles) fall back to full materialization
+- **O(n) CUME_DIST**: single linear pass identifying peer group boundaries instead of O(n^2) nested loop
+- **Pre-computed RANGE frame order values**: `_resolve_range_frame_index` accepts pre-computed `order_vals`, `non_null_vals`, and `non_null_indices` arrays, computed once per partition instead of once per row
+
+### Graph
+
+- **Set-based adjacency**: `GraphStore._adj_out`, `_adj_in`, `_label_index`, `_vertex_label_index` changed from `list` to `set`; `add_vertex`/`add_edge` use `.add()`, `remove_vertex`/`remove_edge` use `.discard()`
+- **Set intersection for label-filtered traversal**: `TraversalOperator` uses `adj & label_eids` set intersection instead of list comprehension filter
+- **Shared frozenset in traversal**: `TraversalOperator` creates a single `frozenset(visited)` and `frozenset(all_edges)` shared across all `GraphPayload` entries instead of one per entry
+- **NFA state hoisting**: `RegularPathOperator` computes `_collect_nfa_states` and `_epsilon_closure` once before the start-vertex loop instead of once per start vertex
+- **Set-based result pairs**: `RegularPathOperator` uses `set[tuple[int, int]]` for result pairs, eliminating O(n) `not in list` checks
+- **Type-tagged vertex/edge refs**: `_VertexRef(int)` and `_EdgeRef(int)` marker subclasses eliminate double `get_vertex`/`get_edge` lookups in `_to_agtype`, `_eval` (PropertyAccess), SET, and DELETE
+
+### Fusion
+
+- **Small-list fast path**: `LogOddsFusion.fuse` uses `np.asarray(dtype=float64)` for lists with 4 or fewer elements, avoiding full `np.array` construction overhead
+
 ## 0.14.1 (2026-03-13)
 
 Fix log-odds fusion scoring when one signal has zero coverage (e.g., BM25 vocabulary gap for out-of-vocabulary terms), and clean up linting across IVF-related files.
