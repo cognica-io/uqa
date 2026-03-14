@@ -174,6 +174,7 @@ from uqa.core.types import (
     PostingEntry,
     Predicate,
 )
+from uqa.operators.base import Operator
 from uqa.sql.table import (
     _AUTO_INCREMENT_TYPES,
     ColumnDef,
@@ -5926,11 +5927,17 @@ class SQLCompiler:
         return _ExprFilterOperator(node, subquery_executor=self._compile_select)
 
     def _make_text_search_op(
-        self, field_name: str, query: str, ctx: ExecutionContext, *, bayesian: bool
+        self,
+        field_name: str | None,
+        query: str,
+        ctx: ExecutionContext,
+        *,
+        bayesian: bool,
     ) -> Any:
         from uqa.operators.primitive import ScoreOperator, TermOperator
 
-        analyzer = ctx.inverted_index.get_search_analyzer(field_name)
+        idx = ctx.inverted_index
+        analyzer = idx.get_search_analyzer(field_name) if field_name else idx.analyzer
         terms = analyzer.analyze(query)
         if not terms:
             return TermOperator(query, field_name)
@@ -7358,7 +7365,7 @@ class _LateralJoinOperator:
         return 1000.0
 
 
-class _CalibratedKNNOperator:
+class _CalibratedKNNOperator(Operator):
     """KNN search with scores calibrated to probabilities.
 
     P_vector = (1 + cosine_similarity) / 2  (Definition 7.1.2, Paper 3)

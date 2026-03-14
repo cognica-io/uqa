@@ -435,7 +435,7 @@ def _compile_phrase(
 
         return _Empty2()
 
-    term_ops = [TermOperator(t, field) for t in terms]
+    term_ops: list[Operator] = [TermOperator(t, field) for t in terms]
     retrieval = term_ops[0] if len(term_ops) == 1 else IntersectOperator(term_ops)
 
     from uqa.scoring.bayesian_bm25 import BayesianBM25Params, BayesianBM25Scorer
