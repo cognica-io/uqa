@@ -33,6 +33,7 @@ class PostingList:
             self._entries: list[PostingEntry] = deduped
         else:
             self._entries = []
+        self._doc_ids_cache: set[DocId] | None = None
 
     @classmethod
     def from_sorted(cls, entries: list[PostingEntry]) -> PostingList:
@@ -44,6 +45,7 @@ class PostingList:
         """
         pl = cls.__new__(cls)
         pl._entries = entries
+        pl._doc_ids_cache = None
         return pl
 
     # -- Boolean Algebra Operations (Theorem 2.1.2, Paper 1) --
@@ -69,6 +71,7 @@ class PostingList:
         result.extend(other._entries[j:])
         pl = PostingList.__new__(PostingList)
         pl._entries = result
+        pl._doc_ids_cache = None
         return pl
 
     def intersect(self, other: PostingList) -> PostingList:
@@ -88,6 +91,7 @@ class PostingList:
                 j += 1
         pl = PostingList.__new__(PostingList)
         pl._entries = result
+        pl._doc_ids_cache = None
         return pl
 
     def difference(self, other: PostingList) -> PostingList:
@@ -96,6 +100,7 @@ class PostingList:
         result = [e for e in self._entries if e.doc_id not in other_ids]
         pl = PostingList.__new__(PostingList)
         pl._entries = result
+        pl._doc_ids_cache = None
         return pl
 
     def complement(self, universal: PostingList) -> PostingList:
@@ -115,11 +120,13 @@ class PostingList:
 
     @property
     def doc_ids(self) -> set[DocId]:
-        return {e.doc_id for e in self._entries}
+        if self._doc_ids_cache is None:
+            self._doc_ids_cache = {e.doc_id for e in self._entries}
+        return self._doc_ids_cache
 
     @property
     def entries(self) -> list[PostingEntry]:
-        return list(self._entries)
+        return self._entries
 
     def get_entry(self, doc_id: DocId) -> PostingEntry | None:
         lo, hi = 0, len(self._entries) - 1
@@ -156,6 +163,7 @@ class PostingList:
             result.append(PostingEntry(e.doc_id, new_payload))
         pl = PostingList.__new__(PostingList)
         pl._entries = result
+        pl._doc_ids_cache = None
         return pl
 
     def __len__(self) -> int:

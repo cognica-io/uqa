@@ -37,6 +37,12 @@ class LogOddsFusion:
             return 0.5
         if n == 1:
             return probabilities[0]
+        if n <= 4:
+            return float(
+                log_odds_conjunction(
+                    np.asarray(probabilities, dtype=np.float64), alpha=self.alpha
+                )
+            )
         return float(log_odds_conjunction(np.array(probabilities), alpha=self.alpha))
 
     def fuse_weighted(self, probabilities: list[float], weights: list[float]) -> float:

@@ -406,6 +406,8 @@ class ASCIIFoldingFilter(TokenFilter):
 
     @staticmethod
     def _fold(token: str) -> str:
+        if token.isascii():
+            return token
         nfkd = unicodedata.normalize("NFKD", token)
         return nfkd.encode("ascii", "ignore").decode("ascii")
 
@@ -551,14 +553,19 @@ class NGramFilter(TokenFilter):
 
     def filter(self, tokens: list[str]) -> list[str]:
         result: list[str] = []
+        result_append = result.append
+        min_gram = self._min_gram
+        max_gram = self._max_gram
+        keep_short = self._keep_short
         for t in tokens:
-            if len(t) < self._min_gram:
-                if self._keep_short:
-                    result.append(t)
+            t_len = len(t)
+            if t_len < min_gram:
+                if keep_short:
+                    result_append(t)
                 continue
-            for n in range(self._min_gram, self._max_gram + 1):
-                for i in range(len(t) - n + 1):
-                    result.append(t[i : i + n])
+            for n in range(min_gram, max_gram + 1):
+                for i in range(t_len - n + 1):
+                    result_append(t[i : i + n])
         return result
 
     def to_dict(self) -> dict[str, Any]:

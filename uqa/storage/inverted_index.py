@@ -56,6 +56,8 @@ class InvertedIndex:
         self._doc_lengths: dict[DocId, dict[FieldName, int]] = {}
         self._doc_count: int = 0
         self._total_length: dict[FieldName, int] = defaultdict(int)
+        self._cached_stats: IndexStats | None = None
+        self._term_to_keys: dict[str, list[tuple[str, str]]] = defaultdict(list)
 
     @property
     def analyzer(self) -> Any:
@@ -102,6 +104,7 @@ class InvertedIndex:
         Returns an IndexedTerms with per-field lengths and posting data
         so the caller can persist them without re-tokenizing.
         """
+        self._cached_stats = None
         self._doc_count += 1
         self._doc_lengths[doc_id] = {}
 
@@ -128,8 +131,10 @@ class InvertedIndex:
 
             for term, positions in term_positions.items():
                 key = (field_name, term)
-                if key not in self._index:
+                is_new_key = key not in self._index
+                if is_new_key:
                     self._index[key] = {}
+                    self._term_to_keys[term].append(key)
                 pos_tuple = tuple(positions)
                 entry = PostingEntry(
                     doc_id,
@@ -145,9 +150,11 @@ class InvertedIndex:
 
     def add_posting(self, field: str, term: str, entry: PostingEntry) -> None:
         """Add a single posting entry directly (for catalog restore)."""
+        self._cached_stats = None
         key = (field, term)
         if key not in self._index:
             self._index[key] = {}
+            self._term_to_keys[term].append(key)
         self._index[key][entry.doc_id] = entry
 
         doc_term_set = self._doc_terms.get(entry.doc_id)
@@ -162,10 +169,12 @@ class InvertedIndex:
 
     def set_doc_count(self, count: int) -> None:
         """Set the indexed document count (for catalog restore)."""
+        self._cached_stats = None
         self._doc_count = count
 
     def add_total_length(self, field: FieldName, length: int) -> None:
         """Accumulate total token length for a field (for catalog restore)."""
+        self._cached_stats = None
         self._total_length[field] += length
 
     # -- Remove method (for delete support) ----------------------------
@@ -176,6 +185,7 @@ class InvertedIndex:
         Uses the ``_doc_terms`` reverse map to touch only relevant
         posting dicts, avoiding a full scan of the entire index.
         """
+        self._cached_stats = None
         keys = self._doc_terms.pop(doc_id, set())
         for key in keys:
             inner = self._index.get(key)
@@ -183,6 +193,15 @@ class InvertedIndex:
                 inner.pop(doc_id, None)
                 if not inner:
                     del self._index[key]
+                    _field, term = key
+                    term_keys = self._term_to_keys.get(term)
+                    if term_keys is not None:
+                        try:
+                            term_keys.remove(key)
+                        except ValueError:
+                            pass
+                        if not term_keys:
+                            del self._term_to_keys[term]
 
         if doc_id in self._doc_lengths:
             for fld, length in self._doc_lengths[doc_id].items():
@@ -192,11 +211,13 @@ class InvertedIndex:
 
     def clear(self) -> None:
         """Remove all indexed data."""
+        self._cached_stats = None
         self._index.clear()
         self._doc_terms.clear()
         self._doc_lengths.clear()
         self._doc_count = 0
         self._total_length.clear()
+        self._term_to_keys.clear()
 
     # -- Query methods -------------------------------------------------
 
@@ -209,10 +230,14 @@ class InvertedIndex:
 
     def get_posting_list_any_field(self, term: str) -> PostingList:
         """Get posting list matching term across any field."""
+        keys = self._term_to_keys.get(term)
+        if not keys:
+            return PostingList()
         seen_docs: set[DocId] = set()
         all_entries: list[PostingEntry] = []
-        for (_field, t), inner in self._index.items():
-            if t == term:
+        for key in keys:
+            inner = self._index.get(key)
+            if inner is not None:
                 for doc_id, e in inner.items():
                     if doc_id not in seen_docs:
                         seen_docs.add(doc_id)
@@ -232,6 +257,16 @@ class InvertedIndex:
             return 0
         return doc_lengths.get(field, 0)
 
+    def get_doc_lengths_bulk(
+        self, doc_ids: list[DocId], field: FieldName
+    ) -> dict[DocId, int]:
+        """Return doc lengths for multiple doc_ids in a single call."""
+        result: dict[DocId, int] = {}
+        for doc_id in doc_ids:
+            lengths = self._doc_lengths.get(doc_id)
+            result[doc_id] = lengths.get(field, 0) if lengths else 0
+        return result
+
     def get_total_doc_length(self, doc_id: DocId) -> int:
         """Get total document length across all fields."""
         lengths = self._doc_lengths.get(doc_id, {})
@@ -247,11 +282,31 @@ class InvertedIndex:
             return 0
         return len(e.payload.positions) if e.payload.positions else 0
 
+    def get_term_freqs_bulk(
+        self, doc_ids: list[DocId], field: str, term: str
+    ) -> dict[DocId, int]:
+        """Return term frequencies for multiple doc_ids in a single call."""
+        inner = self._index.get((field, term))
+        if inner is None:
+            return dict.fromkeys(doc_ids, 0)
+        result: dict[DocId, int] = {}
+        for doc_id in doc_ids:
+            e = inner.get(doc_id)
+            if e is None:
+                result[doc_id] = 0
+            else:
+                result[doc_id] = len(e.payload.positions) if e.payload.positions else 0
+        return result
+
     def get_total_term_freq(self, doc_id: DocId, term: str) -> int:
         """Get total term frequency for a doc across all fields."""
+        keys = self._term_to_keys.get(term)
+        if not keys:
+            return 0
         total = 0
-        for (_f, t), inner in self._index.items():
-            if t == term:
+        for key in keys:
+            inner = self._index.get(key)
+            if inner is not None:
                 e = inner.get(doc_id)
                 if e is not None:
                     total += len(e.payload.positions) if e.payload.positions else 0
@@ -259,21 +314,29 @@ class InvertedIndex:
 
     def doc_freq_any_field(self, term: str) -> int:
         """Get document frequency across all fields."""
+        keys = self._term_to_keys.get(term)
+        if not keys:
+            return 0
         doc_ids: set[DocId] = set()
-        for (_f, t), inner in self._index.items():
-            if t == term:
+        for key in keys:
+            inner = self._index.get(key)
+            if inner is not None:
                 doc_ids.update(inner.keys())
         return len(doc_ids)
 
     @property
     def stats(self) -> IndexStats:
+        if self._cached_stats is not None:
+            return self._cached_stats
         total_length = sum(self._total_length.values())
         avg_doc_length = total_length / self._doc_count if self._doc_count > 0 else 0.0
         doc_freqs: dict[tuple[str, str], int] = {}
         for key, inner in self._index.items():
             doc_freqs[key] = len(inner)
-        return IndexStats(
+        result = IndexStats(
             total_docs=self._doc_count,
             avg_doc_length=avg_doc_length,
             _doc_freqs=doc_freqs,
         )
+        self._cached_stats = result
+        return result

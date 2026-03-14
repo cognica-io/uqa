@@ -68,6 +68,7 @@ class BenchmarkDataGenerator:
         ]
         pl = PostingList.__new__(PostingList)
         pl._entries = entries
+        pl._doc_ids_cache = None
         return pl
 
     def posting_lists(
@@ -104,6 +105,7 @@ class BenchmarkDataGenerator:
             ]
             pl = PostingList.__new__(PostingList)
             pl._entries = entries
+            pl._doc_ids_cache = None
             return pl
 
         ids_a = np.concatenate([shared_ids, unique_a])
@@ -134,6 +136,7 @@ class BenchmarkDataGenerator:
             ]
             pl = PostingList.__new__(PostingList)
             pl._entries = entries
+            pl._doc_ids_cache = None
             result.append(pl)
         return result
 
