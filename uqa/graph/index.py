@@ -19,6 +19,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from uqa.graph.pattern import GraphPattern
     from uqa.graph.store import GraphStore
 
 
@@ -176,7 +177,7 @@ class SubgraphIndex:
     def build(
         cls,
         graph: GraphStore,
-        patterns: list[object],
+        patterns: list[GraphPattern],
     ) -> SubgraphIndex:
         """Build index by running PatternMatchOperator for each pattern."""
         from uqa.graph.operators import PatternMatchOperator
