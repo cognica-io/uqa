@@ -339,7 +339,7 @@ Returns: PostingList with `_score` set to cosine similarity.
 
 #### `traverse_match(start, label, max_hops)`
 
-Graph reachability as a scored signal. Performs BFS from a starting vertex along edges with the given label, up to `max_hops` hops. Reachable vertices receive a score of 0.9.
+Graph reachability as a scored signal. Performs BFS from a starting vertex along edges with the given label, up to `max_hops` hops. Reachable vertices receive a score of 0.9. The FROM-clause variant `traverse()` (Section 4.4) supports named graphs via the `'graph:name'` source argument.
 
 ```sql
 SELECT title, _score FROM papers
@@ -479,9 +479,9 @@ ORDER BY _score DESC;
 
 Returns: PostingList with posterior probabilities incorporating the external prior.
 
-#### `temporal_traverse(start, label, hops, timestamp)` / `temporal_traverse(start, label, hops, from_ts, to_ts)`
+#### `temporal_traverse(start, label, hops, timestamp[, source])` / `temporal_traverse(start, label, hops, from_ts, to_ts[, source])`
 
-Time-aware graph traversal (Paper 2, Section 10). Same BFS as `traverse_match` but filters edges by `valid_from`/`valid_to` temporal properties. The 4-argument form checks a single timestamp; the 5-argument form checks interval overlap.
+Time-aware graph traversal (Paper 2, Section 10). Same BFS as `traverse_match` but filters edges by `valid_from`/`valid_to` temporal properties. The 4-argument form checks a single timestamp; the 5-argument form checks interval overlap. An optional trailing `'graph:name'` argument targets a named graph instead of the per-table graph store.
 
 ```sql
 -- Point-in-time traversal
@@ -489,6 +489,9 @@ SELECT * FROM temporal_traverse(1, 'knows', 2, 1700000000);
 
 -- Range traversal
 SELECT * FROM temporal_traverse(1, 'knows', 2, 1690000000, 1710000000);
+
+-- Named graph traversal
+SELECT * FROM temporal_traverse(1, 'knows', 2, 150, 'graph:net');
 ```
 
 | Parameter | Type | Description |
@@ -498,6 +501,7 @@ SELECT * FROM temporal_traverse(1, 'knows', 2, 1690000000, 1710000000);
 | `hops` | integer | Maximum traversal depth |
 | `timestamp` | float | Point-in-time filter |
 | `from_ts, to_ts` | floats | Time range filter (interval overlap) |
+| `source` | string | Optional `'graph:name'` to target a named graph |
 
 Returns: PostingList of reachable vertices with `_score = 0.9`.
 
@@ -694,9 +698,9 @@ ORDER BY name;
 
 ### 4.4 FROM-Clause Table Functions
 
-#### `traverse(start, label, max_hops)`
+#### `traverse(start, label, max_hops[, source])`
 
-BFS graph traversal as a virtual table. Returns one row per reachable vertex with its properties as columns.
+BFS graph traversal as a virtual table. Returns one row per reachable vertex with its properties as columns. An optional trailing `'graph:name'` argument targets a named graph (created via `create_graph()` or `cypher()`) instead of the per-table graph store.
 
 ```sql
 SELECT _doc_id, _score FROM traverse(1, 'cited_by', 2);
@@ -704,6 +708,9 @@ SELECT _doc_id, _score FROM traverse(1, 'cited_by', 2);
 -- With WHERE filtering on vertex properties
 SELECT _doc_id, title FROM traverse(1, 'cited_by', 3)
 WHERE _score > 0.5;
+
+-- Named graph traversal
+SELECT * FROM traverse(1, 'knows', 2, 'graph:social');
 ```
 
 | Parameter | Type | Description |
@@ -711,10 +718,11 @@ WHERE _score > 0.5;
 | `start` | integer | Starting vertex ID |
 | `label` | string | Edge label to follow |
 | `max_hops` | integer | Maximum traversal depth |
+| `source` | string | Optional `'graph:name'` to target a named graph |
 
-#### `rpq(path_expr, start)`
+#### `rpq(path_expr, start[, source])`
 
-Regular path query. Evaluates a regular path expression using NFA simulation and returns matching vertices.
+Regular path query. Evaluates a regular path expression using NFA simulation and returns matching vertices. An optional trailing `'graph:name'` argument targets a named graph instead of the per-table graph store.
 
 ```sql
 -- Follow two 'cited_by' edges
@@ -722,12 +730,37 @@ SELECT _doc_id, title FROM rpq('cited_by/cited_by', 1);
 
 -- Alternation: follow 'cited_by' or 'references'
 SELECT _doc_id FROM rpq('cited_by|references', 1);
+
+-- Named graph RPQ
+SELECT * FROM rpq('knows/works_with', 1, 'graph:social');
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `path_expr` | string | Path expression using `/` (concatenation) and `\|` (alternation) |
 | `start` | integer | Starting vertex ID (optional) |
+| `source` | string | Optional `'graph:name'` to target a named graph |
+
+#### `temporal_traverse(start, label, hops, timestamp[, source])` / `temporal_traverse(start, label, hops, from_ts, to_ts[, source])`
+
+Time-aware graph traversal as a FROM-clause table function. Same BFS as `traverse()` but filters edges by `valid_from`/`valid_to` temporal properties. The 4-argument form checks a single timestamp; the 5-argument form checks interval overlap. An optional trailing `'graph:name'` argument targets a named graph.
+
+```sql
+-- Point-in-time traversal
+SELECT * FROM temporal_traverse(1, 'knows', 2, 1700000000);
+
+-- Range traversal with named graph
+SELECT * FROM temporal_traverse(1, 'knows', 2, 150, 'graph:net');
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `start` | integer | Starting vertex ID |
+| `label` | string | Edge label to follow |
+| `hops` | integer | Maximum traversal depth |
+| `timestamp` | float | Point-in-time filter |
+| `from_ts, to_ts` | floats | Time range filter (interval overlap) |
+| `source` | string | Optional `'graph:name'` to target a named graph |
 
 #### `text_search(query, field, table)`
 
@@ -1117,6 +1150,7 @@ The optimizer applies equivalence-preserving rewrite rules:
 5. **Fusion signal reordering**: Sorts signals by cost estimate for early termination.
 6. **R*Tree spatial index scan**: Uses the R*Tree index for POINT column range queries when available.
 7. **Index scan substitution**: Replaces full-table FilterOperator scans with B-tree index scans when the estimated cost is lower.
+8. **EXISTS subquery decorrelation**: Correlated `EXISTS` subqueries with equijoin predicates are decorrelated into a semi-join `FilterOperator(outer_col, InSet(values))`. The inner query executes once instead of once per outer row, yielding 116x speedup on the EXISTS benchmark.
 
 The optimizer uses a **CardinalityEstimator** backed by per-column statistics: equi-depth histograms and Most Common Values (MCVs), populated by the ANALYZE command.
 
@@ -1806,7 +1840,7 @@ python -m pytest uqa/tests/ -v
 python -m pytest uqa/tests/test_sql.py -v
 ```
 
-2230 tests across 62 test files covering core algebra, operators, scoring, fusion, SQL compilation, physical execution, joins, graph operations, openCypher graph queries, SQLite persistence, transactions, cost optimization, parallel execution, PostgreSQL 17 compatibility, text analysis pipeline, Arrow/Parquet export, Foreign Data Wrappers (Hive partitioning, predicate pushdown), interactive SQL shell, calibration metrics, parameter learning, multi-field scoring, attention/learned fusion, multi-signal WAND, multi-stage retrieval, external priors, sparse thresholding, path index, graph delta, temporal graphs, GNN message passing, and end-to-end integration.
+2235 tests across 62 test files covering core algebra, operators, scoring, fusion, SQL compilation, physical execution, joins, graph operations, openCypher graph queries, SQLite persistence, transactions, cost optimization, parallel execution, PostgreSQL 17 compatibility, text analysis pipeline, Arrow/Parquet export, Foreign Data Wrappers (Hive partitioning, predicate pushdown), interactive SQL shell, calibration metrics, parameter learning, multi-field scoring, attention/learned fusion, multi-signal WAND, multi-stage retrieval, external priors, sparse thresholding, path index, graph delta, temporal graphs, GNN message passing, and end-to-end integration.
 
 Additionally, 269 benchmarks across 13 files (in the `benchmarks/` directory) measure performance of posting list operations, storage backends, SQL compilation, physical execution, DPccp join enumeration, BM25/vector/fusion scoring, graph traversal and pattern matching, and end-to-end SQL queries. Install with `pip install -e ".[benchmark]"` and run with `python -m pytest benchmarks/ --benchmark-sort=name`.
 

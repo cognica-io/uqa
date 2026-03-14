@@ -500,6 +500,14 @@ SELECT * FROM cypher('social', $$
 $$) AS (person agtype, friend agtype);
 ```
 
+**Named graph support for traverse/rpq/temporal_traverse.** The `traverse()`, `rpq()`, and `temporal_traverse()` FROM-clause table functions accept a `'graph:name'` source argument to operate on named graphs created via `create_graph()` or `cypher()`, rather than per-table graph stores. This enables graph traversal and regular path queries directly against the Cypher-managed graph namespace:
+
+```sql
+SELECT * FROM traverse(1, 'knows', 2, 'graph:social');
+SELECT * FROM rpq('knows/works_with', 1, 'graph:social');
+SELECT * FROM temporal_traverse(1, 'knows', 2, 150, 'graph:net');
+```
+
 ### 5.6 Path Index Integration
 
 Regular path query evaluation via NFA simulation has complexity $O(|V_G|^2 \cdot |R|)$, which can be prohibitive for frequently executed queries. The `PathIndex` in `uqa/graph/index.py` pre-computes reachable $(start, end)$ vertex pairs for specific label sequences, reducing RPQ evaluation for indexed paths to $O(1)$ lookup.
@@ -660,6 +668,7 @@ The cost-based optimizer in `uqa/planner/` applies:
 - R*Tree spatial index scan for POINT column range queries
 - B-tree index scan substitution
 - FDW predicate pushdown (comparison, IN, LIKE, ILIKE, BETWEEN)
+- **EXISTS subquery decorrelation** — correlated `EXISTS` subqueries with equijoin predicates are decorrelated into semi-join `FilterOperator(outer_col, InSet(values))`, executing the inner query once instead of once per outer row (116x speedup on the EXISTS benchmark)
 
 Cardinality estimation uses equi-depth histograms and Most Common Values (MCV), with specialized estimators for text, vector, graph, and fusion operators.
 

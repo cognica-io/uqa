@@ -105,7 +105,13 @@ engine.get_graph(name: str) -> GraphStore
 engine.has_graph(name: str) -> bool
 ```
 
-Manage named graphs for Cypher queries. Named graphs are persisted via the SQLite catalog.
+Manage named graphs for Cypher queries and FROM-clause graph functions. Named graphs are persisted via the SQLite catalog. The `traverse()`, `rpq()`, and `temporal_traverse()` FROM-clause table functions accept a `'graph:name'` source argument to target a named graph instead of a per-table graph store:
+
+```sql
+SELECT * FROM traverse(1, 'knows', 2, 'graph:social');
+SELECT * FROM rpq('knows/works_with', 1, 'graph:social');
+SELECT * FROM temporal_traverse(1, 'knows', 2, 150, 'graph:net');
+```
 
 ### Analyzer Management
 
