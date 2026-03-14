@@ -5055,18 +5055,40 @@ class SQLCompiler:
             # pagerank([damping[, max_iter[, tol]]][, 'source'])
             numeric_args = [a for a in args if not _is_source_arg(a)]
             source_args = [a for a in args if _is_source_arg(a)]
-            damping = float(self._extract_const_value(numeric_args[0])) if len(numeric_args) > 0 else 0.85
-            max_iter = self._extract_int_value(numeric_args[1]) if len(numeric_args) > 1 else 100
-            tol = float(self._extract_const_value(numeric_args[2])) if len(numeric_args) > 2 else 1e-6
+            damping = (
+                float(self._extract_const_value(numeric_args[0]))
+                if len(numeric_args) > 0
+                else 0.85
+            )
+            max_iter = (
+                self._extract_int_value(numeric_args[1])
+                if len(numeric_args) > 1
+                else 100
+            )
+            tol = (
+                float(self._extract_const_value(numeric_args[2]))
+                if len(numeric_args) > 2
+                else 1e-6
+            )
             if source_args:
                 table_name_arg = self._extract_string_value(source_args[0])
-            op = PageRankOperator(damping=damping, max_iterations=max_iter, tolerance=tol)
+            op = PageRankOperator(
+                damping=damping, max_iterations=max_iter, tolerance=tol
+            )
         elif kind == "hits":
             # hits([max_iter[, tol]][, 'source'])
             numeric_args = [a for a in args if not _is_source_arg(a)]
             source_args = [a for a in args if _is_source_arg(a)]
-            max_iter = self._extract_int_value(numeric_args[0]) if len(numeric_args) > 0 else 100
-            tol = float(self._extract_const_value(numeric_args[1])) if len(numeric_args) > 1 else 1e-6
+            max_iter = (
+                self._extract_int_value(numeric_args[0])
+                if len(numeric_args) > 0
+                else 100
+            )
+            tol = (
+                float(self._extract_const_value(numeric_args[1]))
+                if len(numeric_args) > 1
+                else 1e-6
+            )
             if source_args:
                 table_name_arg = self._extract_string_value(source_args[0])
             op = HITSOperator(max_iterations=max_iter, tolerance=tol)
@@ -5236,9 +5258,7 @@ class SQLCompiler:
         from uqa.sql.table import ColumnDef as SQLColumnDef
 
         if len(args) < 3:
-            raise ValueError(
-                "graph_add_vertex(id, 'label', 'table'[, 'key=val,...'])"
-            )
+            raise ValueError("graph_add_vertex(id, 'label', 'table'[, 'key=val,...'])")
         vid = self._extract_int_value(args[0])
         label = self._extract_string_value(args[1])
         table_name = self._extract_string_value(args[2])
@@ -5306,9 +5326,7 @@ class SQLCompiler:
                         except ValueError:
                             props[k] = v
 
-        self._engine.add_graph_edge(
-            Edge(eid, src, tgt, label, props), table=table_name
-        )
+        self._engine.add_graph_edge(Edge(eid, src, tgt, label, props), table=table_name)
 
         result_table = Table(
             "_graph_add_edge",
@@ -6946,7 +6964,10 @@ class SQLCompiler:
         predicate = None
         if len(args) > 4:
             threshold = float(self._extract_const_value(args[4]))
-            predicate = lambda w, t=threshold: w > t
+
+            def predicate(w, t=threshold):
+                return w > t
+
         return WeightedPathQueryOperator(
             path_expr=parse_rpq(expr_str),
             weight_property=weight_prop,
@@ -6978,7 +6999,7 @@ class SQLCompiler:
                 val = self._extract_const_value(arg)
                 if isinstance(val, str):
                     gating = val
-                elif isinstance(val, float) and not val == int(val):
+                elif isinstance(val, float) and val != int(val):
                     alpha = val
                 else:
                     # Integer: this is a k cutoff
@@ -6995,9 +7016,7 @@ class SQLCompiler:
                 )
 
         if signals:
-            raise ValueError(
-                "progressive_fusion: trailing signals without k cutoff"
-            )
+            raise ValueError("progressive_fusion: trailing signals without k cutoff")
         if not stages:
             raise ValueError(
                 "progressive_fusion requires at least one (signals, k) stage"
