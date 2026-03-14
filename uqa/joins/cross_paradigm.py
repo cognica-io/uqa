@@ -252,7 +252,6 @@ class GraphJoinOperator:
         self.label = label
 
     def execute(self, context: object) -> GeneralizedPostingList:
-
         graph: GraphStore = context.graph_store  # type: ignore[attr-defined]
         left_entries = self._get_entries(self.left, context)
         right_entries = self._get_entries(self.right, context)
@@ -312,7 +311,6 @@ class CrossParadigmJoinOperator:
         self.doc_field = doc_field
 
     def execute(self, context: object) -> GeneralizedPostingList:
-
         graph: GraphStore = context.graph_store  # type: ignore[attr-defined]
         left_entries = self._get_entries(self.left, context)
         right_entries = self._get_entries(self.right, context)

@@ -430,7 +430,6 @@ class TestSQLResult:
         assert table.column("b").type == pa.bool_()
 
     def test_to_arrow_with_nulls(self, engine: Engine) -> None:
-
         result = engine.sql("SELECT 1 AS v UNION ALL SELECT NULL")
         table = result.to_arrow()
         assert table.num_rows == 2
