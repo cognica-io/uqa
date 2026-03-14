@@ -170,9 +170,7 @@ class Engine:
         for graph_name, label_sequences in catalog.load_path_indexes():
             store = self._named_graphs.get(graph_name)
             if store is not None:
-                self._path_indexes[graph_name] = PathIndex.build(
-                    store, label_sequences
-                )
+                self._path_indexes[graph_name] = PathIndex.build(store, label_sequences)
 
         # -- Foreign servers and tables --------------------------------
         from uqa.fdw.foreign_table import ForeignServer, ForeignTable

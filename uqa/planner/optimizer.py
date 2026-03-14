@@ -435,7 +435,9 @@ class QueryOptimizer:
                     learned=op.learned,
                 )
             case SparseThresholdOperator(source=src):
-                return SparseThresholdOperator(self.optimize(src), threshold=op.threshold)
+                return SparseThresholdOperator(
+                    self.optimize(src), threshold=op.threshold
+                )
             case _:
                 return op
 

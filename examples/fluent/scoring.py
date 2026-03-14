@@ -179,10 +179,7 @@ print("\n--- 5. Parameter learning for 'attention' query ---")
 # Papers 1, 3, 8 strongly mention attention
 labels = [1, 0, 1, 0, 0, 0, 0, 1]
 
-learned = (
-    engine.query(table="papers")
-    .learn_params("attention", labels, field="title")
-)
+learned = engine.query(table="papers").learn_params("attention", labels, field="title")
 print("  Learned parameters:")
 for param, value in sorted(learned.items()):
     print(f"    {param}: {value:.6f}")

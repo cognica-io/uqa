@@ -55,7 +55,10 @@ class TemporalTraverseOperator:
                 for eid in edge_ids:
                     edge = graph._edges[eid]
                     # Apply temporal filter
-                    if self.temporal_filter is not None and not self.temporal_filter.is_valid(edge.properties):
+                    if (
+                        self.temporal_filter is not None
+                        and not self.temporal_filter.is_valid(edge.properties)
+                    ):
                         continue
                     neighbor = edge.target_id
                     if neighbor not in visited:

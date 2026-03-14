@@ -48,18 +48,14 @@ def _neutral_prior(doc_fields: dict) -> float:
 class TestExternalPrior:
     def test_score_with_prior(self, benchmark) -> None:
         stats = _make_index_stats()
-        scorer = ExternalPriorScorer(
-            BayesianBM25Params(), stats, _neutral_prior
-        )
+        scorer = ExternalPriorScorer(BayesianBM25Params(), stats, _neutral_prior)
         doc_fields = {"authority": "high"}
         benchmark(scorer.score_with_prior, 5, 120, 1000, doc_fields)
 
     @pytest.mark.parametrize("n", [100, 1000])
     def test_score_batch(self, benchmark, n: int) -> None:
         stats = _make_index_stats()
-        scorer = ExternalPriorScorer(
-            BayesianBM25Params(), stats, _neutral_prior
-        )
+        scorer = ExternalPriorScorer(BayesianBM25Params(), stats, _neutral_prior)
         rng = np.random.default_rng(42)
         tfs = rng.integers(1, 20, size=n)
         dls = rng.integers(50, 200, size=n)
@@ -81,9 +77,7 @@ class TestExternalPrior:
 
         prior_fn = recency_prior("updated_at", decay_days=30.0)
         now = datetime.datetime.now(tz=datetime.UTC)
-        doc_fields = {
-            "updated_at": (now - datetime.timedelta(days=5)).isoformat()
-        }
+        doc_fields = {"updated_at": (now - datetime.timedelta(days=5)).isoformat()}
         benchmark(prior_fn, doc_fields)
 
     def test_authority_prior_computation(self, benchmark) -> None:

@@ -61,9 +61,7 @@ class FusionWANDScorer:
         """
         if not active_ubs:
             return 0.0
-        return float(
-            log_odds_conjunction(np.array(active_ubs), alpha=self.alpha)
-        )
+        return float(log_odds_conjunction(np.array(active_ubs), alpha=self.alpha))
 
     def score_top_k(self) -> PostingList:
         """Execute WAND-style top-k with fused scoring.
@@ -92,9 +90,7 @@ class FusionWANDScorer:
             return PostingList()
 
         num_docs = len(all_doc_ids)
-        defaults = [
-            _coverage_based_default(len(smap), num_docs) for smap in score_maps
-        ]
+        defaults = [_coverage_based_default(len(smap), num_docs) for smap in score_maps]
 
         # Score all documents and keep top-k using a min-heap
         top_k_heap: list[tuple[float, int]] = []
@@ -117,16 +113,11 @@ class FusionWANDScorer:
                         continue
 
             # Score the document
-            probs = [
-                smap.get(doc_id, defaults[j])
-                for j, smap in enumerate(score_maps)
-            ]
+            probs = [smap.get(doc_id, defaults[j]) for j, smap in enumerate(score_maps)]
             if num_signals == 1:
                 fused = probs[0]
             else:
-                fused = float(
-                    log_odds_conjunction(np.array(probs), alpha=self.alpha)
-                )
+                fused = float(log_odds_conjunction(np.array(probs), alpha=self.alpha))
 
             if len(top_k_heap) < self.k:
                 heapq.heappush(top_k_heap, (fused, doc_id))

@@ -510,9 +510,7 @@ class QueryBuilder:
 
         ctx = self._engine._context_for_table(self._table)
         idx = ctx.inverted_index
-        analyzer = (
-            idx.get_field_analyzer(field) if field else idx.analyzer
-        )
+        analyzer = idx.get_field_analyzer(field) if field else idx.analyzer
         terms = analyzer.analyze(query)
         scorer = ExternalPriorScorer(BayesianBM25Params(), idx.stats, prior_fn)
 

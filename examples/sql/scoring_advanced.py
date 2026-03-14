@@ -38,14 +38,54 @@ engine.sql("""
 """)
 
 papers = [
-    ("attention is all you need", "transformer model self attention mechanisms", 2017, "high"),
-    ("bert pre-training deep bidirectional", "masked language modeling pre-training transformers", 2019, "high"),
-    ("graph attention networks", "attention mechanisms graph structured data", 2018, "medium"),
-    ("vision transformer image recognition", "image patches standard transformer encoder", 2021, "medium"),
-    ("scaling language models methods", "scaling laws language model performance compute", 2020, "low"),
-    ("diffusion models beat gans", "denoising diffusion probabilistic models image quality", 2021, "medium"),
-    ("reinforcement learning human feedback", "rlhf language models instructions reward modeling", 2022, "high"),
-    ("efficient attention long sequences", "linear attention sparse attention patterns quadratic", 2020, "low"),
+    (
+        "attention is all you need",
+        "transformer model self attention mechanisms",
+        2017,
+        "high",
+    ),
+    (
+        "bert pre-training deep bidirectional",
+        "masked language modeling pre-training transformers",
+        2019,
+        "high",
+    ),
+    (
+        "graph attention networks",
+        "attention mechanisms graph structured data",
+        2018,
+        "medium",
+    ),
+    (
+        "vision transformer image recognition",
+        "image patches standard transformer encoder",
+        2021,
+        "medium",
+    ),
+    (
+        "scaling language models methods",
+        "scaling laws language model performance compute",
+        2020,
+        "low",
+    ),
+    (
+        "diffusion models beat gans",
+        "denoising diffusion probabilistic models image quality",
+        2021,
+        "medium",
+    ),
+    (
+        "reinforcement learning human feedback",
+        "rlhf language models instructions reward modeling",
+        2022,
+        "high",
+    ),
+    (
+        "efficient attention long sequences",
+        "linear attention sparse attention patterns quadratic",
+        2020,
+        "low",
+    ),
 ]
 for title, abstract, year, auth in papers:
     engine.sql(

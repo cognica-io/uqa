@@ -4820,7 +4820,7 @@ class SQLCompiler:
                 RegularPathQueryOperator,
                 CypherQueryOperator,
                 TemporalTraverseOperator,
-            )
+            ),
         )
 
     @staticmethod
@@ -6088,14 +6088,11 @@ class SQLCompiler:
                 elif isinstance(val, (int, float)):
                     weights.append(float(val))
                 elif isinstance(val, str):
-                    raise ValueError(
-                        f"Unexpected string argument at position {i}"
-                    )
+                    raise ValueError(f"Unexpected string argument at position {i}")
 
         if query is None or len(fields) < 2:
             raise ValueError(
-                "multi_field_match() requires at least 2 field names "
-                "and a query string"
+                "multi_field_match() requires at least 2 field names and a query string"
             )
 
         if weights and len(weights) != len(fields):
@@ -6155,14 +6152,11 @@ class SQLCompiler:
             prior_fn = authority_prior(prior_field)
         else:
             raise ValueError(
-                f"Unknown prior mode: {prior_mode}. "
-                f"Use 'recency' or 'authority'."
+                f"Unknown prior mode: {prior_mode}. Use 'recency' or 'authority'."
             )
 
         idx = ctx.inverted_index
-        scorer = ExternalPriorScorer(
-            BayesianBM25Params(), idx.stats, prior_fn
-        )
+        scorer = ExternalPriorScorer(BayesianBM25Params(), idx.stats, prior_fn)
 
         analyzer = idx.get_search_analyzer(field_name) if field_name else idx.analyzer
         terms = analyzer.analyze(query)
@@ -6474,9 +6468,7 @@ class SQLCompiler:
             return ProbBoolFusionOperator(signals, mode="and")
         return ProbBoolFusionOperator(signals, mode="or")
 
-    def _make_staged_retrieval_op(
-        self, args: tuple, ctx: ExecutionContext
-    ) -> Any:
+    def _make_staged_retrieval_op(self, args: tuple, ctx: ExecutionContext) -> Any:
         """staged_retrieval(signal1, k1, signal2, k2, ...)
 
         Each pair of arguments is a (signal_function, cutoff) pair.
@@ -6500,8 +6492,7 @@ class SQLCompiler:
 
         if not stages:
             raise ValueError(
-                "staged_retrieval requires at least one "
-                "(signal, cutoff) pair"
+                "staged_retrieval requires at least one (signal, cutoff) pair"
             )
 
         return MultiStageOperator(stages)
@@ -6533,7 +6524,11 @@ class SQLCompiler:
             for arg in args:
                 if isinstance(arg, FuncCall):
                     fn_name = arg.funcname[-1].sval.lower()
-                    if fn_name in ("text_match", "bayesian_match") and arg.args and len(arg.args) >= 2:
+                    if (
+                        fn_name in ("text_match", "bayesian_match")
+                        and arg.args
+                        and len(arg.args) >= 2
+                    ):
                         query_str = self._extract_string_value(arg.args[1])
                         analyzer = ctx.inverted_index.analyzer
                         terms = analyzer.analyze(query_str)
@@ -7749,18 +7744,13 @@ class _ExternalPriorSearchOperator:
             doc_length = idx.get_doc_length(doc_id, field_key) if idx else tf
             doc_freq = len(source_pl)
 
-            score = self.scorer.score_with_prior(
-                tf, doc_length, doc_freq, doc_fields
-            )
+            score = self.scorer.score_with_prior(tf, doc_length, doc_freq, doc_fields)
             entries.append(PostingEntry(doc_id, Payload(score=score)))
 
         return PL.from_sorted(entries)
 
     def cost_estimate(self, stats: Any) -> float:
-        return (
-            getattr(self.source, "cost_estimate", lambda _: 100.0)(stats)
-            * 1.1
-        )
+        return getattr(self.source, "cost_estimate", lambda _: 100.0)(stats) * 1.1
 
 
 class _CalibratedKNNOperator(Operator):

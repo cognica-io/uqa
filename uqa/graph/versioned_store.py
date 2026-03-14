@@ -82,8 +82,7 @@ class VersionedGraphStore:
         """Rollback to a specific version by reverse-applying deltas."""
         if to_version < 0 or to_version > self._version:
             raise ValueError(
-                f"Cannot rollback to version {to_version} "
-                f"(current: {self._version})"
+                f"Cannot rollback to version {to_version} (current: {self._version})"
             )
         while self._version > to_version:
             inverse = self._inverse_deltas.pop()

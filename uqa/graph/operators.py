@@ -506,9 +506,7 @@ class RegularPathQueryOperator:
                 stack.append(target)
         return visited
 
-    def _try_index_lookup(
-        self, ctx: object
-    ) -> GraphPostingList | None:
+    def _try_index_lookup(self, ctx: object) -> GraphPostingList | None:
         """Try to answer the RPQ from the path index (Section 9.1, Paper 2).
 
         Only works for simple Concat-of-Labels expressions.  Returns None

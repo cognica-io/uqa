@@ -52,9 +52,7 @@ class GraphEmbeddingOperator:
         graph_payloads: dict[int, GraphPayload] = {}
 
         for vid in sorted(graph._vertices):
-            embedding = self._compute_embedding(
-                graph, vid, label_to_idx, n_labels
-            )
+            embedding = self._compute_embedding(graph, vid, label_to_idx, n_labels)
             entries.append(
                 PostingEntry(
                     vid,

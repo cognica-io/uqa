@@ -19,9 +19,7 @@ class TestMultiFieldBayesianScorer:
 
     def test_single_field(self) -> None:
         stats = IndexStats(total_docs=100, avg_doc_length=10.0)
-        scorer = MultiFieldBayesianScorer(
-            [("title", BayesianBM25Params(), 1.0)], stats
-        )
+        scorer = MultiFieldBayesianScorer([("title", BayesianBM25Params(), 1.0)], stats)
         score = scorer.score_document(
             1,
             term_freq_per_field={"title": 3},
@@ -55,9 +53,7 @@ class TestMultiFieldBayesianScorer:
 
     def test_zero_tf_gives_neutral(self) -> None:
         stats = IndexStats(total_docs=100, avg_doc_length=10.0)
-        scorer = MultiFieldBayesianScorer(
-            [("title", BayesianBM25Params(), 1.0)], stats
-        )
+        scorer = MultiFieldBayesianScorer([("title", BayesianBM25Params(), 1.0)], stats)
         score = scorer.score_document(
             1,
             term_freq_per_field={"title": 0},
@@ -109,9 +105,7 @@ class TestMultiFieldSearchOperator:
         from uqa.operators.multi_field import MultiFieldSearchOperator
 
         ctx = engine._context_for_table("docs")
-        op = MultiFieldSearchOperator(
-            ["title", "body"], "learning", weights=[2.0, 0.5]
-        )
+        op = MultiFieldSearchOperator(["title", "body"], "learning", weights=[2.0, 0.5])
         result = op.execute(ctx)
         assert len(result) > 0
 
@@ -156,9 +150,7 @@ class TestMultiFieldSQL:
 
     def test_multi_field_match_too_few_args(self, engine: Engine) -> None:
         with pytest.raises(ValueError):
-            engine.sql(
-                "SELECT * FROM docs WHERE multi_field_match(title, 'learning')"
-            )
+            engine.sql("SELECT * FROM docs WHERE multi_field_match(title, 'learning')")
 
 
 class TestMultiFieldQueryBuilder:
@@ -185,9 +177,7 @@ class TestMultiFieldQueryBuilder:
     def test_query_builder_multi_field_with_weights(self, engine: Engine) -> None:
         result = (
             engine.query("docs")
-            .score_multi_field_bayesian(
-                "learning", ["title", "body"], [2.0, 0.5]
-            )
+            .score_multi_field_bayesian("learning", ["title", "body"], [2.0, 0.5])
             .execute()
         )
         assert len(result) > 0

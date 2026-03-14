@@ -140,7 +140,10 @@ class TestFusionWAND:
     def test_top_k(self, benchmark, k: int) -> None:
         gen = BenchmarkDataGenerator(seed=42)
         n_signals = 3
-        pls = [gen.posting_list(size=1000, score_range=(0.1, 0.9)) for _ in range(n_signals)]
+        pls = [
+            gen.posting_list(size=1000, score_range=(0.1, 0.9))
+            for _ in range(n_signals)
+        ]
         ubs = [0.9] * n_signals
         scorer = FusionWANDScorer(pls, ubs, alpha=0.5, k=k)
         result = benchmark(scorer.score_top_k)
@@ -149,7 +152,9 @@ class TestFusionWAND:
     @pytest.mark.parametrize("n_signals", [2, 3, 5])
     def test_vs_exhaustive(self, benchmark, n_signals: int) -> None:
         gen = BenchmarkDataGenerator(seed=42)
-        pls = [gen.posting_list(size=500, score_range=(0.1, 0.9)) for _ in range(n_signals)]
+        pls = [
+            gen.posting_list(size=500, score_range=(0.1, 0.9)) for _ in range(n_signals)
+        ]
         ubs = [0.9] * n_signals
         scorer = FusionWANDScorer(pls, ubs, alpha=0.5, k=10)
         result = benchmark(scorer.score_top_k)

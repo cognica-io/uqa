@@ -129,9 +129,7 @@ class CostModel:
                 return float(stats.total_docs) ** 2
             case RegularPathQueryOperator():
                 # Path-indexable expressions (Concat-of-Labels) are cheaper
-                labels = RegularPathQueryOperator._extract_label_sequence(
-                    op.path_expr
-                )
+                labels = RegularPathQueryOperator._extract_label_sequence(op.path_expr)
                 if labels is not None:
                     return float(stats.total_docs) * 0.1
                 return float(stats.total_docs) ** 2

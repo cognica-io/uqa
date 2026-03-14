@@ -161,9 +161,7 @@ sig3 = (
     .score_bayesian_bm25("model", "abstract")
 )
 results = (
-    engine.query(table="papers")
-    .fuse_attention(sig1, sig2, sig3, alpha=0.5)
-    .execute()
+    engine.query(table="papers").fuse_attention(sig1, sig2, sig3, alpha=0.5).execute()
 )
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True)[:5]:
     doc = engine.get_document(entry.doc_id, table="papers")
@@ -208,11 +206,7 @@ stage2 = (
     .term("attention", "abstract")
     .score_bayesian_bm25("attention mechanisms", "abstract")
 )
-results = (
-    engine.query(table="papers")
-    .multi_stage([(stage1, 5), (stage2, 3)])
-    .execute()
-)
+results = engine.query(table="papers").multi_stage([(stage1, 5), (stage2, 3)]).execute()
 print(f"  {len(results)} documents survived the pipeline")
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
     doc = engine.get_document(entry.doc_id, table="papers")
@@ -239,9 +233,7 @@ s3 = (
     .score_bayesian_bm25("transformer attention", "title")
 )
 results = (
-    engine.query(table="papers")
-    .multi_stage([(s1, 6), (s2, 4), (s3, 2)])
-    .execute()
+    engine.query(table="papers").multi_stage([(s1, 6), (s2, 4), (s3, 2)]).execute()
 )
 print(f"  {len(results)} documents after 3-stage cascade")
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
@@ -263,11 +255,7 @@ s2 = (
     .term("model", "abstract")
     .score_bayesian_bm25("model", "abstract")
 )
-results = (
-    engine.query(table="papers")
-    .multi_stage([(s1, 0.5), (s2, 0.5)])
-    .execute()
-)
+results = engine.query(table="papers").multi_stage([(s1, 0.5), (s2, 0.5)]).execute()
 print(f"  {len(results)} documents above 0.5 threshold at each stage")
 for entry in sorted(results, key=lambda e: e.payload.score, reverse=True):
     doc = engine.get_document(entry.doc_id, table="papers")

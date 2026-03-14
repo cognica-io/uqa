@@ -99,18 +99,10 @@ class TestMultiStageSQL:
     def engine(self) -> Engine:
         e = Engine()
         e.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, content TEXT)")
-        e.sql(
-            "INSERT INTO docs (content) VALUES ('machine learning algorithms')"
-        )
-        e.sql(
-            "INSERT INTO docs (content) VALUES ('deep learning neural networks')"
-        )
-        e.sql(
-            "INSERT INTO docs (content) VALUES ('database indexing structures')"
-        )
-        e.sql(
-            "INSERT INTO docs (content) VALUES ('search engine optimization')"
-        )
+        e.sql("INSERT INTO docs (content) VALUES ('machine learning algorithms')")
+        e.sql("INSERT INTO docs (content) VALUES ('deep learning neural networks')")
+        e.sql("INSERT INTO docs (content) VALUES ('database indexing structures')")
+        e.sql("INSERT INTO docs (content) VALUES ('search engine optimization')")
         return e
 
     def test_staged_retrieval_sql(self, engine: Engine) -> None:
@@ -137,12 +129,8 @@ class TestMultiStageQueryBuilder:
     def engine(self) -> Engine:
         e = Engine()
         e.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, content TEXT)")
-        e.sql(
-            "INSERT INTO docs (content) VALUES ('machine learning algorithms')"
-        )
-        e.sql(
-            "INSERT INTO docs (content) VALUES ('deep learning neural networks')"
-        )
+        e.sql("INSERT INTO docs (content) VALUES ('machine learning algorithms')")
+        e.sql("INSERT INTO docs (content) VALUES ('deep learning neural networks')")
         return e
 
     def test_query_builder_multi_stage(self, engine: Engine) -> None:
@@ -156,14 +144,10 @@ class TestMultiStageQueryBuilder:
             .term("algorithms", "content")
             .score_bayesian_bm25("algorithms", "content")
         )
-        result = (
-            engine.query("docs").multi_stage([(s1, 2), (s2, 1)]).execute()
-        )
+        result = engine.query("docs").multi_stage([(s1, 2), (s2, 1)]).execute()
         assert len(result) <= 1
 
-    def test_query_builder_stage_requires_operator(
-        self, engine: Engine
-    ) -> None:
+    def test_query_builder_stage_requires_operator(self, engine: Engine) -> None:
         empty = engine.query("docs")
         s1 = (
             engine.query("docs")

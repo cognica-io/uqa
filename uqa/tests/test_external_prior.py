@@ -26,6 +26,7 @@ class TestExternalPriorScorer:
     def test_score_with_neutral_prior(self) -> None:
         stats = IndexStats(total_docs=100, avg_doc_length=10.0)
         stats._doc_freqs[("_default", "test")] = 10
+
         def neutral_fn(fields: object) -> float:
             return 0.5
 
@@ -43,12 +44,8 @@ class TestExternalPriorScorer:
         def high_fn(fields: object) -> float:
             return 0.9
 
-        scorer_neutral = ExternalPriorScorer(
-            BayesianBM25Params(), stats, neutral_fn
-        )
-        scorer_high = ExternalPriorScorer(
-            BayesianBM25Params(), stats, high_fn
-        )
+        scorer_neutral = ExternalPriorScorer(BayesianBM25Params(), stats, neutral_fn)
+        scorer_high = ExternalPriorScorer(BayesianBM25Params(), stats, high_fn)
 
         base_score = scorer_neutral.score_with_prior(3, 10, 10, {})
         boosted_score = scorer_high.score_with_prior(3, 10, 10, {})
@@ -64,12 +61,8 @@ class TestExternalPriorScorer:
         def low_fn(fields: object) -> float:
             return 0.1
 
-        scorer_neutral = ExternalPriorScorer(
-            BayesianBM25Params(), stats, neutral_fn
-        )
-        scorer_low = ExternalPriorScorer(
-            BayesianBM25Params(), stats, low_fn
-        )
+        scorer_neutral = ExternalPriorScorer(BayesianBM25Params(), stats, neutral_fn)
+        scorer_low = ExternalPriorScorer(BayesianBM25Params(), stats, low_fn)
 
         base_score = scorer_neutral.score_with_prior(3, 10, 10, {})
         reduced_score = scorer_low.score_with_prior(3, 10, 10, {})
@@ -78,6 +71,7 @@ class TestExternalPriorScorer:
     def test_score_in_probability_range(self) -> None:
         stats = IndexStats(total_docs=100, avg_doc_length=10.0)
         stats._doc_freqs[("_default", "test")] = 10
+
         def fn(fields: object) -> float:
             return 0.7
 
@@ -101,9 +95,7 @@ class TestRecencyPrior:
 
     def test_old_date_gives_lower_prior(self) -> None:
         fn = recency_prior("timestamp", decay_days=30.0)
-        old = (
-            datetime.datetime.now() - datetime.timedelta(days=365)
-        ).isoformat()
+        old = (datetime.datetime.now() - datetime.timedelta(days=365)).isoformat()
         prior = fn({"timestamp": old})
         assert prior < 0.6
 
@@ -147,21 +139,11 @@ class TestExternalPriorSQL:
     @pytest.fixture()
     def engine(self) -> Engine:
         e = Engine()
+        e.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, content TEXT, authority TEXT)")
         e.sql(
-            "CREATE TABLE docs ("
-            "id SERIAL PRIMARY KEY, "
-            "content TEXT, "
-            "authority TEXT"
-            ")"
+            "INSERT INTO docs (content, authority) VALUES ('machine learning', 'high')"
         )
-        e.sql(
-            "INSERT INTO docs (content, authority) "
-            "VALUES ('machine learning', 'high')"
-        )
-        e.sql(
-            "INSERT INTO docs (content, authority) "
-            "VALUES ('deep learning', 'low')"
-        )
+        e.sql("INSERT INTO docs (content, authority) VALUES ('deep learning', 'low')")
         return e
 
     def test_bayesian_with_prior_sql(self, engine: Engine) -> None:
@@ -186,13 +168,7 @@ class TestExternalPriorQueryBuilder:
 
     def test_fluent_api_with_authority_prior(self) -> None:
         e = Engine()
-        e.sql(
-            "CREATE TABLE articles ("
-            "id SERIAL PRIMARY KEY, "
-            "body TEXT, "
-            "source TEXT"
-            ")"
-        )
+        e.sql("CREATE TABLE articles (id SERIAL PRIMARY KEY, body TEXT, source TEXT)")
         e.sql(
             "INSERT INTO articles (body, source) "
             "VALUES ('information retrieval systems', 'high')"

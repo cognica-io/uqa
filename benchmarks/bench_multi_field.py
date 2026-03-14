@@ -57,9 +57,7 @@ class TestMultiFieldScorer:
         dl_per_field = {f"field_{i}": 120 for i in range(n_fields)}
         df_per_field = {f"field_{i}": 1000 for i in range(n_fields)}
 
-        benchmark(
-            scorer.score_document, 1, tf_per_field, dl_per_field, df_per_field
-        )
+        benchmark(scorer.score_document, 1, tf_per_field, dl_per_field, df_per_field)
 
     @pytest.mark.parametrize("n_fields", [2, 5])
     def test_score_batch(self, benchmark, n_fields: int) -> None:

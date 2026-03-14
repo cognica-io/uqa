@@ -149,9 +149,7 @@ class TestTemporalTraverse:
         assert 2 in reached
         assert 3 not in reached
 
-    def test_traverse_at_later_timestamp(
-        self, temporal_ctx: _ExecutionContext
-    ) -> None:
+    def test_traverse_at_later_timestamp(self, temporal_ctx: _ExecutionContext) -> None:
         """At t=160, from vertex 1: both edge 1 (1->2, [100,200]) and
         edge 2 (1->3, [150,300]) are valid. So vertices 2 and 3 are
         reachable in 1 hop.
@@ -176,9 +174,7 @@ class TestTemporalTraverse:
         assert 2 in reached
         assert 3 in reached
 
-    def test_traverse_with_time_range(
-        self, temporal_ctx: _ExecutionContext
-    ) -> None:
+    def test_traverse_with_time_range(self, temporal_ctx: _ExecutionContext) -> None:
         """Range [90, 110]: from vertex 1 with "knows":
         Edge 1 (1->2, [100,200]): overlaps [90,110]? 100<=110 and 200>=90 -> yes
         Edge 2 (1->3, [150,300]): overlaps [90,110]? 150<=110? no
@@ -224,9 +220,7 @@ class TestTemporalTraverse:
 
 
 class TestTemporalPatternMatch:
-    def test_pattern_match_at_timestamp(
-        self, temporal_ctx: _ExecutionContext
-    ) -> None:
+    def test_pattern_match_at_timestamp(self, temporal_ctx: _ExecutionContext) -> None:
         """Find (a)-[:knows]->(b) at t=110.
         Valid knows edges at t=110:
           1->2 [100,200]: yes
@@ -243,18 +237,14 @@ class TestTemporalPatternMatch:
         tf = TemporalFilter(timestamp=110.0)
         op = TemporalPatternMatchOperator(pattern, tf)
         result = op.execute(temporal_ctx)
-        assignments = [
-            (e.payload.fields["a"], e.payload.fields["b"]) for e in result
-        ]
+        assignments = [(e.payload.fields["a"], e.payload.fields["b"]) for e in result]
         assert (1, 2) in assignments
         assert (2, 3) in assignments
         assert (3, 4) in assignments
         assert (1, 3) not in assignments
         assert (4, 5) not in assignments
 
-    def test_pattern_match_no_filter(
-        self, temporal_ctx: _ExecutionContext
-    ) -> None:
+    def test_pattern_match_no_filter(self, temporal_ctx: _ExecutionContext) -> None:
         """Without temporal filter, all knows edges participate."""
         pattern = GraphPattern(
             vertex_patterns=[VertexPattern("a"), VertexPattern("b")],
@@ -262,9 +252,7 @@ class TestTemporalPatternMatch:
         )
         op = TemporalPatternMatchOperator(pattern, None)
         result = op.execute(temporal_ctx)
-        assignments = [
-            (e.payload.fields["a"], e.payload.fields["b"]) for e in result
-        ]
+        assignments = [(e.payload.fields["a"], e.payload.fields["b"]) for e in result]
         # All 5 knows edges should be found
         assert (1, 2) in assignments
         assert (1, 3) in assignments
@@ -276,11 +264,11 @@ class TestTemporalPatternMatch:
         self, temporal_ctx: _ExecutionContext
     ) -> None:
         """Range [200, 350]: valid knows edges:
-          1->2 [100,200]: 100<=350 and 200>=200 -> yes
-          1->3 [150,300]: 150<=350 and 300>=200 -> yes
-          2->3 [50,120]:  50<=350 and 120>=200 -> no
-          3->4 [100,250]: 100<=350 and 250>=200 -> yes
-          4->5 [300,500]: 300<=350 and 500>=200 -> yes
+        1->2 [100,200]: 100<=350 and 200>=200 -> yes
+        1->3 [150,300]: 150<=350 and 300>=200 -> yes
+        2->3 [50,120]:  50<=350 and 120>=200 -> no
+        3->4 [100,250]: 100<=350 and 250>=200 -> yes
+        4->5 [300,500]: 300<=350 and 500>=200 -> yes
         """
         pattern = GraphPattern(
             vertex_patterns=[VertexPattern("a"), VertexPattern("b")],
@@ -289,9 +277,7 @@ class TestTemporalPatternMatch:
         tf = TemporalFilter(time_range=(200.0, 350.0))
         op = TemporalPatternMatchOperator(pattern, tf)
         result = op.execute(temporal_ctx)
-        assignments = [
-            (e.payload.fields["a"], e.payload.fields["b"]) for e in result
-        ]
+        assignments = [(e.payload.fields["a"], e.payload.fields["b"]) for e in result]
         assert (1, 2) in assignments
         assert (1, 3) in assignments
         assert (2, 3) not in assignments
@@ -321,15 +307,9 @@ class TestTemporalTraverseSQL:
         engine.sql("CREATE TABLE tg (id INTEGER, name TEXT)")
         engine.sql("INSERT INTO tg VALUES (1, 'Alice')")
 
-        engine.add_graph_vertex(
-            Vertex(1, "person", {"name": "Alice"}), table="tg"
-        )
-        engine.add_graph_vertex(
-            Vertex(2, "person", {"name": "Bob"}), table="tg"
-        )
-        engine.add_graph_vertex(
-            Vertex(3, "person", {"name": "Charlie"}), table="tg"
-        )
+        engine.add_graph_vertex(Vertex(1, "person", {"name": "Alice"}), table="tg")
+        engine.add_graph_vertex(Vertex(2, "person", {"name": "Bob"}), table="tg")
+        engine.add_graph_vertex(Vertex(3, "person", {"name": "Charlie"}), table="tg")
         engine.add_graph_edge(
             Edge(1, 1, 2, "knows", {"valid_from": 100, "valid_to": 200}),
             table="tg",
@@ -340,9 +320,7 @@ class TestTemporalTraverseSQL:
         )
 
         # At t=110, only 1->2 is valid
-        result = engine.sql(
-            "SELECT * FROM temporal_traverse(1, 'knows', 1, 110, 'tg')"
-        )
+        result = engine.sql("SELECT * FROM temporal_traverse(1, 'knows', 1, 110, 'tg')")
         doc_ids = {row["_doc_id"] for row in result.rows}
         assert 2 in doc_ids
         assert 3 not in doc_ids
@@ -355,15 +333,9 @@ class TestTemporalTraverseSQL:
         engine.sql("CREATE TABLE tg2 (id INTEGER, name TEXT)")
         engine.sql("INSERT INTO tg2 VALUES (1, 'Alice')")
 
-        engine.add_graph_vertex(
-            Vertex(1, "person", {"name": "Alice"}), table="tg2"
-        )
-        engine.add_graph_vertex(
-            Vertex(2, "person", {"name": "Bob"}), table="tg2"
-        )
-        engine.add_graph_vertex(
-            Vertex(3, "person", {"name": "Charlie"}), table="tg2"
-        )
+        engine.add_graph_vertex(Vertex(1, "person", {"name": "Alice"}), table="tg2")
+        engine.add_graph_vertex(Vertex(2, "person", {"name": "Bob"}), table="tg2")
+        engine.add_graph_vertex(Vertex(3, "person", {"name": "Charlie"}), table="tg2")
         engine.add_graph_edge(
             Edge(1, 1, 2, "knows", {"valid_from": 100, "valid_to": 200}),
             table="tg2",
@@ -394,15 +366,9 @@ class TestTemporalTraverseQueryBuilder:
         engine.sql("CREATE TABLE qbt (id INTEGER)")
         engine.sql("INSERT INTO qbt VALUES (1)")
 
-        engine.add_graph_vertex(
-            Vertex(1, "person", {"name": "Alice"}), table="qbt"
-        )
-        engine.add_graph_vertex(
-            Vertex(2, "person", {"name": "Bob"}), table="qbt"
-        )
-        engine.add_graph_vertex(
-            Vertex(3, "person", {"name": "Charlie"}), table="qbt"
-        )
+        engine.add_graph_vertex(Vertex(1, "person", {"name": "Alice"}), table="qbt")
+        engine.add_graph_vertex(Vertex(2, "person", {"name": "Bob"}), table="qbt")
+        engine.add_graph_vertex(Vertex(3, "person", {"name": "Charlie"}), table="qbt")
         engine.add_graph_edge(
             Edge(1, 1, 2, "knows", {"valid_from": 100, "valid_to": 200}),
             table="qbt",
@@ -426,15 +392,9 @@ class TestTemporalTraverseQueryBuilder:
         engine.sql("CREATE TABLE qbt2 (id INTEGER)")
         engine.sql("INSERT INTO qbt2 VALUES (1)")
 
-        engine.add_graph_vertex(
-            Vertex(1, "person", {"name": "Alice"}), table="qbt2"
-        )
-        engine.add_graph_vertex(
-            Vertex(2, "person", {"name": "Bob"}), table="qbt2"
-        )
-        engine.add_graph_vertex(
-            Vertex(3, "person", {"name": "Charlie"}), table="qbt2"
-        )
+        engine.add_graph_vertex(Vertex(1, "person", {"name": "Alice"}), table="qbt2")
+        engine.add_graph_vertex(Vertex(2, "person", {"name": "Bob"}), table="qbt2")
+        engine.add_graph_vertex(Vertex(3, "person", {"name": "Charlie"}), table="qbt2")
         engine.add_graph_edge(
             Edge(1, 1, 2, "knows", {"valid_from": 100, "valid_to": 200}),
             table="qbt2",

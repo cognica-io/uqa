@@ -92,9 +92,7 @@ print("=" * 70)
 # ==================================================================
 show(
     "1. Temporal traverse from Alice at month 2 (1-hop 'follows')",
-    engine.sql(
-        "SELECT name FROM temporal_traverse(1, 'follows', 1, 2)"
-    ),
+    engine.sql("SELECT name FROM temporal_traverse(1, 'follows', 1, 2)"),
 )
 
 
@@ -103,9 +101,7 @@ show(
 # ==================================================================
 show(
     "2. Temporal traverse from Alice at month 7 (2-hop 'follows')",
-    engine.sql(
-        "SELECT name FROM temporal_traverse(1, 'follows', 2, 7)"
-    ),
+    engine.sql("SELECT name FROM temporal_traverse(1, 'follows', 2, 7)"),
 )
 
 
@@ -114,9 +110,7 @@ show(
 # ==================================================================
 print("\n--- 3. Comparison: month 1 vs month 10 (2-hop from Alice) ---")
 for month in (1, 10):
-    result = engine.sql(
-        f"SELECT name FROM temporal_traverse(1, 'follows', 2, {month})"
-    )
+    result = engine.sql(f"SELECT name FROM temporal_traverse(1, 'follows', 2, {month})")
     reachable = [row["name"] for row in result.rows]
     print(f"  Month {month:>2}: {', '.join(reachable)}")
 
@@ -126,9 +120,7 @@ for month in (1, 10):
 # ==================================================================
 show(
     "4. Range traversal from Alice, months 3-6 (2-hop 'follows')",
-    engine.sql(
-        "SELECT name FROM temporal_traverse(1, 'follows', 2, 3, 6)"
-    ),
+    engine.sql("SELECT name FROM temporal_traverse(1, 'follows', 2, 3, 6)"),
 )
 
 
@@ -137,9 +129,7 @@ show(
 # ==================================================================
 show(
     "5. Range traversal from Bob, months 7-12 (2-hop 'follows')",
-    engine.sql(
-        "SELECT name FROM temporal_traverse(2, 'follows', 2, 7, 12)"
-    ),
+    engine.sql("SELECT name FROM temporal_traverse(2, 'follows', 2, 7, 12)"),
 )
 
 

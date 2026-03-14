@@ -184,15 +184,11 @@ class PlanExecutor:
                 lines.append(f"{prefix}ProbNot")
                 self._explain_recursive(sig, lines, indent + 1)
             case AttentionFusionOperator(signals=sigs):
-                lines.append(
-                    f"{prefix}AttentionFusion(signals={len(sigs)})"
-                )
+                lines.append(f"{prefix}AttentionFusion(signals={len(sigs)})")
                 for sig in sigs:
                     self._explain_recursive(sig, lines, indent + 1)
             case LearnedFusionOperator(signals=sigs):
-                lines.append(
-                    f"{prefix}LearnedFusion(signals={len(sigs)})"
-                )
+                lines.append(f"{prefix}LearnedFusion(signals={len(sigs)})")
                 for sig in sigs:
                     self._explain_recursive(sig, lines, indent + 1)
             case TraverseOperator():

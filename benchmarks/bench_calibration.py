@@ -22,9 +22,7 @@ from uqa.scoring.parameter_learner import ParameterLearner
 # ---------------------------------------------------------------------------
 
 
-def _make_predictions(
-    n: int, seed: int = 42
-) -> tuple[list[float], list[int]]:
+def _make_predictions(n: int, seed: int = 42) -> tuple[list[float], list[int]]:
     """Generate random probabilities and binary labels."""
     rng = np.random.default_rng(seed)
     probabilities = [float(rng.uniform(0.0, 1.0)) for _ in range(n)]
@@ -32,9 +30,7 @@ def _make_predictions(
     return probabilities, labels
 
 
-def _make_scores_and_labels(
-    n: int, seed: int = 42
-) -> tuple[list[float], list[int]]:
+def _make_scores_and_labels(n: int, seed: int = 42) -> tuple[list[float], list[int]]:
     """Generate BM25-like scores and binary labels for parameter learning."""
     rng = np.random.default_rng(seed)
     scores = [float(rng.uniform(0.0, 20.0)) for _ in range(n)]

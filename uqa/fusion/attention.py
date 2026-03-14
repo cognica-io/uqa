@@ -51,7 +51,9 @@ class AttentionFusion:
         weights = weights - np.max(weights)
         exp_w = np.exp(weights)
         weights = exp_w / np.sum(exp_w)
-        return float(log_odds_conjunction(probs, alpha=self._attn.alpha, weights=weights))
+        return float(
+            log_odds_conjunction(probs, alpha=self._attn.alpha, weights=weights)
+        )
 
     def fit(
         self,

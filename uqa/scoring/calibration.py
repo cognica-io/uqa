@@ -24,9 +24,7 @@ class CalibrationMetrics:
     """
 
     @staticmethod
-    def ece(
-        probabilities: list[float], labels: list[int], n_bins: int = 10
-    ) -> float:
+    def ece(probabilities: list[float], labels: list[int], n_bins: int = 10) -> float:
         """Expected Calibration Error.
 
         Measures how well predicted probabilities match actual relevance
@@ -47,9 +45,7 @@ class CalibrationMetrics:
         return float(brier_score(np.array(probabilities), np.array(labels)))
 
     @staticmethod
-    def report(
-        probabilities: list[float], labels: list[int], n_bins: int = 10
-    ) -> dict:
+    def report(probabilities: list[float], labels: list[int], n_bins: int = 10) -> dict:
         """Full calibration diagnostic report.
 
         Returns a dict with keys: ece, brier, bin_data, and any
@@ -65,9 +61,7 @@ class CalibrationMetrics:
             return raw
         # Fallback: build report manually
         return {
-            "ece": float(
-                expected_calibration_error(probs, lbls, n_bins=n_bins)
-            ),
+            "ece": float(expected_calibration_error(probs, lbls, n_bins=n_bins)),
             "brier": float(brier_score(probs, lbls)),
         }
 

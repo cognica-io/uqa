@@ -33,7 +33,9 @@ class LearnedFusion:
         """Fuse signals using learned weights."""
         probs = np.array(probabilities)
         weights = self._learnable.weights
-        return float(log_odds_conjunction(probs, alpha=self._learnable.alpha, weights=weights))
+        return float(
+            log_odds_conjunction(probs, alpha=self._learnable.alpha, weights=weights)
+        )
 
     def fit(self, probs: NDArray, labels: NDArray, **kwargs: Any) -> None:
         """Batch train signal weights."""

@@ -142,7 +142,10 @@ class TemporalPatternMatchOperator:
                 if not all(c(edge) for c in ep.constraints):
                     continue
                 # Apply temporal filter
-                if self.temporal_filter is not None and not self.temporal_filter.is_valid(edge.properties):
+                if (
+                    self.temporal_filter is not None
+                    and not self.temporal_filter.is_valid(edge.properties)
+                ):
                     continue
                 found = True
                 break
@@ -159,11 +162,12 @@ class TemporalPatternMatchOperator:
             tgt_id = assignment[ep.target_var]
             for eid in graph._adj_out.get(src_id, []):
                 edge = graph._edges[eid]
-                if edge.target_id == tgt_id and (
-                    ep.label is None or edge.label == ep.label
-                ) and (
-                    self.temporal_filter is None or self.temporal_filter.is_valid(
-                        edge.properties
+                if (
+                    edge.target_id == tgt_id
+                    and (ep.label is None or edge.label == ep.label)
+                    and (
+                        self.temporal_filter is None
+                        or self.temporal_filter.is_valid(edge.properties)
                     )
                 ):
                     edge_ids.add(eid)

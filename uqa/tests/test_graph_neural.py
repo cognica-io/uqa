@@ -182,15 +182,11 @@ class TestGNNSQL:
         return e
 
     def test_message_passing_sql(self, engine: Engine) -> None:
-        result = engine.sql(
-            "SELECT * FROM g WHERE message_passing(2, 'mean', 'score')"
-        )
+        result = engine.sql("SELECT * FROM g WHERE message_passing(2, 'mean', 'score')")
         assert result is not None
 
     def test_graph_embedding_sql(self, engine: Engine) -> None:
-        result = engine.sql(
-            "SELECT * FROM g WHERE graph_embedding(16, 2)"
-        )
+        result = engine.sql("SELECT * FROM g WHERE graph_embedding(16, 2)")
         assert result is not None
 
 
