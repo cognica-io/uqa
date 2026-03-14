@@ -66,7 +66,7 @@
         flex-direction: column;
       }
       .benchmark-title {
-        font-size: 3rem;
+        font-size: 1.8rem;
         font-weight: 600;
         word-break: break-word;
         text-align: center;
@@ -74,13 +74,22 @@
       .benchmark-graphs {
         display: flex;
         flex-direction: row;
-        justify-content: space-around;
-        align-items: center;
+        justify-content: flex-start;
+        align-items: flex-start;
         flex-wrap: wrap;
         width: 100%;
+        gap: 12px;
       }
       .benchmark-chart {
-        max-width: 1000px;
+        max-width: calc(33.333% - 8px);
+        min-width: 280px;
+        flex: 1 1 calc(33.333% - 8px);
+      }
+      @media (max-width: 900px) {
+        .benchmark-chart {
+          max-width: 100%;
+          flex: 1 1 100%;
+        }
       }
     </style>
     <title>Benchmarks</title>
@@ -188,12 +197,18 @@
               ],
             };
             const options = {
+              responsive: true,
+              maintainAspectRatio: true,
+              aspectRatio: 1.6,
               scales: {
                 xAxes: [
                   {
                     scaleLabel: {
-                      display: true,
-                      labelString: 'commit',
+                      display: false,
+                    },
+                    ticks: {
+                      fontSize: 9,
+                      maxRotation: 45,
                     },
                   }
                 ],
@@ -202,12 +217,20 @@
                     scaleLabel: {
                       display: true,
                       labelString: dataset.length > 0 ? dataset[0].bench.unit : '',
+                      fontSize: 10,
                     },
                     ticks: {
                       beginAtZero: true,
+                      fontSize: 9,
                     }
                   }
                 ],
+              },
+              legend: {
+                labels: {
+                  fontSize: 10,
+                  boxWidth: 12,
+                },
               },
               tooltips: {
                 callbacks: {
