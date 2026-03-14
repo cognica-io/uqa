@@ -392,9 +392,9 @@ class SQLiteInvertedIndex:
         self._conn.commit()
         self._cached_stats = None
 
-        # Rebuild skip pointers for affected terms.
+        # Defer skip pointer rebuilds until next query.
         for field, term in affected_terms:
-            self._rebuild_skip_pointers(field, term)
+            self._dirty_terms.add((field, term))
 
     def clear(self) -> None:
         """Remove all indexed data from all backing tables."""
@@ -415,8 +415,15 @@ class SQLiteInvertedIndex:
 
     # -- Query methods -------------------------------------------------
 
+    def _flush_term(self, field: str, term: str) -> None:
+        """Flush skip pointers for a specific (field, term) if dirty."""
+        key = (field, term)
+        if key in self._dirty_terms:
+            self._dirty_terms.discard(key)
+            self._rebuild_skip_pointers(field, term)
+
     def get_posting_list(self, field: str, term: str) -> PostingList:
-        self.flush_skip_pointers()
+        self._flush_term(field, term)
         if field not in self._known_fields:
             return PostingList()
         tbl = self._inverted_table_name(field)
@@ -483,6 +490,23 @@ class SQLiteInvertedIndex:
         )
         return row[0] if row else 0
 
+    def get_doc_lengths_bulk(
+        self, doc_ids: list[DocId], field: FieldName
+    ) -> dict[DocId, int]:
+        """Return doc lengths for multiple doc_ids in a single call."""
+        result: dict[DocId, int] = dict.fromkeys(doc_ids, 0)
+        for chunk_start in range(0, len(doc_ids), 500):
+            chunk = doc_ids[chunk_start : chunk_start + 500]
+            placeholders = ",".join("?" * len(chunk))
+            rows = self._fetchall(
+                f'SELECT doc_id, length FROM "_doc_lengths_{self._table_name}" '
+                f"WHERE field = ? AND doc_id IN ({placeholders})",
+                (field, *chunk),
+            )
+            for doc_id, length in rows:
+                result[doc_id] = length
+        return result
+
     def get_total_doc_length(self, doc_id: DocId) -> int:
         """Get total document length across all fields."""
         row = self._fetchone(
@@ -503,31 +527,53 @@ class SQLiteInvertedIndex:
         )
         return row[0] if row else 0
 
+    def get_term_freqs_bulk(
+        self, doc_ids: list[DocId], field: str, term: str
+    ) -> dict[DocId, int]:
+        """Return term frequencies for multiple doc_ids in a single call."""
+        result: dict[DocId, int] = dict.fromkeys(doc_ids, 0)
+        if field not in self._known_fields:
+            return result
+        tbl = self._inverted_table_name(field)
+        for chunk_start in range(0, len(doc_ids), 500):
+            chunk = doc_ids[chunk_start : chunk_start + 500]
+            placeholders = ",".join("?" * len(chunk))
+            rows = self._fetchall(
+                f'SELECT doc_id, tf FROM "{tbl}" '
+                f"WHERE term = ? AND doc_id IN ({placeholders})",
+                (term, *chunk),
+            )
+            for doc_id, tf in rows:
+                result[doc_id] = tf
+        return result
+
     def get_total_term_freq(self, doc_id: DocId, term: str) -> int:
         """Get total term frequency for a doc across all fields."""
-        total = 0
+        if not self._known_fields:
+            return 0
+        parts = []
+        params: list[Any] = []
         for field in self._known_fields:
             tbl = self._inverted_table_name(field)
-            row = self._fetchone(
-                f'SELECT tf FROM "{tbl}" WHERE term = ? AND doc_id = ?',
-                (term, doc_id),
-            )
-            if row:
-                total += row[0]
-        return total
+            parts.append(f'SELECT tf FROM "{tbl}" WHERE term = ? AND doc_id = ?')
+            params.extend([term, doc_id])
+        sql = " UNION ALL ".join(parts)
+        rows = self._fetchall(sql, tuple(params))
+        return sum(r[0] for r in rows)
 
     def doc_freq_any_field(self, term: str) -> int:
         """Get document frequency across all fields."""
-        doc_ids: set[int] = set()
+        if not self._known_fields:
+            return 0
+        parts = []
+        params: list[Any] = []
         for field in self._known_fields:
             tbl = self._inverted_table_name(field)
-            rows = self._fetchall(
-                f'SELECT doc_id FROM "{tbl}" WHERE term = ?',
-                (term,),
-            )
-            for (did,) in rows:
-                doc_ids.add(did)
-        return len(doc_ids)
+            parts.append(f'SELECT DISTINCT doc_id FROM "{tbl}" WHERE term = ?')
+            params.extend([term])
+        sql = f"SELECT COUNT(DISTINCT doc_id) FROM ({' UNION ALL '.join(parts)})"
+        row = self._fetchone(sql, tuple(params))
+        return row[0] if row else 0
 
     @property
     def stats(self) -> IndexStats:

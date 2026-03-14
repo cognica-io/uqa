@@ -120,6 +120,8 @@ class TestSkipPointerConstruction:
         for i in range(1, 73):
             idx.remove_document(i)
 
+        # Flush deferred skip pointer rebuilds before checking.
+        idx.flush_skip_pointers()
         rows_after = idx._conn.execute(
             f'SELECT COUNT(*) FROM "{skip_tbl}" WHERE term = ?',
             ("alpha",),

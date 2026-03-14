@@ -39,6 +39,20 @@ class DocumentStore:
             return None
         return doc.get(field)
 
+    def get_fields_bulk(
+        self, doc_ids: list[DocId], field: FieldName
+    ) -> dict[DocId, Any]:
+        """Return field values for multiple doc_ids in a single call."""
+        result: dict[DocId, Any] = {}
+        for doc_id in doc_ids:
+            doc = self._documents.get(doc_id)
+            result[doc_id] = doc.get(field) if doc is not None else None
+        return result
+
+    def has_value(self, field: FieldName, value: Any) -> bool:
+        """Return True if any document has ``field == value``."""
+        return any(doc.get(field) == value for doc in self._documents.values())
+
     def eval_path(self, doc_id: DocId, path: PathExpr) -> Any:
         doc = self._documents.get(doc_id)
         if doc is None:

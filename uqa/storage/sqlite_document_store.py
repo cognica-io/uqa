@@ -196,6 +196,38 @@ class SQLiteDocumentStore:
             v = json.loads(v)
         return v
 
+    def get_fields_bulk(
+        self, doc_ids: list[DocId], field: FieldName
+    ) -> dict[DocId, Any]:
+        """Return field values for multiple doc_ids in a single call."""
+        if field not in self._col_set:
+            return dict.fromkeys(doc_ids)
+        is_json = field in self._json_cols
+        result: dict[DocId, Any] = dict.fromkeys(doc_ids)
+        for chunk_start in range(0, len(doc_ids), 500):
+            chunk = doc_ids[chunk_start : chunk_start + 500]
+            placeholders = ",".join("?" * len(chunk))
+            rows = self._fetchall(
+                f"SELECT _rowid, {field} FROM {self._table} "
+                f"WHERE _rowid IN ({placeholders})",
+                tuple(chunk),
+            )
+            for rowid, v in rows:
+                if v is not None and is_json and isinstance(v, str):
+                    v = json.loads(v)
+                result[rowid] = v
+        return result
+
+    def has_value(self, field: FieldName, value: Any) -> bool:
+        """Return True if any row has ``field == value``."""
+        if field not in self._col_set:
+            return False
+        row = self._fetchone(
+            f"SELECT 1 FROM {self._table} WHERE {field} = ? LIMIT 1",
+            (value,),
+        )
+        return row is not None
+
     def eval_path(self, doc_id: DocId, path: PathExpr) -> Any:
         """Evaluate a hierarchical path expression against a document.
 

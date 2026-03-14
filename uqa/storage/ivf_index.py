@@ -274,16 +274,22 @@ class IVFIndex(VectorIndex):
         if not rows:
             return PostingList()
 
-        scored: list[tuple[int, float]] = []
-        for doc_id, blob in rows:
-            vec = np.frombuffer(blob, dtype=np.float32)
-            sim = float(np.dot(q, vec))
-            scored.append((doc_id, sim))
+        n = len(rows)
+        doc_ids = [r[0] for r in rows]
+        data = np.empty((n, self.dimensions), dtype=np.float32)
+        for i, (_did, blob) in enumerate(rows):
+            data[i] = np.frombuffer(blob, dtype=np.float32)
 
-        scored.sort(key=lambda x: x[1], reverse=True)
-        actual_k = min(k, len(scored))
+        sims = data @ q
+        actual_k = min(k, n)
+        if actual_k >= n:
+            top_indices = np.argsort(sims)[::-1]
+        else:
+            top_indices = np.argpartition(sims, -actual_k)[-actual_k:]
+            top_indices = top_indices[np.argsort(sims[top_indices])[::-1]]
+
         entries = [
-            PostingEntry(did, Payload(score=sim)) for did, sim in scored[:actual_k]
+            PostingEntry(doc_ids[i], Payload(score=float(sims[i]))) for i in top_indices
         ]
         return PostingList(entries)
 
@@ -291,12 +297,21 @@ class IVFIndex(VectorIndex):
         rows = self._conn.execute(
             f'SELECT doc_id, embedding FROM "{self._lists_table}"'
         ).fetchall()
-        entries: list[PostingEntry] = []
-        for doc_id, blob in rows:
-            vec = np.frombuffer(blob, dtype=np.float32)
-            sim = float(np.dot(q, vec))
-            if sim >= threshold:
-                entries.append(PostingEntry(doc_id, Payload(score=sim)))
+        if not rows:
+            return PostingList()
+
+        n = len(rows)
+        doc_ids = [r[0] for r in rows]
+        data = np.empty((n, self.dimensions), dtype=np.float32)
+        for i, (_did, blob) in enumerate(rows):
+            data[i] = np.frombuffer(blob, dtype=np.float32)
+
+        sims = data @ q
+        mask = sims >= threshold
+        entries = [
+            PostingEntry(doc_ids[i], Payload(score=float(sims[i])))
+            for i in np.where(mask)[0]
+        ]
         return PostingList(entries)
 
     # ------------------------------------------------------------------
@@ -310,22 +325,32 @@ class IVFIndex(VectorIndex):
         # the last train.
         centroid_ids_with_untrained = [*centroid_ids, _UNTRAINED_CENTROID_ID]
 
-        scored: list[tuple[int, float]] = []
-        for cid in centroid_ids_with_untrained:
-            rows = self._conn.execute(
-                f'SELECT doc_id, embedding FROM "{self._lists_table}" '
-                f"WHERE centroid_id = ?",
-                (cid,),
-            ).fetchall()
-            for doc_id, blob in rows:
-                vec = np.frombuffer(blob, dtype=np.float32)
-                sim = float(np.dot(q, vec))
-                scored.append((doc_id, sim))
+        placeholders = ",".join("?" * len(centroid_ids_with_untrained))
+        rows = self._conn.execute(
+            f'SELECT doc_id, embedding FROM "{self._lists_table}" '
+            f"WHERE centroid_id IN ({placeholders})",
+            tuple(centroid_ids_with_untrained),
+        ).fetchall()
 
-        scored.sort(key=lambda x: x[1], reverse=True)
-        actual_k = min(k, len(scored))
+        if not rows:
+            return PostingList()
+
+        n = len(rows)
+        doc_ids = [r[0] for r in rows]
+        data = np.empty((n, self.dimensions), dtype=np.float32)
+        for i, (_did, blob) in enumerate(rows):
+            data[i] = np.frombuffer(blob, dtype=np.float32)
+
+        sims = data @ q
+        actual_k = min(k, n)
+        if actual_k >= n:
+            top_indices = np.argsort(sims)[::-1]
+        else:
+            top_indices = np.argpartition(sims, -actual_k)[-actual_k:]
+            top_indices = top_indices[np.argsort(sims[top_indices])[::-1]]
+
         entries = [
-            PostingEntry(did, Payload(score=sim)) for did, sim in scored[:actual_k]
+            PostingEntry(doc_ids[i], Payload(score=float(sims[i]))) for i in top_indices
         ]
         return PostingList(entries)
 
@@ -333,18 +358,28 @@ class IVFIndex(VectorIndex):
         centroid_ids = self._nearest_centroids(q, self._nprobe)
         centroid_ids_with_untrained = [*centroid_ids, _UNTRAINED_CENTROID_ID]
 
-        entries: list[PostingEntry] = []
-        for cid in centroid_ids_with_untrained:
-            rows = self._conn.execute(
-                f'SELECT doc_id, embedding FROM "{self._lists_table}" '
-                f"WHERE centroid_id = ?",
-                (cid,),
-            ).fetchall()
-            for doc_id, blob in rows:
-                vec = np.frombuffer(blob, dtype=np.float32)
-                sim = float(np.dot(q, vec))
-                if sim >= threshold:
-                    entries.append(PostingEntry(doc_id, Payload(score=sim)))
+        placeholders = ",".join("?" * len(centroid_ids_with_untrained))
+        rows = self._conn.execute(
+            f'SELECT doc_id, embedding FROM "{self._lists_table}" '
+            f"WHERE centroid_id IN ({placeholders})",
+            tuple(centroid_ids_with_untrained),
+        ).fetchall()
+
+        if not rows:
+            return PostingList()
+
+        n = len(rows)
+        doc_ids = [r[0] for r in rows]
+        data = np.empty((n, self.dimensions), dtype=np.float32)
+        for i, (_did, blob) in enumerate(rows):
+            data[i] = np.frombuffer(blob, dtype=np.float32)
+
+        sims = data @ q
+        mask = sims >= threshold
+        entries = [
+            PostingEntry(doc_ids[i], Payload(score=float(sims[i])))
+            for i in np.where(mask)[0]
+        ]
         return PostingList(entries)
 
     # ------------------------------------------------------------------
@@ -374,23 +409,20 @@ class IVFIndex(VectorIndex):
 
         # Persist centroids.
         self._conn.execute(f'DELETE FROM "{self._centroids_table}"')
-        for i, c in enumerate(centroids):
-            self._conn.execute(
-                f'INSERT INTO "{self._centroids_table}" '
-                f"(centroid_id, centroid) VALUES (?, ?)",
-                (i, c.tobytes()),
-            )
+        self._conn.executemany(
+            f'INSERT INTO "{self._centroids_table}" '
+            f"(centroid_id, centroid) VALUES (?, ?)",
+            [(i, c.tobytes()) for i, c in enumerate(centroids)],
+        )
 
         # Reassign all vectors to their nearest centroid.
         assignments = data @ centroids.T  # (n, nlist)
         best = np.argmax(assignments, axis=1)
 
-        for j, doc_id in enumerate(doc_ids):
-            cid = int(best[j])
-            self._conn.execute(
-                f'UPDATE "{self._lists_table}" SET centroid_id = ? WHERE doc_id = ?',
-                (cid, doc_id),
-            )
+        self._conn.executemany(
+            f'UPDATE "{self._lists_table}" SET centroid_id = ? WHERE doc_id = ?',
+            [(int(best[j]), doc_id) for j, doc_id in enumerate(doc_ids)],
+        )
 
         self._conn.commit()
         self._state = _State.TRAINED
@@ -436,23 +468,21 @@ class IVFIndex(VectorIndex):
             sims = data @ centroids.T  # (n, k)
             labels = np.argmax(sims, axis=1)
 
-            # Update centroids.
+            # Update centroids using vectorized scatter-add.
             new_centroids = np.zeros_like(centroids)
-            counts = np.zeros(k, dtype=np.int64)
-            for j in range(n):
-                c = labels[j]
-                new_centroids[c] += data[j]
-                counts[c] += 1
+            np.add.at(new_centroids, labels, data)
+            counts = np.bincount(labels, minlength=k)
 
-            for c in range(k):
-                if counts[c] > 0:
-                    new_centroids[c] /= counts[c]
-                    norm = np.linalg.norm(new_centroids[c])
-                    if norm > 0:
-                        new_centroids[c] /= norm
-                else:
-                    # Empty cluster: reinitialize from a random point.
-                    new_centroids[c] = data[rng.randint(n)]
+            nonempty = counts > 0
+            new_centroids[nonempty] /= counts[nonempty, np.newaxis]
+            norms = np.linalg.norm(new_centroids[nonempty], axis=1, keepdims=True)
+            norms = np.maximum(norms, 1e-30)
+            new_centroids[nonempty] /= norms
+
+            empty = ~nonempty
+            n_empty = empty.sum()
+            if n_empty > 0:
+                new_centroids[empty] = data[rng.choice(n, size=n_empty)]
 
             # Check convergence.
             shift = np.linalg.norm(new_centroids - centroids)

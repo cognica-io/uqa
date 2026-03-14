@@ -83,14 +83,17 @@ class BlockMaxIndex:
             ")"
         )
         conn.execute("DELETE FROM _global_blockmax")
+        batch: list[tuple[str, str, str, int, float]] = []
         for (table_name, field, term), maxes in self._block_maxes.items():
             for block_idx, max_score in enumerate(maxes):
-                conn.execute(
-                    "INSERT INTO _global_blockmax "
-                    "(table_name, field, term, block_idx, max_score) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (table_name, field, term, block_idx, max_score),
-                )
+                batch.append((table_name, field, term, block_idx, max_score))
+        if batch:
+            conn.executemany(
+                "INSERT INTO _global_blockmax "
+                "(table_name, field, term, block_idx, max_score) "
+                "VALUES (?, ?, ?, ?, ?)",
+                batch,
+            )
         conn.commit()
 
     def load_from_sqlite(self, conn: SQLiteConnection) -> None:

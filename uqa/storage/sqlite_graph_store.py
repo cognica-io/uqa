@@ -125,19 +125,19 @@ class SQLiteGraphStore(GraphStore):
         vtx = self._vtx_table
         edg = self._edge_table
 
-        rows = self._conn.execute(
+        cursor = self._conn.execute(
             f'SELECT vertex_id, label, properties_json FROM "{vtx}"'
-        ).fetchall()
-        for vid, label, props_json in rows:
+        )
+        for vid, label, props_json in cursor:
             vertex = Vertex(
                 vertex_id=vid, label=label, properties=json.loads(props_json)
             )
             super().add_vertex(vertex)
 
-        rows = self._conn.execute(
+        cursor = self._conn.execute(
             f'SELECT edge_id, source_id, target_id, label, properties_json FROM "{edg}"'
-        ).fetchall()
-        for eid, src, tgt, label, props_json in rows:
+        )
+        for eid, src, tgt, label, props_json in cursor:
             edge = Edge(
                 edge_id=eid,
                 source_id=src,

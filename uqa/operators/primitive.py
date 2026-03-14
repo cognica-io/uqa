@@ -261,32 +261,56 @@ class FilterOperator(Operator):
         from uqa.core.types import is_null_predicate
 
         null_aware = is_null_predicate(self.predicate)
+        has_bulk = hasattr(doc_store, "get_fields_bulk")
 
         if self.source is not None:
             source_pl = self.source.execute(context)
-            # Iterate source entries directly (already sorted by doc_id).
-            # This avoids O(n) dict construction and preserves the
-            # entry's original payload (including scores).
-            entries: list[PostingEntry] = []
-            for entry in source_pl:
-                value = doc_store.get_field(entry.doc_id, self.field)
-                if null_aware:
-                    matched = self.predicate.evaluate(value)
-                else:
-                    matched = value is not None and self.predicate.evaluate(value)
-                if matched:
-                    entries.append(entry)
+            source_entries = list(source_pl)
+            if has_bulk and len(source_entries) > 1:
+                doc_ids = [e.doc_id for e in source_entries]
+                value_map = doc_store.get_fields_bulk(doc_ids, self.field)
+                entries: list[PostingEntry] = []
+                for entry in source_entries:
+                    value = value_map.get(entry.doc_id)
+                    if null_aware:
+                        matched = self.predicate.evaluate(value)
+                    else:
+                        matched = value is not None and self.predicate.evaluate(value)
+                    if matched:
+                        entries.append(entry)
+            else:
+                entries = []
+                for entry in source_entries:
+                    value = doc_store.get_field(entry.doc_id, self.field)
+                    if null_aware:
+                        matched = self.predicate.evaluate(value)
+                    else:
+                        matched = value is not None and self.predicate.evaluate(value)
+                    if matched:
+                        entries.append(entry)
         else:
             candidate_ids = sorted(doc_store.doc_ids)
-            entries = []
-            for doc_id in candidate_ids:
-                value = doc_store.get_field(doc_id, self.field)
-                if null_aware:
-                    matched = self.predicate.evaluate(value)
-                else:
-                    matched = value is not None and self.predicate.evaluate(value)
-                if matched:
-                    entries.append(PostingEntry(doc_id, Payload(score=0.0)))
+            if has_bulk and len(candidate_ids) > 1:
+                value_map = doc_store.get_fields_bulk(candidate_ids, self.field)
+                entries = []
+                for doc_id in candidate_ids:
+                    value = value_map.get(doc_id)
+                    if null_aware:
+                        matched = self.predicate.evaluate(value)
+                    else:
+                        matched = value is not None and self.predicate.evaluate(value)
+                    if matched:
+                        entries.append(PostingEntry(doc_id, Payload(score=0.0)))
+            else:
+                entries = []
+                for doc_id in candidate_ids:
+                    value = doc_store.get_field(doc_id, self.field)
+                    if null_aware:
+                        matched = self.predicate.evaluate(value)
+                    else:
+                        matched = value is not None and self.predicate.evaluate(value)
+                    if matched:
+                        entries.append(PostingEntry(doc_id, Payload(score=0.0)))
         return PostingList.from_sorted(entries)
 
     def cost_estimate(self, stats: IndexStats) -> float:
@@ -366,6 +390,7 @@ class ScoreOperator(Operator):
         # Pre-compute per-term IDF values (hoisted out of per-doc loop).
         has_idf = hasattr(self.scorer, "score_with_idf")
         has_combine = hasattr(self.scorer, "combine_scores")
+        has_bulk = hasattr(idx, "get_doc_lengths_bulk")
         term_idfs: list[float] = []
         if has_idf:
             for term in self.query_terms:
@@ -375,17 +400,36 @@ class ScoreOperator(Operator):
                     df = idx.doc_freq_any_field(term)
                 term_idfs.append(self.scorer.idf(df))  # type: ignore[union-attr]
 
+        source_entries = list(source_pl)
+        doc_ids = [e.doc_id for e in source_entries]
+
+        # Bulk prefetch doc lengths.
+        if has_bulk and self.field is not None:
+            dl_map = idx.get_doc_lengths_bulk(doc_ids, self.field)
+        else:
+            dl_map = None
+
+        # Bulk prefetch term frequencies per term.
+        tf_maps: list[dict[int, int]] = []
+        if has_bulk and self.field is not None:
+            for term in self.query_terms:
+                tf_maps.append(idx.get_term_freqs_bulk(doc_ids, self.field, term))
+
         entries: list[PostingEntry] = []
-        for entry in source_pl:
+        for entry in source_entries:
             # Per-doc constants: doc length (hoisted out of per-term loop).
-            if self.field is not None:
+            if dl_map is not None:
+                dl = dl_map.get(entry.doc_id, 0)
+            elif self.field is not None:
                 dl = idx.get_doc_length(entry.doc_id, self.field)
             else:
                 dl = idx.get_total_doc_length(entry.doc_id)
 
             per_term_scores: list[float] = []
             for i, term in enumerate(self.query_terms):
-                if self.field is not None:
+                if tf_maps:
+                    tf = tf_maps[i].get(entry.doc_id, 0)
+                elif self.field is not None:
                     tf = idx.get_term_freq(entry.doc_id, self.field, term)
                 else:
                     tf = idx.get_total_term_freq(entry.doc_id, term)
