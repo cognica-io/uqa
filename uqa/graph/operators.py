@@ -405,6 +405,12 @@ class RegularPathQueryOperator:
         self.start_vertex = start_vertex
 
     def execute(self, ctx: object) -> GraphPostingList:
+        # Try path index first (Section 9.1, Paper 2)
+        indexed_result = self._try_index_lookup(ctx)
+        if indexed_result is not None:
+            return indexed_result
+
+        # Fall back to NFA simulation
         graph: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
         _reset_state_counter()
         nfa = _build_nfa(self.path_expr)
@@ -499,6 +505,61 @@ class RegularPathQueryOperator:
             for _, target in state.transitions:
                 stack.append(target)
         return visited
+
+    def _try_index_lookup(
+        self, ctx: object
+    ) -> GraphPostingList | None:
+        """Try to answer the RPQ from the path index (Section 9.1, Paper 2).
+
+        Only works for simple Concat-of-Labels expressions.  Returns None
+        if the expression is not indexable or not indexed.
+        """
+        labels = self._extract_label_sequence(self.path_expr)
+        if labels is None:
+            return None
+
+        path_index = getattr(ctx, "path_index", None)
+        if path_index is None:
+            return None
+
+        pairs = path_index.lookup(labels)
+        if pairs is None:
+            return None
+
+        # Filter by start_vertex if specified
+        if self.start_vertex is not None:
+            pairs = {(s, e) for s, e in pairs if s == self.start_vertex}
+
+        entries: list[PostingEntry] = []
+        graph_payloads: dict[int, GraphPayload] = {}
+        seen_ids: set[int] = set()
+        for start_v, end_v in pairs:
+            doc_id = end_v
+            if doc_id not in seen_ids:
+                seen_ids.add(doc_id)
+                entries.append(PostingEntry(doc_id, Payload(score=0.9)))
+                graph_payloads[doc_id] = GraphPayload(
+                    subgraph_vertices=frozenset({start_v, end_v}),
+                    subgraph_edges=frozenset(),
+                )
+        entries.sort(key=lambda e: e.doc_id)
+        return GraphPostingList(entries, graph_payloads)
+
+    @staticmethod
+    def _extract_label_sequence(expr: RegularPathExpr) -> list[str] | None:
+        """Extract label sequence from a Concat-of-Labels expression.
+
+        Returns None for expressions containing Alternation or KleeneStar.
+        """
+        if isinstance(expr, Label):
+            return [expr.name]
+        if isinstance(expr, Concat):
+            left = RegularPathQueryOperator._extract_label_sequence(expr.left)
+            right = RegularPathQueryOperator._extract_label_sequence(expr.right)
+            if left is None or right is None:
+                return None
+            return left + right
+        return None
 
 
 class VertexAggregationOperator:

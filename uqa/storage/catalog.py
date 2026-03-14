@@ -136,6 +136,10 @@ CREATE TABLE IF NOT EXISTS _table_field_analyzers (
     analyzer_name TEXT NOT NULL,
     PRIMARY KEY (table_name, field, phase)
 );
+CREATE TABLE IF NOT EXISTS _path_indexes (
+    graph_name       TEXT PRIMARY KEY,
+    label_sequences  TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS _graph_vertices_label ON _graph_vertices (label);
 CREATE INDEX IF NOT EXISTS _graph_edges_out ON _graph_edges (source_id, label);
 CREATE INDEX IF NOT EXISTS _graph_edges_in ON _graph_edges (target_id, label);
@@ -636,6 +640,37 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         """Return the names of all registered named graphs."""
         rows = self._conn.execute("SELECT name FROM _named_graphs").fetchall()
         return [r[0] for r in rows]
+
+    # -- Path indexes --------------------------------------------------
+
+    def save_path_index(
+        self, graph_name: str, label_sequences: list[list[str]]
+    ) -> None:
+        """Persist path index label sequences for a named graph."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO _path_indexes "
+            "(graph_name, label_sequences) VALUES (?, ?)",
+            (graph_name, json.dumps(label_sequences)),
+        )
+        self._auto_commit()
+
+    def load_path_indexes(self) -> list[tuple[str, list[list[str]]]]:
+        """Load all persisted path index configurations."""
+        try:
+            rows = self._conn.execute(
+                "SELECT graph_name, label_sequences FROM _path_indexes"
+            ).fetchall()
+        except Exception:
+            return []
+        return [(name, json.loads(seqs)) for name, seqs in rows]
+
+    def drop_path_index(self, graph_name: str) -> None:
+        """Remove path index configuration for a graph."""
+        self._conn.execute(
+            "DELETE FROM _path_indexes WHERE graph_name = ?",
+            (graph_name,),
+        )
+        self._auto_commit()
 
     # -- Analyzers -----------------------------------------------------
 

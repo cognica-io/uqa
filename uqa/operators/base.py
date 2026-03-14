@@ -14,6 +14,7 @@ from uqa.core.posting_list import PostingList
 
 if TYPE_CHECKING:
     from uqa.core.types import IndexStats
+    from uqa.graph.index import PathIndex
     from uqa.planner.parallel import ParallelExecutor
     from uqa.storage.block_max_index import BlockMaxIndex
     from uqa.storage.document_store import DocumentStore
@@ -32,6 +33,7 @@ class ExecutionContext:
     vector_indexes: dict[str, VectorIndex] = field(default_factory=dict)
     spatial_indexes: dict[str, SpatialIndex] = field(default_factory=dict)
     graph_store: Any = None
+    path_index: PathIndex | None = None
     block_max_index: BlockMaxIndex | None = None
     index_manager: IndexManager | None = None
     parallel_executor: ParallelExecutor | None = None
