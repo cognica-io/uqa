@@ -131,9 +131,7 @@ class PostingListScanOp(PhysicalOperator):
             # Look up document store first, then overlay payload fields.
             # This ensures graph operators with extra fields (e.g., HITS
             # hub_score/authority_score) still get document columns.
-            doc = (
-                self._doc_store.get(doc_id) if self._doc_store is not None else None
-            )
+            doc = self._doc_store.get(doc_id) if self._doc_store is not None else None
             if doc is not None:
                 row.update(doc)
             elif self._graph_store is not None:
