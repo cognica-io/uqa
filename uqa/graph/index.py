@@ -160,3 +160,71 @@ class PathIndex:
 
     def indexed_paths(self) -> list[str]:
         return sorted(self._path_pairs.keys())
+
+
+class SubgraphIndex:
+    """Pre-indexed frequent subgraph patterns (Section 9.1 #4, Paper 2).
+
+    Caches PatternMatchOperator results for frequently queried patterns.
+    Lookup is O(1) after build.
+    """
+
+    def __init__(self) -> None:
+        self._pattern_to_matches: dict[str, set[frozenset[int]]] = {}
+
+    @classmethod
+    def build(
+        cls,
+        graph: GraphStore,
+        patterns: list[object],
+    ) -> SubgraphIndex:
+        """Build index by running PatternMatchOperator for each pattern."""
+        from uqa.graph.operators import PatternMatchOperator
+        from uqa.operators.base import ExecutionContext
+
+        idx = cls()
+        ctx = ExecutionContext(graph_store=graph)
+        for pattern in patterns:
+            key = idx._canonicalize(pattern)
+            pm = PatternMatchOperator(pattern)
+            gpl = pm.execute(ctx)
+            match_set: set[frozenset[int]] = set()
+            for entry in gpl:
+                gp = gpl.get_graph_payload(entry.doc_id)
+                if gp is not None:
+                    match_set.add(gp.subgraph_vertices)
+            idx._pattern_to_matches[key] = match_set
+        return idx
+
+    def lookup(self, pattern: object) -> set[frozenset[int]] | None:
+        """O(1) cached lookup."""
+        key = self._canonicalize(pattern)
+        return self._pattern_to_matches.get(key)
+
+    def has_pattern(self, pattern: object) -> bool:
+        key = self._canonicalize(pattern)
+        return key in self._pattern_to_matches
+
+    def invalidate(self, affected_labels: set[str]) -> None:
+        """Remove entries with matching edge labels."""
+        keys_to_remove: list[str] = []
+        for key in self._pattern_to_matches:
+            # Key format includes edge labels; check if any affected
+            for label in affected_labels:
+                if label in key:
+                    keys_to_remove.append(key)
+                    break
+        for key in keys_to_remove:
+            del self._pattern_to_matches[key]
+
+    @staticmethod
+    def _canonicalize(pattern: object) -> str:
+        """Deterministic key: sort vertex vars + edge tuples."""
+        vertex_patterns = getattr(pattern, "vertex_patterns", [])
+        edge_patterns = getattr(pattern, "edge_patterns", [])
+
+        vertex_vars = sorted(vp.variable for vp in vertex_patterns)
+        edge_tuples = sorted(
+            (ep.source_var, ep.target_var, ep.label or "") for ep in edge_patterns
+        )
+        return f"V:{','.join(vertex_vars)}|E:{edge_tuples}"

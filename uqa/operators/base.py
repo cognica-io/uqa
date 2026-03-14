@@ -37,6 +37,7 @@ class ExecutionContext:
     block_max_index: BlockMaxIndex | None = None
     index_manager: IndexManager | None = None
     parallel_executor: ParallelExecutor | None = None
+    subgraph_index: object | None = None
 
 
 class Operator(ABC):

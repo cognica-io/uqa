@@ -91,6 +91,18 @@ class KleeneStar(RegularPathExpr):
         return f"{self.inner!r}*"
 
 
+@dataclass(frozen=True)
+class BoundedLabel(RegularPathExpr):
+    """Bounded repetition of a path expression (e{min,max})."""
+
+    inner: RegularPathExpr
+    min_hops: int
+    max_hops: int
+
+    def __repr__(self) -> str:
+        return f"{self.inner!r}{{{self.min_hops},{self.max_hops}}}"
+
+
 def parse_rpq(expr_str: str) -> RegularPathExpr:
     """Parse a regular path query expression string.
 
@@ -120,7 +132,7 @@ def _tokenize(expr_str: str) -> list[str]:
         if ch in " \t":
             i += 1
             continue
-        if ch in ("(", ")", "/", "|", "*"):
+        if ch in ("(", ")", "/", "|", "*", "{", "}", ","):
             tokens.append(ch)
             i += 1
         else:
@@ -132,6 +144,9 @@ def _tokenize(expr_str: str) -> list[str]:
                 "/",
                 "|",
                 "*",
+                "{",
+                "}",
+                ",",
                 " ",
                 "\t",
             ):
@@ -161,11 +176,33 @@ def _parse_concat(tokens: list[str], pos: int) -> tuple[RegularPathExpr, int]:
 
 
 def _parse_star(tokens: list[str], pos: int) -> tuple[RegularPathExpr, int]:
-    """Parse Kleene star (highest precedence): expr '*'"""
+    """Parse Kleene star and bounded repetition (highest precedence): expr '*' or expr '{min,max}'"""
     expr, pos = _parse_atom(tokens, pos)
-    while pos < len(tokens) and tokens[pos] == "*":
-        pos += 1  # consume '*'
-        expr = KleeneStar(expr)
+    while pos < len(tokens) and tokens[pos] in ("*", "{"):
+        if tokens[pos] == "*":
+            pos += 1  # consume '*'
+            expr = KleeneStar(expr)
+        elif tokens[pos] == "{":
+            pos += 1  # consume '{'
+            # parse min
+            if pos >= len(tokens):
+                raise ValueError("Expected min in bounded repetition")
+            min_hops = int(tokens[pos])
+            pos += 1
+            # expect comma
+            if pos >= len(tokens) or tokens[pos] != ",":
+                raise ValueError("Expected ',' in bounded repetition")
+            pos += 1
+            # parse max
+            if pos >= len(tokens):
+                raise ValueError("Expected max in bounded repetition")
+            max_hops = int(tokens[pos])
+            pos += 1
+            # expect '}'
+            if pos >= len(tokens) or tokens[pos] != "}":
+                raise ValueError("Expected '}' in bounded repetition")
+            pos += 1
+            expr = BoundedLabel(expr, min_hops, max_hops)
     return expr, pos
 
 
@@ -181,7 +218,7 @@ def _parse_atom(tokens: list[str], pos: int) -> tuple[RegularPathExpr, int]:
             raise ValueError("Missing closing parenthesis")
         pos += 1  # consume ')'
         return expr, pos
-    if token in (")", "/", "|", "*"):
+    if token in (")", "/", "|", "*", "{", "}", ","):
         raise ValueError(f"Unexpected token: {token!r}")
     # It's a label
     pos += 1

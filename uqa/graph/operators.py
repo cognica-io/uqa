@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from uqa.core.types import Payload, PostingEntry
 from uqa.graph.pattern import (
     Alternation,
+    BoundedLabel,
     Concat,
     EdgePattern,
     GraphPattern,
@@ -104,6 +105,13 @@ class PatternMatchOperator:
     def execute(self, ctx: object) -> GraphPostingList:
         graph: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
 
+        # Check subgraph index cache (Section 9.1, Paper 2)
+        subgraph_index = getattr(ctx, "subgraph_index", None)
+        if subgraph_index is not None:
+            cached = subgraph_index.lookup(self.pattern)
+            if cached is not None:
+                return self._build_from_cached(cached)
+
         # Pre-compute candidate sets with arc consistency filtering
         var_candidates = self._compute_candidates(graph)
 
@@ -136,6 +144,27 @@ class PatternMatchOperator:
                 subgraph_edges=match_edges,
             )
 
+        return GraphPostingList(entries, graph_payloads)
+
+    @staticmethod
+    def _build_from_cached(
+        cached: set[frozenset[int]],
+    ) -> GraphPostingList:
+        """Build GraphPostingList from cached vertex sets."""
+        entries: list[PostingEntry] = []
+        graph_payloads: dict[int, GraphPayload] = {}
+        for i, vertex_set in enumerate(
+            sorted(cached, key=lambda s: tuple(sorted(s))), 1
+        ):
+            entry = PostingEntry(
+                i,
+                Payload(score=0.9, fields={}),
+            )
+            entries.append(entry)
+            graph_payloads[i] = GraphPayload(
+                subgraph_vertices=vertex_set,
+                subgraph_edges=frozenset(),
+            )
         return GraphPostingList(entries, graph_payloads)
 
     def _compute_candidates(self, graph: GraphStore) -> dict[str, list[int]]:
@@ -373,6 +402,32 @@ def _build_nfa(expr: RegularPathExpr) -> _NFA:
         inner_nfa.accept.transitions.append((None, accept))
         return _NFA(start, accept)
 
+    if isinstance(expr, BoundedLabel):
+        # Chain min_hops mandatory copies + (max_hops - min_hops) optional copies
+        start = _new_state()
+        current_end = start
+
+        # Mandatory copies
+        for _ in range(expr.min_hops):
+            inner_nfa = _build_nfa(expr.inner)
+            current_end.transitions.append((None, inner_nfa.start))
+            current_end = inner_nfa.accept
+
+        accept = _new_state()
+
+        if expr.min_hops == expr.max_hops:
+            current_end.transitions.append((None, accept))
+        else:
+            # Optional copies with epsilon bypass
+            current_end.transitions.append((None, accept))
+            for _ in range(expr.max_hops - expr.min_hops):
+                inner_nfa = _build_nfa(expr.inner)
+                current_end.transitions.append((None, inner_nfa.start))
+                inner_nfa.accept.transitions.append((None, accept))
+                current_end = inner_nfa.accept
+
+        return _NFA(start, accept)
+
     raise TypeError(f"Unknown RegularPathExpr type: {type(expr)}")
 
 
@@ -558,6 +613,146 @@ class RegularPathQueryOperator:
                 return None
             return left + right
         return None
+
+
+class WeightedPathQueryOperator:
+    """RPQ with cumulative edge weight tracking and predicate filtering.
+
+    Paper 2, Section 5.1: extends RPQ expressiveness with aggregate predicates.
+
+    NFA simulation carrying cumulative weight in BFS state:
+    (vertex, nfa_states, cumulative_weight).
+    At accepting states: filter by predicate(cumulative_weight).
+    """
+
+    def __init__(
+        self,
+        path_expr: RegularPathExpr,
+        weight_property: str = "weight",
+        aggregate_fn: str = "sum",
+        predicate: object | None = None,
+        start_vertex: int | None = None,
+    ) -> None:
+        self.path_expr = path_expr
+        self.weight_property = weight_property
+        self.aggregate_fn = aggregate_fn
+        self.predicate = predicate
+        self.start_vertex = start_vertex
+
+    def execute(self, ctx: object) -> GraphPostingList:
+        graph: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
+        _reset_state_counter()
+        nfa = _build_nfa(self.path_expr)
+
+        if self.start_vertex is not None:
+            start_vertices = [self.start_vertex]
+        else:
+            start_vertices = list(graph._vertices.keys())
+
+        all_nfa_states = self._collect_nfa_states(nfa)
+        state_map = {s.state_id: s for s in all_nfa_states}
+
+        initial_nfa_states = _epsilon_closure({nfa.start})
+        initial_ids = frozenset(s.state_id for s in initial_nfa_states)
+        accept_id = nfa.accept.state_id
+
+        result_entries: dict[int, float] = {}  # end_vertex -> best_weight
+
+        for sv in start_vertices:
+            # Queue: (graph_vertex, nfa_states, cumulative_weight)
+            queue: deque[tuple[int, frozenset[int], float]] = deque()
+            init_weight = 0.0
+            queue.append((sv, initial_ids, init_weight))
+            # Track visited as (vertex, nfa_states) to allow weight differences
+            visited: set[tuple[int, frozenset[int]]] = {(sv, initial_ids)}
+
+            if accept_id in initial_ids and self._check_predicate(init_weight):
+                self._update_result(result_entries, sv, init_weight)
+
+            while queue:
+                gv, nfa_state_ids, cum_weight = queue.popleft()
+
+                for eid in graph._adj_out.get(gv, []):
+                    edge = graph._edges[eid]
+                    edge_label = edge.label
+                    neighbor = edge.target_id
+
+                    edge_weight = float(edge.properties.get(self.weight_property, 0.0))
+                    new_weight = self._aggregate(cum_weight, edge_weight)
+
+                    next_nfa: set[_NFAState] = set()
+                    for sid in nfa_state_ids:
+                        state = state_map.get(sid)
+                        if state is None:
+                            continue
+                        for trans_label, target in state.transitions:
+                            if trans_label == edge_label:
+                                next_nfa.add(target)
+
+                    if not next_nfa:
+                        continue
+
+                    next_nfa = _epsilon_closure(next_nfa)
+                    next_ids = frozenset(s.state_id for s in next_nfa)
+
+                    if accept_id in next_ids and self._check_predicate(new_weight):
+                        self._update_result(result_entries, neighbor, new_weight)
+
+                    config = (neighbor, next_ids)
+                    if config not in visited:
+                        visited.add(config)
+                        queue.append((neighbor, next_ids, new_weight))
+
+        entries: list[PostingEntry] = []
+        graph_payloads: dict[int, GraphPayload] = {}
+        for vid in sorted(result_entries.keys()):
+            weight = result_entries[vid]
+            entries.append(
+                PostingEntry(vid, Payload(score=0.9, fields={"path_weight": weight}))
+            )
+            graph_payloads[vid] = GraphPayload(
+                subgraph_vertices=frozenset({vid}),
+                subgraph_edges=frozenset(),
+            )
+
+        return GraphPostingList(entries, graph_payloads)
+
+    def _aggregate(self, current: float, new_value: float) -> float:
+        if self.aggregate_fn == "sum":
+            return current + new_value
+        if self.aggregate_fn == "max":
+            return max(current, new_value)
+        if self.aggregate_fn == "min":
+            return min(current, new_value) if current != 0.0 else new_value
+        return current + new_value
+
+    def _check_predicate(self, weight: float) -> bool:
+        if self.predicate is None:
+            return True
+        if callable(self.predicate):
+            return bool(self.predicate(weight))
+        return True
+
+    def _update_result(self, result: dict[int, float], vid: int, weight: float) -> None:
+        if vid not in result:
+            result[vid] = weight
+        elif self.aggregate_fn == "max":
+            result[vid] = max(result[vid], weight)
+        elif self.aggregate_fn == "min":
+            result[vid] = min(result[vid], weight)
+
+    @staticmethod
+    def _collect_nfa_states(nfa: _NFA) -> set[_NFAState]:
+        visited: set[_NFAState] = set()
+        stack = [nfa.start]
+        while stack:
+            state = stack.pop()
+            if state in visited:
+                continue
+            visited.add(state)
+            for _, target in state.transitions:
+                stack.append(target)
+        return visited
 
 
 class VertexAggregationOperator:
