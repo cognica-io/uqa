@@ -5666,7 +5666,7 @@ class SQLCompiler:
         if isinstance(node, BoolExpr):
             return self._compile_bool_expr(node, ctx)
         if isinstance(node, A_Expr):
-            return self._compile_comparison(node)
+            return self._compile_comparison(node, ctx)
         if isinstance(node, FuncCall):
             return self._compile_func_in_where(node, ctx)
         if isinstance(node, NullTest):
@@ -5721,13 +5721,26 @@ class SQLCompiler:
             base = FilterOperator(f.field, f.predicate, source=base)
         return base
 
-    def _compile_comparison(self, node: A_Expr) -> Any:
+    def _compile_comparison(
+        self, node: A_Expr, ctx: ExecutionContext | None = None
+    ) -> Any:
         from uqa.operators.primitive import FilterOperator
 
         kind = A_Expr_Kind(node.kind)
 
         if kind == A_Expr_Kind.AEXPR_OP:
             op_name = node.name[0].sval
+
+            if op_name == "@@":
+                from uqa.sql.fts_query import compile_fts_match
+
+                field_name = self._extract_column_name(node.lexpr)
+                query_string = self._extract_string_value(node.rexpr)
+                effective_field = None if field_name == "_all" else field_name
+                if ctx is None:
+                    raise ValueError("@@  operator requires an execution context")
+                return compile_fts_match(query_string, effective_field, ctx, self)
+
             # Simple case: column op constant (basic comparison only)
             if (
                 isinstance(node.lexpr, ColumnRef)
@@ -5915,13 +5928,17 @@ class SQLCompiler:
     def _make_text_search_op(
         self, field_name: str, query: str, ctx: ExecutionContext, *, bayesian: bool
     ) -> Any:
-        from uqa.operators.boolean import UnionOperator
         from uqa.operators.primitive import ScoreOperator, TermOperator
 
         analyzer = ctx.inverted_index.get_search_analyzer(field_name)
         terms = analyzer.analyze(query)
-        term_ops = [TermOperator(t, field_name) for t in terms]
-        retrieval = term_ops[0] if len(term_ops) == 1 else UnionOperator(term_ops)
+        if not terms:
+            return TermOperator(query, field_name)
+        # Pass the raw query to a single TermOperator so it analyzes
+        # once internally.  Pre-analyzing and feeding stemmed tokens to
+        # TermOperator caused double-stemming (e.g. database -> databas
+        # -> databa) for terms where stemming is not idempotent.
+        retrieval = TermOperator(query, field_name)
 
         if bayesian:
             from uqa.scoring.bayesian_bm25 import BayesianBM25Params, BayesianBM25Scorer

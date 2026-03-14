@@ -61,6 +61,15 @@ For full formal treatment, see [Paper 1](docs/papers/1.%20A%20Unified%20Mathemat
 UQA extends standard SQL with cross-paradigm query functions:
 
 ```sql
+-- Full-text search with @@ operator (query string mini-language)
+SELECT title, _score FROM articles
+WHERE title @@ 'database AND query' ORDER BY _score DESC;
+
+-- Hybrid text + vector fusion via @@
+SELECT title, _score FROM articles
+WHERE _all @@ 'body:search AND embedding:[0.1, 0.9, 0.0, 0.0]'
+ORDER BY _score DESC;
+
 -- Full-text search with BM25 scoring
 SELECT title, _score FROM papers
 WHERE text_match(title, 'attention transformer') ORDER BY _score DESC;
@@ -224,9 +233,9 @@ uqa/
   joins/          Hash, sort-merge, index, graph, cross-paradigm, similarity joins
   execution/      Volcano iterator engine: Apache Arrow columnar batches, vectorized operators, disk spilling
   planner/        Cost model, cardinality estimator, optimizer, DPccp join enumerator, parallel executor
-  sql/            SQL compiler (pglast), expression evaluator, table DDL/DML
+  sql/            SQL compiler (pglast), expression evaluator, FTS query parser, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          1967 tests across 49 test files
+  tests/          2018 tests across 50 test files
 benchmarks/       192 pytest-benchmark tests across 8 files (posting list, storage, compiler,
                   execution, planner, scoring, graph, end-to-end SQL)
 ```
@@ -253,6 +262,7 @@ benchmarks/       192 pytest-benchmark tests across 8 files (posting list, stora
 | Date/Time | `EXTRACT`, `DATE_TRUNC`, `DATE_PART`, `NOW()`, `CURRENT_DATE`, `CURRENT_TIMESTAMP`, `CURRENT_TIME`, `CLOCK_TIMESTAMP`, `TIMEOFDAY`, `AGE`, `TO_CHAR`, `TO_DATE`, `TO_TIMESTAMP`, `MAKE_DATE`, `MAKE_TIMESTAMP`, `MAKE_INTERVAL`, `TO_NUMBER`, `OVERLAPS`, `ISFINITE` |
 | JSON | `->`, `->>`, `#>`, `#>>` operators, `@>` / `<@` containment, `?` / `?|` / `?&` key existence, `JSONB_SET`, `JSONB_STRIP_NULLS`, `JSON_BUILD_OBJECT`, `JSON_BUILD_ARRAY`, `JSON_OBJECT_KEYS`, `JSON_EXTRACT_PATH`, `JSON_TYPEOF`, `JSON_AGG`, `::jsonb` cast |
 | Table Funcs | `GENERATE_SERIES`, `UNNEST`, `REGEXP_SPLIT_TO_TABLE`, `JSON_EACH`/`JSON_EACH_TEXT`, `JSON_ARRAY_ELEMENTS`/`JSON_ARRAY_ELEMENTS_TEXT` |
+| FTS | `column @@ 'query'` full-text search operator with query string mini-language: bare terms, `"phrases"`, `field:term`, `field:[vector]`, `AND`/`OR`/`NOT`, implicit AND, parenthesized grouping, hybrid text+vector fusion |
 | Functions | 90+ scalar functions: string (`CONCAT_WS`, `POSITION`, `LPAD`, `REVERSE`, `MD5`, `OVERLAY`, `REGEXP_MATCH`, `ENCODE`/`DECODE`, ...), math (`POWER`, `SQRT`, `LN`, `CBRT`, `GCD`, `LCM`, `MIN_SCALE`, `TRIM_SCALE`, trig, ...), conditional (`GREATEST`, `LEAST`, `NULLIF`) |
 | Prepared | `PREPARE name AS ...`, `EXECUTE name(params)`, `DEALLOCATE name` |
 | Utility | `EXPLAIN SELECT ...`, `ANALYZE [table]` |
@@ -263,6 +273,7 @@ benchmarks/       192 pytest-benchmark tests across 8 files (posting list, stora
 
 | Function | Description |
 |----------|-------------|
+| `column @@ 'query'` | Full-text search operator with query string mini-language (boolean, phrase, field targeting, hybrid text+vector) |
 | `text_match(field, 'query')` | Full-text search with BM25 scoring |
 | `bayesian_match(field, 'query')` | Bayesian BM25 — calibrated P(relevant) in [0,1] |
 | `knn_match(field, vector, k)` | K-nearest neighbor vector search (vector as `ARRAY[...]` or `$N`) |
@@ -543,6 +554,7 @@ python examples/fluent/export.py              # Arrow/Parquet export from fluent
 python examples/sql/basics.py                 # DDL, DML, SELECT, CTE, window, transactions, views
 python examples/sql/functions.py              # text_match, knn_match, path_agg, path_value, path_filter
 python examples/sql/graph.py                  # FROM traverse/rpq, aggregates, GROUP BY, WHERE
+python examples/sql/fts_match.py               # @@ operator: boolean, phrase, field, hybrid text+vector
 python examples/sql/fusion.py                 # fuse_log_odds, fuse_prob_and/or/not, EXPLAIN
 python examples/sql/joins_and_subqueries.py   # JOINs, derived tables, set operations, recursive CTE
 python examples/sql/analytics.py              # Aggregates, window functions, JSON, date/time, UPSERT

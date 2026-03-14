@@ -39,6 +39,8 @@ keywords:
   - geospatial
   - rtree
   - benchmark
+  - full-text-search
+  - query-string-language
   - query-optimization
   - join-ordering
   - performance-optimization

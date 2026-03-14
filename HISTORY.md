@@ -2,10 +2,20 @@
 
 ## 0.15.0 (2026-03-14)
 
-Comprehensive performance optimization across 4 layers (Core Engine, SQL Compiler, Storage, Graph/Search). 43 optimizations implemented spanning correctness fixes, algorithmic improvements, and architectural refactors. All 1967 tests, 19 examples, and 192 benchmarks pass.
+Comprehensive performance optimization across 4 layers (Core Engine, SQL Compiler, Storage, Graph/Search), plus the `@@` full-text search operator with a query string mini-language supporting boolean logic, phrase search, field targeting, and hybrid text+vector fusion via log-odds. All 2018 tests, 20 examples, and 192 benchmarks pass.
+
+### Full-Text Search `@@` Operator
+
+- **Query string mini-language**: `column @@ 'query'` parses a query string supporting bare terms, quoted phrases (`"..."`), field targeting (`field:term`, `field:"phrase"`), vector literals (`field:[0.1, 0.2]`), boolean operators (`AND`, `OR`, `NOT`), implicit AND for adjacent terms, and parenthesized grouping with correct precedence (NOT > AND > OR)
+- **Recursive descent parser**: `FTSParser` in `uqa/sql/fts_query.py` with lexer, AST nodes (`TermNode`, `PhraseNode`, `VectorNode`, `AndNode`, `OrNode`, `NotNode`), and AST-to-operator compiler
+- **Posting-list-native compilation**: each AST node maps to existing UQA operators -- `TermNode` to `TermOperator` + `ScoreOperator(BayesianBM25)`, `PhraseNode` to `IntersectOperator` + `ScoreOperator`, `VectorNode` to `_CalibratedKNNOperator`, `OrNode` to `UnionOperator`, `NotNode` to `ComplementOperator`
+- **Hybrid text+vector AND**: when AND mixes text and vector signals, `LogOddsFusionOperator` is used for calibrated probability fusion; pure-text AND uses `IntersectOperator`
+- **`_all` column support**: `WHERE _all @@ 'query'` searches all text columns
+- **SQL integration**: pglast parses `@@` as `A_Expr(kind=AEXPR_OP, name='@@')`; `_compile_comparison` dispatches to `compile_fts_match()`
 
 ### Correctness
 
+- **Double-stemming fix**: `_make_text_search_op` was pre-analyzing the query into stemmed tokens, then passing them to `TermOperator` which re-analyzed internally. For terms where Porter stemming is not idempotent (e.g., `database` -> `databas` -> `databa`), the second stemming produced a token absent from the index, returning zero results. Fixed by passing the raw query string to a single `TermOperator` (which handles tokenization internally) and using pre-analyzed terms only for `ScoreOperator` IDF computation.
 - **WAND doc_length bug fix**: `WANDScorer` and `BlockMaxWANDScorer` were passing term frequency as document length to `BM25Scorer.score()`, producing incorrect BM25 length normalization. Both scorers now accept an optional `inverted_index` parameter and look up actual document lengths per field.
 
 ### Storage
