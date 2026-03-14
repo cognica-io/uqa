@@ -107,9 +107,11 @@ class LogOddsFusionOperator(Operator):
         self,
         signals: list[Operator],
         alpha: float = 0.5,
+        top_k: int | None = None,
     ) -> None:
         self.signals = signals
         self.alpha = alpha
+        self.top_k = top_k
 
     def execute(self, context: ExecutionContext) -> PostingList:
         from bayesian_bm25 import log_odds_conjunction
@@ -119,6 +121,24 @@ class LogOddsFusionOperator(Operator):
             posting_lists = par.execute_branches(self.signals, context)
         else:
             posting_lists = [sig.execute(context) for sig in self.signals]
+
+        # Use WAND pruning when top_k is specified
+        if self.top_k is not None:
+            from uqa.scoring.fusion_wand import FusionWANDScorer
+
+            # Compute per-signal upper bounds
+            upper_bounds = []
+            for pl in posting_lists:
+                if pl:
+                    ub = max(entry.payload.score for entry in pl)
+                else:
+                    ub = 0.5
+                upper_bounds.append(ub)
+
+            scorer = FusionWANDScorer(
+                posting_lists, upper_bounds, alpha=self.alpha, k=self.top_k
+            )
+            return scorer.score_top_k()
 
         all_doc_ids: set[int] = set()
         score_maps: list[dict[int, float]] = []
