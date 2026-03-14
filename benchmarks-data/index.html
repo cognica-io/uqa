@@ -81,14 +81,19 @@
         gap: 12px;
       }
       .benchmark-chart {
-        max-width: calc(33.333% - 8px);
+        width: calc(33.333% - 8px);
         min-width: 280px;
-        flex: 1 1 calc(33.333% - 8px);
+        flex: 0 1 calc(33.333% - 8px);
+        position: relative;
+      }
+      .benchmark-chart canvas {
+        width: 100% !important;
+        height: auto !important;
       }
       @media (max-width: 900px) {
         .benchmark-chart {
-          max-width: 100%;
-          flex: 1 1 100%;
+          width: 100%;
+          flex: 0 1 100%;
         }
       }
     </style>
@@ -180,9 +185,11 @@
         function renderAllChars(dataSets) {
 
           function renderGraph(parent, name, dataset) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'benchmark-chart';
+            parent.appendChild(wrapper);
             const canvas = document.createElement('canvas');
-            canvas.className = 'benchmark-chart';
-            parent.appendChild(canvas);
+            wrapper.appendChild(canvas);
 
             const color = toolColors[dataset.length > 0 ? dataset[0].tool : '_'];
             const data = {
@@ -199,7 +206,7 @@
             const options = {
               responsive: true,
               maintainAspectRatio: true,
-              aspectRatio: 1.6,
+              aspectRatio: 2.0,
               scales: {
                 xAxes: [
                   {
@@ -207,7 +214,7 @@
                       display: false,
                     },
                     ticks: {
-                      fontSize: 9,
+                      fontSize: 11,
                       maxRotation: 45,
                     },
                   }
@@ -217,19 +224,19 @@
                     scaleLabel: {
                       display: true,
                       labelString: dataset.length > 0 ? dataset[0].bench.unit : '',
-                      fontSize: 10,
+                      fontSize: 12,
                     },
                     ticks: {
                       beginAtZero: true,
-                      fontSize: 9,
+                      fontSize: 11,
                     }
                   }
                 ],
               },
               legend: {
                 labels: {
-                  fontSize: 10,
-                  boxWidth: 12,
+                  fontSize: 12,
+                  boxWidth: 16,
                 },
               },
               tooltips: {
