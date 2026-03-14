@@ -206,6 +206,8 @@ class Table:
 
         self._next_id = 1
         self._stats: dict[str, ColumnStats] = {}
+        self._unique_indexes: dict[str, dict[Any, int]] = {}
+        self._unique_indexes_built = False
 
     def insert(self, row: dict[str, Any]) -> tuple[int, IndexedTerms | None]:
         """Insert a row and return (doc_id, indexed_terms).
@@ -256,6 +258,7 @@ class Table:
                         )
 
         # -- UNIQUE constraint validation --------------------------------
+        self._build_unique_indexes()
         for col_name, col_def in self.columns.items():
             if not (col_def.unique or col_def.primary_key):
                 continue
@@ -264,14 +267,13 @@ class Table:
             value = row.get(col_name)
             if value is None:
                 continue  # NULL is allowed in UNIQUE columns
-            for existing_id in self.document_store.doc_ids:
-                existing_val = self.document_store.get_field(existing_id, col_name)
-                if existing_val == value:
-                    raise ValueError(
-                        f"UNIQUE constraint violated: "
-                        f"duplicate value '{value}' for column "
-                        f"'{col_name}' in table '{self.name}'"
-                    )
+            idx = self._unique_indexes.get(col_name)
+            if idx is not None and value in idx:
+                raise ValueError(
+                    f"UNIQUE constraint violated: "
+                    f"duplicate value '{value}' for column "
+                    f"'{col_name}' in table '{self.name}'"
+                )
 
         # -- CHECK constraint validation --------------------------------
         for constraint_name, check_fn in self.check_constraints:
@@ -344,7 +346,38 @@ class Table:
             if sp_idx is not None:
                 sp_idx.add(doc_id, px, py)
 
+        # Maintain unique indexes.
+        for col_name in self._unique_indexes:
+            val = coerced.get(col_name)
+            if val is not None:
+                self._unique_indexes[col_name][val] = doc_id
+
         return doc_id, indexed
+
+    def _build_unique_indexes(self) -> None:
+        """Build hash indexes for all UNIQUE/PK columns from existing rows."""
+        if self._unique_indexes_built:
+            return
+        self._unique_indexes_built = True
+        unique_cols: list[str] = []
+        for col_name, col_def in self.columns.items():
+            if (col_def.unique or col_def.primary_key) and not col_def.auto_increment:
+                unique_cols.append(col_name)
+                self._unique_indexes[col_name] = {}
+        if not unique_cols:
+            return
+        for doc_id in self.document_store.doc_ids:
+            for col_name in unique_cols:
+                val = self.document_store.get_field(doc_id, col_name)
+                if val is not None:
+                    self._unique_indexes[col_name][val] = doc_id
+
+    def remove_from_unique_indexes(self, doc_id: int) -> None:
+        """Remove a document from all unique indexes."""
+        for col_name, idx in self._unique_indexes.items():
+            val = self.document_store.get_field(doc_id, col_name)
+            if val is not None:
+                idx.pop(val, None)
 
     @property
     def column_names(self) -> list[str]:
@@ -366,18 +399,24 @@ class Table:
         """
         doc_ids = sorted(self.document_store.doc_ids)
         n = len(doc_ids)
+        col_names = list(self.columns.keys())
+
+        # Single-pass: collect all column values per doc.
+        col_values: dict[str, list[Any]] = {c: [] for c in col_names}
+        col_nulls: dict[str, int] = dict.fromkeys(col_names, 0)
+        for doc_id in doc_ids:
+            doc = self.document_store.get(doc_id)
+            for col_name in col_names:
+                val = doc.get(col_name) if doc else None
+                if val is None:
+                    col_nulls[col_name] += 1
+                else:
+                    col_values[col_name].append(val)
 
         stats: dict[str, ColumnStats] = {}
-        for col_name in self.columns:
-            values: list[Any] = []
-            null_count = 0
-            for doc_id in doc_ids:
-                val = self.document_store.get_field(doc_id, col_name)
-                if val is None:
-                    null_count += 1
-                else:
-                    values.append(val)
-
+        for col_name in col_names:
+            values = col_values[col_name]
+            null_count = col_nulls[col_name]
             distinct = len(set(values))
             comparable = [v for v in values if isinstance(v, (int, float, str))]
             min_val = min(comparable) if comparable else None
