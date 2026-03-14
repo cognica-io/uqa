@@ -1,8 +1,76 @@
 # History
 
+## 0.17.0 (2026-03-14)
+
+12 paper-derived improvements fully connecting the theoretical foundations from Papers 1 — 4 into the query engine. Adds graph centrality scoring (PageRank, HITS, Betweenness), fusion gating mechanisms (ReLU/Swish), bounded RPQ with aggregate predicates, edge property filter pushdown, join-pattern fusion, cross-paradigm join cost models, threshold-aware vector selectivity, temporal graph cardinality correction, subgraph indexing, incremental pattern matching, random-walk graph sampling for cardinality estimation, and progressive multi-stage WAND fusion. All new features are exposed as SQL functions. All 2305 tests, 29 examples, and 295 benchmarks pass.
+
+### Graph Centrality (Paper 2, Section 9.1)
+
+- **PageRank Operator**: Power iteration with configurable damping (default 0.85), min-max normalized scores in [0, 1]; cost model `O(N * iterations)`
+- **HITS Operator**: Hub/authority mutual reinforcement with L2 normalization; `Payload.fields["hub_score"]` and `Payload.fields["authority_score"]`; cost model `O(N * iterations * 2)`
+- **Betweenness Centrality Operator**: Brandes algorithm `O(|V| * |E|)` for unweighted directed graphs; normalized by `(N-1) * (N-2)`, clamped to [0, 1]
+- All three operators integrated into cost model, cardinality estimator, and SQL compiler
+- SQL WHERE functions: `pagerank()`, `hits()`, `betweenness()` as scored filter signals
+- SQL FROM functions: `SELECT ... FROM pagerank()`, `FROM hits()`, `FROM betweenness()` as table sources
+- Named graph support: `pagerank('graph:name')`, `hits('graph:name')`, `betweenness('graph:name')`
+
+### Fusion Gating (Paper 4, Section 6.5 — 6.7)
+
+- **ReLU/Swish gating** threaded through `LogOddsFusion`, `LogOddsFusionOperator`, `FusionWANDScorer`, optimizer, and SQL compiler
+- SQL syntax: `fuse_log_odds(sig1, sig2, 'relu')` or `fuse_log_odds(sig1, sig2, 0.8, 'swish')` (alpha + gating combined)
+- Optimizer preserves gating parameter during signal reordering
+
+### Bounded RPQ and Weighted Paths (Paper 2, Section 5.1)
+
+- **BoundedLabel** dataclass: `e{min,max}` syntax parsed by `parse_rpq()`; NFA construction chains mandatory + optional copies with epsilon bypass
+- **WeightedPathQueryOperator**: NFA simulation carrying cumulative edge weight `(vertex, nfa_states, weight)`; configurable `aggregate_fn` (sum/max/min) and callable `predicate` for accepting-state filtering
+- Cost and cardinality integration for `WeightedPathQueryOperator` (RPQ estimate * 0.5 selectivity)
+- SQL function: `weighted_rpq('expr', start, 'prop'[, 'agg'[, threshold]])` in WHERE clause
+
+### Optimizer Improvements (Paper 2, Theorems 6.1.1 — 6.1.2)
+
+- **Edge property filter pushdown**: Filters on `"src_tgt.property"` (e.g., `"a_b.since"`) pushed into `EdgePattern.constraints` during pattern matching, eliminating post-filtering
+- **Join-pattern fusion**: `IntersectOperator` with 2+ `PatternMatchOperator` children sharing vertex variables merged into single `PatternMatchOperator`; deduplicates vertex patterns and combines constraints
+
+### Cross-Paradigm Cost and Cardinality (Paper 1, Section 4 — 5)
+
+- **Join cost models**: `TextSimilarityJoinOperator`, `VectorSimilarityJoinOperator`, `GraphJoinOperator`, `HybridJoinOperator`, `CrossParadigmJoinOperator` with domain-specific cost formulas
+- **Join cardinality**: Jaccard selectivity (0.05), vector selectivity (0.1), graph average degree, and hybrid formulas
+- **Vector selectivity estimation** (Paper 1, Section 5.3): Threshold-aware tiers (0.9 -> 1%, 0.7 -> 5%, 0.5 -> 10%, <0.5 -> 20%)
+- **Temporal cardinality correction** (Paper 2, Section 8): `GraphStats.min_timestamp`/`max_timestamp` + `_temporal_selectivity()` applied to traverse and pattern match estimates
+
+### Subgraph Indexing and Incremental Matching (Paper 2, Section 9)
+
+- **SubgraphIndex**: Pre-indexed frequent subgraph patterns with O(1) lookup via canonical key; `build()`, `lookup()`, `invalidate()` by affected edge labels; `PatternMatchOperator` checks cache before backtracking
+- **IncrementalPatternMatcher**: Delta-aware pattern matching with 3-step update (invalidate affected matches, re-match constrained to affected vertices, merge); `GraphDelta` dataclass
+- **Graph sampling** (Paper 2, Section 6.3): Random walk sampling for cardinality estimation on graphs with 10000+ vertices; falls back to formula-based when graph_store unavailable
+
+### Progressive Fusion (Paper 4, Section 7)
+
+- **ProgressiveFusionOperator**: Cascading multi-stage fusion with WAND pruning; each stage introduces new signals and narrows candidates via top-k cutoff; gating parameter forwarded to `FusionWANDScorer`
+- Cascading cost model: each stage cost proportional to candidate survival ratio
+- SQL function: `progressive_fusion(sig1, sig2, k1, sig3, k2[, alpha][, 'gating'])` in WHERE clause
+
+### SQL Graph Mutation Functions
+
+- **`graph_add_vertex(id, 'label', 'table'[, 'key=val,...'])`**: Add graph vertex via SQL (FROM-clause table function)
+- **`graph_add_edge(eid, src, tgt, 'label', 'table'[, 'key=val,...'])`**: Add graph edge via SQL (FROM-clause table function)
+- All centrality and graph SQL functions support both per-table and named graph (`'graph:name'`) sources
+
+### Bug Fixes
+
+- **PostingListScanOp title=None fix**: Graph operators with `payload.fields` (e.g., HITS hub/authority scores) now correctly look up document store columns first, then overlay operator fields, fixing `title=None` for centrality FROM queries
+
+### Examples and Benchmarks
+
+- **`examples/fluent/graph_centrality.py`**: 9 sections demonstrating PageRank, HITS, betweenness, bounded RPQ, weighted paths, subgraph indexing, incremental matching
+- **`examples/sql/fusion_gating.py`**: 8 sections demonstrating ReLU/Swish gating, alpha+gating, three-signal gating, staged retrieval, gating+relational filters
+- **`examples/sql/graph_centrality.py`**: 16 sections demonstrating pagerank/hits/betweenness SQL, bounded RPQ, weighted RPQ, progressive fusion, graph_add_vertex/edge, named graph centrality — 100% SQL via `engine.sql()`
+- **`benchmarks/bench_graph_centrality.py`**: 23 benchmarks across 9 test classes covering all new operators and SQL functions
+
 ## 0.16.0 (2026-03-14)
 
-12 paper-derived features connecting all theoretical building blocks from Papers 1--4 into the UQA engine. Adds calibration diagnostics, online parameter learning, multi-field scoring, attention-based and learned fusion, multi-signal WAND pruning, multi-stage retrieval pipelines, external prior integration, sparse thresholding, path index acceleration, incremental graph maintenance with versioned rollback, temporal graph operations, and GNN message-passing aggregation. All 2230 tests, 26 examples, and 269 benchmarks pass.
+12 paper-derived features connecting all theoretical building blocks from Papers 1 — 4 into the UQA engine. Adds calibration diagnostics, online parameter learning, multi-field scoring, attention-based and learned fusion, multi-signal WAND pruning, multi-stage retrieval pipelines, external prior integration, sparse thresholding, path index acceleration, incremental graph maintenance with versioned rollback, temporal graph operations, and GNN message-passing aggregation. All 2230 tests, 26 examples, and 269 benchmarks pass.
 
 ### Scoring
 
@@ -47,7 +115,7 @@ Comprehensive performance optimization across 4 layers (Core Engine, SQL Compile
 
 - **Query string mini-language**: `column @@ 'query'` parses a query string supporting bare terms, quoted phrases (`"..."`), field targeting (`field:term`, `field:"phrase"`), vector literals (`field:[0.1, 0.2]`), boolean operators (`AND`, `OR`, `NOT`), implicit AND for adjacent terms, and parenthesized grouping with correct precedence (NOT > AND > OR)
 - **Recursive descent parser**: `FTSParser` in `uqa/sql/fts_query.py` with lexer, AST nodes (`TermNode`, `PhraseNode`, `VectorNode`, `AndNode`, `OrNode`, `NotNode`), and AST-to-operator compiler
-- **Posting-list-native compilation**: each AST node maps to existing UQA operators -- `TermNode` to `TermOperator` + `ScoreOperator(BayesianBM25)`, `PhraseNode` to `IntersectOperator` + `ScoreOperator`, `VectorNode` to `_CalibratedKNNOperator`, `OrNode` to `UnionOperator`, `NotNode` to `ComplementOperator`
+- **Posting-list-native compilation**: each AST node maps to existing UQA operators —`TermNode` to `TermOperator` + `ScoreOperator(BayesianBM25)`, `PhraseNode` to `IntersectOperator` + `ScoreOperator`, `VectorNode` to `_CalibratedKNNOperator`, `OrNode` to `UnionOperator`, `NotNode` to `ComplementOperator`
 - **Hybrid text+vector AND**: when AND mixes text and vector signals, `LogOddsFusionOperator` is used for calibrated probability fusion; pure-text AND uses `IntersectOperator`
 - **`_all` column support**: `WHERE _all @@ 'query'` searches all text columns
 - **SQL integration**: pglast parses `@@` as `A_Expr(kind=AEXPR_OP, name='@@')`; `_compile_comparison` dispatches to `compile_fts_match()`

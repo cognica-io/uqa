@@ -319,6 +319,7 @@ All computed in log-space for numerical stability.
 | `fuse_prob_and(...)` | `ProbabilisticBoolean` | `uqa/fusion/boolean.py` |
 | `fuse_prob_or(...)` | `ProbabilisticBoolean` | `uqa/fusion/boolean.py` |
 | `fuse_prob_not(...)` | `ProbabilisticBoolean` | `uqa/fusion/boolean.py` |
+| `fuse_log_odds(..., 'relu')` | `LogOddsFusion(gating='relu')` | `uqa/fusion/log_odds.py` |
 
 In SQL:
 
@@ -388,6 +389,40 @@ $$
 
 The cost model reflects the cascading reduction: each stage's cost is scaled by the fraction of documents surviving from the previous stage, making the total cost sublinear in corpus size when early stages aggressively prune.
 
+### 4.9 Fusion Gating Mechanisms
+
+The `log_odds_conjunction` function supports optional gating transformations applied to the fused log-odds before the final sigmoid. Two gating functions are available:
+
+**ReLU gating.** $g(x) = \max(0, x)$. Suppresses weak negative evidence, ensuring that ambiguous signals (near-neutral log-odds) are clamped to zero rather than pulled toward irrelevance.
+
+**Swish gating.** $g(x) = x \cdot \sigma(\beta x)$. A smooth approximation to ReLU that preserves gradient flow for differentiable pipelines. The self-gating property ($\sigma$ applied to the input itself) provides implicit regularization.
+
+In SQL, gating is specified as a trailing string argument:
+
+```sql
+SELECT title, _score FROM papers
+WHERE fuse_log_odds(
+    text_match(title, 'attention'),
+    knn_match(embedding, $1, 5),
+    'relu'
+) ORDER BY _score DESC;
+
+-- Combined with alpha parameter:
+WHERE fuse_log_odds(sig1, sig2, 0.8, 'swish')
+```
+
+The gating parameter is threaded through `LogOddsFusionOperator`, `FusionWANDScorer`, and preserved by the query optimizer during signal reordering.
+
+### 4.10 Progressive Fusion
+
+`ProgressiveFusionOperator` in `uqa/operators/progressive_fusion.py` implements cascading multi-stage fusion with WAND pruning. Unlike `MultiStageOperator` which re-scores with independent signals at each stage, progressive fusion accumulates signals across stages:
+
+$$
+\text{Stage}_i: \text{signals}_{1..i} \xrightarrow{\text{WAND top-}k_i} C_i
+$$
+
+Each stage introduces new signals, computes a fused score over all accumulated signals using `FusionWANDScorer`, and narrows the candidate set to the top $k_i$ documents. Subsequent stages evaluate new signals only on surviving candidates, making the cost cascade: $\text{cost}_i \propto |C_{i-1}| / N$.
+
 ---
 
 ## 5. Graph Extension
@@ -422,6 +457,10 @@ $$
 | $GMatch_P$ | Subgraph isomorphism via backtracking | $O(\|V_G\|^{\|V_P\|})$ (NP-complete) | `PatternMatchOperator` |
 | $RPQ_R$ | Regular path query via NFA simulation | $O(\|V_G\|^2 \cdot \|R\|)$ | `RegularPathQueryOperator` |
 | $VertexAgg_{p,f}$ | Aggregate property $p$ with function $f$ | $O(\|L_G\|)$ | `VertexAggregationOperator` |
+| $PageRank_{d,iter}$ | Power iteration centrality | $O(\|V_G\| \cdot iter)$ | `PageRankOperator` |
+| $HITS_{iter}$ | Hub/authority mutual reinforcement | $O(\|V_G\| \cdot iter)$ | `HITSOperator` |
+| $BC$ | Brandes betweenness centrality | $O(\|V_G\| \cdot \|E_G\|)$ | `BetweennessCentralityOperator` |
+| $WRPQ_{R,w,f,p}$ | Weighted RPQ with aggregate predicates | $O(\|V_G\|^2 \cdot \|R\|)$ | `WeightedPathQueryOperator` |
 
 ### 5.3 Subgraph Isomorphism: Complexity and Mitigations
 
@@ -473,6 +512,8 @@ $$
 
 The `RegularPathExpr` hierarchy (`Label`, `Concat`, `Alternation`, `KleeneStar`) in `uqa/graph/pattern.py` represents these expressions. The `RegularPathQueryOperator` uses Thompson's construction to build an NFA from the expression, then simulates it on the graph.
 
+**Bounded repetition.** UQA extends the standard RPQ grammar with bounded repetition: $R\{m, n\}$ matches paths of length between $m$ and $n$ hops. The `BoundedLabel` dataclass in `uqa/graph/pattern.py` represents this extension. NFA construction chains $m$ mandatory copies of the inner NFA followed by $(n - m)$ optional copies with epsilon bypasses.
+
 ### 5.5 openCypher Integration
 
 The `CypherCompiler` in `uqa/graph/cypher/` compiles openCypher queries into graph posting list operations:
@@ -523,6 +564,29 @@ Three index types are available:
 | `PathIndex` | $(start, end)$ pairs for label sequences | $O(1)$ per sequence |
 
 The `VersionedGraphStore` (Section 5.7) integrates with path indexes by tracking affected edge labels on mutation, enabling targeted invalidation of stale index entries.
+
+### 5.6.1 Subgraph Indexing
+
+`SubgraphIndex` in `uqa/graph/index.py` pre-indexes frequently queried subgraph patterns. Given a list of `GraphPattern` objects, `build()` runs `PatternMatchOperator` for each and caches the resulting vertex sets keyed by a canonical string representation. Subsequent `lookup()` calls return cached results in O(1).
+
+| Method | Description |
+|--------|-------------|
+| `build(graph, patterns)` | Run pattern matching, cache results |
+| `lookup(pattern)` | O(1) cached lookup, returns `set[frozenset[int]]` or `None` |
+| `has_pattern(pattern)` | Check if pattern is indexed |
+| `invalidate(labels)` | Remove entries with matching edge labels |
+
+`PatternMatchOperator.execute()` checks `ctx.subgraph_index` before backtracking. When a cached result exists, it bypasses the full CSP solver entirely.
+
+### 5.7.1 Incremental Pattern Matching
+
+`IncrementalPatternMatcher` in `uqa/graph/incremental_match.py` maintains a set of pattern matches and updates them efficiently when the graph changes:
+
+1. **Invalidate**: Remove matches containing any affected vertex IDs
+2. **Re-match**: For each pattern variable, constrain it to affected vertices and run `PatternMatchOperator`
+3. **Merge**: Union new matches into the base set
+
+This avoids full re-computation when only a few vertices or edges change.
 
 ### 5.7 Incremental Graph Maintenance
 
@@ -669,6 +733,12 @@ The cost-based optimizer in `uqa/planner/` applies:
 - B-tree index scan substitution
 - FDW predicate pushdown (comparison, IN, LIKE, ILIKE, BETWEEN)
 - **EXISTS subquery decorrelation** — correlated `EXISTS` subqueries with equijoin predicates are decorrelated into semi-join `FilterOperator(outer_col, InSet(values))`, executing the inner query once instead of once per outer row (116x speedup on the EXISTS benchmark)
+- Edge property filter pushdown into graph pattern constraints (e.g., `"a_b.since" > 2020` pushed into `EdgePattern.constraints`)
+- Join-pattern fusion: merge intersected `PatternMatchOperator` children with shared vertex variables into single pattern
+- Cross-paradigm join cost models for text similarity, vector similarity, graph, hybrid, and cross-paradigm joins
+- Threshold-aware vector selectivity estimation (4-tier threshold buckets: 0.9/0.7/0.5/<0.5)
+- Temporal graph cardinality correction with timestamp/range selectivity
+- Random-walk graph sampling for cardinality estimation on graphs with 10000+ vertices
 
 Cardinality estimation uses equi-depth histograms and Most Common Values (MCV), with specialized estimators for text, vector, graph, and fusion operators.
 
@@ -717,6 +787,15 @@ The table below maps each formal definition and theorem from the four papers to 
 | Temporal Graph Filter (Section 10) | `TemporalFilter` in `uqa/graph/temporal_filter.py` |
 | Temporal Traversal (Section 10) | `TemporalTraverseOperator` in `uqa/graph/temporal_traverse.py` |
 | Temporal Pattern Match (Section 10) | `TemporalPatternMatchOperator` in `uqa/graph/temporal_pattern_match.py` |
+| Graph Centrality (Section 9.1) | `PageRankOperator`, `HITSOperator`, `BetweennessCentralityOperator` in `uqa/graph/centrality.py` |
+| Bounded RPQ (Section 5.1) | `BoundedLabel` in `uqa/graph/pattern.py` |
+| Weighted RPQ (Section 5.1) | `WeightedPathQueryOperator` in `uqa/graph/operators.py` |
+| Subgraph Index (Section 9.1 #4) | `SubgraphIndex` in `uqa/graph/index.py` |
+| Incremental Pattern Matching (Section 9.3) | `IncrementalPatternMatcher` in `uqa/graph/incremental_match.py` |
+| Graph Sampling (Section 6.3) | `_sample_graph_cardinality()` in `uqa/planner/cardinality.py` |
+| Edge Filter Pushdown (Theorem 6.1.1) | `_push_graph_pattern_filters()` edge case in `uqa/planner/optimizer.py` |
+| Join-Pattern Fusion (Theorem 6.1.2) | `_fuse_join_pattern()` + `_merge_patterns()` in `uqa/planner/optimizer.py` |
+| Temporal Cardinality (Section 8) | `_temporal_selectivity()` in `uqa/planner/cardinality.py` |
 
 ### Paper 3: Bayesian BM25
 
@@ -745,6 +824,10 @@ The table below maps each formal definition and theorem from the four papers to 
 | Multi-Stage Retrieval Pipeline (Section 9) | `MultiStageOperator` in `uqa/operators/multi_stage.py` |
 | GNN Message Passing (Paper 2 + Paper 4) | `MessagePassingOperator` in `uqa/graph/message_passing.py` |
 | Structural Graph Embeddings (Paper 2 + Paper 4) | `GraphEmbeddingOperator` in `uqa/graph/graph_embedding.py` |
+| Fusion Gating (Section 6.5-6.7) | `gating` parameter in `LogOddsFusion`, `LogOddsFusionOperator`, `FusionWANDScorer` |
+| Progressive Fusion (Section 7) | `ProgressiveFusionOperator` in `uqa/operators/progressive_fusion.py` |
+| Cross-Paradigm Join Costs (Section 4) | Cost/cardinality models in `uqa/planner/cost_model.py`, `uqa/planner/cardinality.py` |
+| Vector Selectivity (Section 5.3) | `_vector_selectivity()` in `uqa/planner/cardinality.py` |
 
 ---
 

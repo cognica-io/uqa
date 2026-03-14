@@ -1103,7 +1103,7 @@ Fusion meta-functions combine multiple search signals in the WHERE clause. Each 
 
 ```ebnf
 fusion_call
-    = FUSE_LOG_ODDS '(' signal { ',' signal } [ ',' numeric_literal ] ')'
+    = FUSE_LOG_ODDS '(' signal { ',' signal } [ ',' numeric_literal ] [ ',' gating_literal ] ')'
     | FUSE_PROB_AND '(' signal { ',' signal } ')'
     | FUSE_PROB_OR '(' signal { ',' signal } ')'
     | FUSE_PROB_NOT '(' signal ')'
@@ -1116,7 +1116,16 @@ signal
     | traverse_match_call
     | spatial_within_call
     ;
+
+gating_literal
+    = '''relu'''
+    | '''swish'''
+    ;
 ```
+
+For `FUSE_LOG_ODDS`, the optional trailing arguments are:
+- `numeric_literal`: confidence alpha (default 0.5)
+- `gating_literal`: activation gating (`'relu'` or `'swish'`, default none)
 
 Inside a fusion context, `TEXT_MATCH` is automatically promoted to Bayesian BM25 calibration so all signals produce probabilities in $(0, 1)$.
 
@@ -1138,9 +1147,55 @@ traverse_call
     ;
 
 rpq_call
-    = RPQ '(' path_expression ',' start_id ')'
+    = RPQ '(' path_expression ',' start_id [ ',' graph_source ] ')'
+    ;
+
+pagerank_call
+    = PAGERANK '(' [ damping [ ',' max_iterations [ ',' tolerance ] ] ] [ ',' graph_source ] ')'
+    ;
+
+hits_call
+    = HITS '(' [ max_iterations [ ',' tolerance ] ] [ ',' graph_source ] ')'
+    ;
+
+betweenness_call
+    = BETWEENNESS '(' [ graph_source ] ')'
+    ;
+
+weighted_rpq_call
+    = WEIGHTED_RPQ '(' path_expression ',' start_id ',' weight_property
+                       [ ',' aggregate_fn [ ',' threshold ] ] ')'
+    ;
+
+progressive_fusion_call
+    = PROGRESSIVE_FUSION '(' signal { ',' signal } ',' integer_literal
+                             { ',' signal { ',' signal } ',' integer_literal }
+                             [ ',' numeric_literal ] [ ',' gating_literal ] ')'
+    ;
+
+graph_add_vertex_call
+    = GRAPH_ADD_VERTEX '(' vertex_id ',' label ',' table_name [ ',' properties ] ')'
+    ;
+
+graph_add_edge_call
+    = GRAPH_ADD_EDGE '(' edge_id ',' source_id ',' target_id ','
+                         label ',' table_name [ ',' properties ] ')'
+    ;
+
+graph_source
+    = string_literal        (* table name or 'graph:name' *)
     ;
 ```
+
+Path expressions support bounded repetition: `'knows{2,4}'` matches paths of 2 to 4 hops.
+
+`PAGERANK`, `HITS`, `BETWEENNESS` work as both FROM-clause table sources and WHERE-clause scored signals. The optional `graph_source` argument accepts `'graph:name'` for named graphs or a table name.
+
+`WEIGHTED_RPQ` evaluates a regular path query tracking cumulative edge weight. `aggregate_fn` is `'sum'` (default), `'max'`, or `'min'`. When `threshold` is provided, only paths with cumulative weight exceeding the threshold are returned.
+
+`PROGRESSIVE_FUSION` implements cascading multi-stage WAND fusion. Signals are grouped into stages separated by integer cutoffs. Each stage narrows the candidate set via top-k pruning.
+
+`GRAPH_ADD_VERTEX` and `GRAPH_ADD_EDGE` add vertices and edges to a table's per-table graph store. Properties are specified as comma-separated `key=value` pairs in a single string.
 
 `GENERATE_SERIES` produces integer or timestamp series.
 

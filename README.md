@@ -245,8 +245,10 @@ uqa/
                   parameter learning, external prior, multi-field, fusion WAND (via bayesian-bm25)
   fusion/         Log-odds conjunction, probabilistic boolean, attention fusion,
                   learned fusion, query features (via bayesian-bm25)
-  graph/          GraphStore, traversal, pattern matching, RPQ, cross-paradigm, indexes,
-                  temporal filter/traverse/pattern, delta/versioned store, message passing, embeddings
+  graph/          GraphStore, traversal, pattern matching, RPQ, bounded RPQ, weighted paths,
+                  centrality (PageRank, HITS, betweenness), cross-paradigm, indexes,
+                  subgraph index, incremental matching, temporal filter/traverse/pattern,
+                  delta/versioned store, message passing, embeddings
     cypher/       openCypher lexer, parser, AST, posting-list-based compiler
   fdw/            Foreign Data Wrappers: DuckDB (Parquet/CSV/JSON), Arrow Flight SQL, Hive partitioning
   joins/          Hash, sort-merge, index, graph, cross-paradigm, similarity joins
@@ -254,10 +256,10 @@ uqa/
   planner/        Cost model, cardinality estimator, optimizer, DPccp join enumerator, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, FTS query parser, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          2230 tests across 62 test files
-benchmarks/       269 pytest-benchmark tests across 13 files (posting list, storage, compiler,
-                  execution, planner, scoring, graph, end-to-end SQL, calibration,
-                  multi-field, external prior, advanced scoring, advanced graph)
+  tests/          2305 tests across 65 test files
+benchmarks/       295 pytest-benchmark tests across 14 files (posting list, storage, compiler,
+                  execution, planner, scoring, graph, graph centrality, end-to-end SQL,
+                  calibration, multi-field, external prior, advanced scoring, advanced graph)
 ```
 
 ## Key Features
@@ -307,18 +309,24 @@ benchmarks/       269 pytest-benchmark tests across 13 files (posting list, stor
 | `temporal_traverse(start, lbl, hops, ts)` | Time-aware graph traversal |
 | `message_passing(k, agg, property)` | GNN k-layer neighbor aggregation |
 | `graph_embedding(dims, k)` | Structural graph embeddings |
+| `vector_exclude(f, pos, neg, k, theta)` | Vector exclusion: positive minus negative similarity |
+| `pagerank([damping[, iter[, tol]]])` | PageRank centrality scoring |
+| `hits([iter[, tol]])` | HITS hub/authority scoring |
+| `betweenness()` | Betweenness centrality (Brandes) |
+| `weighted_rpq('expr', start, 'prop'[, 'agg'[, threshold]])` | Weighted RPQ with aggregate predicates |
 
 ### Fusion Meta-Functions
 
 | Function | Description |
 |----------|-------------|
-| `fuse_log_odds(sig1, sig2, ...[, alpha])` | Log-odds conjunction (resolves conjunction shrinkage) |
+| `fuse_log_odds(sig1, sig2, ...[, alpha][, 'relu'\|'swish'])` | Log-odds conjunction with optional gating |
 | `fuse_prob_and(sig1, sig2, ...)` | Probabilistic AND: P = prod(P_i) |
 | `fuse_prob_or(sig1, sig2, ...)` | Probabilistic OR: P = 1 - prod(1 - P_i) |
 | `fuse_prob_not(signal)` | Probabilistic NOT: P = 1 - P_signal |
 | `fuse_attention(sig1, sig2, ...)` | Attention-weighted log-odds fusion |
 | `fuse_learned(sig1, sig2, ...)` | Learned-weight log-odds fusion |
 | `staged_retrieval(sig1, k1, sig2, k2, ...)` | Multi-stage cascading retrieval pipeline |
+| `progressive_fusion(sig1, sig2, k1, sig3, k2[, alpha][, 'gating'])` | Progressive multi-stage WAND fusion |
 
 ### SELECT Spatial Functions
 
@@ -348,6 +356,11 @@ benchmarks/       269 pytest-benchmark tests across 13 files (posting list, stor
 | `regexp_split_to_table(str, pattern)` | Split string by regex into rows |
 | `json_each(json)` / `json_each_text(json)` | Expand JSON object to key/value rows |
 | `json_array_elements(json)` | Expand JSON array to a set of rows |
+| `pagerank([damping][, 'table'\|'graph:name'])` | PageRank centrality as table source |
+| `hits([iter][, 'table'\|'graph:name'])` | HITS hub/authority as table source |
+| `betweenness(['table'\|'graph:name'])` | Betweenness centrality as table source |
+| `graph_add_vertex(id, 'label', 'table'[, 'props'])` | Add graph vertex to table's graph store |
+| `graph_add_edge(eid, src, tgt, 'label', 'table'[, 'props'])` | Add graph edge to table's graph store |
 | `create_graph('name')` | Create a named graph namespace |
 | `drop_graph('name')` | Drop a named graph |
 | `cypher('graph', $$ query $$) AS (cols)` | Execute openCypher query on a named graph |
@@ -390,6 +403,11 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 - B-tree index scan substitution (replace full scans when profitable)
 - FDW predicate pushdown (comparison, IN, LIKE, ILIKE, BETWEEN pushed to DuckDB/Arrow Flight SQL for Hive partition pruning)
 - Cross-paradigm cardinality estimation for text, vector, graph, fusion, temporal, and GNN operators
+- Edge property filter pushdown into graph pattern constraints
+- Join-pattern fusion (merge intersected pattern matches with shared variables)
+- Cross-paradigm join cost models (text similarity, vector similarity, graph, hybrid joins)
+- Threshold-aware vector selectivity estimation (4-tier threshold buckets)
+- Temporal graph cardinality correction with timestamp/range selectivity
 - Path index acceleration for simple Concat-of-Labels RPQ expressions
 - CTE inlining for single-reference non-recursive CTEs
 - Predicate pushdown into views and derived tables
@@ -595,6 +613,7 @@ python examples/fluent/multi_paradigm.py      # Multi-signal fusion, graph analy
 python examples/fluent/scoring.py             # Bayesian BM25, sparse threshold, multi-field, priors
 python examples/fluent/fusion_advanced.py     # Attention/learned fusion, multi-stage pipelines
 python examples/fluent/graph_advanced.py      # Temporal traversal, message passing, path index, delta
+python examples/fluent/graph_centrality.py    # PageRank, HITS, betweenness, bounded RPQ, weighted paths, indexing
 python examples/fluent/analysis.py            # Text analysis pipeline, tokenizers, filters, stemming
 python examples/fluent/export.py              # Arrow/Parquet export from fluent queries
 ```
@@ -605,7 +624,7 @@ python examples/fluent/export.py              # Arrow/Parquet export from fluent
 python examples/sql/basics.py                 # DDL, DML, SELECT, CTE, window, transactions, views
 python examples/sql/functions.py              # text_match, knn_match, path_agg, path_value, path_filter
 python examples/sql/graph.py                  # FROM traverse/rpq, aggregates, GROUP BY, WHERE
-python examples/sql/fts_match.py               # @@ operator: boolean, phrase, field, hybrid text+vector
+python examples/sql/fts_match.py              # @@ operator: boolean, phrase, field, hybrid text+vector
 python examples/sql/fusion.py                 # fuse_log_odds, fuse_prob_and/or/not, EXPLAIN
 python examples/sql/joins_and_subqueries.py   # JOINs, derived tables, set operations, recursive CTE
 python examples/sql/analytics.py              # Aggregates, window functions, JSON, date/time, UPSERT
@@ -613,11 +632,13 @@ python examples/sql/analysis.py               # Text analyzers via SQL: create, 
 python examples/sql/export.py                 # Arrow/Parquet export from SQL queries
 python examples/sql/spatial.py                # Geospatial: POINT, R*Tree, spatial_within, ST_Distance, fusion
 python examples/sql/synonyms.py               # Synonym search: dual analyzers, index/search-time expansion
-python examples/sql/scoring_advanced.py        # Sparse threshold, multi-field, attention/learned fusion, staged retrieval
+python examples/sql/scoring_advanced.py       # Sparse threshold, multi-field, attention/learned fusion, staged retrieval
 python examples/sql/calibration.py            # ECE, Brier, reliability diagram, parameter learning
 python examples/sql/temporal_graph.py         # Temporal traversal, message passing, graph embeddings
 python examples/sql/graph_delta.py            # Delta operations, path index invalidation, rollback
 python examples/sql/fdw.py                    # Foreign Data Wrappers, Hive partitioning, predicate pushdown
+python examples/sql/fusion_gating.py          # ReLU/Swish gating, alpha+gating, progressive fusion
+python examples/sql/graph_centrality.py       # PageRank, HITS, betweenness, bounded RPQ, weighted RPQ via SQL
 ```
 
 ### Interactive Shell

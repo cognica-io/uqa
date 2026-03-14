@@ -9,7 +9,7 @@ authors:
     affiliation: "Cognica, Inc."
 repository-code: "https://github.com/cognica-io/uqa"
 license: AGPL-3.0-only
-version: 0.16.0
+version: 0.17.0
 date-released: "2026-03-14"
 abstract: >-
   A multi-paradigm database engine that unifies relational, text retrieval,
@@ -53,3 +53,13 @@ keywords:
   - graph-neural-network
   - message-passing
   - path-index
+  - pagerank
+  - hits-algorithm
+  - betweenness-centrality
+  - graph-centrality
+  - bounded-rpq
+  - weighted-path-query
+  - subgraph-index
+  - incremental-pattern-matching
+  - progressive-fusion
+  - gating-mechanism

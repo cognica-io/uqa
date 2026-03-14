@@ -544,11 +544,11 @@ FROM employees;
 ### Window Frame Specification
 
 ```sql
-ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW        -- default
+ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW         -- default
 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING -- entire partition
 ROWS BETWEEN n PRECEDING AND n FOLLOWING                 -- sliding window
 ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING
-RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW       -- value-based
+RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW        -- value-based
 ```
 
 ### Named Windows
@@ -923,6 +923,78 @@ SELECT * FROM employees
 WHERE traverse_match(1, 'manages', 3);
 ```
 
+### Bounded RPQ
+
+```sql
+-- Bounded repetition: paths of 2-3 hops
+SELECT * FROM rpq('knows{2,3}', 1);
+```
+
+### Graph Centrality
+
+```sql
+-- PageRank as table source (FROM clause)
+SELECT _doc_id, title, _score FROM pagerank() ORDER BY _score DESC;
+SELECT _doc_id, _score FROM pagerank(0.95) ORDER BY _score DESC;  -- custom damping
+SELECT _doc_id, _score FROM pagerank('graph:social') ORDER BY _score DESC;  -- named graph
+
+-- HITS hub/authority scoring
+SELECT _doc_id, title, _score FROM hits() ORDER BY _score DESC;
+
+-- Betweenness centrality
+SELECT _doc_id, title, _score FROM betweenness() ORDER BY _score DESC;
+
+-- PageRank as WHERE signal (combined with relational filter)
+SELECT title, year, _score FROM papers WHERE pagerank() AND year >= 2020 ORDER BY _score DESC;
+
+-- Centrality as fusion signal
+SELECT title, _score FROM papers
+WHERE fuse_log_odds(text_match(title, 'attention'), pagerank()) ORDER BY _score DESC;
+```
+
+### Weighted Path Query
+
+```sql
+-- Sum of edge weights along path
+SELECT title, _score FROM papers
+WHERE weighted_rpq('cites/cites', 7, 'weight', 'sum')
+ORDER BY _score DESC;
+
+-- Max aggregate with threshold predicate
+SELECT title, _score FROM papers
+WHERE weighted_rpq('cites/cites', 7, 'weight', 'max', 6.0)
+ORDER BY _score DESC;
+```
+
+### Graph Mutation (SQL)
+
+```sql
+-- Add graph vertex to a table's graph store
+SELECT * FROM graph_add_vertex(1, 'person', 'employees');
+SELECT * FROM graph_add_vertex(2, 'person', 'employees', 'name=Alice,age=30');
+
+-- Add graph edge to a table's graph store
+SELECT * FROM graph_add_edge(1, 1, 2, 'knows', 'employees');
+SELECT * FROM graph_add_edge(2, 1, 2, 'knows', 'employees', 'weight=0.8,since=2020');
+```
+
+### Progressive Fusion
+
+```sql
+-- Cascading multi-stage WAND fusion
+SELECT title, _score FROM papers
+WHERE progressive_fusion(
+    text_match(title, 'attention'),
+    traverse_match(1, 'cites', 2),
+    5,
+    pagerank(),
+    3
+) ORDER BY _score DESC;
+
+-- With gating
+WHERE progressive_fusion(sig1, sig2, 5, sig3, 3, 'relu')
+```
+
 ### Spatial Search
 
 ```sql
@@ -971,6 +1043,37 @@ WHERE fuse_log_odds(
 )
 ORDER BY _score DESC;
 ```
+
+### Log-Odds Fusion with Gating
+
+```sql
+-- ReLU gating: suppress weak negative evidence
+SELECT title, _score FROM papers
+WHERE fuse_log_odds(
+    text_match(title, 'attention'),
+    knn_match(embedding, $1, 5),
+    'relu'
+) ORDER BY _score DESC;
+
+-- Swish gating: smooth approximation to ReLU
+SELECT title, _score FROM papers
+WHERE fuse_log_odds(
+    text_match(title, 'attention'),
+    knn_match(embedding, $1, 5),
+    'swish'
+) ORDER BY _score DESC;
+
+-- Alpha parameter + gating combined
+SELECT title, _score FROM papers
+WHERE fuse_log_odds(
+    text_match(title, 'attention'),
+    knn_match(embedding, $1, 5),
+    0.8,
+    'relu'
+) ORDER BY _score DESC;
+```
+
+Valid gating values: `'relu'`, `'swish'`. Default is no gating. The gating parameter is always the last argument (after optional alpha).
 
 ### Probabilistic AND
 

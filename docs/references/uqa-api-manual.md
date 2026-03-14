@@ -926,6 +926,44 @@ path_idx = PathIndex.build(gs, label_sequences=[["KNOWS", "WORKS_AT"]])
 pairs = path_idx.lookup(["KNOWS", "WORKS_AT"])  # [(source, target), ...]
 ```
 
+### SubgraphIndex
+
+```python
+from uqa.graph.index import SubgraphIndex
+
+# Pre-index frequent patterns
+idx = SubgraphIndex.build(graph_store, [pattern1, pattern2])
+
+# O(1) lookup
+matches = idx.lookup(pattern1)  # set[frozenset[int]] or None
+
+# Use with PatternMatchOperator (automatic cache check)
+ctx = ExecutionContext(graph_store=gs, subgraph_index=idx)
+result = PatternMatchOperator(pattern1).execute(ctx)  # uses cache
+
+# Invalidation
+idx.invalidate({"knows"})  # remove entries with "knows" edges
+```
+
+### Incremental Pattern Matching
+
+```python
+from uqa.graph.incremental_match import GraphDelta, IncrementalPatternMatcher
+
+matcher = IncrementalPatternMatcher(pattern, initial_matches)
+
+# After graph mutation:
+delta = GraphDelta(added_edge_ids={new_edge_id})
+updated_matches = matcher.update(graph_store, delta)
+```
+
+| Field | Description |
+|-------|-------------|
+| `GraphDelta.added_vertex_ids` | Set of added vertex IDs |
+| `GraphDelta.removed_vertex_ids` | Set of removed vertex IDs |
+| `GraphDelta.added_edge_ids` | Set of added edge IDs |
+| `GraphDelta.removed_edge_ids` | Set of removed edge IDs |
+
 ### Graph Patterns
 
 ```python
@@ -997,7 +1035,7 @@ from uqa.scoring.parameter_learner import ParameterLearner
 learner = ParameterLearner(alpha=1.0, beta=0.0, base_rate=0.5)
 params = learner.fit(scores, labels, mode="balanced")  # batch
 learner.update(score, label)  # online
-current = learner.params()  # {"alpha", "beta", "base_rate"}
+current = learner.params()    # {"alpha", "beta", "base_rate"}
 ```
 
 ### External Prior Scorer
@@ -1137,6 +1175,64 @@ from uqa.graph.operators import (
 | `RegularPathQueryOperator(path_expr, start)` | NFA-based path query |
 | `VertexAggregationOperator(source, property, agg_fn)` | Aggregate vertex properties |
 
+### Graph Centrality Operators
+
+```python
+from uqa.graph.centrality import (
+    PageRankOperator,
+    HITSOperator,
+    BetweennessCentralityOperator,
+)
+
+# PageRank: power iteration centrality
+pr = PageRankOperator(damping=0.85, max_iterations=100, tolerance=1e-6)
+results = pr.execute(ctx)  # GraphPostingList, score = normalized PageRank
+
+# HITS: hub/authority scoring
+hits = HITSOperator(max_iterations=100, tolerance=1e-6)
+results = hits.execute(ctx)
+# entry.payload.fields["hub_score"], entry.payload.fields["authority_score"]
+# entry.payload.score = authority_score
+
+# Betweenness centrality: Brandes algorithm
+bc = BetweennessCentralityOperator()
+results = bc.execute(ctx)  # score = normalized betweenness in [0, 1]
+```
+
+| Parameter | `PageRankOperator` | `HITSOperator` | `BetweennessCentralityOperator` |
+|-----------|-------------------|----------------|--------------------------------|
+| `damping` | 0.85 | N/A | N/A |
+| `max_iterations` | 100 | 100 | N/A |
+| `tolerance` | 1e-6 | 1e-6 | N/A |
+
+### Bounded RPQ
+
+```python
+from uqa.graph.pattern import parse_rpq, BoundedLabel
+
+# Parse bounded repetition: e{min,max}
+expr = parse_rpq("knows{2,4}")  # 2 to 4 hops
+assert isinstance(expr, BoundedLabel)
+assert expr.min_hops == 2
+assert expr.max_hops == 4
+```
+
+### Weighted Path Query
+
+```python
+from uqa.graph.operators import WeightedPathQueryOperator
+
+op = WeightedPathQueryOperator(
+    path_expr=parse_rpq("knows/knows"),
+    weight_property="weight",    # edge property to accumulate
+    aggregate_fn="sum",          # "sum", "max", or "min"
+    predicate=lambda w: w > 5.0, # filter at accepting states
+    start_vertex=1,
+)
+results = op.execute(ctx)
+# entry.payload.fields["path_weight"] = cumulative weight
+```
+
 ### Advanced Scoring Operators
 
 | Operator | Constructor | Description |
@@ -1151,6 +1247,24 @@ from uqa.graph.operators import (
 | `AttentionFusionOperator` | `(signals, attention, query_features)` | Attention-weighted log-odds conjunction |
 | `LearnedFusionOperator` | `(signals, learned)` | Learned-weight log-odds conjunction |
 | `MultiStageOperator` | `(stages)` | Cascading (operator, cutoff) retrieval pipeline |
+
+### ProgressiveFusionOperator
+
+```python
+from uqa.operators.progressive_fusion import ProgressiveFusionOperator
+
+op = ProgressiveFusionOperator(
+    stages=[
+        ([signal1, signal2], 50),  # Stage 1: fuse sig1+sig2, keep top-50
+        ([signal3], 10),           # Stage 2: add sig3, keep top-10
+    ],
+    alpha=0.5,
+    gating="relu",  # optional
+)
+result = op.execute(ctx)
+```
+
+Each stage accumulates signals and narrows candidates via `FusionWANDScorer` top-k pruning.
 
 ### Temporal Graph Operators
 
@@ -1182,6 +1296,21 @@ from uqa.graph.operators import (
 | `LearnedFusion` | `__init__(n_signals, alpha)`, `fuse(probs)`, `fit()`, `update()`, `state_dict()`, `load_state_dict()` |
 | `QueryFeatureExtractor` | `__init__(inverted_index)`, `extract(query_terms, field)`, `n_features` (= 6) |
 | `FusionWANDScorer` | `__init__(signal_posting_lists, signal_upper_bounds, alpha, k)`, `score_top_k()` |
+
+### Fusion Gating
+
+```python
+from uqa.fusion.log_odds import LogOddsFusion
+
+# ReLU gating
+f = LogOddsFusion(confidence_alpha=0.5, gating="relu")
+result = f.fuse([0.8, 0.6, 0.7])
+
+# Swish gating
+f = LogOddsFusion(confidence_alpha=0.5, gating="swish")
+```
+
+The `gating` parameter is also available on `LogOddsFusionOperator` and `FusionWANDScorer`.
 
 ### Hierarchical Operators
 
@@ -1231,6 +1360,7 @@ context = ExecutionContext(
 | `spatial_indexes` | `dict[str, SpatialIndex]` | Named spatial indexes |
 | `graph_store` | `GraphStore \| None` | Graph store for traversal operators |
 | `path_index` | `PathIndex \| None` | Pre-computed path index for RPQ acceleration |
+| `subgraph_index` | `SubgraphIndex \| None` | Pre-indexed subgraph patterns for PatternMatchOperator cache |
 
 ---
 
