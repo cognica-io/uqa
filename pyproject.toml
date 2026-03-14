@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "uqa"
-version = "0.15.0"
+version = "0.16.0"
 description = "Unified Query Algebra — a multi-paradigm database engine unifying relational, text, vector, graph, and geospatial queries"
 license = "AGPL-3.0-only"
 requires-python = ">=3.12"
@@ -42,7 +42,7 @@ classifiers = [
 dependencies = [
     "numpy>=1.26",
     "pyarrow>=10.0",
-    "bayesian-bm25>=0.8.0",
+    "bayesian-bm25>=0.8.1",
     "duckdb>=1.0",
     "pglast>=7.0",
     "prompt-toolkit>=3.0",

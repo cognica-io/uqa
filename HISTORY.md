@@ -1,5 +1,44 @@
 # History
 
+## 0.16.0 (2026-03-14)
+
+12 paper-derived features connecting all theoretical building blocks from Papers 1--4 into the UQA engine. Adds calibration diagnostics, online parameter learning, multi-field scoring, attention-based and learned fusion, multi-signal WAND pruning, multi-stage retrieval pipelines, external prior integration, sparse thresholding, path index acceleration, incremental graph maintenance with versioned rollback, temporal graph operations, and GNN message-passing aggregation. All 2230 tests, 26 examples, and 269 benchmarks pass.
+
+### Scoring
+
+- **Calibration Metrics** (Paper 3 S11.3): `CalibrationMetrics` class wrapping `bayesian_bm25` ECE, Brier score, reliability diagram; `Engine.calibration_report()` for end-to-end calibration diagnostics
+- **Online Parameter Learning** (Paper 3 S8): `ParameterLearner` wrapping `BayesianProbabilityTransform.fit()`/`.update()` for batch and online calibration; `Engine.learn_scoring_params()`, `Engine.update_scoring_params()`; `QueryBuilder.learn_params()`
+- **External Prior Features** (Paper 3 S12.2 #6): `ExternalPriorScorer` combining BM25 likelihood with document-level priors via log-odds addition; `recency_prior()` and `authority_prior()` helper factories; `bayesian_match_with_prior()` SQL function; `QueryBuilder.score_bayesian_with_prior()`
+- **Multi-Field Bayesian BM25** (Paper 3 S12.2 #1): `MultiFieldBayesianScorer` with per-field (alpha, beta, base_rate) calibration and cross-field weighted log-odds fusion; `MultiFieldSearchOperator`; `multi_field_match()` SQL function; `QueryBuilder.score_multi_field_bayesian()`
+- **Sparse Thresholding / ReLU-as-MAP** (Paper 4 S6.5): `SparseThresholdOperator` applying `max(0, score - threshold)` to exclude zero-evidence documents; `sparse_threshold()` SQL function; `QueryBuilder.sparse_threshold()`
+
+### Fusion
+
+- **Attention-Based Fusion** (Paper 4 S8): `AttentionFusion` wrapping `AttentionLogOddsWeights` with query-feature-dependent attention weights via softmax over `W @ query_features`; `QueryFeatureExtractor` computing [mean_idf, max_idf, min_idf, coverage_ratio, query_length, vocab_overlap_ratio]; `AttentionFusionOperator`; `fuse_attention()` SQL function; `QueryBuilder.fuse_attention()`; state_dict/load_state_dict for persistence
+- **Learned Fusion** (Paper 4 S8): `LearnedFusion` wrapping `LearnableLogOddsWeights` for per-signal weights without query features; `LearnedFusionOperator`; `fuse_learned()` SQL function; `QueryBuilder.fuse_learned()`
+- **Multi-Signal WAND Pruning** (Paper 4 S8.7): `FusionWANDScorer` using per-signal upper bounds for safe fused pruning (log_odds_conjunction monotonicity); `LogOddsFusionOperator` gains optional `top_k` parameter that delegates to WAND
+- **Multi-Stage Inference Pipeline** (Paper 4 S9): `MultiStageOperator` with cascading (operator, cutoff) stages where cutoff is top-k (int) or threshold (float); `staged_retrieval()` SQL function; `QueryBuilder.multi_stage()`
+
+### Graph
+
+- **Path Index Integration** (Paper 2 S9.1): `PathIndex` connected to `RegularPathQueryOperator` for O(1) RPQ lookups on simple Concat-of-Labels expressions; `Engine.build_path_index()` / `get_path_index()` / `drop_path_index()`; catalog persistence via `_path_indexes` table; `ExecutionContext.path_index` field; cost model uses reduced cost for indexable RPQs
+- **Incremental Graph Maintenance** (Paper 2 S9.3): `GraphDelta` recording add/remove vertex/edge operations with `affected_vertex_ids()` and `affected_edge_labels()`; `VersionedGraphStore` with `apply()`/`rollback()` and inverse delta storage; `Engine.apply_graph_delta()` with automatic path index invalidation
+- **Temporal Graphs** (Paper 2 S10): `TemporalFilter` checking `valid_from`/`valid_to` edge properties for point-in-time or range queries; `TemporalTraverseOperator` and `TemporalPatternMatchOperator` pushing temporal filter into edge constraints; `temporal_traverse()` SQL function; `QueryBuilder.temporal_traverse()`
+- **GNN Message Passing** (Paper 2 + Paper 4): `MessagePassingOperator` with k-layer neighbor feature aggregation (mean/sum/max) and sigmoid calibration; `GraphEmbeddingOperator` computing structural embeddings from degree, label distribution, and k-hop connectivity; `message_passing()` and `graph_embedding()` SQL functions; `QueryBuilder.message_passing()`
+
+### Integration
+
+- **SQL compiler**: 9 new WHERE-clause functions (`sparse_threshold`, `multi_field_match`, `fuse_attention`, `fuse_learned`, `staged_retrieval`, `bayesian_match_with_prior`, `temporal_traverse`, `message_passing`, `graph_embedding`)
+- **QueryBuilder**: 12 new fluent methods (`sparse_threshold`, `score_multi_field_bayesian`, `fuse_attention`, `fuse_learned`, `multi_stage`, `learn_params`, `score_bayesian_with_prior`, `temporal_traverse`, `message_passing`, and 3 Engine-level methods)
+- **Planner**: CostModel, CardinalityEstimator, PlanExecutor, and QueryOptimizer updated for all 10 new operator types
+- **Catalog**: `_path_indexes` table for path index persistence
+
+### Tests, Examples, and Benchmarks
+
+- 212 new tests across 12 test files (2230 total)
+- 7 new example files (4 SQL + 3 fluent API)
+- 5 new benchmark files with 77 benchmark tests (269 total)
+
 ## 0.15.0 (2026-03-14)
 
 Comprehensive performance optimization across 4 layers (Core Engine, SQL Compiler, Storage, Graph/Search), plus the `@@` full-text search operator with a query string mini-language supporting boolean logic, phrase search, field targeting, and hybrid text+vector fusion via log-odds. All 2018 tests, 20 examples, and 192 benchmarks pass.

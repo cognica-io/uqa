@@ -83,6 +83,21 @@ WHERE fuse_log_odds(
 ) AND year >= 2020
 ORDER BY _score DESC;
 
+-- Multi-stage retrieval: broad recall -> precise re-ranking
+SELECT title, _score FROM papers
+WHERE staged_retrieval(
+    bayesian_match(title, 'transformer attention'), 50,
+    bayesian_match(abstract, 'self attention mechanism'), 10
+) ORDER BY _score DESC;
+
+-- Multi-field search across title + abstract
+SELECT title, _score FROM papers
+WHERE multi_field_match(title, abstract, 'attention transformer')
+ORDER BY _score DESC;
+
+-- Temporal graph traversal (edges valid at timestamp)
+SELECT * FROM temporal_traverse(1, 'knows', 2, 1700000000);
+
 -- JOINs with qualified columns
 SELECT e.name, d.name AS dept, e.salary
 FROM employees e
@@ -224,10 +239,14 @@ uqa/
   core/           PostingList, types, hierarchical documents
   analysis/       Text analysis pipeline: CharFilter, Tokenizer, TokenFilter, Analyzer, dual index/search analyzers
   storage/        SQLite-backed stores: documents, inverted index, vectors (IVF), spatial (R*Tree), graph
-  operators/      Operator algebra (boolean, primitive, hybrid, aggregation, hierarchical)
-  scoring/        BM25, Bayesian BM25, VectorScorer, WAND/BlockMaxWAND (via bayesian-bm25)
-  fusion/         Log-odds conjunction, probabilistic boolean (via bayesian-bm25)
-  graph/          GraphStore, traversal, pattern matching, RPQ, cross-paradigm, indexes
+  operators/      Operator algebra (boolean, primitive, hybrid, aggregation, hierarchical,
+                  sparse, multi-field, attention fusion, learned fusion, multi-stage)
+  scoring/        BM25, Bayesian BM25, VectorScorer, WAND/BlockMaxWAND, calibration,
+                  parameter learning, external prior, multi-field, fusion WAND (via bayesian-bm25)
+  fusion/         Log-odds conjunction, probabilistic boolean, attention fusion,
+                  learned fusion, query features (via bayesian-bm25)
+  graph/          GraphStore, traversal, pattern matching, RPQ, cross-paradigm, indexes,
+                  temporal filter/traverse/pattern, delta/versioned store, message passing, embeddings
     cypher/       openCypher lexer, parser, AST, posting-list-based compiler
   fdw/            Foreign Data Wrappers: DuckDB (Parquet/CSV/JSON), Arrow Flight SQL, Hive partitioning
   joins/          Hash, sort-merge, index, graph, cross-paradigm, similarity joins
@@ -235,9 +254,10 @@ uqa/
   planner/        Cost model, cardinality estimator, optimizer, DPccp join enumerator, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, FTS query parser, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          2018 tests across 50 test files
-benchmarks/       192 pytest-benchmark tests across 8 files (posting list, storage, compiler,
-                  execution, planner, scoring, graph, end-to-end SQL)
+  tests/          2230 tests across 62 test files
+benchmarks/       269 pytest-benchmark tests across 13 files (posting list, storage, compiler,
+                  execution, planner, scoring, graph, end-to-end SQL, calibration,
+                  multi-field, external prior, advanced scoring, advanced graph)
 ```
 
 ## Key Features
@@ -281,6 +301,12 @@ benchmarks/       192 pytest-benchmark tests across 8 files (posting list, stora
 | `path_filter(path, value)` | Hierarchical equality filter (any-match on arrays) |
 | `path_filter(path, op, value)` | Hierarchical comparison filter (`>`, `<`, `>=`, `<=`, `!=`) |
 | `spatial_within(field, POINT(x,y), dist)` | Geospatial range query (R*Tree + Haversine) |
+| `sparse_threshold(signal, threshold)` | ReLU thresholding: max(0, score - threshold) |
+| `multi_field_match(f1, f2, ..., query)` | Multi-field Bayesian BM25 with log-odds fusion |
+| `bayesian_match_with_prior(f, q, pf, mode)` | Bayesian BM25 with external prior (recency/authority) |
+| `temporal_traverse(start, lbl, hops, ts)` | Time-aware graph traversal |
+| `message_passing(k, agg, property)` | GNN k-layer neighbor aggregation |
+| `graph_embedding(dims, k)` | Structural graph embeddings |
 
 ### Fusion Meta-Functions
 
@@ -290,6 +316,9 @@ benchmarks/       192 pytest-benchmark tests across 8 files (posting list, stora
 | `fuse_prob_and(sig1, sig2, ...)` | Probabilistic AND: P = prod(P_i) |
 | `fuse_prob_or(sig1, sig2, ...)` | Probabilistic OR: P = 1 - prod(1 - P_i) |
 | `fuse_prob_not(signal)` | Probabilistic NOT: P = 1 - P_signal |
+| `fuse_attention(sig1, sig2, ...)` | Attention-weighted log-odds fusion |
+| `fuse_learned(sig1, sig2, ...)` | Learned-weight log-odds fusion |
+| `staged_retrieval(sig1, k1, sig2, k2, ...)` | Multi-stage cascading retrieval pipeline |
 
 ### SELECT Spatial Functions
 
@@ -346,6 +375,7 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 | Field Analyzers | `_table_field_analyzers` | Per-field index/search analyzer assignments |
 | Foreign Servers | `_foreign_servers` | FDW server definitions (type, connection options) |
 | Foreign Tables | `_foreign_tables` | FDW table definitions (columns, source, options) |
+| Path Indexes | `_path_indexes` | Pre-computed label-sequence RPQ accelerators |
 | Statistics | `_column_stats` | Per-table histograms and MCVs for optimizer |
 
 ### Query Optimizer
@@ -359,7 +389,8 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 - R*Tree spatial index scan for POINT column range queries
 - B-tree index scan substitution (replace full scans when profitable)
 - FDW predicate pushdown (comparison, IN, LIKE, ILIKE, BETWEEN pushed to DuckDB/Arrow Flight SQL for Hive partition pruning)
-- Cross-paradigm cardinality estimation for text, vector, graph, and fusion operators
+- Cross-paradigm cardinality estimation for text, vector, graph, fusion, temporal, and GNN operators
+- Path index acceleration for simple Concat-of-Labels RPQ expressions
 - CTE inlining for single-reference non-recursive CTEs
 - Predicate pushdown into views and derived tables
 - Implicit cross join reordering via DPccp when equijoin predicates exist in WHERE
@@ -393,7 +424,7 @@ engine = Engine(parallel_workers=0)                   # disable parallelism
 - Python 3.12+
 - numpy >= 1.26
 - pyarrow >= 10.0
-- bayesian-bm25 >= 0.8.0
+- bayesian-bm25 >= 0.8.1
 - duckdb >= 1.0
 - pglast >= 7.0
 - prompt-toolkit >= 3.0
@@ -502,6 +533,23 @@ result = (
 team = engine.query(table="employees").traverse(2, "manages", max_hops=2)
 total = team.vertex_aggregate("salary", "sum")
 
+# Multi-field search with per-field weights
+result = (
+    engine.query(table="papers")
+    .score_multi_field_bayesian("attention", ["title", "abstract"], [2.0, 1.0])
+    .execute()
+)
+
+# Multi-stage pipeline: broad recall -> re-rank
+s1 = engine.query(table="papers").score_bayesian_bm25("transformer", "title")
+s2 = engine.query(table="papers").score_bayesian_bm25("attention", "abstract")
+result = engine.query(table="papers").multi_stage([(s1, 50), (s2, 10)]).execute()
+
+# Temporal graph traversal
+result = engine.query(table="social").temporal_traverse(
+    1, "knows", max_hops=2, timestamp=1700000000.0
+).execute()
+
 # Facets over all documents
 facets = engine.query(table="papers").facet("status")
 ```
@@ -544,6 +592,9 @@ python examples/fluent/vector_and_hybrid.py   # KNN, hybrid, vector exclusion, f
 python examples/fluent/graph.py               # Traversal, RPQ, pattern matching, indexes
 python examples/fluent/hierarchical.py        # Nested data, path filters, aggregation
 python examples/fluent/multi_paradigm.py      # Multi-signal fusion, graph analytics, query plans
+python examples/fluent/scoring.py             # Bayesian BM25, sparse threshold, multi-field, priors
+python examples/fluent/fusion_advanced.py     # Attention/learned fusion, multi-stage pipelines
+python examples/fluent/graph_advanced.py      # Temporal traversal, message passing, path index, delta
 python examples/fluent/analysis.py            # Text analysis pipeline, tokenizers, filters, stemming
 python examples/fluent/export.py              # Arrow/Parquet export from fluent queries
 ```
@@ -562,6 +613,10 @@ python examples/sql/analysis.py               # Text analyzers via SQL: create, 
 python examples/sql/export.py                 # Arrow/Parquet export from SQL queries
 python examples/sql/spatial.py                # Geospatial: POINT, R*Tree, spatial_within, ST_Distance, fusion
 python examples/sql/synonyms.py               # Synonym search: dual analyzers, index/search-time expansion
+python examples/sql/scoring_advanced.py        # Sparse threshold, multi-field, attention/learned fusion, staged retrieval
+python examples/sql/calibration.py            # ECE, Brier, reliability diagram, parameter learning
+python examples/sql/temporal_graph.py         # Temporal traversal, message passing, graph embeddings
+python examples/sql/graph_delta.py            # Delta operations, path index invalidation, rollback
 python examples/sql/fdw.py                    # Foreign Data Wrappers, Hive partitioning, predicate pushdown
 ```
 
