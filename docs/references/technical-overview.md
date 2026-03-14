@@ -795,4 +795,3 @@ The query optimizer ensures efficient execution: each paradigm's operator execut
 3. Jeong, J. (2026). Bayesian BM25: A Probabilistic Framework for Hybrid Text and Vector Search.
 
 4. Jeong, J. (2026). Advanced Fusion and Retrieval: Attention-Weighted Log-Odds, Multi-Stage Pipelines, and GNN Integration.
-

@@ -47,7 +47,7 @@ def engine_with_bench_table(gen: BenchmarkDataGenerator) -> Engine:
     for row in rows:
         cols = ", ".join(
             str(v)
-            if not isinstance(v, (str, bool))
+            if not isinstance(v, str | bool)
             else f"'{v}'"
             if isinstance(v, str)
             else ("TRUE" if v else "FALSE")

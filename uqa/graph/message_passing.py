@@ -46,7 +46,7 @@ class MessagePassingOperator:
         for vid, vertex in graph._vertices.items():
             if self.property_name is not None:
                 val = vertex.properties.get(self.property_name, 0.0)
-                features[vid] = float(val) if isinstance(val, (int, float)) else 0.0
+                features[vid] = float(val) if isinstance(val, int | float) else 0.0
             else:
                 features[vid] = 1.0
 

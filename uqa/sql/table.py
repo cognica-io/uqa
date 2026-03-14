@@ -304,7 +304,7 @@ class Table:
                     vectors[col_name] = vec
                 elif col_def.type_name == "point":
                     pt = row[col_name]
-                    if isinstance(pt, (list, tuple)) and len(pt) == 2:
+                    if isinstance(pt, list | tuple) and len(pt) == 2:
                         coerced[col_name] = [float(pt[0]), float(pt[1])]
                         points[col_name] = (float(pt[0]), float(pt[1]))
                     else:
@@ -418,7 +418,7 @@ class Table:
             values = col_values[col_name]
             null_count = col_nulls[col_name]
             distinct = len(set(values))
-            comparable = [v for v in values if isinstance(v, (int, float, str))]
+            comparable = [v for v in values if isinstance(v, int | float | str)]
             min_val = min(comparable) if comparable else None
             max_val = max(comparable) if comparable else None
 
@@ -508,7 +508,7 @@ def _coerce_json(value: Any) -> Any:
     """Coerce a value to native JSON representation (dict/list/scalar)."""
     import json as json_mod
 
-    if isinstance(value, (dict, list)):
+    if isinstance(value, dict | list):
         return value
     if isinstance(value, str):
         return json_mod.loads(value)

@@ -243,7 +243,7 @@ class TestJoinOrderOptimizer:
         optimizer = JoinOrderOptimizer()
         operator, table = optimizer.optimize(relations, predicates)
         # Optimizer chooses IndexJoin or InnerJoin based on cardinality
-        assert isinstance(operator, (InnerJoinOperator, IndexJoinOperator))
+        assert isinstance(operator, InnerJoinOperator | IndexJoinOperator)
         assert table is None
 
 

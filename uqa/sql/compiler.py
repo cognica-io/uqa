@@ -1514,7 +1514,7 @@ class SQLCompiler:
                 doc = table.document_store.get(doc_id)
                 if doc is not None and col_name in doc:
                     pt = doc[col_name]
-                    if isinstance(pt, (list, tuple)) and len(pt) == 2:
+                    if isinstance(pt, list | tuple) and len(pt) == 2:
                         sp_idx.add(doc_id, float(pt[0]), float(pt[1]))
 
             table.spatial_indexes[col_name] = sp_idx
@@ -1863,7 +1863,7 @@ class SQLCompiler:
             # Update spatial indexes for changed POINT columns
             for col_name, sp_idx in table.spatial_indexes.items():
                 pt = new_doc.get(col_name)
-                if pt is not None and isinstance(pt, (list, tuple)) and len(pt) == 2:
+                if pt is not None and isinstance(pt, list | tuple) and len(pt) == 2:
                     sp_idx.add(doc_id, float(pt[0]), float(pt[1]))
                 else:
                     sp_idx.delete(doc_id)
@@ -2267,7 +2267,7 @@ class SQLCompiler:
                 val = getattr(node, slot, None)
                 if val is None:
                     kwargs[slot] = None
-                elif isinstance(val, (tuple, list)):
+                elif isinstance(val, tuple | list):
                     kwargs[slot] = type(val)(
                         self._substitute_params(item, params) for item in val
                     )
@@ -2747,18 +2747,16 @@ class SQLCompiler:
                 return True
             if isinstance(
                 val,
-                (
-                    A_Const,
-                    A_ArrayExpr,
-                    A_Expr,
-                    CaseExpr,
-                    TypeCast,
-                    CoalesceExpr,
-                    NullTest,
-                    SubLink,
-                    MinMaxExpr,
-                    SQLValueFunction,
-                ),
+                A_Const
+                | A_ArrayExpr
+                | A_Expr
+                | CaseExpr
+                | TypeCast
+                | CoalesceExpr
+                | NullTest
+                | SubLink
+                | MinMaxExpr
+                | SQLValueFunction,
             ):
                 return True
         return False
@@ -3259,7 +3257,7 @@ class SQLCompiler:
         if isinstance(where_node, A_Expr):
             kind = where_node.kind
             rhs_is_const = isinstance(
-                where_node.rexpr, (A_Const, PgInteger, PgFloat, PgString)
+                where_node.rexpr, A_Const | PgInteger | PgFloat | PgString
             )
             if rhs_is_const and kind == A_Expr_Kind.AEXPR_OP:
                 op_name = where_node.name[-1].sval
@@ -3297,7 +3295,7 @@ class SQLCompiler:
                 except ValueError:
                     return [], where_node
                 elements = where_node.rexpr
-                if isinstance(elements, (list, tuple)) and all(
+                if isinstance(elements, list | tuple) and all(
                     isinstance(e, A_Const) for e in elements
                 ):
                     values = tuple(self._extract_const_value(e) for e in elements)
@@ -3404,7 +3402,7 @@ class SQLCompiler:
             child = getattr(node, attr, None)
             if child is None:
                 continue
-            if isinstance(child, (list, tuple)):
+            if isinstance(child, list | tuple):
                 for c in child:
                     if c is not None:
                         SQLCompiler._walk_for_column_aliases(c, aliases)
@@ -3426,7 +3424,7 @@ class SQLCompiler:
         aliases: set[str] = set()
         if isinstance(op, _TableScanOperator) and op._alias:
             aliases.add(op._alias)
-        elif isinstance(op, (InnerJoinOperator, IndexJoinOperator, CrossJoinOperator)):
+        elif isinstance(op, InnerJoinOperator | IndexJoinOperator | CrossJoinOperator):
             aliases |= SQLCompiler._collect_inner_join_scan_aliases(op.left)
             aliases |= SQLCompiler._collect_inner_join_scan_aliases(op.right)
         return aliases
@@ -3447,7 +3445,7 @@ class SQLCompiler:
         from uqa.joins.inner import InnerJoinOperator
 
         if isinstance(
-            join_op, (InnerJoinOperator, IndexJoinOperator, CrossJoinOperator)
+            join_op, InnerJoinOperator | IndexJoinOperator | CrossJoinOperator
         ):
             new_left = self._inject_scan_filter(join_op.left, pushable)
             new_right = self._inject_scan_filter(join_op.right, pushable)
@@ -3463,7 +3461,7 @@ class SQLCompiler:
         from uqa.joins.index import IndexJoinOperator
         from uqa.joins.inner import InnerJoinOperator
 
-        if isinstance(scan, (InnerJoinOperator, IndexJoinOperator, CrossJoinOperator)):
+        if isinstance(scan, InnerJoinOperator | IndexJoinOperator | CrossJoinOperator):
             return self._inject_join_filters(scan, pushable)
 
         if isinstance(scan, _TableScanOperator):
@@ -3508,7 +3506,7 @@ class SQLCompiler:
 
             # Check if RHS is a constant (column-to-constant comparison)
             rhs_is_const = isinstance(
-                where_node.rexpr, (A_Const, PgInteger, PgFloat, PgString)
+                where_node.rexpr, A_Const | PgInteger | PgFloat | PgString
             )
 
             if rhs_is_const and kind == A_Expr_Kind.AEXPR_OP:
@@ -3834,7 +3832,7 @@ class SQLCompiler:
         if isinstance(node, RangeVar):
             return 1 if node.relname == name else 0
         count = 0
-        if isinstance(node, (tuple, list)):
+        if isinstance(node, tuple | list):
             for item in node:
                 count += self._count_cte_refs(name, item)
             return count
@@ -4203,7 +4201,7 @@ class SQLCompiler:
             return col is not None and col in subquery_columns
         if isinstance(node, A_Const):
             return True
-        if isinstance(node, (FuncCall, SubLink)):
+        if isinstance(node, FuncCall | SubLink):
             return False
         if isinstance(node, A_Expr):
             left_ok = SQLCompiler._is_pushable_predicate(node.lexpr, subquery_columns)
@@ -4815,12 +4813,10 @@ class SQLCompiler:
 
         return isinstance(
             op,
-            (
-                TraverseOperator,
-                RegularPathQueryOperator,
-                CypherQueryOperator,
-                TemporalTraverseOperator,
-            ),
+            TraverseOperator
+            | RegularPathQueryOperator
+            | CypherQueryOperator
+            | TemporalTraverseOperator,
         )
 
     @staticmethod
@@ -4833,12 +4829,7 @@ class SQLCompiler:
 
         return isinstance(
             op,
-            (
-                JoinOperator,
-                CrossJoinOperator,
-                _ExprJoinOperator,
-                _LateralJoinOperator,
-            ),
+            JoinOperator | CrossJoinOperator | _ExprJoinOperator | _LateralJoinOperator,
         )
 
     def _collect_join_tables(
@@ -5214,7 +5205,7 @@ class SQLCompiler:
         stop = self._extract_const_value(args[1])
         step = self._extract_const_value(args[2]) if len(args) > 2 else 1
 
-        if not isinstance(start, (int, float)):
+        if not isinstance(start, int | float):
             raise ValueError("generate_series currently supports numeric ranges")
         if step == 0:
             raise ValueError("generate_series step cannot be zero")
@@ -5903,8 +5894,14 @@ class SQLCompiler:
         Correlated subqueries (inner query references outer table) are
         routed to per-row evaluation via ``_ExprFilterOperator``.
         """
-        # Detect correlated subqueries -- route to per-row evaluation
+        # Detect correlated subqueries.  Try semi-join decorrelation
+        # for EXISTS before falling back to per-row evaluation.
         if self._is_correlated(node.subselect):
+            link_type_check = SubLinkType(node.subLinkType)
+            if link_type_check == SubLinkType.EXISTS_SUBLINK:
+                semi = self._try_exists_decorrelation(node.subselect, ctx)
+                if semi is not None:
+                    return semi
             return _ExprFilterOperator(
                 node, subquery_executor=self._compile_select, compiler=self
             )
@@ -5940,6 +5937,176 @@ class SQLCompiler:
 
         raise ValueError(f"Unsupported subquery type: {link_type.name}")
 
+    def _try_exists_decorrelation(
+        self, subselect: SelectStmt, ctx: ExecutionContext
+    ) -> Any:
+        """Decorrelate a correlated EXISTS into a semi-join FilterOperator.
+
+        Handles the common pattern:
+            WHERE EXISTS (SELECT 1 FROM inner WHERE inner.fk = outer.pk AND ...)
+
+        Extracts the equijoin predicate (inner.fk = outer.pk), executes the
+        inner query with the non-correlated predicates only, collects the
+        distinct values of the join column, and returns a FilterOperator
+        using InSet on the outer column.  Falls back to None if the pattern
+        is not recognized.
+        """
+        from uqa.operators.primitive import FilterOperator
+
+        if subselect.whereClause is None:
+            return None
+
+        # Collect inner table names for correlated reference detection.
+        inner_tables: set[str] = set()
+        if subselect.fromClause:
+            for from_item in subselect.fromClause:
+                if isinstance(from_item, RangeVar):
+                    if from_item.alias:
+                        inner_tables.add(from_item.alias.aliasname)
+                    inner_tables.add(from_item.relname)
+
+        # Split WHERE into equijoin predicates and residual predicates.
+        # Equijoin: inner_col = outer_col (one side correlated, one inner).
+        equi_preds: list[
+            tuple[str, str, str]
+        ] = []  # (outer_qual_col, inner_col, inner_table)
+        residual_nodes: list[Any] = []
+
+        where = subselect.whereClause
+        conjuncts = self._flatten_bool_and(where)
+
+        for conj in conjuncts:
+            parsed = self._parse_equijoin_predicate(conj, inner_tables)
+            if parsed is not None:
+                equi_preds.append(parsed)
+            else:
+                residual_nodes.append(conj)
+
+        if not equi_preds:
+            return None
+
+        # Use the first equijoin predicate for the semi-join.
+        outer_qual, inner_col, _inner_tbl = equi_preds[0]
+
+        # outer_qual is "alias.column" -- extract the bare column name.
+        outer_col = outer_qual.split(".")[-1] if "." in outer_qual else outer_qual
+
+        # Build residual WHERE for the inner query (non-correlated predicates
+        # plus any remaining equijoin predicates beyond the first).
+        remaining_equi = equi_preds[1:]
+        all_residual = residual_nodes + [
+            self._rebuild_equijoin_node(ep) for ep in remaining_equi
+        ]
+
+        # Rebuild the inner SELECT projecting the join column so we can
+        # collect its distinct values for the InSet filter.
+        from pglast.ast import ResTarget
+
+        join_target = ResTarget(
+            val=ColumnRef(fields=(PgString(sval=_inner_tbl), PgString(sval=inner_col))),
+            name=inner_col,
+        )
+        residual_where = self._rebuild_and(all_residual) if all_residual else None
+        modified = SelectStmt(
+            targetList=(join_target,),
+            fromClause=subselect.fromClause,
+            whereClause=residual_where,
+            groupClause=None,
+            havingClause=None,
+            sortClause=None,
+            limitCount=None,
+            limitOffset=None,
+            distinctClause=None,
+            op=SetOperation.SETOP_NONE,
+        )
+
+        inner_result = self._compile_select(modified)
+        if not inner_result.rows:
+            from uqa.operators.boolean import ComplementOperator
+
+            return ComplementOperator(_ScanOperator())
+
+        # Collect distinct values of the inner join column.
+        values = frozenset(
+            row.get(inner_col)
+            for row in inner_result.rows
+            if row.get(inner_col) is not None
+        )
+        return FilterOperator(outer_col, InSet(values))
+
+    @staticmethod
+    def _flatten_bool_and(node: Any) -> list[Any]:
+        """Flatten a tree of BoolExpr(AND, ...) into a list of conjuncts."""
+        if (
+            isinstance(node, BoolExpr)
+            and BoolExprType(node.boolop) == BoolExprType.AND_EXPR
+        ):
+            result: list[Any] = []
+            for arg in node.args:
+                result.extend(SQLCompiler._flatten_bool_and(arg))
+            return result
+        return [node]
+
+    def _parse_equijoin_predicate(
+        self, node: Any, inner_tables: set[str]
+    ) -> tuple[str, str, str] | None:
+        """Parse an equijoin predicate: inner.col = outer.col.
+
+        Returns (outer_qualified_col, inner_col_name, inner_table) or None.
+        """
+        if not isinstance(node, A_Expr):
+            return None
+        if not (hasattr(node, "name") and node.name and len(node.name) == 1):
+            return None
+        op = node.name[0]
+        if not (hasattr(op, "sval") and op.sval == "="):
+            return None
+        if not isinstance(node.lexpr, ColumnRef) or not isinstance(
+            node.rexpr, ColumnRef
+        ):
+            return None
+
+        left_fields = node.lexpr.fields
+        right_fields = node.rexpr.fields
+
+        if len(left_fields) < 2 or len(right_fields) < 2:
+            return None
+
+        left_qual = left_fields[0].sval
+        left_col = left_fields[-1].sval
+        right_qual = right_fields[0].sval
+        right_col = right_fields[-1].sval
+
+        left_is_inner = left_qual in inner_tables
+        right_is_inner = right_qual in inner_tables
+
+        if left_is_inner and not right_is_inner:
+            return (f"{right_qual}.{right_col}", left_col, left_qual)
+        if right_is_inner and not left_is_inner:
+            return (f"{left_qual}.{left_col}", right_col, right_qual)
+        return None
+
+    @staticmethod
+    def _rebuild_and(nodes: list[Any]) -> Any:
+        """Rebuild a list of conjuncts into a BoolExpr AND tree."""
+        if len(nodes) == 1:
+            return nodes[0]
+        return BoolExpr(boolop=BoolExprType.AND_EXPR, args=tuple(nodes))
+
+    @staticmethod
+    def _rebuild_equijoin_node(ep: tuple[str, str, str]) -> Any:
+        """Rebuild an equijoin predicate as an A_Expr node (unused in current path)."""
+        outer_qual, inner_col, inner_tbl = ep
+        parts = outer_qual.split(".")
+        return A_Expr(
+            kind=0,
+            name=(PgString(sval="="),),
+            lexpr=ColumnRef(
+                fields=(PgString(sval=inner_tbl), PgString(sval=inner_col))
+            ),
+            rexpr=ColumnRef(fields=tuple(PgString(sval=p) for p in parts)),
+        )
+
     def _is_correlated(self, subselect: Any) -> bool:
         """Check if a subquery contains correlated column references.
 
@@ -5964,7 +6131,7 @@ class SQLCompiler:
                 return qualifier not in inner_tables
             return False
 
-        if isinstance(node, (tuple, list)):
+        if isinstance(node, tuple | list):
             return any(self._has_outer_refs(item, inner_tables) for item in node)
 
         if hasattr(node, "__slots__") and isinstance(node.__slots__, dict):
@@ -6085,7 +6252,7 @@ class SQLCompiler:
                 val = self._extract_const_value(arg)
                 if isinstance(val, str) and query is None:
                     query = val
-                elif isinstance(val, (int, float)):
+                elif isinstance(val, int | float):
                     weights.append(float(val))
                 elif isinstance(val, str):
                     raise ValueError(f"Unexpected string argument at position {i}")
@@ -6220,7 +6387,7 @@ class SQLCompiler:
             if idx < 0 or idx >= len(self._params):
                 raise ValueError(f"No value supplied for parameter ${node.number}")
             val = self._params[idx]
-            if isinstance(val, (list, tuple)) and len(val) == 2:
+            if isinstance(val, list | tuple) and len(val) == 2:
                 return (float(val[0]), float(val[1]))
             raise ValueError(
                 f"Parameter ${node.number} must be a [x, y] list for POINT"
@@ -6734,7 +6901,7 @@ class SQLCompiler:
             child = getattr(node, attr, None)
             if child is None:
                 continue
-            if isinstance(child, (list, tuple)):
+            if isinstance(child, list | tuple):
                 for item in child:
                     result.extend(SQLCompiler._collect_agg_funcs(item))
             else:

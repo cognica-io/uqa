@@ -149,7 +149,7 @@ class SQLiteDocumentStore:
         values: list[Any] = [doc_id]
         for c in self._columns:
             v = document.get(c)
-            if v is not None and c in self._json_cols and isinstance(v, (dict, list)):
+            if v is not None and c in self._json_cols and isinstance(v, dict | list):
                 v = json.dumps(v, ensure_ascii=False)
             values.append(v)
         self._conn.execute(self._sql_put, values)

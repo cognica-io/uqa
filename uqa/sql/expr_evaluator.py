@@ -339,7 +339,7 @@ class ExprEvaluator:
                 if qualifier not in inner_tables:
                     return True
             return False
-        if isinstance(node, (tuple, list)):
+        if isinstance(node, tuple | list):
             return any(self._has_correlated_ref(item, inner_tables) for item in node)
         if hasattr(node, "__slots__") and isinstance(node.__slots__, dict):
             for slot in node.__slots__:
@@ -469,7 +469,7 @@ class ExprEvaluator:
                     col_name = node.fields[-1].sval
                     refs.append((qualifier, col_name))
             return
-        if isinstance(node, (tuple, list)):
+        if isinstance(node, tuple | list):
             for item in node:
                 self._walk_for_correlated(item, inner_tables, refs)
             return
@@ -657,7 +657,7 @@ class ExprEvaluator:
 
         if not isinstance(values, list):
             values = [values] if values is not None else []
-        numeric = [v for v in values if isinstance(v, (int, float))]
+        numeric = [v for v in values if isinstance(v, int | float)]
 
         agg = str(agg_name).lower()
         if agg == "sum":
@@ -717,7 +717,7 @@ def _json_access(obj: Any, key: Any, *, as_text: bool) -> Any:
     if result is None:
         return None
     if as_text:
-        if isinstance(result, (dict, list)):
+        if isinstance(result, dict | list):
             return json.dumps(result, ensure_ascii=False)
         return str(result)
     return result
@@ -755,7 +755,7 @@ def _json_path_access(obj: Any, path_str: Any, *, as_text: bool) -> Any:
     if obj is None:
         return None
     if as_text:
-        if isinstance(obj, (dict, list)):
+        if isinstance(obj, dict | list):
             return json.dumps(obj, ensure_ascii=False)
         return str(obj)
     return obj
@@ -854,7 +854,7 @@ def _overlaps(range1: Any, range2: Any) -> bool:
 
     if range1 is None or range2 is None:
         return False
-    if isinstance(range1, (list, tuple)) and isinstance(range2, (list, tuple)):
+    if isinstance(range1, list | tuple) and isinstance(range2, list | tuple):
         s1 = datetime.fromisoformat(str(range1[0]))
         e1 = datetime.fromisoformat(str(range1[1]))
         s2 = datetime.fromisoformat(str(range2[0]))
@@ -934,7 +934,7 @@ _CAST_MAP: dict[str, type] = {
 
 def _cast_value(value: Any, type_name: str) -> Any:
     if type_name in ("json", "jsonb"):
-        if isinstance(value, (dict, list)):
+        if isinstance(value, dict | list):
             return value
         if isinstance(value, str):
             return json.loads(value)
@@ -1785,7 +1785,7 @@ def _sf_st_distance(args: list[Any]) -> float | None:
     p1, p2 = args[0], args[1]
     if p1 is None or p2 is None:
         return None
-    if isinstance(p1, (list, tuple)) and isinstance(p2, (list, tuple)):
+    if isinstance(p1, list | tuple) and isinstance(p2, list | tuple):
         return haversine_distance(
             float(p1[1]), float(p1[0]), float(p2[1]), float(p2[0])
         )
@@ -1802,7 +1802,7 @@ def _sf_st_within(args: list[Any]) -> bool | None:
     if p1 is None or p2 is None:
         return None
     dist_limit = float(args[2])
-    if isinstance(p1, (list, tuple)) and isinstance(p2, (list, tuple)):
+    if isinstance(p1, list | tuple) and isinstance(p2, list | tuple):
         dist = haversine_distance(
             float(p1[1]), float(p1[0]), float(p2[1]), float(p2[0])
         )
@@ -2076,7 +2076,7 @@ def _json_extract_path(args: list[Any], *, as_text: bool) -> Any:
         if obj is None:
             return None
     if as_text:
-        if isinstance(obj, (dict, list)):
+        if isinstance(obj, dict | list):
             return json.dumps(obj, ensure_ascii=False)
         return str(obj)
     return obj
@@ -2143,7 +2143,7 @@ def _json_each(args: list[Any], *, as_text: bool) -> list[dict]:
     rows = []
     for k, v in obj.items():
         if as_text:
-            if isinstance(v, (dict, list)):
+            if isinstance(v, dict | list):
                 v = json.dumps(v, ensure_ascii=False)
             else:
                 v = str(v) if v is not None else None
@@ -2164,7 +2164,7 @@ def _json_array_elements(args: list[Any], *, as_text: bool) -> list[Any]:
     if as_text:
         result_list = []
         for v in arr:
-            if isinstance(v, (dict, list)):
+            if isinstance(v, dict | list):
                 result_list.append(json.dumps(v, ensure_ascii=False))
             else:
                 result_list.append(str(v) if v is not None else None)

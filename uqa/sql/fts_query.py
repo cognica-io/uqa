@@ -486,7 +486,7 @@ def _has_vector_signal(node: FTSNode) -> bool:
     """Return True if the AST subtree contains a VectorNode."""
     if isinstance(node, VectorNode):
         return True
-    if isinstance(node, (TermNode, PhraseNode)):
+    if isinstance(node, TermNode | PhraseNode):
         return False
     if isinstance(node, AndNode):
         return _has_vector_signal(node.left) or _has_vector_signal(node.right)

@@ -605,7 +605,7 @@ class VertexAggregationOperator:
             PostingEntry(
                 0,
                 Payload(
-                    score=float(result) if isinstance(result, (int, float)) else 0.0,
+                    score=float(result) if isinstance(result, int | float) else 0.0,
                     fields={
                         "_vertex_agg_property": self.property_name,
                         "_vertex_agg_fn": self.agg_fn,

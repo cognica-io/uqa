@@ -241,4 +241,4 @@ def _like_match(value: str, pattern: str, *, case_sensitive: bool) -> bool:
 
 def is_null_predicate(pred: Predicate) -> bool:
     """Return True if *pred* needs to see None values (IsNull or IsNotNull)."""
-    return isinstance(pred, (IsNull, IsNotNull))
+    return isinstance(pred, IsNull | IsNotNull)

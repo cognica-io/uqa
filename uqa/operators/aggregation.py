@@ -143,7 +143,7 @@ class AggregateOperator(Operator):
             doc_id=0,
             payload=Payload(
                 score=float(result_value)
-                if isinstance(result_value, (int, float))
+                if isinstance(result_value, int | float)
                 else 0.0,
                 fields={"_aggregate_field": self.field, "_aggregate": result_value},
             ),
@@ -192,7 +192,7 @@ class GroupByOperator(Operator):
                     doc_id=i,
                     payload=Payload(
                         score=float(result_value)
-                        if isinstance(result_value, (int, float))
+                        if isinstance(result_value, int | float)
                         else 0.0,
                         fields={
                             "_group_key": group_key,

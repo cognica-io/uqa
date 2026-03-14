@@ -63,7 +63,7 @@ print(f"  Report keys: {sorted(report.keys())}")
 for key, value in sorted(report.items()):
     if isinstance(value, float):
         print(f"  {key}: {value:.6f}")
-    elif isinstance(value, (int, bool)):
+    elif isinstance(value, int | bool):
         print(f"  {key}: {value}")
 
 

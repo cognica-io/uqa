@@ -765,16 +765,16 @@ class HashAggOp(PhysicalOperator):
                     if val is not None:
                         acc[0] += 1
                 elif func_name in ("sum", "avg"):
-                    if isinstance(val, (int, float)):
+                    if isinstance(val, int | float):
                         acc[0] += 1
                         acc[1] += val
                 elif func_name == "min":
-                    if isinstance(val, (int, float)):
+                    if isinstance(val, int | float):
                         acc[0] += 1
                         if acc[2] is None or val < acc[2]:
                             acc[2] = val
                 elif func_name == "max":
-                    if isinstance(val, (int, float)):
+                    if isinstance(val, int | float):
                         acc[0] += 1
                         if acc[3] is None or val > acc[3]:
                             acc[3] = val
@@ -1676,7 +1676,7 @@ def _compute_aggregate(
         return Counter(vals).most_common(1)[0][0]
 
     values: list[Any] = [
-        v for r in rows if isinstance((v := r.get(arg_col)), (int, float))
+        v for r in rows if isinstance((v := r.get(arg_col)), int | float)
     ]
     if not values:
         return None
@@ -1746,7 +1746,7 @@ def _compute_aggregate(
         for r in rows:
             y_val = r.get(arg_col)
             x_val = r.get(x_col)
-            if isinstance(y_val, (int, float)) and isinstance(x_val, (int, float)):
+            if isinstance(y_val, int | float) and isinstance(x_val, int | float):
                 pairs.append((y_val, x_val))
         n = len(pairs)
         if n == 0:

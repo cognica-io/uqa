@@ -59,7 +59,7 @@ class PlanExecutor:
         stats = ExecutionStats(operator_name=type(op).__name__)
         child_stats: list[ExecutionStats] = []
 
-        if isinstance(op, (IntersectOperator, UnionOperator)):
+        if isinstance(op, IntersectOperator | UnionOperator):
             for child in op.operands:
                 _, cs = self._execute_with_stats(child)
                 child_stats.append(cs)
@@ -70,11 +70,11 @@ class PlanExecutor:
             for child in op.operators:
                 _, cs = self._execute_with_stats(child)
                 child_stats.append(cs)
-        elif isinstance(op, (AttentionFusionOperator, LearnedFusionOperator)):
+        elif isinstance(op, AttentionFusionOperator | LearnedFusionOperator):
             for sig in op.signals:
                 _, cs = self._execute_with_stats(sig)
                 child_stats.append(cs)
-        elif isinstance(op, (LogOddsFusionOperator, ProbBoolFusionOperator)):
+        elif isinstance(op, LogOddsFusionOperator | ProbBoolFusionOperator):
             for sig in op.signals:
                 _, cs = self._execute_with_stats(sig)
                 child_stats.append(cs)

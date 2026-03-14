@@ -173,7 +173,7 @@ class PathAggregateOperator(Operator):
 
             result = self.monoid.finalize(state)
             path_key = ".".join(str(c) for c in self.path)
-            score = float(result) if isinstance(result, (int, float)) else 0.0
+            score = float(result) if isinstance(result, int | float) else 0.0
             entries.append(
                 PostingEntry(
                     doc_id,

@@ -409,10 +409,10 @@ class CardinalityEstimator:
         if isinstance(predicate, Between):
             return self._range_selectivity(cs, predicate.low, predicate.high)
 
-        if isinstance(predicate, (GreaterThan, GreaterThanOrEqual)):
+        if isinstance(predicate, GreaterThan | GreaterThanOrEqual):
             return self._gt_selectivity(cs, predicate.target)
 
-        if isinstance(predicate, (LessThan, LessThanOrEqual)):
+        if isinstance(predicate, LessThan | LessThanOrEqual):
             return self._lt_selectivity(cs, predicate.target)
 
         return 0.5

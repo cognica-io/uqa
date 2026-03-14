@@ -288,7 +288,7 @@ class CypherCompiler:
         anon_vars = {
             e.variable
             for e in anon_elements
-            if isinstance(e, (NodePattern, RelPattern))
+            if isinstance(e, NodePattern | RelPattern)
             and e.variable
             and e.variable.startswith("_anon_")
         }
@@ -1400,7 +1400,7 @@ def _sort_key(val: Any) -> tuple:
         return (0,)
     if isinstance(val, bool):
         return (1, int(val))
-    if isinstance(val, (int, float)):
+    if isinstance(val, int | float):
         return (2, val)
     if isinstance(val, str):
         return (3, val)

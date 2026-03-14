@@ -221,7 +221,7 @@ class SpatialWithinOperator(Operator):
         entries: list[PostingEntry] = []
         for doc_id in sorted(doc_store.doc_ids):
             pt = doc_store.get_field(doc_id, self.field)
-            if pt is None or not isinstance(pt, (list, tuple)):
+            if pt is None or not isinstance(pt, list | tuple):
                 continue
             dist = haversine_distance(
                 self.center_y, self.center_x, float(pt[1]), float(pt[0])

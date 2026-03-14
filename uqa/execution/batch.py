@@ -308,7 +308,7 @@ class Batch:
 
 def _has_complex_values(values: list[Any]) -> bool:
     """Check if any non-null value is a list or dict."""
-    return any(isinstance(v, (list, dict)) for v in values)
+    return any(isinstance(v, list | dict) for v in values)
 
 
 def _normalize_complex_values(values: list[Any]) -> list[Any]:
