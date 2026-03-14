@@ -49,6 +49,10 @@
     <li><a href="#geospatial">Geospatial</a></li>
     <li><a href="#fdw">Foreign Data Wrappers</a></li>
     <li><a href="#scoring-advanced">Advanced Scoring</a></li>
+    <li><a href="#function-reference">Function Reference</a></li>
+    <li class="toc-h3"><a href="#function-reference">WHERE Functions</a></li>
+    <li class="toc-h3"><a href="#function-reference">Fusion Functions</a></li>
+    <li class="toc-h3"><a href="#function-reference">FROM Functions</a></li>
     <li><a href="#python-api">Python API</a></li>
     <li class="toc-h3"><a href="#engine">Engine</a></li>
     <li class="toc-h3"><a href="#querybuilder">QueryBuilder</a></li>
@@ -553,6 +557,23 @@ $$</span>) <span class="kw">AS</span> (name agtype);
 <span class="cm">-- Graph traversal (SQL functions)</span>
 <span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">traverse</span>(1, <span class="st">'cited_by'</span>, 2);
 <span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">rpq</span>(<span class="st">'cited_by/cited_by'</span>, 1);</code></pre>
+
+  <h3>Named Graphs</h3>
+<pre><code><span class="cm">-- Create named graph and populate via Cypher</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">create_graph</span>(<span class="st">'social'</span>);
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">cypher</span>(<span class="st">'social'</span>, $$
+    CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})
+    RETURN a.name, b.name
+$$) <span class="kw">AS</span> (a_name agtype, b_name agtype);
+
+<span class="cm">-- Traverse named graph</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">traverse</span>(1, <span class="st">'KNOWS'</span>, 2, <span class="st">'graph:social'</span>);
+
+<span class="cm">-- Temporal traverse on named graph</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">temporal_traverse</span>(1, <span class="st">'KNOWS'</span>, 2, 1700000000, <span class="st">'graph:social'</span>);
+
+<span class="cm">-- RPQ on named graph</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">rpq</span>(<span class="st">'KNOWS/WORKS_AT'</span>, 1, <span class="st">'graph:social'</span>);</code></pre>
 </section>
 
 <!-- ============ Fusion ============ -->
@@ -719,6 +740,9 @@ $$</span>) <span class="kw">AS</span> (name agtype);
 <pre><code><span class="cm">-- Time-aware graph traversal (edges valid at timestamp)</span>
 <span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">temporal_traverse</span>(1, <span class="st">'knows'</span>, 2, 1700000000);
 
+<span class="cm">-- Temporal traverse on named graph</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">temporal_traverse</span>(1, <span class="st">'knows'</span>, 2, 150, <span class="st">'graph:social'</span>);
+
 <span class="cm">-- GNN message passing aggregation</span>
 <span class="kw">SELECT</span> * <span class="kw">FROM</span> papers
 <span class="kw">WHERE</span> <span class="fn">message_passing</span>(2, <span class="st">'mean'</span>, <span class="st">'citations'</span>);
@@ -726,6 +750,202 @@ $$</span>) <span class="kw">AS</span> (name agtype);
 <span class="cm">-- Structural graph embeddings</span>
 <span class="kw">SELECT</span> * <span class="kw">FROM</span> papers
 <span class="kw">WHERE</span> <span class="fn">graph_embedding</span>(16, 3);</code></pre>
+</section>
+
+<!-- ============ Function Reference ============ -->
+<section id="function-reference">
+  <h2>Function Reference</h2>
+
+  <h3>WHERE-Clause Signal Functions</h3>
+  <p>These functions produce scored posting lists in WHERE clauses.</p>
+  <table>
+    <thead><tr><th>Function</th><th>Parameters</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>text_match(field, query)</code></td>
+        <td><code>field</code> &mdash; column name<br><code>query</code> &mdash; search string</td>
+        <td>Full-text search with BM25 scoring. Returns _score &ge; 0 (unbounded).</td>
+      </tr>
+      <tr>
+        <td><code>bayesian_match(field, query)</code></td>
+        <td><code>field</code> &mdash; column name<br><code>query</code> &mdash; search string</td>
+        <td>Bayesian BM25 calibrated probability. Returns _score in [0, 1].</td>
+      </tr>
+      <tr>
+        <td><code>knn_match(field, vector, k)</code></td>
+        <td><code>field</code> &mdash; VECTOR column<br><code>vector</code> &mdash; ARRAY or $N<br><code>k</code> &mdash; integer</td>
+        <td>K-nearest neighbor vector search by cosine similarity.</td>
+      </tr>
+      <tr>
+        <td><code>traverse_match(start, label, hops)</code></td>
+        <td><code>start</code> &mdash; vertex ID<br><code>label</code> &mdash; edge label<br><code>hops</code> &mdash; max depth</td>
+        <td>Graph reachability as a scored signal. Reachable vertices get score 0.9.</td>
+      </tr>
+      <tr>
+        <td><code>path_filter(path, value)</code></td>
+        <td><code>path</code> &mdash; dot-separated path<br><code>value</code> &mdash; target value</td>
+        <td>Hierarchical equality filter on nested document fields.</td>
+      </tr>
+      <tr>
+        <td><code>path_filter(path, op, value)</code></td>
+        <td><code>path</code> &mdash; dot-separated path<br><code>op</code> &mdash; comparison (=, !=, &lt;, &gt;, &lt;=, &gt;=)<br><code>value</code> &mdash; target value</td>
+        <td>Hierarchical comparison filter on nested document fields.</td>
+      </tr>
+      <tr>
+        <td><code>spatial_within(field, POINT(x,y), dist)</code></td>
+        <td><code>field</code> &mdash; POINT column<br><code>POINT(x,y)</code> &mdash; center<br><code>dist</code> &mdash; meters</td>
+        <td>Geospatial range query using R*Tree + Haversine distance.</td>
+      </tr>
+      <tr>
+        <td><code>sparse_threshold(signal, threshold)</code></td>
+        <td><code>signal</code> &mdash; signal function<br><code>threshold</code> &mdash; float</td>
+        <td>ReLU thresholding: max(0, score - threshold). Excludes zero-score documents.</td>
+      </tr>
+      <tr>
+        <td><code>multi_field_match(f1, f2, ..., query[, w1, w2, ...])</code></td>
+        <td><code>f1, f2, ...</code> &mdash; column names (2+)<br><code>query</code> &mdash; search string<br><code>w1, w2, ...</code> &mdash; weights (optional)</td>
+        <td>Multi-field Bayesian BM25 with per-field calibration and weighted log-odds fusion.</td>
+      </tr>
+      <tr>
+        <td><code>bayesian_match_with_prior(field, query, prior_field, mode)</code></td>
+        <td><code>field</code> &mdash; text column<br><code>query</code> &mdash; search string<br><code>prior_field</code> &mdash; metadata column<br><code>mode</code> &mdash; 'recency' or 'authority'</td>
+        <td>Bayesian BM25 with external document-level prior via log-odds addition.</td>
+      </tr>
+      <tr>
+        <td><code>message_passing(k_layers, agg, property)</code></td>
+        <td><code>k_layers</code> &mdash; integer (default 2)<br><code>agg</code> &mdash; 'mean', 'sum', or 'max'<br><code>property</code> &mdash; vertex property name</td>
+        <td>GNN k-layer neighbor feature aggregation with sigmoid calibration.</td>
+      </tr>
+      <tr>
+        <td><code>graph_embedding(dims, k_layers)</code></td>
+        <td><code>dims</code> &mdash; integer (default 32)<br><code>k_layers</code> &mdash; integer (default 2)</td>
+        <td>Structural graph embeddings from degree, label distribution, and k-hop connectivity.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Fusion Meta-Functions</h3>
+  <p>Combine multiple signal functions into a single fused relevance score. Each signal argument must be a signal function call.</p>
+  <table>
+    <thead><tr><th>Function</th><th>Parameters</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>fuse_log_odds(sig1, sig2, ...[, alpha])</code></td>
+        <td><code>sig1, sig2, ...</code> &mdash; signal functions (2+)<br><code>alpha</code> &mdash; confidence scaling (default 0.5)</td>
+        <td>Log-odds conjunction. Resolves conjunction shrinkage with &radic;n scaling.</td>
+      </tr>
+      <tr>
+        <td><code>fuse_prob_and(sig1, sig2, ...)</code></td>
+        <td><code>sig1, sig2, ...</code> &mdash; signal functions (2+)</td>
+        <td>Probabilistic AND: P = &prod; P<sub>i</sub></td>
+      </tr>
+      <tr>
+        <td><code>fuse_prob_or(sig1, sig2, ...)</code></td>
+        <td><code>sig1, sig2, ...</code> &mdash; signal functions (2+)</td>
+        <td>Probabilistic OR: P = 1 - &prod; (1 - P<sub>i</sub>)</td>
+      </tr>
+      <tr>
+        <td><code>fuse_prob_not(signal)</code></td>
+        <td><code>signal</code> &mdash; single signal function</td>
+        <td>Probabilistic NOT: P = 1 - P<sub>signal</sub></td>
+      </tr>
+      <tr>
+        <td><code>fuse_attention(sig1, sig2, ...)</code></td>
+        <td><code>sig1, sig2, ...</code> &mdash; signal functions (2+)</td>
+        <td>Attention-weighted log-odds fusion using query-level IDF/coverage features.</td>
+      </tr>
+      <tr>
+        <td><code>fuse_learned(sig1, sig2, ...)</code></td>
+        <td><code>sig1, sig2, ...</code> &mdash; signal functions (2+)</td>
+        <td>Learned per-signal weight log-odds fusion (no query features needed).</td>
+      </tr>
+      <tr>
+        <td><code>staged_retrieval(sig1, k1, sig2, k2, ...)</code></td>
+        <td><code>sig1</code> &mdash; signal function<br><code>k1</code> &mdash; top-k (int) or threshold (float)<br>(repeating pairs)</td>
+        <td>Multi-stage cascading retrieval pipeline. Each stage refines the candidate set.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>FROM-Clause Table Functions</h3>
+  <p>These functions appear in the FROM clause and produce result sets.</p>
+  <table>
+    <thead><tr><th>Function</th><th>Parameters</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>traverse(start, label, hops[, source])</code></td>
+        <td><code>start</code> &mdash; vertex ID<br><code>label</code> &mdash; edge label<br><code>hops</code> &mdash; max depth<br><code>source</code> &mdash; 'table' or 'graph:name'</td>
+        <td>BFS graph traversal. Supports named graphs via <code>'graph:name'</code>.</td>
+      </tr>
+      <tr>
+        <td><code>rpq(expr, start[, source])</code></td>
+        <td><code>expr</code> &mdash; path expression<br><code>start</code> &mdash; vertex ID<br><code>source</code> &mdash; 'table' or 'graph:name'</td>
+        <td>Regular path query (NFA simulation). Supports named graphs.</td>
+      </tr>
+      <tr>
+        <td><code>temporal_traverse(start, label, hops, ts[, source])</code></td>
+        <td><code>start</code> &mdash; vertex ID<br><code>label</code> &mdash; edge label<br><code>hops</code> &mdash; max depth<br><code>ts</code> &mdash; timestamp (or from_ts, to_ts for range)<br><code>source</code> &mdash; 'table' or 'graph:name'</td>
+        <td>Time-aware BFS filtering edges by valid_from/valid_to. Supports named graphs.</td>
+      </tr>
+      <tr>
+        <td><code>text_search(query, field[, table])</code></td>
+        <td><code>query</code> &mdash; search string<br><code>field</code> &mdash; column name<br><code>table</code> &mdash; table name</td>
+        <td>Table-scoped full-text search.</td>
+      </tr>
+      <tr>
+        <td><code>generate_series(start, stop[, step])</code></td>
+        <td><code>start, stop</code> &mdash; numeric<br><code>step</code> &mdash; numeric (default 1)</td>
+        <td>Generate a series of values.</td>
+      </tr>
+      <tr>
+        <td><code>unnest(array)</code></td>
+        <td><code>array</code> &mdash; array expression</td>
+        <td>Expand an array to a set of rows.</td>
+      </tr>
+      <tr>
+        <td><code>create_graph(name)</code></td>
+        <td><code>name</code> &mdash; graph name</td>
+        <td>Create a named graph namespace.</td>
+      </tr>
+      <tr>
+        <td><code>drop_graph(name)</code></td>
+        <td><code>name</code> &mdash; graph name</td>
+        <td>Drop a named graph and all its data.</td>
+      </tr>
+      <tr>
+        <td><code>cypher(graph, $$ query $$) AS (cols)</code></td>
+        <td><code>graph</code> &mdash; graph name<br><code>query</code> &mdash; Cypher query</td>
+        <td>Execute openCypher query on a named graph.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>SELECT Scalar Functions</h3>
+  <table>
+    <thead><tr><th>Function</th><th>Parameters</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>path_agg(path, func)</code></td>
+        <td><code>path</code> &mdash; dot-separated path<br><code>func</code> &mdash; 'sum', 'count', 'avg', 'min', 'max'</td>
+        <td>Per-row nested array aggregation.</td>
+      </tr>
+      <tr>
+        <td><code>path_value(path)</code></td>
+        <td><code>path</code> &mdash; dot-separated path</td>
+        <td>Access nested field value by path.</td>
+      </tr>
+      <tr>
+        <td><code>ST_Distance(p1, p2)</code></td>
+        <td><code>p1, p2</code> &mdash; POINT values</td>
+        <td>Haversine great-circle distance in meters.</td>
+      </tr>
+      <tr>
+        <td><code>ST_Within(p1, p2, dist)</code></td>
+        <td><code>p1, p2</code> &mdash; POINT values<br><code>dist</code> &mdash; meters</td>
+        <td>Distance predicate (boolean).</td>
+      </tr>
+    </tbody>
+  </table>
 </section>
 
 <!-- ============ Python API ============ -->
