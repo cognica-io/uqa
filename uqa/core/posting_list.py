@@ -95,20 +95,15 @@ class PostingList:
         return pl
 
     def difference(self, other: PostingList) -> PostingList:
-        """A - B: two-pointer merge keeping entries in A but not in B."""
-        result: list[PostingEntry] = []
-        i, j = 0, 0
-        while i < len(self._entries) and j < len(other._entries):
-            a, b = self._entries[i], other._entries[j]
-            if a.doc_id < b.doc_id:
-                result.append(a)
-                i += 1
-            elif a.doc_id == b.doc_id:
-                i += 1
-                j += 1
-            else:
-                j += 1
-        result.extend(self._entries[i:])
+        """A - B: entries in A but not in B.
+
+        Uses set-based lookup because CPython's C-level set.__contains__
+        outperforms a Python-level two-pointer loop for this operation.
+        The result preserves the sorted invariant since self._entries is
+        already sorted and we only filter (never reorder).
+        """
+        other_ids = other.doc_ids
+        result = [e for e in self._entries if e.doc_id not in other_ids]
         pl = PostingList.__new__(PostingList)
         pl._entries = result
         pl._doc_ids_cache = None

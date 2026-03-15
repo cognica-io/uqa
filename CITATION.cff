@@ -9,7 +9,7 @@ authors:
     affiliation: "Cognica, Inc."
 repository-code: "https://github.com/cognica-io/uqa"
 license: AGPL-3.0-only
-version: 0.18.0
+version: 0.18.1
 date-released: "2026-03-15"
 abstract: >-
   A multi-paradigm database engine that unifies relational, text retrieval,

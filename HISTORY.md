@@ -1,5 +1,9 @@
 # History
 
+## 0.18.1 (2026-03-15)
+
+- **PostingList.difference()**: Reverted to set-based lookup. The two-pointer merge caused a 5-7x regression in difference benchmarks (34K -> 4K iter/sec at size=1000) because CPython's C-level `set.__contains__` outperforms a Python-level while loop. The `__new__` bypass is retained.
+
 ## 0.18.0 (2026-03-15)
 
 8 paper-driven optimizations closing gaps between the formal algorithms/complexity bounds in Papers 1 — 4 and the codebase. Replaces set-based PostingList.difference() with O(|A|+|B|) two-pointer merge, adds early termination to IntersectOperator, introduces predicate-aware damping in cardinality estimation, makes the DPccp cost model join-algorithm-aware (index join vs hash join), switches vector threshold merging to np.allclose for floating-point tolerance, converts intersection reordering from cardinality-based to cost-based, enables recursive filter pushdown through nested IntersectOperators, and integrates PathIndex into the Cypher MATCH compiler for O(1) pattern resolution. All 2318 tests, 29 examples, and 295 benchmarks pass.
