@@ -48,6 +48,8 @@
     <li class="toc-h3"><a href="#graph-centrality">Centrality</a></li>
     <li><a href="#fusion">Fusion</a></li>
     <li class="toc-h3"><a href="#fusion-gating">Gating</a></li>
+    <li><a href="#geospatial">Geospatial</a></li>
+    <li><a href="#temporal-graph">Temporal Graph</a></li>
     <li><a href="#fdw">Foreign Data Wrappers</a></li>
     <li><a href="#python-api">Python API</a></li>
     <li class="toc-h3"><a href="#engine">Engine</a></li>
@@ -464,6 +466,26 @@ engine.close()</code></pre>
   <h2>Text Search</h2>
   <p>Full-text search with BM25 scoring, powered by an inverted index with configurable text analysis pipelines.</p>
 
+  <h3>@@ Operator (Query String Mini-Language)</h3>
+<pre><code><span class="cm">-- Boolean query: AND / OR / NOT</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> articles
+<span class="kw">WHERE</span> title <span class="fn">@@</span> <span class="st">'database AND query'</span> <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Phrase query</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> articles
+<span class="kw">WHERE</span> title <span class="fn">@@</span> <span class="st">'"machine learning"'</span> <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Field targeting</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> articles
+<span class="kw">WHERE</span> _all <span class="fn">@@</span> <span class="st">'title:attention AND body:transformer'</span>
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Hybrid text + vector fusion via @@</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> articles
+<span class="kw">WHERE</span> _all <span class="fn">@@</span> <span class="st">'body:search AND embedding:[0.1, 0.9, 0.0, 0.0]'</span>
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <h3>Function-Based Search</h3>
 <pre><code><span class="cm">-- BM25 full-text search</span>
 <span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
 <span class="kw">WHERE</span> <span class="fn">text_match</span>(title, <span class="st">'attention transformer'</span>)
@@ -523,9 +545,10 @@ $$</span>) <span class="kw">AS</span> (name agtype);
 <span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">rpq</span>(<span class="st">'cited_by/cited_by'</span>, 1);
 
 <span class="cm">-- Bounded RPQ: paths of 2-3 hops</span>
-<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">rpq</span>(<span class="st">'knows{2,3}'</span>, 1);
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">rpq</span>(<span class="st">'knows{2,3}'</span>, 1);</code></pre>
 
-<span class="cm">-- Graph centrality (FROM clause)</span>
+  <h3 id="graph-centrality">Centrality</h3>
+<pre><code><span class="cm">-- Graph centrality (FROM clause)</span>
 <span class="kw">SELECT</span> _doc_id, title, _score <span class="kw">FROM</span> <span class="fn">pagerank</span>() <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
 <span class="kw">SELECT</span> _doc_id, title, _score <span class="kw">FROM</span> <span class="fn">hits</span>() <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
 <span class="kw">SELECT</span> _doc_id, title, _score <span class="kw">FROM</span> <span class="fn">betweenness</span>() <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
@@ -565,10 +588,10 @@ $$</span>) <span class="kw">AS</span> (name agtype);
     <span class="fn">bayesian_match</span>(title, <span class="st">'neural'</span>),
     <span class="fn">knn_match</span>(embedding, <span class="kw">ARRAY</span>[...], 10)
 )
-<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
 
-<span class="cm">-- EXPLAIN shows fusion plan</span>
-<span class="cm">-- Log-odds with ReLU gating</span>
+  <h3 id="fusion-gating">Gating</h3>
+<pre><code><span class="cm">-- Log-odds with ReLU gating</span>
 <span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
 <span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
     <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
@@ -589,6 +612,77 @@ $$</span>) <span class="kw">AS</span> (name agtype);
     <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
     <span class="fn">knn_match</span>(embedding, <span class="kw">ARRAY</span>[...], 5)
 );</code></pre>
+</section>
+
+<!-- ============ Geospatial ============ -->
+<section id="geospatial">
+  <h2>Geospatial</h2>
+  <p>R*Tree spatial index with Haversine great-circle distance for POINT columns.</p>
+
+<pre><code><span class="cm">-- Create table with POINT column</span>
+<span class="kw">CREATE TABLE</span> restaurants (
+    id <span class="kw">SERIAL PRIMARY KEY</span>,
+    name <span class="kw">TEXT NOT NULL</span>,
+    cuisine <span class="kw">TEXT NOT NULL</span>,
+    location <span class="kw">POINT</span>
+);
+
+<span class="cm">-- Create R*Tree spatial index</span>
+<span class="kw">CREATE INDEX</span> idx_loc <span class="kw">ON</span> restaurants <span class="kw">USING</span> rtree (location);
+
+<span class="cm">-- Range query with Haversine distance</span>
+<span class="kw">SELECT</span> name,
+       <span class="fn">ROUND</span>(<span class="fn">ST_Distance</span>(location, <span class="fn">POINT</span>(-73.9857, 40.7484)), 0) <span class="kw">AS</span> dist_m
+<span class="kw">FROM</span> restaurants
+<span class="kw">WHERE</span> <span class="fn">spatial_within</span>(location, <span class="fn">POINT</span>(-73.9857, 40.7484), 5000)
+<span class="kw">ORDER BY</span> dist_m;
+
+<span class="cm">-- Spatial + text + vector fusion</span>
+<span class="kw">SELECT</span> name, _score <span class="kw">FROM</span> restaurants
+<span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
+    <span class="fn">text_match</span>(description, <span class="st">'pizza'</span>),
+    <span class="fn">spatial_within</span>(location, <span class="fn">POINT</span>(-73.9969, 40.7306), 3000),
+    <span class="fn">knn_match</span>(embedding, $1, 5)
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <h3>Spatial Functions</h3>
+  <table>
+    <thead><tr><th>Function</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>ST_Distance(p1, p2)</code></td><td>Haversine great-circle distance in meters</td></tr>
+      <tr><td><code>ST_Within(p1, p2, dist)</code></td><td>Distance predicate (boolean)</td></tr>
+      <tr><td><code>ST_DWithin(p1, p2, dist)</code></td><td>Alias for ST_Within</td></tr>
+      <tr><td><code>POINT(x, y)</code></td><td>Construct a POINT value (longitude, latitude)</td></tr>
+      <tr><td><code>spatial_within(field, point, dist)</code></td><td>WHERE-clause geospatial range query (R*Tree + Haversine)</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ Temporal Graph ============ -->
+<section id="temporal-graph">
+  <h2>Temporal Graph</h2>
+  <p>Time-aware graph operations, GNN-style message passing, and structural embeddings.</p>
+
+<pre><code><span class="cm">-- Temporal traversal: edges valid at timestamp</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">temporal_traverse</span>(1, <span class="st">'knows'</span>, 2, 1700000000);
+
+<span class="cm">-- GNN message passing: aggregate neighbor properties</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">message_passing</span>(2, <span class="st">'mean'</span>, <span class="st">'citations'</span>);
+
+<span class="cm">-- Structural graph embeddings</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">graph_embedding</span>(16, 3);</code></pre>
+
+  <h3>Temporal / GNN Functions</h3>
+  <table>
+    <thead><tr><th>Function</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>temporal_traverse(start, lbl, hops, ts)</code></td><td>Time-aware graph traversal</td></tr>
+      <tr><td><code>message_passing(k, agg, property)</code></td><td>GNN k-layer neighbor aggregation</td></tr>
+      <tr><td><code>graph_embedding(dims, k)</code></td><td>Structural graph embeddings</td></tr>
+    </tbody>
+  </table>
 </section>
 
 <!-- ============ FDW ============ -->

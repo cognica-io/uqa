@@ -21,8 +21,9 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
 <header class="hero">
   <h1><span>UQA</span> &mdash; Unified Query Algebra</h1>
   <p class="tagline">
-    A database prototype that unifies relational, text retrieval, vector search,
-    and graph query paradigms under a single algebraic structure.
+    A multi-paradigm database engine that unifies relational, text retrieval,
+    vector search, graph query, and geospatial paradigms under a single
+    algebraic structure, using posting lists as the universal abstraction.
   </p>
   <div class="badges">
     <a class="primary" href="https://github.com/cognica-io/uqa">GitHub</a>
@@ -284,14 +285,22 @@ graph TD
   <ul>
     <li><strong>Histogram-aware selectivity:</strong> equi-depth histograms + Most Common Values (MCV) from <code>ANALYZE</code></li>
     <li><strong>Filter pushdown</strong> into intersections</li>
+    <li><strong>Vector threshold merge:</strong> same query vector</li>
     <li><strong>Cardinality-ordered intersections:</strong> cheapest-first operand reordering</li>
+    <li><strong>Fusion signal reordering:</strong> cheapest-first signal evaluation</li>
+    <li><strong>R*Tree spatial index scan:</strong> for POINT column range queries</li>
     <li><strong>B-tree index scan substitution:</strong> replace full scans when profitable</li>
-    <li><strong>FDW predicate pushdown:</strong> comparison, IN, LIKE, ILIKE pushed to DuckDB/Arrow Flight SQL</li>
-    <li><strong>Cross-paradigm cardinality:</strong> text, vector, graph, and fusion operators</li>
+    <li><strong>FDW predicate pushdown:</strong> comparison, IN, LIKE, ILIKE, BETWEEN pushed to DuckDB/Arrow Flight SQL</li>
+    <li><strong>Cross-paradigm cardinality:</strong> text, vector, graph, fusion, temporal, and GNN operators</li>
     <li><strong>Edge filter pushdown:</strong> graph edge property filters into pattern constraints</li>
     <li><strong>Join-pattern fusion:</strong> merge intersected pattern matches with shared variables</li>
+    <li><strong>Cross-paradigm join cost models:</strong> text similarity, vector similarity, graph, hybrid joins</li>
     <li><strong>Threshold-aware vector selectivity:</strong> 4-tier estimation buckets</li>
     <li><strong>Temporal cardinality correction:</strong> timestamp/range selectivity for temporal graphs</li>
+    <li><strong>Path index acceleration:</strong> for simple Concat-of-Labels RPQ expressions</li>
+    <li><strong>CTE inlining:</strong> for single-reference non-recursive CTEs</li>
+    <li><strong>Predicate pushdown:</strong> into views and derived tables</li>
+    <li><strong>Implicit cross join reordering:</strong> via DPccp when equijoin predicates exist in WHERE</li>
   </ul>
 </div>
 </section>
@@ -336,6 +345,42 @@ graph TD
     RETURN p.name, friend.name, p.age
     ORDER BY p.name
 $$</span>) <span class="kw">AS</span> (name agtype, friend agtype, age agtype);</code></pre>
+
+  <h3>Full-Text Search (@@ Operator)</h3>
+<pre><code><span class="cm">&mdash; Query string mini-language: boolean, phrase, field targeting</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> articles
+<span class="kw">WHERE</span> title <span class="fn">@@</span> <span class="st">'database AND query'</span> <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">&mdash; Hybrid text + vector fusion via @@</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> articles
+<span class="kw">WHERE</span> _all <span class="fn">@@</span> <span class="st">'body:search AND embedding:[0.1, 0.9, 0.0, 0.0]'</span>
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <h3>Geospatial Query</h3>
+<pre><code><span class="kw">CREATE TABLE</span> restaurants (
+    id <span class="kw">SERIAL PRIMARY KEY</span>,
+    name <span class="kw">TEXT NOT NULL</span>,
+    location <span class="kw">POINT</span>
+);
+
+<span class="kw">CREATE INDEX</span> idx_loc <span class="kw">ON</span> restaurants <span class="kw">USING</span> rtree (location);
+
+<span class="kw">SELECT</span> name, <span class="fn">ROUND</span>(<span class="fn">ST_Distance</span>(location, <span class="fn">POINT</span>(-73.9857, 40.7484)), 0) <span class="kw">AS</span> dist_m
+<span class="kw">FROM</span> restaurants
+<span class="kw">WHERE</span> <span class="fn">spatial_within</span>(location, <span class="fn">POINT</span>(-73.9857, 40.7484), 5000)
+<span class="kw">ORDER BY</span> dist_m;</code></pre>
+
+  <h3>Temporal Graph Traversal</h3>
+<pre><code><span class="cm">&mdash; Edges valid at timestamp</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">temporal_traverse</span>(1, <span class="st">'knows'</span>, 2, 1700000000);
+
+<span class="cm">&mdash; GNN message passing: aggregate neighbor properties</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">message_passing</span>(2, <span class="st">'mean'</span>, <span class="st">'citations'</span>);
+
+<span class="cm">&mdash; Structural graph embeddings</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">graph_embedding</span>(16, 3);</code></pre>
 
   <h3>Graph Centrality</h3>
 <pre><code><span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> <span class="fn">pagerank</span>()
