@@ -6163,19 +6163,16 @@ class SQLCompiler:
     def _try_exists_decorrelation(
         self, subselect: SelectStmt, ctx: ExecutionContext
     ) -> Any:
-        """Decorrelate a correlated EXISTS into a semi-join FilterOperator.
+        """Decorrelate a correlated EXISTS into a lazy semi-join operator.
 
         Handles the common pattern:
             WHERE EXISTS (SELECT 1 FROM inner WHERE inner.fk = outer.pk AND ...)
 
-        Extracts the equijoin predicate (inner.fk = outer.pk), executes the
-        inner query with the non-correlated predicates only, collects the
-        distinct values of the join column, and returns a FilterOperator
-        using InSet on the outer column.  Falls back to None if the pattern
+        Extracts the equijoin predicate (inner.fk = outer.pk) and builds
+        a ``_SemiJoinFilterOperator`` that defers the inner query execution
+        to operator execution time.  Falls back to None if the pattern
         is not recognized.
         """
-        from uqa.operators.primitive import FilterOperator
-
         if subselect.whereClause is None:
             return None
 
@@ -6222,7 +6219,7 @@ class SQLCompiler:
         ]
 
         # Rebuild the inner SELECT projecting the join column so we can
-        # collect its distinct values for the InSet filter.
+        # collect its distinct values for the InSet filter at execution time.
         from pglast.ast import ResTarget
 
         join_target = ResTarget(
@@ -6243,19 +6240,12 @@ class SQLCompiler:
             op=SetOperation.SETOP_NONE,
         )
 
-        inner_result = self._compile_select(modified)
-        if not inner_result.rows:
-            from uqa.operators.boolean import ComplementOperator
-
-            return ComplementOperator(_ScanOperator())
-
-        # Collect distinct values of the inner join column.
-        values = frozenset(
-            row.get(inner_col)
-            for row in inner_result.rows
-            if row.get(inner_col) is not None
+        return _SemiJoinFilterOperator(
+            outer_col=outer_col,
+            inner_col=inner_col,
+            inner_subselect=modified,
+            subquery_executor=self._compile_select,
         )
-        return FilterOperator(outer_col, InSet(values))
 
     @staticmethod
     def _flatten_bool_and(node: Any) -> list[Any]:
@@ -8344,6 +8334,46 @@ class _CalibratedKNNOperator(Operator):
         import math
 
         return float(stats.dimensions) * math.log2(stats.total_docs + 1)
+
+
+class _SemiJoinFilterOperator:
+    """Lazy semi-join filter for decorrelated EXISTS subqueries.
+
+    Defers inner subquery execution to ``execute()`` time, avoiding
+    the overhead of compiling and running the inner query during the
+    outer query's compilation phase.
+    """
+
+    def __init__(
+        self,
+        outer_col: str,
+        inner_col: str,
+        inner_subselect: Any,
+        subquery_executor: Any,
+    ) -> None:
+        self._outer_col = outer_col
+        self._inner_col = inner_col
+        self._inner_subselect = inner_subselect
+        self._subquery_executor = subquery_executor
+
+    def execute(self, context: Any) -> PostingList:
+        from uqa.core.posting_list import PostingList
+        from uqa.core.types import InSet
+        from uqa.operators.primitive import FilterOperator
+
+        inner_result = self._subquery_executor(self._inner_subselect)
+        if not inner_result.rows:
+            return PostingList()
+
+        values = frozenset(
+            row.get(self._inner_col)
+            for row in inner_result.rows
+            if row.get(self._inner_col) is not None
+        )
+        return FilterOperator(self._outer_col, InSet(values)).execute(context)
+
+    def cost_estimate(self, stats: Any) -> float:
+        return float(stats.total_docs) * 1.5
 
 
 class _ExprFilterOperator:
