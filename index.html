@@ -284,9 +284,12 @@ graph TD
   <h3>Cost-Based Optimization</h3>
   <ul>
     <li><strong>Histogram-aware selectivity:</strong> equi-depth histograms + Most Common Values (MCV) from <code>ANALYZE</code></li>
-    <li><strong>Filter pushdown</strong> into intersections</li>
-    <li><strong>Vector threshold merge:</strong> same query vector</li>
-    <li><strong>Cardinality-ordered intersections:</strong> cheapest-first operand reordering</li>
+    <li><strong>Recursive filter pushdown:</strong> through nested IntersectOperators to all leaf operators</li>
+    <li><strong>Vector threshold merge:</strong> same query vector with floating-point tolerance (<code>np.allclose</code>)</li>
+    <li><strong>Cost-based intersection reordering:</strong> sort by execution cost, not cardinality</li>
+    <li><strong>Intersection early termination:</strong> skip remaining operands when accumulator is empty</li>
+    <li><strong>Predicate-aware cardinality damping:</strong> same-column correlation vs cross-column independence</li>
+    <li><strong>Join-algorithm-aware DPccp:</strong> index join cost for small inputs, hash join cost for large inputs</li>
     <li><strong>Fusion signal reordering:</strong> cheapest-first signal evaluation</li>
     <li><strong>R*Tree spatial index scan:</strong> for POINT column range queries</li>
     <li><strong>B-tree index scan substitution:</strong> replace full scans when profitable</li>
@@ -297,7 +300,7 @@ graph TD
     <li><strong>Cross-paradigm join cost models:</strong> text similarity, vector similarity, graph, hybrid joins</li>
     <li><strong>Threshold-aware vector selectivity:</strong> 4-tier estimation buckets</li>
     <li><strong>Temporal cardinality correction:</strong> timestamp/range selectivity for temporal graphs</li>
-    <li><strong>Path index acceleration:</strong> for simple Concat-of-Labels RPQ expressions</li>
+    <li><strong>Path index acceleration:</strong> for Concat-of-Labels RPQ expressions and Cypher MATCH patterns</li>
     <li><strong>CTE inlining:</strong> for single-reference non-recursive CTEs</li>
     <li><strong>Predicate pushdown:</strong> into views and derived tables</li>
     <li><strong>Implicit cross join reordering:</strong> via DPccp when equijoin predicates exist in WHERE</li>
