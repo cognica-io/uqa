@@ -118,19 +118,20 @@ class TestDPccp:
         plan = DPccp(g).optimize()
         assert plan.relations == frozenset({0, 1, 2})
         # DPccp should prefer joining small tables first.
-        # Cost model: C_total = (|L| + |R|) + C_left + C_right
-        # Base cost = cardinality.
+        # Cost model uses index join when min(|L|, |R|) <= 100:
+        #   index join cost = min_card * log2(max_card + 1)
+        #   hash join cost  = |L| + |R|
         #
         # (B JOIN C) JOIN A:
-        #   B JOIN C: card=10*500*0.01=50, cost=(10+500)+10+500 = 1020
-        #   then JOIN A: card=50*1000*0.01=500, cost=(50+1000)+1020+1000 = 3070
+        #   B JOIN C: card=10*500*0.01=50, min=10<=100 -> 10*log2(501) + 10 + 500
+        #   then JOIN A: card=50*1000*0.01=500, min=50<=100 -> 50*log2(1001) + above + 1000
         #
-        # (B JOIN A) JOIN C:
-        #   B JOIN A: card=10*1000*0.01=100, cost=(10+1000)+10+1000 = 2020
-        #   then JOIN C: card=100*500*0.01=500, cost=(100+500)+2020+500 = 3120
-        #
-        # Best is (B JOIN C) JOIN A with cost 3070
-        assert plan.cost == pytest.approx(3070.0)
+        # Best is (B JOIN C) JOIN A
+        import math
+
+        b_c_cost = 10 * math.log2(501) + 10 + 500
+        expected = 50 * math.log2(1001) + b_c_cost + 1000
+        assert plan.cost == pytest.approx(expected)
 
     def test_four_relations_star(self) -> None:
         """Star join: A at center connected to B, C, D."""

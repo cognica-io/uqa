@@ -124,10 +124,11 @@ class CardinalityEstimator:
                 child_cards = sorted([self.estimate(o, stats) for o in ops])
                 if not child_cards:
                     return 0.0
+                damping = self._intersection_damping(ops)
                 result = child_cards[0]
                 for card in child_cards[1:]:
                     sel = card / n if n > 0 else 1.0
-                    result *= sel**0.5  # sqrt damping for correlated predicates
+                    result *= sel**damping
                 return max(1.0, result)
             case UnionOperator(operands=ops):
                 child_cards = [self.estimate(o, stats) for o in ops]
@@ -137,6 +138,35 @@ class CardinalityEstimator:
                 return max(0.0, n - inner_card)
             case _:
                 return self._estimate_cross_paradigm(op, stats, n)
+
+    @staticmethod
+    def _intersection_damping(ops: list[Operator]) -> float:
+        """Choose damping exponent based on predicate correlation.
+
+        The exponent controls how aggressively the second predicate
+        reduces the estimate: sel**exponent.  Lower exponent means
+        less reduction (more correlation), higher exponent means more
+        reduction (more independence).
+
+        Same-column predicates (e.g., age > 30 AND age < 50) are highly
+        correlated, so use 0.1 (little additional reduction).
+        Different-column predicates are more independent, so use 0.5
+        (standard sqrt damping).
+        """
+        from uqa.operators.primitive import FilterOperator
+
+        fields: list[str] = []
+        for op in ops:
+            if isinstance(op, FilterOperator) and op.field is not None:
+                fields.append(op.field)
+
+        if len(fields) < 2:
+            return 0.5
+
+        if len(set(fields)) == 1:
+            return 0.1
+
+        return 0.5
 
     def _estimate_cross_paradigm(
         self, op: Operator, stats: IndexStats, n: float

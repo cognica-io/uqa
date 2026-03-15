@@ -95,9 +95,20 @@ class PostingList:
         return pl
 
     def difference(self, other: PostingList) -> PostingList:
-        """A - B: entries in A but not in B."""
-        other_ids = other.doc_ids
-        result = [e for e in self._entries if e.doc_id not in other_ids]
+        """A - B: two-pointer merge keeping entries in A but not in B."""
+        result: list[PostingEntry] = []
+        i, j = 0, 0
+        while i < len(self._entries) and j < len(other._entries):
+            a, b = self._entries[i], other._entries[j]
+            if a.doc_id < b.doc_id:
+                result.append(a)
+                i += 1
+            elif a.doc_id == b.doc_id:
+                i += 1
+                j += 1
+            else:
+                j += 1
+        result.extend(self._entries[i:])
         pl = PostingList.__new__(PostingList)
         pl._entries = result
         pl._doc_ids_cache = None
@@ -216,13 +227,26 @@ class GeneralizedPostingList:
         return len(self._entries) > 0
 
     def union(self, other: GeneralizedPostingList) -> GeneralizedPostingList:
-        seen: set[tuple[DocId, ...]] = set()
+        """Two-pointer merge keeping all unique doc_ids tuples."""
         result: list[GeneralizedPostingEntry] = []
-        for e in self._entries + other._entries:
-            if e.doc_ids not in seen:
-                seen.add(e.doc_ids)
-                result.append(e)
-        return GeneralizedPostingList(result)
+        i, j = 0, 0
+        while i < len(self._entries) and j < len(other._entries):
+            a, b = self._entries[i], other._entries[j]
+            if a.doc_ids == b.doc_ids:
+                result.append(a)
+                i += 1
+                j += 1
+            elif a.doc_ids < b.doc_ids:
+                result.append(a)
+                i += 1
+            else:
+                result.append(b)
+                j += 1
+        result.extend(self._entries[i:])
+        result.extend(other._entries[j:])
+        gpl = GeneralizedPostingList.__new__(GeneralizedPostingList)
+        gpl._entries = result
+        return gpl
 
     def __repr__(self) -> str:
         tuples = [e.doc_ids for e in self._entries]

@@ -66,6 +66,7 @@ from uqa.graph.cypher.ast import (
 from uqa.graph.posting_list import GraphPayload, GraphPostingList
 
 if TYPE_CHECKING:
+    from uqa.graph.index import PathIndex
     from uqa.graph.store import GraphStore
 
 # Type alias: a binding row stored in PostingEntry.payload.fields.
@@ -97,9 +98,11 @@ class CypherCompiler:
         self,
         graph: GraphStore,
         params: dict[str, Any] | None = None,
+        path_index: PathIndex | None = None,
     ) -> None:
         self._graph = graph
         self._params = params or {}
+        self._path_index = path_index
         self._next_doc_id = 1
 
     # -- Top-level execution -------------------------------------------
@@ -243,6 +246,112 @@ class CypherCompiler:
             results = next_results
         return results
 
+    def _try_path_index_match(
+        self, pattern: PathPattern, fields: BindingFields
+    ) -> list[BindingFields] | None:
+        """Try to answer a MATCH from the PathIndex.
+
+        Only works for simple patterns: alternating (node)-[rel]->(node)
+        where no relationship has properties, multiple types, or
+        variable-length hops.  Returns None to fall back to BFS.
+        """
+        if self._path_index is None:
+            return None
+
+        elements = pattern.elements
+        if len(elements) < 3:
+            return None
+
+        # Extract label sequence from alternating NodePattern/RelPattern
+        labels: list[str] = []
+        for i, elem in enumerate(elements):
+            if i % 2 == 1:
+                # Relationship pattern
+                if not isinstance(elem, RelPattern):
+                    return None
+                if elem.properties:
+                    return None
+                if len(elem.types) != 1:
+                    return None
+                if elem.min_hops is not None or elem.max_hops is not None:
+                    return None
+                labels.append(elem.types[0])
+            else:
+                if not isinstance(elem, NodePattern):
+                    return None
+
+        if not labels:
+            return None
+
+        pairs = self._path_index.lookup(labels)
+        if pairs is None:
+            return None
+
+        # Get the first and last node patterns for variable binding
+        first_node = elements[0]
+        last_node = elements[-1]
+        assert isinstance(first_node, NodePattern)
+        assert isinstance(last_node, NodePattern)
+
+        results: list[BindingFields] = []
+        for start_vid, end_vid in pairs:
+            # Filter by already-bound variables
+            if first_node.variable and first_node.variable in fields:
+                bound_val = fields[first_node.variable]
+                if isinstance(bound_val, int) and bound_val != start_vid:
+                    continue
+
+            if last_node.variable and last_node.variable in fields:
+                bound_val = fields[last_node.variable]
+                if isinstance(bound_val, int) and bound_val != end_vid:
+                    continue
+
+            # Check vertex label constraints
+            start_vtx = self._graph.get_vertex(start_vid)
+            end_vtx = self._graph.get_vertex(end_vid)
+            if start_vtx is None or end_vtx is None:
+                continue
+
+            if first_node.labels and start_vtx.label not in first_node.labels:
+                continue
+            if last_node.labels and end_vtx.label not in last_node.labels:
+                continue
+
+            # Check property constraints on endpoint nodes
+            if first_node.properties and not self._vertex_matches(
+                start_vtx, first_node, fields
+            ):
+                continue
+            if last_node.properties and not self._vertex_matches(
+                end_vtx, last_node, fields
+            ):
+                continue
+
+            # Check intermediate node constraints -- if any intermediate
+            # node has label or property constraints, fall back to BFS
+            has_intermediate_constraints = False
+            for i in range(2, len(elements) - 1, 2):
+                mid_node = elements[i]
+                if isinstance(mid_node, NodePattern):
+                    if mid_node.labels or mid_node.properties:
+                        has_intermediate_constraints = True
+                        break
+                    if mid_node.variable and not mid_node.variable.startswith("_anon_"):
+                        # Named intermediate node -- need BFS to bind it
+                        has_intermediate_constraints = True
+                        break
+            if has_intermediate_constraints:
+                return None  # Fall back for entire pattern
+
+            new_fields = dict(fields)
+            if first_node.variable:
+                new_fields[first_node.variable] = _VertexRef(start_vid)
+            if last_node.variable:
+                new_fields[last_node.variable] = _VertexRef(end_vid)
+            results.append(new_fields)
+
+        return results
+
     def _match_path(
         self, pattern: PathPattern, fields: BindingFields
     ) -> list[BindingFields]:
@@ -250,6 +359,11 @@ class CypherCompiler:
         elements = pattern.elements
         if not elements:
             return [dict(fields)]
+
+        # Try path index first for simple patterns
+        indexed = self._try_path_index_match(pattern, fields)
+        if indexed is not None:
+            return indexed
 
         # Assign synthetic variable names to anonymous nodes/rels so
         # that _expand_rel can track the "current vertex" through fields.

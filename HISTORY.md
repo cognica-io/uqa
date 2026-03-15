@@ -1,5 +1,57 @@
 # History
 
+## 0.18.0 (2026-03-15)
+
+8 paper-driven optimizations closing gaps between the formal algorithms/complexity bounds in Papers 1 — 4 and the codebase. Replaces set-based PostingList.difference() with O(|A|+|B|) two-pointer merge, adds early termination to IntersectOperator, introduces predicate-aware damping in cardinality estimation, makes the DPccp cost model join-algorithm-aware (index join vs hash join), switches vector threshold merging to np.allclose for floating-point tolerance, converts intersection reordering from cardinality-based to cost-based, enables recursive filter pushdown through nested IntersectOperators, and integrates PathIndex into the Cypher MATCH compiler for O(1) pattern resolution. All 2318 tests, 29 examples, and 295 benchmarks pass.
+
+### PostingList Two-Pointer Difference (Paper 1, Theorem 2.1.2)
+
+- **PostingList.difference()**: Replaced O(|B|) set construction with O(|A|+|B|) two-pointer merge, matching the existing `union()` and `intersect()` implementations
+- **GeneralizedPostingList.union()**: Replaced set-based deduplication with two-pointer merge, bypassing `__init__` sort via `__new__` pattern
+
+### IntersectOperator Early Termination (Paper 1, Section 6.2)
+
+- **Sequential path**: Execute operands one at a time; return empty immediately when the accumulator becomes empty, skipping all remaining operands
+- **Parallel path**: Short-circuit the `intersect()` reduction loop after `par.execute_branches()` completes
+- Combined with cost-based reordering (below), places cheap operators first to maximize early termination probability
+
+### Predicate-Aware Cardinality Damping (Paper 1, Definition 6.2.3)
+
+- **`_intersection_damping()`**: Extracts field names from FilterOperator children to detect predicate correlation
+- Same-column predicates (e.g., `age > 30 AND age < 50`): exponent 0.1 (high correlation, minimal additional reduction)
+- Different-column predicates: exponent 0.5 (standard sqrt damping, independence assumption)
+- Replaces the fixed `sel**0.5` with `sel**damping` where damping is predicate-aware
+
+### DPccp Join Algorithm Awareness (Paper 1, Section 6.2)
+
+- **`_emit_csg_cmp_pair()`**: When `min(|L|, |R|) <= INDEX_JOIN_THRESHOLD` (100), uses index join cost `min_card * log2(max_card + 1)` instead of hash join cost `|L| + |R|`
+- **`_greedy_optimize()`**: Same formula applied for consistency in the greedy fallback path
+- Eliminates cost model mismatch where DPccp planned hash join but runtime selected index join
+
+### Vector Threshold Merge Tolerance (Paper 1, Theorem 6.1.2)
+
+- Replaced `np.array_equal()` with `np.allclose(rtol=1e-7, atol=1e-9)` in `_merge_vector_thresholds()`
+- Semantically identical vectors with tiny floating-point differences now merge correctly into `V_max(theta1, theta2)(q)`
+
+### Cost-Based Intersection Reordering (Paper 1, Section 6.2)
+
+- Added `CostModel` instance to `QueryOptimizer`
+- Changed `_reorder_intersect()` sort key from `CardinalityEstimator.estimate()` to `CostModel.estimate()`
+- Ensures cheap operators (e.g., TermOperator) execute before expensive operators (e.g., VectorSimilarityOperator) regardless of their output cardinality
+
+### Recursive Filter Pushdown (Paper 1, Theorem 6.1.2)
+
+- `_push_filters_down()` now recursively calls itself on newly created operands before `_recurse_children()`
+- `_filter_applies_to()` extended to recursively check inside IntersectOperator children
+- `Filter(Intersect(Intersect(T1, T2), T3))` now pushes the filter to all three leaf operators
+
+### PathIndex in Cypher MATCH (Paper 2, Section 9.1)
+
+- **CypherCompiler**: Added `path_index` parameter; `_try_path_index_match()` resolves simple MATCH patterns via pre-computed (start, end) pairs in O(1)
+- Guard checks: falls back to BFS for patterns with relationship properties, multiple types, variable-length hops, or constrained intermediate nodes
+- **CypherQueryOperator**: Passes `path_index` from execution context to the compiler
+- Mirrors `RegularPathQueryOperator._try_index_lookup()` for consistent PathIndex integration across graph paradigms
+
 ## 0.17.0 (2026-03-14)
 
 12 paper-derived improvements fully connecting the theoretical foundations from Papers 1 — 4 into the query engine. Adds graph centrality scoring (PageRank, HITS, Betweenness), fusion gating mechanisms (ReLU/Swish), bounded RPQ with aggregate predicates, edge property filter pushdown, join-pattern fusion, cross-paradigm join cost models, threshold-aware vector selectivity, temporal graph cardinality correction, subgraph indexing, incremental pattern matching, random-walk graph sampling for cardinality estimation, and progressive multi-stage WAND fusion. All new features are exposed as SQL functions. All 2305 tests, 29 examples, and 295 benchmarks pass.

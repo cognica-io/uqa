@@ -864,7 +864,8 @@ class CypherQueryOperator:
     def execute(self, ctx: object) -> GraphPostingList:
         from uqa.graph.cypher.compiler import CypherCompiler
 
-        compiler = CypherCompiler(self.graph, params=self.params)
+        path_index = getattr(ctx, "path_index", None)
+        compiler = CypherCompiler(self.graph, params=self.params, path_index=path_index)
         gpl = compiler.execute_posting_list(self.query)
 
         if self.col_names is None:

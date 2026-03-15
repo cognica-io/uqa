@@ -256,7 +256,7 @@ uqa/
   planner/        Cost model, cardinality estimator, optimizer, DPccp join enumerator, parallel executor
   sql/            SQL compiler (pglast), expression evaluator, FTS query parser, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          2305 tests across 65 test files
+  tests/          2318 tests across 65 test files
 benchmarks/       295 pytest-benchmark tests across 14 files (posting list, storage, compiler,
                   execution, planner, scoring, graph, graph centrality, end-to-end SQL,
                   calibration, multi-field, external prior, advanced scoring, advanced graph)
@@ -395,10 +395,13 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 
 - Cost-based optimization with equi-depth histograms and Most Common Values (MCV)
 - **DPccp join order optimization** (Moerkotte & Neumann, 2006) — O(3^n) dynamic programming over connected subgraph complement pairs; produces optimal bushy join trees for INNER JOIN chains with 2+ relations; greedy fallback for 16+ relations; bitmask DP table with bytearray connectivity lookup and incremental connected subgraph enumeration
-- Filter pushdown into intersections
-- Vector threshold merge (same query vector)
-- Intersect operand reordering by cardinality (cheapest first)
+- Filter pushdown into intersections (recursive through nested IntersectOperators)
+- Vector threshold merge with floating-point tolerance (same query vector, `np.allclose`)
+- Intersect operand reordering by execution cost (cheapest first)
 - Fusion signal reordering by cost (cheapest first)
+- Early termination in IntersectOperator (skip remaining operands when accumulator is empty)
+- Predicate-aware cardinality damping (same-column vs different-column correlation)
+- Join-algorithm-aware DPccp cost model (index join vs hash join threshold)
 - R*Tree spatial index scan for POINT column range queries
 - B-tree index scan substitution (replace full scans when profitable)
 - FDW predicate pushdown (comparison, IN, LIKE, ILIKE, BETWEEN pushed to DuckDB/Arrow Flight SQL for Hive partition pruning)
@@ -408,7 +411,7 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 - Cross-paradigm join cost models (text similarity, vector similarity, graph, hybrid joins)
 - Threshold-aware vector selectivity estimation (4-tier threshold buckets)
 - Temporal graph cardinality correction with timestamp/range selectivity
-- Path index acceleration for simple Concat-of-Labels RPQ expressions
+- Path index acceleration for simple Concat-of-Labels RPQ expressions and Cypher MATCH patterns
 - CTE inlining for single-reference non-recursive CTEs
 - Predicate pushdown into views and derived tables
 - Implicit cross join reordering via DPccp when equijoin predicates exist in WHERE

@@ -1038,3 +1038,114 @@ class TestVertexLabels:
         g = GraphStore()
         g.add_edge(Edge(10, 1, 2, "X", {}))
         assert g.next_edge_id() == 11
+
+
+# ==================================================================
+# Paper-driven: Task 8 -- PathIndex usage in Cypher MATCH
+# ==================================================================
+
+
+class TestCypherPathIndex:
+    """Test PathIndex integration with CypherCompiler."""
+
+    def _build_graph_with_path_index(self):
+        """Build a graph with KNOWS edges and a PathIndex."""
+        from uqa.graph.index import PathIndex
+
+        g = GraphStore()
+        g.add_vertex(Vertex(1, "Person", {"name": "Alice"}))
+        g.add_vertex(Vertex(2, "Person", {"name": "Bob"}))
+        g.add_vertex(Vertex(3, "Person", {"name": "Carol"}))
+        g.add_vertex(Vertex(4, "Person", {"name": "Dave"}))
+        g.add_edge(Edge(1, 1, 2, "KNOWS", {}))
+        g.add_edge(Edge(2, 2, 3, "KNOWS", {}))
+        g.add_edge(Edge(3, 3, 4, "KNOWS", {}))
+        g.add_edge(Edge(4, 1, 3, "WORKS_WITH", {}))
+
+        path_index = PathIndex.build(g, [["KNOWS"], ["KNOWS", "KNOWS"]])
+        return g, path_index
+
+    def test_single_hop_with_path_index(self):
+        """Single-hop MATCH should use PathIndex and return correct results."""
+        from uqa.graph.cypher.compiler import CypherCompiler
+        from uqa.graph.cypher.parser import parse_cypher
+
+        g, path_index = self._build_graph_with_path_index()
+
+        query = "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, b.name"
+        ast = parse_cypher(query)
+
+        # With path index
+        compiler_idx = CypherCompiler(g, path_index=path_index)
+        result_idx = compiler_idx.execute(ast)
+
+        # Without path index (BFS fallback)
+        compiler_bfs = CypherCompiler(g)
+        result_bfs = compiler_bfs.execute(ast)
+
+        # Both should return the same results
+        idx_pairs = {(r["a.name"], r["b.name"]) for r in result_idx}
+        bfs_pairs = {(r["a.name"], r["b.name"]) for r in result_bfs}
+        assert idx_pairs == bfs_pairs
+        assert len(idx_pairs) == 3  # Alice->Bob, Bob->Carol, Carol->Dave
+
+    def test_two_hop_with_path_index(self):
+        """Two-hop MATCH should use PathIndex for KNOWS/KNOWS."""
+        from uqa.graph.cypher.compiler import CypherCompiler
+        from uqa.graph.cypher.parser import parse_cypher
+
+        g, path_index = self._build_graph_with_path_index()
+
+        query = (
+            "MATCH (a:Person)-[:KNOWS]->()-[:KNOWS]->(b:Person) RETURN a.name, b.name"
+        )
+        ast = parse_cypher(query)
+
+        compiler_idx = CypherCompiler(g, path_index=path_index)
+        result_idx = compiler_idx.execute(ast)
+
+        compiler_bfs = CypherCompiler(g)
+        result_bfs = compiler_bfs.execute(ast)
+
+        idx_pairs = {(r["a.name"], r["b.name"]) for r in result_idx}
+        bfs_pairs = {(r["a.name"], r["b.name"]) for r in result_bfs}
+        assert idx_pairs == bfs_pairs
+
+    def test_fallback_for_rel_with_properties(self):
+        """Patterns with relationship properties should fall back to BFS."""
+        from uqa.graph.cypher.compiler import CypherCompiler
+        from uqa.graph.cypher.parser import parse_cypher
+
+        g, path_index = self._build_graph_with_path_index()
+
+        # Add a KNOWS edge with properties
+        g.add_edge(Edge(5, 4, 1, "KNOWS", {"since": 2020}))
+
+        query = (
+            "MATCH (a:Person)-[:KNOWS {since: 2020}]->(b:Person) RETURN a.name, b.name"
+        )
+        ast = parse_cypher(query)
+
+        # Should fall back to BFS (properties on rel)
+        compiler = CypherCompiler(g, path_index=path_index)
+        result = compiler.execute(ast)
+
+        pairs = {(r["a.name"], r["b.name"]) for r in result}
+        assert ("Dave", "Alice") in pairs
+
+    def test_fallback_for_variable_length(self):
+        """Variable-length patterns should fall back to BFS."""
+        from uqa.graph.cypher.compiler import CypherCompiler
+        from uqa.graph.cypher.parser import parse_cypher
+
+        g, path_index = self._build_graph_with_path_index()
+
+        query = "MATCH (a:Person)-[:KNOWS*1..3]->(b:Person) RETURN a.name, b.name"
+        ast = parse_cypher(query)
+
+        # Should fall back to BFS (variable-length)
+        compiler = CypherCompiler(g, path_index=path_index)
+        result = compiler.execute(ast)
+
+        # Should still produce correct results via BFS
+        assert len(result) > 0

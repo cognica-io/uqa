@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from uqa.planner.cardinality import CardinalityEstimator
+from uqa.planner.cost_model import CostModel
 
 if TYPE_CHECKING:
     from uqa.core.types import IndexStats
@@ -36,6 +37,7 @@ class QueryOptimizer:
     ):
         self.stats = stats
         self.estimator = CardinalityEstimator(column_stats)
+        self._cost_model = CostModel()
         self._index_manager = index_manager
         self._table_name = table_name
 
@@ -68,7 +70,8 @@ class QueryOptimizer:
                 else:
                     new_operands.append(child)
             if any_pushed:
-                return self._recurse_children(IntersectOperator(new_operands))
+                recursed = [self._push_filters_down(o) for o in new_operands]
+                return self._recurse_children(IntersectOperator(recursed))
 
         if source is None:
             return op
@@ -348,8 +351,11 @@ class QueryOptimizer:
             for j in range(i + 1, len(vector_ops)):
                 if used[j]:
                     continue
-                if merged.field == vector_ops[j].field and np.array_equal(
-                    merged.query_vector, vector_ops[j].query_vector
+                if merged.field == vector_ops[j].field and np.allclose(
+                    merged.query_vector,
+                    vector_ops[j].query_vector,
+                    rtol=1e-7,
+                    atol=1e-9,
                 ):
                     merged = VectorSimilarityOperator(
                         merged.query_vector,
@@ -373,7 +379,7 @@ class QueryOptimizer:
             return self._recurse_children(op)
 
         children = [self._recurse_children(c) for c in op.operands]
-        children.sort(key=lambda c: self.estimator.estimate(c, self.stats))
+        children.sort(key=lambda c: self._cost_model.estimate(c, self.stats))
         return IntersectOperator(children)
 
     def _reorder_fusion_signals(self, op: Operator) -> Operator:
@@ -545,6 +551,7 @@ class QueryOptimizer:
     @staticmethod
     def _filter_applies_to(filter_op: object, target: Operator) -> bool:
         """Check if a filter is relevant to a specific operand."""
+        from uqa.operators.boolean import IntersectOperator
         from uqa.operators.primitive import FilterOperator, TermOperator
 
         field = getattr(filter_op, "field", None)
@@ -555,4 +562,9 @@ class QueryOptimizer:
             return target.field == field or target.field is None
         if isinstance(target, FilterOperator):
             return target.field == field
+        if isinstance(target, IntersectOperator):
+            return any(
+                QueryOptimizer._filter_applies_to(filter_op, child)
+                for child in target.operands
+            )
         return False

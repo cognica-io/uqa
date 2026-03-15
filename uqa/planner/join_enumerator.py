@@ -22,10 +22,16 @@ frozenset construction and hashing in the inner enumeration loops.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
 from uqa.planner.join_graph import JoinEdge, JoinGraph
+
+# Use index join when the smaller side has fewer rows than this threshold.
+# Mirrors the constant in join_order.py; duplicated here to avoid a
+# circular import (join_order imports DPccp from this module).
+INDEX_JOIN_THRESHOLD = 100
 
 # Maximum number of relations for exact DP enumeration.
 # Beyond this threshold, use greedy heuristic to avoid
@@ -247,8 +253,14 @@ class DPccp:
             cardinality *= edge.selectivity
 
         # Cost = C_out + C_left + C_right
-        # C_out approximates hash join cost as the sum of input sizes
-        join_cost = plan1.cardinality + plan2.cardinality
+        # Use index join cost when the smaller side fits within threshold;
+        # otherwise use hash join cost.
+        min_card = min(plan1.cardinality, plan2.cardinality)
+        max_card = max(plan1.cardinality, plan2.cardinality)
+        if min_card <= INDEX_JOIN_THRESHOLD:
+            join_cost = min_card * math.log2(max_card + 1)
+        else:
+            join_cost = plan1.cardinality + plan2.cardinality
         total_cost = join_cost + plan1.cost + plan2.cost
 
         existing = self._dp.get(combined_mask)
@@ -417,7 +429,13 @@ class DPccp:
                     for edge in edges:
                         cardinality *= edge.selectivity
 
-                    cost = p1.cardinality + p2.cardinality + p1.cost + p2.cost
+                    greedy_min = min(p1.cardinality, p2.cardinality)
+                    greedy_max = max(p1.cardinality, p2.cardinality)
+                    if greedy_min <= INDEX_JOIN_THRESHOLD:
+                        greedy_join_cost = greedy_min * math.log2(greedy_max + 1)
+                    else:
+                        greedy_join_cost = p1.cardinality + p2.cardinality
+                    cost = greedy_join_cost + p1.cost + p2.cost
 
                     if cost < best_cost:
                         best_cost = cost

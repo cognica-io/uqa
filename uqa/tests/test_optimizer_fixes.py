@@ -4,7 +4,7 @@
 # Copyright (c) 2023-2026 Cognica, Inc.
 #
 
-"""Tests for optimizer comprehensive fixes (Phases 1-6)."""
+"""Tests for optimizer comprehensive fixes and paper-driven optimizations."""
 
 from __future__ import annotations
 
@@ -475,3 +475,226 @@ class TestDPccp2Tables:
             "SELECT dp_a.name, dp_b.val FROM dp_a JOIN dp_b ON dp_a.id = dp_b.a_id"
         )
         assert len(result.rows) == 10
+
+
+# ==================================================================
+# Paper-driven: Task 2 -- IntersectOperator early termination
+# ==================================================================
+
+
+class TestIntersectEarlyTermination:
+    def test_empty_first_operand_skips_rest(self) -> None:
+        """When the first operand returns empty, subsequent operands should not execute."""
+        from uqa.core.posting_list import PostingList
+        from uqa.operators.base import ExecutionContext, Operator
+        from uqa.operators.boolean import IntersectOperator
+
+        class _CountingOp(Operator):
+            call_count = 0
+
+            def execute(self, context: ExecutionContext) -> PostingList:
+                _CountingOp.call_count += 1
+                return PostingList([PostingEntry(1, Payload(score=1.0))])
+
+            def cost_estimate(self, stats: object) -> float:
+                return 1.0
+
+        class _EmptyOp(Operator):
+            def execute(self, context: ExecutionContext) -> PostingList:
+                return PostingList()
+
+            def cost_estimate(self, stats: object) -> float:
+                return 1.0
+
+        _CountingOp.call_count = 0
+        # Empty operator first, then two counting operators
+        intersect = IntersectOperator([_EmptyOp(), _CountingOp(), _CountingOp()])
+        ctx = ExecutionContext()
+        result = intersect.execute(ctx)
+
+        assert len(result) == 0
+        assert _CountingOp.call_count == 0  # Neither counting op executed
+
+
+# ==================================================================
+# Paper-driven: Task 3 -- Predicate-aware damping
+# ==================================================================
+
+
+class TestPredicateAwareDamping:
+    def test_same_field_higher_estimate(self) -> None:
+        """Same-field intersect should produce higher cardinality (0.9 damping)."""
+        from uqa.operators.boolean import IntersectOperator
+        from uqa.operators.primitive import FilterOperator
+        from uqa.planner.cardinality import CardinalityEstimator
+
+        stats = IndexStats(total_docs=1000)
+        estimator = CardinalityEstimator()
+
+        # Same field: age > 30 AND age < 50 -> 0.9 damping
+        same = IntersectOperator(
+            [
+                FilterOperator("age", GreaterThan(30), None),
+                FilterOperator("age", GreaterThan(50), None),
+            ]
+        )
+        card_same = estimator.estimate(same, stats)
+
+        # Different fields: age > 30 AND salary > 50000 -> 0.5 damping
+        diff = IntersectOperator(
+            [
+                FilterOperator("age", GreaterThan(30), None),
+                FilterOperator("salary", GreaterThan(50000), None),
+            ]
+        )
+        card_diff = estimator.estimate(diff, stats)
+
+        assert card_same > card_diff
+
+    def test_mixed_operators_default_damping(self) -> None:
+        """Non-filter children should use default 0.5 damping."""
+        from uqa.operators.boolean import IntersectOperator
+        from uqa.operators.primitive import FilterOperator, TermOperator
+        from uqa.planner.cardinality import CardinalityEstimator
+
+        stats = IndexStats(total_docs=1000)
+        estimator = CardinalityEstimator()
+
+        # Mix of filter and non-filter -> default 0.5
+        mixed = IntersectOperator(
+            [
+                FilterOperator("age", GreaterThan(30), None),
+                TermOperator("hello", "text"),
+            ]
+        )
+        card = estimator.estimate(mixed, stats)
+        assert card >= 1.0
+
+
+# ==================================================================
+# Paper-driven: Task 4 -- DPccp join algorithm awareness
+# ==================================================================
+
+
+class TestDPccpJoinAlgorithmAwareness:
+    def test_small_input_index_join_cost(self) -> None:
+        """DPccp cost model should use index join formula for small inputs."""
+        import math
+
+        from uqa.planner.join_enumerator import DPccp
+        from uqa.planner.join_graph import JoinGraph
+
+        graph = JoinGraph()
+        graph.add_node(alias="small", operator=None, table=None, cardinality=50.0)
+        graph.add_node(alias="big", operator=None, table=None, cardinality=10000.0)
+        graph.add_edge(
+            left_node=0,
+            right_node=1,
+            left_field="id",
+            right_field="fk",
+        )
+
+        solver = DPccp(graph)
+        plan = solver.optimize()
+
+        # With index join: cost = 50 * log2(10001) + 50 + 10000
+        expected_join_cost = 50.0 * math.log2(10001.0)
+        expected_total = expected_join_cost + 50.0 + 10000.0
+        assert abs(plan.cost - expected_total) < 1.0
+
+
+# ==================================================================
+# Paper-driven: Task 5 -- Vector threshold merge with np.allclose
+# ==================================================================
+
+
+class TestVectorThresholdMerge:
+    def test_merge_nearly_identical_vectors(self) -> None:
+        """Vectors differing by tiny epsilon should still merge."""
+        import numpy as np
+
+        from uqa.operators.boolean import IntersectOperator
+        from uqa.operators.primitive import VectorSimilarityOperator
+        from uqa.planner.optimizer import QueryOptimizer
+
+        v1 = np.array([1.0, 2.0, 3.0])
+        v2 = v1 + 1e-10  # Tiny difference
+
+        op1 = VectorSimilarityOperator(v1, 0.5, "vec")
+        op2 = VectorSimilarityOperator(v2, 0.7, "vec")
+        intersect = IntersectOperator([op1, op2])
+
+        stats = IndexStats(total_docs=100, dimensions=3)
+        optimizer = QueryOptimizer(stats)
+        optimized = optimizer.optimize(intersect)
+
+        # Should be merged into single VectorSimilarityOperator with max threshold
+        assert isinstance(optimized, VectorSimilarityOperator)
+        assert optimized.threshold == 0.7
+
+
+# ==================================================================
+# Paper-driven: Task 6 -- Cost-based intersection reordering
+# ==================================================================
+
+
+class TestCostBasedIntersectReordering:
+    def test_cheap_operator_first(self) -> None:
+        """TermOperator (cheap) should appear before VectorSimilarityOperator (expensive)."""
+        import numpy as np
+
+        from uqa.operators.boolean import IntersectOperator
+        from uqa.operators.primitive import TermOperator, VectorSimilarityOperator
+        from uqa.planner.optimizer import QueryOptimizer
+
+        vec = np.array([1.0] * 128)
+        vector_op = VectorSimilarityOperator(vec, 0.5, "vec")
+        term_op = TermOperator("hello", "text")
+
+        # Put expensive vector op first
+        intersect = IntersectOperator([vector_op, term_op])
+
+        stats = IndexStats(total_docs=1000, dimensions=128)
+        optimizer = QueryOptimizer(stats)
+        optimized = optimizer.optimize(intersect)
+
+        # After optimization, cheap TermOperator should come first
+        assert isinstance(optimized, IntersectOperator)
+        assert isinstance(optimized.operands[0], TermOperator)
+        assert isinstance(optimized.operands[1], VectorSimilarityOperator)
+
+
+# ==================================================================
+# Paper-driven: Task 7 -- Recursive filter pushdown
+# ==================================================================
+
+
+class TestRecursiveFilterPushdown:
+    def test_filter_pushes_through_nested_intersect(self) -> None:
+        """Filter should push through nested IntersectOperators to all leaves."""
+        from uqa.operators.boolean import IntersectOperator
+        from uqa.operators.primitive import FilterOperator, TermOperator
+        from uqa.planner.optimizer import QueryOptimizer
+
+        t1 = TermOperator("alpha", "text")
+        t2 = TermOperator("beta", "text")
+        t3 = TermOperator("gamma", "text")
+
+        # Nested: Intersect(Intersect(T1, T2), T3)
+        inner = IntersectOperator([t1, t2])
+        outer = IntersectOperator([inner, t3])
+        filtered = FilterOperator("text", GreaterThan(0), outer)
+
+        stats = IndexStats(total_docs=100)
+        optimizer = QueryOptimizer(stats)
+        optimized = optimizer.optimize(filtered)
+
+        # All three TermOperators should have filters applied
+        def count_filters(op: object) -> int:
+            if isinstance(op, FilterOperator):
+                return 1 + count_filters(op.source)
+            if isinstance(op, IntersectOperator):
+                return sum(count_filters(o) for o in op.operands)
+            return 0
+
+        assert count_filters(optimized) == 3

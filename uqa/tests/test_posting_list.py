@@ -199,6 +199,26 @@ def test_sorted_invariant_after_complement(a: PostingList) -> None:
         assert entries[i].doc_id < entries[i + 1].doc_id
 
 
+@given(a=posting_list_strategy, b=posting_list_strategy)
+@settings(max_examples=100)
+def test_sorted_invariant_after_difference(a: PostingList, b: PostingList) -> None:
+    """Entries are sorted by doc_id after difference."""
+    result = a.difference(b)
+    entries = result.entries
+    for i in range(len(entries) - 1):
+        assert entries[i].doc_id < entries[i + 1].doc_id
+
+
+@given(a=posting_list_strategy, b=posting_list_strategy)
+@settings(max_examples=100)
+def test_difference_correctness(a: PostingList, b: PostingList) -> None:
+    """difference() returns entries in A but not in B."""
+    result = a.difference(b)
+    result_ids = {e.doc_id for e in result}
+    expected_ids = a.doc_ids - b.doc_ids
+    assert result_ids == expected_ids
+
+
 # -- Merge payloads --
 
 

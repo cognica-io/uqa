@@ -43,9 +43,19 @@ class IntersectOperator(Operator):
         par = context.parallel_executor
         if par is not None and par.enabled:
             results = par.execute_branches(self.operands, context)
+            acc = results[0]
+            for r in results[1:]:
+                if not acc:
+                    return PostingList()
+                acc = acc.intersect(r)
+            return acc
         else:
-            results = [op.execute(context) for op in self.operands]
-        return reduce(PostingList.intersect, results)
+            acc = self.operands[0].execute(context)
+            for op in self.operands[1:]:
+                if not acc:
+                    return PostingList()
+                acc = acc.intersect(op.execute(context))
+            return acc
 
     def cost_estimate(self, stats: IndexStats) -> float:
         if not self.operands:
