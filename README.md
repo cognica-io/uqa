@@ -213,7 +213,7 @@ graph TD
 
     PAR --> DS[Document Store<br/>SQLite]
     PAR --> II[Inverted Index<br/>SQLite + Analyzer]
-    PAR --> VI["Vector Index<br/>IVF (optional)"]
+    PAR --> VI["Vector Index<br/>IVF"]
     PAR --> SI[Spatial Index<br/>R*Tree]
     PAR --> GS[Graph Store<br/>SQLite]
 
