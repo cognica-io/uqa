@@ -295,6 +295,8 @@ graph TD
     <li><strong>R*Tree spatial index scan:</strong> for POINT column range queries</li>
     <li><strong>B-tree index scan substitution:</strong> replace full scans when profitable</li>
     <li><strong>FDW predicate pushdown:</strong> comparison, IN, LIKE, ILIKE, BETWEEN pushed to DuckDB/Arrow Flight SQL</li>
+    <li><strong>FDW full query pushdown:</strong> same-server queries delegated entirely via AST deparsing</li>
+    <li><strong>FDW mixed foreign-local:</strong> small local tables shipped to DuckDB for in-process JOINs</li>
     <li><strong>Cross-paradigm cardinality:</strong> text, vector, graph, fusion, temporal, and GNN operators</li>
     <li><strong>Edge filter pushdown:</strong> graph edge property filters into pattern constraints</li>
     <li><strong>Join-pattern fusion:</strong> merge intersected pattern matches with shared variables</li>
@@ -458,6 +460,17 @@ $$</span>) <span class="kw">AS</span> (name agtype, friend agtype, age agtype);
       <p>Remote access to any Arrow Flight SQL server &mdash; Dremio, DataFusion,
         DuckDB, and other compatible engines over gRPC.</p>
     </div>
+    <div class="card">
+      <h3>Full Query Pushdown</h3>
+      <p>Entire queries &mdash; JOINs, aggregates, window functions, subqueries &mdash;
+        delegated to DuckDB or Arrow Flight SQL via AST deparsing.
+        Zero Python row materialization.</p>
+    </div>
+    <div class="card">
+      <h3>Mixed Foreign-Local</h3>
+      <p>Local dimension tables shipped to DuckDB as temp tables for in-process
+        JOIN execution with large foreign fact tables.</p>
+    </div>
   </div>
 
   <h3>Predicate Pushdown</h3>
@@ -466,6 +479,18 @@ $$</span>) <span class="kw">AS</span> (name agtype, friend agtype, age agtype);
     <code>IN</code>, <code>LIKE</code>, <code>ILIKE</code>, and <code>BETWEEN</code>
     predicates are pushed down to the external engine, enabling Hive partition
     pruning and reducing data transfer.
+  </p>
+
+  <h3>Full Query Pushdown <span style="font-size:0.8em; font-weight:normal;">(v0.19.0)</span></h3>
+  <p>
+    When all tables in a query live on the same DuckDB server, the entire SQL
+    &mdash; including JOINs, GROUP BY, ORDER BY, window functions, subqueries,
+    and CTEs &mdash; is deparsed via <code>pglast.stream.RawStream</code> and
+    executed natively by DuckDB. For mixed foreign-local queries, small local
+    tables (&lt;100K rows) are shipped to DuckDB as temp tables. Arrow Flight
+    SQL supports same-server pure-foreign pushdown. If DuckDB cannot execute
+    (e.g., UQA-specific functions like <code>spatial_within</code>), the
+    standard UQA operator pipeline takes over automatically.
   </p>
 </div>
 </section>

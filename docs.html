@@ -51,6 +51,8 @@
     <li><a href="#geospatial">Geospatial</a></li>
     <li><a href="#temporal-graph">Temporal Graph</a></li>
     <li><a href="#fdw">Foreign Data Wrappers</a></li>
+    <li class="toc-h3"><a href="#fdw-pushdown">Full Query Pushdown</a></li>
+    <li class="toc-h3"><a href="#fdw-mixed">Mixed Foreign-Local</a></li>
     <li><a href="#python-api">Python API</a></li>
     <li class="toc-h3"><a href="#engine">Engine</a></li>
     <li class="toc-h3"><a href="#querybuilder">QueryBuilder</a></li>
@@ -715,6 +717,37 @@ $$</span>) <span class="kw">AS</span> (name agtype);
 <span class="kw">SELECT</span> s.name, e.dept
 <span class="kw">FROM</span> sales s <span class="kw">JOIN</span> employees e <span class="kw">ON</span> s.rep_id = e.id
 <span class="kw">ORDER BY</span> s.amount <span class="kw">DESC LIMIT</span> 10;</code></pre>
+
+  <h3 id="fdw-pushdown">Full Query Pushdown <span style="font-size:0.8em; font-weight:normal;">(v0.19.0)</span></h3>
+  <p>When all tables in a query are foreign tables on the same DuckDB server,
+    the entire query is pushed to DuckDB &mdash; no Python row materialization.
+    JOINs, aggregates, window functions, subqueries, and CTEs all execute natively.</p>
+
+<pre><code><span class="cm">-- Entire query delegated to DuckDB (41M rows, instant)</span>
+<span class="kw">SELECT</span> payment_type, <span class="fn">COUNT</span>(*) <span class="kw">AS</span> trips,
+       <span class="fn">AVG</span>(total_amount) <span class="kw">AS</span> avg_total
+<span class="kw">FROM</span> taxi_trips
+<span class="kw">GROUP BY</span> payment_type
+<span class="kw">ORDER BY</span> trips <span class="kw">DESC</span>;
+
+<span class="cm">-- Window functions also pushed down</span>
+<span class="kw">SELECT</span> name, value,
+       <span class="fn">ROW_NUMBER</span>() <span class="kw">OVER</span> (<span class="kw">ORDER BY</span> value <span class="kw">DESC</span>) <span class="kw">AS</span> rn
+<span class="kw">FROM</span> foreign_data;</code></pre>
+
+  <h3 id="fdw-mixed">Mixed Foreign-Local Queries</h3>
+  <p>Local dimension tables (&lt;100K rows) are shipped to DuckDB as temp tables,
+    letting the full JOIN execute in DuckDB. If DuckDB cannot handle
+    UQA-specific functions (e.g., <code>spatial_within</code>), the standard
+    UQA operator pipeline takes over automatically.</p>
+
+<pre><code><span class="cm">-- Local taxi_zones (263 rows) shipped to DuckDB,</span>
+<span class="cm">-- JOINed with foreign taxi_trips (41M rows) in DuckDB</span>
+<span class="kw">SELECT</span> z.zone, z.borough, <span class="fn">COUNT</span>(*) <span class="kw">AS</span> pickups
+<span class="kw">FROM</span> taxi_trips t
+<span class="kw">JOIN</span> taxi_zones z <span class="kw">ON</span> t.pu_location_id = z.location_id
+<span class="kw">GROUP BY</span> z.zone, z.borough
+<span class="kw">ORDER BY</span> pickups <span class="kw">DESC LIMIT</span> 10;</code></pre>
 </section>
 
 <!-- ============ Python API ============ -->
