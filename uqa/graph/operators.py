@@ -29,6 +29,20 @@ if TYPE_CHECKING:
 DEFAULT_GRAPH_SCORE: float = 0.9
 _EMPTY: frozenset[int] = frozenset()
 
+# Lazy-loaded RPQ optimizer functions (avoid circular import)
+_rpq_simplify = None
+_rpq_subset = None
+
+
+def _get_rpq_optimizer() -> tuple[Any, Any]:
+    global _rpq_simplify, _rpq_subset
+    if _rpq_simplify is None:
+        from uqa.graph.rpq_optimizer import _simplify_expr, _subset_construction
+
+        _rpq_simplify = _simplify_expr
+        _rpq_subset = _subset_construction
+    return _rpq_simplify, _rpq_subset
+
 
 class TraverseOperator:
     """Definition 2.2.1: Traverse_{v,l,k}
@@ -75,9 +89,7 @@ class TraverseOperator:
                 adj = part.adj_out.get(v, _EMPTY)
                 edge_ids = adj & label_eids if label_eids is not None else adj
                 for eid in edge_ids:
-                    edge = edges.get(eid)
-                    if edge is None:
-                        continue
+                    edge = edges[eid]
                     neighbor = edge.target_id
                     if neighbor in visited:
                         continue
@@ -552,14 +564,14 @@ class RegularPathQueryOperator:
         if indexed_result is not None:
             return indexed_result
 
-        from uqa.graph.rpq_optimizer import _simplify_expr, _subset_construction
+        simplify_expr, subset_construction = _get_rpq_optimizer()
 
         gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
         g = self.graph_name
         _reset_state_counter()
 
         # Step 1: Simplify expression
-        simplified = _simplify_expr(self.path_expr)
+        simplified = simplify_expr(self.path_expr)
         nfa = _build_nfa(simplified)
 
         # Cache partition and edges for tight-loop access
@@ -577,7 +589,7 @@ class RegularPathQueryOperator:
 
         # Step 2: Try DFA conversion for small NFAs (<= 32 states)
         if len(all_nfa_states) <= 32:
-            dfa_transitions, dfa_start, dfa_accepts = _subset_construction(nfa)
+            dfa_transitions, dfa_start, dfa_accepts = subset_construction(nfa)
             result_pairs = self._simulate_dfa(
                 part,
                 edges_dict,
@@ -605,9 +617,7 @@ class RegularPathQueryOperator:
                 while queue:
                     gv, nfa_state_ids = queue.popleft()
                     for eid in part.adj_out.get(gv, _EMPTY):
-                        edge = edges_dict.get(eid)
-                        if edge is None:
-                            continue
+                        edge = edges_dict[eid]
                         edge_label = edge.label
                         neighbor = edge.target_id
 
@@ -677,9 +687,7 @@ class RegularPathQueryOperator:
                 trans = dfa_transitions.get(dfa_state, {})
 
                 for eid in adj_out.get(gv, _EMPTY):
-                    edge = edges_dict.get(eid)
-                    if edge is None:
-                        continue
+                    edge = edges_dict[eid]
                     next_state = trans.get(edge.label)
                     if next_state is None:
                         continue
@@ -811,9 +819,7 @@ class WeightedPathQueryOperator:
                 gv, nfa_state_ids, cum_weight = queue.popleft()
 
                 for eid in part.adj_out.get(gv, _EMPTY):
-                    edge = edges_dict.get(eid)
-                    if edge is None:
-                        continue
+                    edge = edges_dict[eid]
                     edge_label = edge.label
                     neighbor = edge.target_id
 
