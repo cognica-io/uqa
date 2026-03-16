@@ -339,7 +339,7 @@ class TestGraphStore:
             gs.create_graph(GRAPH_NAME)
             for v in vertices:
                 gs.add_vertex(v, graph=GRAPH_NAME)
-            return len(gs.vertices_in_graph(GRAPH_NAME))
+            return len(gs.vertex_ids_in_graph(GRAPH_NAME))
 
         count = benchmark(build)
         assert count == len(vertices)
@@ -356,7 +356,7 @@ class TestGraphStore:
         def add_edges() -> int:
             for e in edges:
                 gs.add_edge(e, graph=GRAPH_NAME)
-            return len(gs.edges_in_graph(GRAPH_NAME))
+            return len(gs.partition(GRAPH_NAME).edge_ids)
 
         benchmark(add_edges)
 

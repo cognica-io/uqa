@@ -42,8 +42,10 @@ class GraphEmbeddingOperator:
 
     def execute(self, ctx: object) -> GraphPostingList:
         gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
-        g = self.graph_name
-        vertices = sorted(gs.vertex_ids_in_graph(g))
+        part = gs.partition(self.graph_name)
+        edges_dict = gs._edges
+        _empty: frozenset[int] = frozenset()
+        vertices = sorted(part.vertex_ids)
 
         if not vertices:
             return GraphPostingList()
@@ -51,8 +53,8 @@ class GraphEmbeddingOperator:
         # Collect all edge labels for one-hot encoding
         all_labels: set[str] = set()
         for vid in vertices:
-            for eid in gs.out_edge_ids(vid, graph=g):
-                edge = gs.get_edge(eid)
+            for eid in part.adj_out.get(vid, _empty):
+                edge = edges_dict.get(eid)
                 if edge is not None:
                     all_labels.add(edge.label)
         sorted_labels = sorted(all_labels)
@@ -63,7 +65,9 @@ class GraphEmbeddingOperator:
         graph_payloads: dict[int, GraphPayload] = {}
 
         for vid in vertices:
-            embedding = self._compute_embedding(gs, g, vid, label_to_idx, n_labels)
+            embedding = self._compute_embedding(
+                part, edges_dict, _empty, vid, label_to_idx, n_labels
+            )
             entries.append(
                 PostingEntry(
                     vid,
@@ -82,22 +86,26 @@ class GraphEmbeddingOperator:
 
     def _compute_embedding(
         self,
-        gs: GraphStore,
-        g: str,
+        part: object,
+        edges_dict: dict,
+        _empty: frozenset,
         vid: int,
         label_to_idx: dict[str, int],
         n_labels: int,
     ) -> list[float]:
         """Compute structural embedding for a vertex."""
+        adj_out = part.adj_out  # type: ignore[attr-defined]
+        adj_in = part.adj_in  # type: ignore[attr-defined]
+
         # Feature 1: degree features (2 dims)
-        out_degree = len(gs.out_edge_ids(vid, graph=g))
-        in_degree = len(gs.in_edge_ids(vid, graph=g))
+        out_degree = len(adj_out.get(vid, _empty))
+        in_degree = len(adj_in.get(vid, _empty))
 
         # Feature 2: label distribution (n_labels dims, capped at dims/2)
         label_dims = min(n_labels, self.dimensions // 2)
         label_dist = [0.0] * label_dims
-        for eid in gs.out_edge_ids(vid, graph=g):
-            edge = gs.get_edge(eid)
+        for eid in adj_out.get(vid, _empty):
+            edge = edges_dict.get(eid)
             if edge is None:
                 continue
             idx = label_to_idx.get(edge.label, -1)
@@ -115,8 +123,8 @@ class GraphEmbeddingOperator:
         for _ in range(self.k_layers):
             next_frontier: set[int] = set()
             for v in frontier:
-                for eid in gs.out_edge_ids(v, graph=g):
-                    edge = gs.get_edge(eid)
+                for eid in adj_out.get(v, _empty):
+                    edge = edges_dict.get(eid)
                     if edge is None:
                         continue
                     neighbor = edge.target_id

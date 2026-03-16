@@ -40,8 +40,10 @@ class MessagePassingOperator:
 
     def execute(self, ctx: object) -> GraphPostingList:
         gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
-        g = self.graph_name
-        vertices = sorted(gs.vertex_ids_in_graph(g))
+        part = gs.partition(self.graph_name)
+        edges_dict = gs._edges
+        _empty: frozenset[int] = frozenset()
+        vertices = sorted(part.vertex_ids)
 
         if not vertices:
             return GraphPostingList()
@@ -59,17 +61,19 @@ class MessagePassingOperator:
                 features[vid] = 1.0
 
         # K rounds of message passing
+        adj_out = part.adj_out
+        adj_in = part.adj_in
         for _ in range(self.k_layers):
             new_features: dict[int, float] = {}
             for vid in vertices:
                 neighbor_values: list[float] = []
-                for eid in gs.out_edge_ids(vid, graph=g):
-                    edge = gs.get_edge(eid)
+                for eid in adj_out.get(vid, _empty):
+                    edge = edges_dict.get(eid)
                     if edge is None:
                         continue
                     neighbor_values.append(features.get(edge.target_id, 0.0))
-                for eid in gs.in_edge_ids(vid, graph=g):
-                    edge = gs.get_edge(eid)
+                for eid in adj_in.get(vid, _empty):
+                    edge = edges_dict.get(eid)
                     if edge is None:
                         continue
                     neighbor_values.append(features.get(edge.source_id, 0.0))
