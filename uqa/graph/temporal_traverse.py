@@ -45,22 +45,25 @@ class TemporalTraverseOperator:
 
     def execute(self, ctx: object) -> GraphPostingList:
         gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
-        g = self.graph_name
         visited: set[int] = set()
         frontier: set[int] = {self.start_vertex}
         all_edges: set[int] = set()
 
+        # Cache partition and edges for tight-loop access
+        part = gs.partition(self.graph_name)
+        edges_dict = gs._edges
+        _empty: frozenset[int] = frozenset()
+        label_eids = (
+            part.label_index.get(self.label, _empty) if self.label is not None else None
+        )
+
         for _ in range(self.max_hops):
             next_frontier: set[int] = set()
             for v in frontier:
-                adj = gs.out_edge_ids(v, graph=g)
-                if self.label is not None:
-                    label_eids = gs.edge_ids_by_label(self.label, graph=g)
-                    edge_ids = adj & label_eids
-                else:
-                    edge_ids = adj
+                adj = part.adj_out.get(v, _empty)
+                edge_ids = adj & label_eids if label_eids is not None else adj
                 for eid in edge_ids:
-                    edge = gs.get_edge(eid)
+                    edge = edges_dict.get(eid)
                     if edge is None:
                         continue
                     # Apply temporal filter

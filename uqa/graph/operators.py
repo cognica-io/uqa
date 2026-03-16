@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from uqa.graph.store import GraphStore
 
 DEFAULT_GRAPH_SCORE: float = 0.9
+_EMPTY: frozenset[int] = frozenset()
 
 
 class TraverseOperator:
@@ -59,25 +60,27 @@ class TraverseOperator:
         visited: set[int] = set()
         frontier: set[int] = {self.start_vertex}
         all_edges: set[int] = set()
+
+        # Cache partition and edges dict for tight-loop access
         g = self.graph_name
+        part = gs.partition(g)
+        edges = gs._edges
+        label_eids = (
+            part.label_index.get(self.label, _EMPTY) if self.label is not None else None
+        )
 
         for _ in range(self.max_hops):
             next_frontier: set[int] = set()
             for v in frontier:
-                adj = gs.out_edge_ids(v, graph=g)
-                if self.label is not None:
-                    label_eids = gs.edge_ids_by_label(self.label, graph=g)
-                    edge_ids = adj & label_eids
-                else:
-                    edge_ids = adj
+                adj = part.adj_out.get(v, _EMPTY)
+                edge_ids = adj & label_eids if label_eids is not None else adj
                 for eid in edge_ids:
-                    edge = gs.get_edge(eid)
+                    edge = edges.get(eid)
                     if edge is None:
                         continue
                     neighbor = edge.target_id
                     if neighbor in visited:
                         continue
-                    # Prune via vertex_predicate during BFS
                     if self.vertex_predicate is not None and callable(
                         self.vertex_predicate
                     ):
@@ -559,10 +562,14 @@ class RegularPathQueryOperator:
         simplified = _simplify_expr(self.path_expr)
         nfa = _build_nfa(simplified)
 
+        # Cache partition and edges for tight-loop access
+        part = gs.partition(g)
+        edges_dict = gs._edges
+
         if self.start_vertex is not None:
             start_vertices = [self.start_vertex]
         else:
-            start_vertices = sorted(gs.vertex_ids_in_graph(g))
+            start_vertices = sorted(part.vertex_ids)
 
         result_pairs: set[tuple[int, int]] = set()
 
@@ -572,7 +579,12 @@ class RegularPathQueryOperator:
         if len(all_nfa_states) <= 32:
             dfa_transitions, dfa_start, dfa_accepts = _subset_construction(nfa)
             result_pairs = self._simulate_dfa(
-                gs, g, start_vertices, dfa_transitions, dfa_start, dfa_accepts
+                part,
+                edges_dict,
+                start_vertices,
+                dfa_transitions,
+                dfa_start,
+                dfa_accepts,
             )
         else:
             # Fall back to NFA simulation for large NFAs
@@ -592,8 +604,8 @@ class RegularPathQueryOperator:
 
                 while queue:
                     gv, nfa_state_ids = queue.popleft()
-                    for eid in gs.out_edge_ids(gv, graph=g):
-                        edge = gs.get_edge(eid)
+                    for eid in part.adj_out.get(gv, _EMPTY):
+                        edge = edges_dict.get(eid)
                         if edge is None:
                             continue
                         edge_label = edge.label
@@ -641,14 +653,15 @@ class RegularPathQueryOperator:
 
     @staticmethod
     def _simulate_dfa(
-        gs: GraphStore,
-        g: str,
+        part: object,
+        edges_dict: dict[int, Any],
         start_vertices: list[int],
         dfa_transitions: dict[frozenset[int], dict[str, frozenset[int]]],
         dfa_start: frozenset[int],
         dfa_accepts: set[frozenset[int]],
     ) -> set[tuple[int, int]]:
         """DFA-based simulation -- deterministic, no epsilon transitions."""
+        adj_out = part.adj_out  # type: ignore[attr-defined]
         result_pairs: set[tuple[int, int]] = set()
 
         for sv in start_vertices:
@@ -663,8 +676,8 @@ class RegularPathQueryOperator:
                 gv, dfa_state = queue.popleft()
                 trans = dfa_transitions.get(dfa_state, {})
 
-                for eid in gs.out_edge_ids(gv, graph=g):
-                    edge = gs.get_edge(eid)
+                for eid in adj_out.get(gv, _EMPTY):
+                    edge = edges_dict.get(eid)
                     if edge is None:
                         continue
                     next_state = trans.get(edge.label)
@@ -767,10 +780,14 @@ class WeightedPathQueryOperator:
         _reset_state_counter()
         nfa = _build_nfa(self.path_expr)
 
+        # Cache partition and edges for tight-loop access
+        part = gs.partition(g)
+        edges_dict = gs._edges
+
         if self.start_vertex is not None:
             start_vertices = [self.start_vertex]
         else:
-            start_vertices = sorted(gs.vertex_ids_in_graph(g))
+            start_vertices = sorted(part.vertex_ids)
 
         all_nfa_states = self._collect_nfa_states(nfa)
         state_map = {s.state_id: s for s in all_nfa_states}
@@ -793,8 +810,8 @@ class WeightedPathQueryOperator:
             while queue:
                 gv, nfa_state_ids, cum_weight = queue.popleft()
 
-                for eid in gs.out_edge_ids(gv, graph=g):
-                    edge = gs.get_edge(eid)
+                for eid in part.adj_out.get(gv, _EMPTY):
+                    edge = edges_dict.get(eid)
                     if edge is None:
                         continue
                     edge_label = edge.label

@@ -450,3 +450,15 @@ class GraphStore:
         if p is None:
             raise ValueError(f"Graph '{name}' does not exist")
         return p
+
+    def partition(self, graph: str) -> _GraphPartition:
+        """Return the internal partition for direct adjacency access.
+
+        For performance-critical loops that call out_edge_ids/in_edge_ids
+        hundreds of times per query, callers can resolve the partition once
+        and access adj_out/adj_in/label_index directly.
+        """
+        p = self._graphs.get(graph)
+        if p is None:
+            raise ValueError(f"Graph '{graph}' does not exist")
+        return p
