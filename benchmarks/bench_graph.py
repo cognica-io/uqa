@@ -30,14 +30,18 @@ from uqa.graph.store import GraphStore
 # ---------------------------------------------------------------------------
 
 
+GRAPH_NAME = "bench"
+
+
 def _build_graph(sf: int = 1) -> GraphStore:
     gen = BenchmarkDataGenerator(scale_factor=sf, seed=42)
     vertices, edges = gen.graph()
     gs = GraphStore()
+    gs.create_graph(GRAPH_NAME)
     for v in vertices:
-        gs.add_vertex(v)
+        gs.add_vertex(v, graph=GRAPH_NAME)
     for e in edges:
-        gs.add_edge(e)
+        gs.add_edge(e, graph=GRAPH_NAME)
     return gs
 
 
@@ -52,7 +56,9 @@ def _bfs(
         next_frontier: deque[int] = deque()
         for _ in range(len(frontier)):
             v = frontier.popleft()
-            for neighbor in gs.neighbors(v, label=label, direction="out"):
+            for neighbor in gs.neighbors(
+                v, label=label, direction="out", graph=GRAPH_NAME
+            ):
                 if neighbor not in visited:
                     visited.add(neighbor)
                     next_frontier.append(neighbor)
@@ -88,15 +94,15 @@ class TestBFSTraversal:
 class TestNeighbors:
     def test_out_neighbors(self, benchmark) -> None:
         gs = _build_graph(sf=1)
-        benchmark(gs.neighbors, 1, None, "out")
+        benchmark(gs.neighbors, 1, None, "out", graph=GRAPH_NAME)
 
     def test_in_neighbors(self, benchmark) -> None:
         gs = _build_graph(sf=1)
-        benchmark(gs.neighbors, 1, None, "in")
+        benchmark(gs.neighbors, 1, None, "in", graph=GRAPH_NAME)
 
     def test_labeled_neighbors(self, benchmark) -> None:
         gs = _build_graph(sf=1)
-        benchmark(gs.neighbors, 1, "knows", "out")
+        benchmark(gs.neighbors, 1, "knows", "out", graph=GRAPH_NAME)
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +113,7 @@ class TestNeighbors:
 class TestVertexLookup:
     def test_vertices_by_label(self, benchmark) -> None:
         gs = _build_graph(sf=1)
-        result = benchmark(gs.vertices_by_label, "Person")
+        result = benchmark(gs.vertices_by_label, "Person", graph=GRAPH_NAME)
         assert len(result) >= 0
 
 

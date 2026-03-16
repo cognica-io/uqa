@@ -74,7 +74,9 @@ class TraverseOperator:
                     if neighbor in visited:
                         continue
                     # Prune via vertex_predicate during BFS
-                    if self.vertex_predicate is not None:
+                    if self.vertex_predicate is not None and callable(
+                        self.vertex_predicate
+                    ):
                         vtx = gs.get_vertex(neighbor)
                         if vtx is not None and not self.vertex_predicate(vtx):
                             continue

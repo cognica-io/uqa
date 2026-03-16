@@ -32,14 +32,18 @@ from uqa.graph.versioned_store import VersionedGraphStore
 # ---------------------------------------------------------------------------
 
 
+GRAPH_NAME = "bench"
+
+
 def _build_graph(sf: int = 1) -> GraphStore:
     gen = BenchmarkDataGenerator(scale_factor=sf, seed=42)
     vertices, edges = gen.graph()
     gs = GraphStore()
+    gs.create_graph(GRAPH_NAME)
     for v in vertices:
-        gs.add_vertex(v)
+        gs.add_vertex(v, graph=GRAPH_NAME)
     for e in edges:
-        gs.add_edge(e)
+        gs.add_edge(e, graph=GRAPH_NAME)
     return gs
 
 
@@ -48,8 +52,9 @@ def _build_temporal_graph(sf: int = 1) -> GraphStore:
     gen = BenchmarkDataGenerator(scale_factor=sf, seed=42)
     vertices, edges = gen.graph()
     gs = GraphStore()
+    gs.create_graph(GRAPH_NAME)
     for v in vertices:
-        gs.add_vertex(v)
+        gs.add_vertex(v, graph=GRAPH_NAME)
     rng = gen.rng
     for e in edges:
         valid_from = float(rng.uniform(0.0, 50.0))
@@ -65,7 +70,7 @@ def _build_temporal_graph(sf: int = 1) -> GraphStore:
                 "valid_to": valid_to,
             },
         )
-        gs.add_edge(temporal_edge)
+        gs.add_edge(temporal_edge, graph=GRAPH_NAME)
     return gs
 
 

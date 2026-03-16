@@ -123,12 +123,15 @@ class QueryOptimizer:
                 else:
                     new_pred = vertex_filter
 
-                return TraverseOperator(
-                    inner.start_vertex,
-                    graph=inner.graph_name,
-                    label=inner.label,
-                    max_hops=inner.max_hops,
-                    vertex_predicate=new_pred,
+                return cast(
+                    "Operator",
+                    TraverseOperator(
+                        inner.start_vertex,
+                        graph=inner.graph_name,
+                        label=inner.label,
+                        max_hops=inner.max_hops,
+                        vertex_predicate=new_pred,
+                    ),
                 )
 
         return self._recurse_traverse_filter(op)
@@ -316,7 +319,9 @@ class QueryOptimizer:
             source = op.source
             if isinstance(source, GraphJoinOperator):
                 # Push filter below the join -- apply to left operand
-                new_left = FilterOperator(op.field, op.predicate, source.left)
+                new_left = FilterOperator(
+                    op.field, op.predicate, cast("Operator", source.left)
+                )
                 new_join = GraphJoinOperator(
                     new_left,
                     source.right,
