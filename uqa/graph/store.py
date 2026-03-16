@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from uqa.core.types import Edge, Vertex
 
+_EMPTY_SET: set[int] = frozenset()  # type: ignore[assignment]
+
 
 @dataclass
 class _GraphPartition:
@@ -234,20 +236,32 @@ class GraphStore:
     # --- Mutations (graph is REQUIRED, no default) ---
 
     def add_vertex(self, vertex: Vertex, *, graph: str) -> None:
-        self._vertices[vertex.vertex_id] = vertex
-        self._ensure_graph(graph)
-        self._graphs[graph].add_vertex(vertex)
-        self._vertex_membership[vertex.vertex_id].add(graph)
-        if vertex.vertex_id >= self._next_vertex_id:
-            self._next_vertex_id = vertex.vertex_id + 1
+        vid = vertex.vertex_id
+        self._vertices[vid] = vertex
+        partition = self._graphs.get(graph)
+        if partition is None:
+            partition = _GraphPartition()
+            self._graphs[graph] = partition
+        partition.vertex_ids.add(vid)
+        partition.vertex_label_index[vertex.label].add(vid)
+        self._vertex_membership[vid].add(graph)
+        if vid >= self._next_vertex_id:
+            self._next_vertex_id = vid + 1
 
     def add_edge(self, edge: Edge, *, graph: str) -> None:
-        self._edges[edge.edge_id] = edge
-        self._ensure_graph(graph)
-        self._graphs[graph].add_edge(edge)
-        self._edge_membership[edge.edge_id].add(graph)
-        if edge.edge_id >= self._next_edge_id:
-            self._next_edge_id = edge.edge_id + 1
+        eid = edge.edge_id
+        self._edges[eid] = edge
+        partition = self._graphs.get(graph)
+        if partition is None:
+            partition = _GraphPartition()
+            self._graphs[graph] = partition
+        partition.edge_ids.add(eid)
+        partition.adj_out[edge.source_id].add(eid)
+        partition.adj_in[edge.target_id].add(eid)
+        partition.label_index[edge.label].add(eid)
+        self._edge_membership[eid].add(graph)
+        if eid >= self._next_edge_id:
+            self._next_edge_id = eid + 1
 
     def remove_vertex(self, vertex_id: int, *, graph: str) -> None:
         partition = self._require_graph(graph)
@@ -284,9 +298,21 @@ class GraphStore:
         *,
         graph: str,
     ) -> list[int]:
-        return self._require_graph(graph).neighbors(
-            vertex_id, label, direction, self._edges
-        )
+        partition = self._graphs.get(graph)
+        if partition is None:
+            raise ValueError(f"Graph '{graph}' does not exist")
+        if direction == "out":
+            edge_ids = partition.adj_out.get(vertex_id, _EMPTY_SET)
+        else:
+            edge_ids = partition.adj_in.get(vertex_id, _EMPTY_SET)
+        edges = self._edges
+        result: list[int] = []
+        for eid in edge_ids:
+            edge = edges[eid]
+            if label is not None and edge.label != label:
+                continue
+            result.append(edge.target_id if direction == "out" else edge.source_id)
+        return result
 
     def vertices_by_label(self, label: str, *, graph: str) -> list[Vertex]:
         return self._require_graph(graph).vertices_by_label(label, self._vertices)
@@ -310,23 +336,33 @@ class GraphStore:
 
     # --- Graph-scoped adjacency accessors (for operators) ---
 
-    _EMPTY_SET: set[int] = set()
-
     def out_edge_ids(self, vertex_id: int, *, graph: str) -> set[int]:
         """Return outgoing edge IDs for vertex in a specific graph."""
-        return self._require_graph(graph).adj_out.get(vertex_id, self._EMPTY_SET)
+        partition = self._graphs.get(graph)
+        if partition is None:
+            raise ValueError(f"Graph '{graph}' does not exist")
+        return partition.adj_out.get(vertex_id, _EMPTY_SET)
 
     def in_edge_ids(self, vertex_id: int, *, graph: str) -> set[int]:
         """Return incoming edge IDs for vertex in a specific graph."""
-        return self._require_graph(graph).adj_in.get(vertex_id, self._EMPTY_SET)
+        partition = self._graphs.get(graph)
+        if partition is None:
+            raise ValueError(f"Graph '{graph}' does not exist")
+        return partition.adj_in.get(vertex_id, _EMPTY_SET)
 
     def edge_ids_by_label(self, label: str, *, graph: str) -> set[int]:
         """Return edge IDs with a given label in a specific graph."""
-        return self._require_graph(graph).label_index.get(label, self._EMPTY_SET)
+        partition = self._graphs.get(graph)
+        if partition is None:
+            raise ValueError(f"Graph '{graph}' does not exist")
+        return partition.label_index.get(label, _EMPTY_SET)
 
     def vertex_ids_in_graph(self, graph: str) -> set[int]:
         """Return all vertex IDs in a specific graph."""
-        return self._require_graph(graph).vertex_ids
+        partition = self._graphs.get(graph)
+        if partition is None:
+            raise ValueError(f"Graph '{graph}' does not exist")
+        return partition.vertex_ids
 
     # --- Statistics (per-graph) ---
 
