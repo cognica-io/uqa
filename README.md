@@ -650,6 +650,7 @@ python examples/sql/calibration.py            # ECE, Brier, reliability diagram,
 python examples/sql/temporal_graph.py         # Temporal traversal, message passing, graph embeddings
 python examples/sql/graph_delta.py            # Delta operations, path index invalidation, rollback
 python examples/sql/fdw.py                    # Foreign Data Wrappers, Hive partitioning, predicate pushdown
+python examples/sql/nyc_taxi.py               # NYC Taxi analytics, remote Parquet, full query pushdown, spatial JOIN
 python examples/sql/fusion_gating.py          # ReLU/Swish gating, alpha+gating, progressive fusion
 python examples/sql/graph_centrality.py       # PageRank, HITS, betweenness, bounded RPQ, weighted RPQ via SQL
 ```
