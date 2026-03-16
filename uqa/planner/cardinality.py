@@ -915,6 +915,17 @@ def _column_entropy(cs: Any) -> float:
             entropy -= remaining * math.log2(p)
         return max(0.0, entropy)
 
+    # If histogram buckets are available, use bucket frequencies
+    histogram = getattr(cs, "histogram", None)
+    if histogram is not None and len(histogram) > 1:
+        num_buckets = len(histogram) - 1  # boundaries define buckets
+        total_rows = getattr(cs, "row_count", 0)
+        if total_rows > 0 and num_buckets > 0:
+            # Equi-depth: each bucket has approximately total_rows/num_buckets rows
+            p = 1.0 / num_buckets
+            entropy = -num_buckets * p * math.log2(p)  # = log2(num_buckets)
+            return max(0.0, entropy)
+
     # Uniform assumption: H = log2(ndv)
     return math.log2(ndv)
 

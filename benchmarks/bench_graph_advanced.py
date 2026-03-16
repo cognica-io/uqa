@@ -92,17 +92,17 @@ class TestPathIndex:
         gs = _build_graph(sf=1)
         labels = ["knows", "works_at", "located_in"]
         sequences = [labels[:depth]]
-        result = benchmark(PathIndex.build, gs, sequences)
+        result = benchmark(PathIndex.build, gs, sequences, graph_name=GRAPH_NAME)
         assert len(result.indexed_paths()) == 1
 
     def test_lookup(self, benchmark) -> None:
         gs = _build_graph(sf=1)
-        idx = PathIndex.build(gs, [["knows"], ["works_at"]])
+        idx = PathIndex.build(gs, [["knows"], ["works_at"]], graph_name=GRAPH_NAME)
         benchmark(idx.lookup, ["knows"])
 
     def test_rpq_with_index_vs_without(self, benchmark) -> None:
         gs = _build_graph(sf=1)
-        idx = PathIndex.build(gs, [["knows", "works_at"]])
+        idx = PathIndex.build(gs, [["knows", "works_at"]], graph_name=GRAPH_NAME)
 
         def lookup_indexed() -> int:
             pairs = idx.lookup(["knows", "works_at"])
@@ -121,7 +121,7 @@ class TestGraphDelta:
     @pytest.mark.parametrize("size", [10, 100, 1000])
     def test_apply(self, benchmark, size: int) -> None:
         gs = _build_graph(sf=1)
-        vgs = VersionedGraphStore(gs)
+        vgs = VersionedGraphStore(gs, graph_name=GRAPH_NAME)
         gen = BenchmarkDataGenerator(scale_factor=1, seed=99)
         rng = gen.rng
 
@@ -152,7 +152,7 @@ class TestGraphDelta:
     @pytest.mark.parametrize("depth", [1, 5, 10])
     def test_rollback(self, benchmark, depth: int) -> None:
         gs = _build_graph(sf=1)
-        vgs = VersionedGraphStore(gs)
+        vgs = VersionedGraphStore(gs, graph_name=GRAPH_NAME)
 
         # Apply `depth` deltas
         for d in range(depth):
@@ -185,6 +185,7 @@ class TestTemporalTraverse:
             label="knows",
             max_hops=depth,
             temporal_filter=tf,
+            graph=GRAPH_NAME,
         )
         ctx = _GraphContext(gs)
         result = benchmark(op.execute, ctx)
@@ -198,6 +199,7 @@ class TestTemporalTraverse:
             label="knows",
             max_hops=2,
             temporal_filter=tf,
+            graph=GRAPH_NAME,
         )
         ctx = _GraphContext(gs)
         result = benchmark(op.execute, ctx)
@@ -213,7 +215,9 @@ class TestMessagePassing:
     @pytest.mark.parametrize("k_layers", [1, 2, 3])
     def test_execute(self, benchmark, k_layers: int) -> None:
         gs = _build_graph(sf=1)
-        op = MessagePassingOperator(k_layers=k_layers, aggregation="mean")
+        op = MessagePassingOperator(
+            k_layers=k_layers, aggregation="mean", graph=GRAPH_NAME
+        )
         ctx = _GraphContext(gs)
         result = benchmark(op.execute, ctx)
         assert len(result) > 0
@@ -221,7 +225,9 @@ class TestMessagePassing:
     @pytest.mark.parametrize("aggregation", ["mean", "sum", "max"])
     def test_aggregation(self, benchmark, aggregation: str) -> None:
         gs = _build_graph(sf=1)
-        op = MessagePassingOperator(k_layers=2, aggregation=aggregation)
+        op = MessagePassingOperator(
+            k_layers=2, aggregation=aggregation, graph=GRAPH_NAME
+        )
         ctx = _GraphContext(gs)
         result = benchmark(op.execute, ctx)
         assert len(result) > 0
@@ -236,7 +242,7 @@ class TestGraphEmbedding:
     @pytest.mark.parametrize("dimensions", [8, 16, 32])
     def test_execute(self, benchmark, dimensions: int) -> None:
         gs = _build_graph(sf=1)
-        op = GraphEmbeddingOperator(dimensions=dimensions, k_layers=2)
+        op = GraphEmbeddingOperator(dimensions=dimensions, k_layers=2, graph=GRAPH_NAME)
         ctx = _GraphContext(gs)
         result = benchmark(op.execute, ctx)
         assert len(result) > 0
@@ -257,9 +263,9 @@ def _engine_with_named_graph(name: str = "bench_ng") -> Any:
     vertices, edges = gen.graph()
     graph = e.get_graph(name)
     for v in vertices:
-        graph.add_vertex(v)
+        graph.add_vertex(v, graph=name)
     for edge in edges:
-        graph.add_edge(edge)
+        graph.add_edge(edge, graph=name)
     return e
 
 

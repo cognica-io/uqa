@@ -41,14 +41,18 @@ from uqa.operators.progressive_fusion import ProgressiveFusionOperator
 # ---------------------------------------------------------------------------
 
 
+GRAPH_NAME = "bench"
+
+
 def _build_graph(sf: int = 1) -> GraphStore:
     gen = BenchmarkDataGenerator(scale_factor=sf, seed=42)
     vertices, edges = gen.graph()
     gs = GraphStore()
+    gs.create_graph(GRAPH_NAME)
     for v in vertices:
-        gs.add_vertex(v)
+        gs.add_vertex(v, graph=GRAPH_NAME)
     for e in edges:
-        gs.add_edge(e)
+        gs.add_edge(e, graph=GRAPH_NAME)
     return gs
 
 
@@ -66,19 +70,19 @@ def _build_ctx(sf: int = 1) -> tuple[GraphStore, ExecutionContext]:
 class TestPageRank:
     def test_pagerank_default(self, benchmark) -> None:
         _, ctx = _build_ctx()
-        op = PageRankOperator()
+        op = PageRankOperator(graph=GRAPH_NAME)
         result = benchmark(op.execute, ctx)
         assert len(result) > 0
 
     def test_pagerank_high_damping(self, benchmark) -> None:
         _, ctx = _build_ctx()
-        op = PageRankOperator(damping=0.95, max_iterations=50)
+        op = PageRankOperator(damping=0.95, max_iterations=50, graph=GRAPH_NAME)
         result = benchmark(op.execute, ctx)
         assert len(result) > 0
 
     def test_pagerank_low_iterations(self, benchmark) -> None:
         _, ctx = _build_ctx()
-        op = PageRankOperator(max_iterations=10)
+        op = PageRankOperator(max_iterations=10, graph=GRAPH_NAME)
         result = benchmark(op.execute, ctx)
         assert len(result) > 0
 
@@ -91,13 +95,13 @@ class TestPageRank:
 class TestHITS:
     def test_hits_default(self, benchmark) -> None:
         _, ctx = _build_ctx()
-        op = HITSOperator()
+        op = HITSOperator(graph=GRAPH_NAME)
         result = benchmark(op.execute, ctx)
         assert len(result) > 0
 
     def test_hits_low_iterations(self, benchmark) -> None:
         _, ctx = _build_ctx()
-        op = HITSOperator(max_iterations=10)
+        op = HITSOperator(max_iterations=10, graph=GRAPH_NAME)
         result = benchmark(op.execute, ctx)
         assert len(result) > 0
 
@@ -110,7 +114,7 @@ class TestHITS:
 class TestBetweenness:
     def test_betweenness(self, benchmark) -> None:
         _, ctx = _build_ctx()
-        op = BetweennessCentralityOperator()
+        op = BetweennessCentralityOperator(graph=GRAPH_NAME)
         result = benchmark(op.execute, ctx)
         assert len(result) > 0
 
@@ -127,7 +131,7 @@ class TestBoundedRPQ:
     def test_bounded_rpq_execute(self, benchmark) -> None:
         _, ctx = _build_ctx()
         expr = parse_rpq("knows{1,3}")
-        op = RegularPathQueryOperator(expr, start_vertex=1)
+        op = RegularPathQueryOperator(expr, graph=GRAPH_NAME, start_vertex=1)
         result = benchmark(op.execute, ctx)
         assert len(result) >= 0
 
@@ -135,7 +139,7 @@ class TestBoundedRPQ:
         """Bounded RPQ should be faster than Kleene star for same reach."""
         _, ctx = _build_ctx()
         expr = parse_rpq("knows{1,2}")
-        op = RegularPathQueryOperator(expr, start_vertex=1)
+        op = RegularPathQueryOperator(expr, graph=GRAPH_NAME, start_vertex=1)
         result = benchmark(op.execute, ctx)
         assert len(result) >= 0
 
@@ -150,6 +154,7 @@ class TestWeightedPath:
         _, ctx = _build_ctx()
         op = WeightedPathQueryOperator(
             path_expr=Label("knows"),
+            graph=GRAPH_NAME,
             weight_property="weight",
             aggregate_fn="sum",
             start_vertex=1,
@@ -161,6 +166,7 @@ class TestWeightedPath:
         _, ctx = _build_ctx()
         op = WeightedPathQueryOperator(
             path_expr=parse_rpq("knows/knows"),
+            graph=GRAPH_NAME,
             weight_property="weight",
             aggregate_fn="max",
             start_vertex=1,
@@ -172,6 +178,7 @@ class TestWeightedPath:
         _, ctx = _build_ctx()
         op = WeightedPathQueryOperator(
             path_expr=Label("knows"),
+            graph=GRAPH_NAME,
             weight_property="weight",
             aggregate_fn="sum",
             predicate=lambda w: w > 0.5,
@@ -193,7 +200,7 @@ class TestSubgraphIndex:
             [VertexPattern("a"), VertexPattern("b")],
             [EdgePattern("a", "b", "knows")],
         )
-        idx = benchmark(SubgraphIndex.build, gs, [pattern])
+        idx = benchmark(SubgraphIndex.build, gs, [pattern], graph_name=GRAPH_NAME)
         assert idx.has_pattern(pattern)
 
     def test_lookup(self, benchmark) -> None:
@@ -202,7 +209,7 @@ class TestSubgraphIndex:
             [VertexPattern("a"), VertexPattern("b")],
             [EdgePattern("a", "b", "knows")],
         )
-        idx = SubgraphIndex.build(gs, [pattern])
+        idx = SubgraphIndex.build(gs, [pattern], graph_name=GRAPH_NAME)
         result = benchmark(idx.lookup, pattern)
         assert result is not None
 
@@ -212,9 +219,9 @@ class TestSubgraphIndex:
             [VertexPattern("a"), VertexPattern("b")],
             [EdgePattern("a", "b", "knows")],
         )
-        idx = SubgraphIndex.build(gs, [pattern])
+        idx = SubgraphIndex.build(gs, [pattern], graph_name=GRAPH_NAME)
         ctx = ExecutionContext(graph_store=gs, subgraph_index=idx)
-        pm = PatternMatchOperator(pattern)
+        pm = PatternMatchOperator(pattern, graph=GRAPH_NAME)
         result = benchmark(pm.execute, ctx)
         assert len(result) > 0
 
@@ -232,28 +239,28 @@ class TestIncrementalMatch:
             [EdgePattern("a", "b", "knows")],
         )
         ctx = ExecutionContext(graph_store=gs)
-        pm = PatternMatchOperator(pattern)
+        pm = PatternMatchOperator(pattern, graph=GRAPH_NAME)
         gpl = pm.execute(ctx)
         matches = set()
         for entry in gpl:
             gp = gpl.get_graph_payload(entry.doc_id)
             if gp:
                 matches.add(gp.subgraph_vertices)
-        return gs, IncrementalPatternMatcher(pattern, matches)
+        return gs, IncrementalPatternMatcher(pattern, matches, graph_name=GRAPH_NAME)
 
     def test_incremental_add_edge(self, benchmark) -> None:
         from uqa.core.types import Edge as E
 
         gs, matcher = self._setup_matcher()
         new_eid = gs.next_edge_id()
-        gs.add_edge(E(new_eid, 1, 2, "knows", {"weight": 0.5}))
+        gs.add_edge(E(new_eid, 1, 2, "knows", {"weight": 0.5}), graph=GRAPH_NAME)
         delta = GraphDelta(added_edge_ids={new_eid})
         result = benchmark(matcher.update, gs, delta)
         assert len(result) > 0
 
     def test_incremental_remove_vertex(self, benchmark) -> None:
         gs, matcher = self._setup_matcher()
-        gs.remove_vertex(2)
+        gs.remove_vertex(2, graph=GRAPH_NAME)
         delta = GraphDelta(removed_vertex_ids={2})
         result = benchmark(matcher.update, gs, delta)
         for m in result:

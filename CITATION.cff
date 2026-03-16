@@ -76,3 +76,7 @@ keywords:
   - rpq-optimization
   - cross-paradigm-optimizer
   - information-theory
+  - algebraic-simplification
+  - quantile-aggregation
+  - log-odds-mean
+  - histogram-entropy

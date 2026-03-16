@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from uqa.core.types import Payload, PostingEntry
+from uqa.graph.operators import DEFAULT_GRAPH_SCORE
 from uqa.graph.posting_list import GraphPayload, GraphPostingList
 
 if TYPE_CHECKING:
@@ -33,12 +34,14 @@ class TemporalTraverseOperator:
         temporal_filter: TemporalFilter | None = None,
         *,
         graph: str,
+        score: float = DEFAULT_GRAPH_SCORE,
     ) -> None:
         self.start_vertex = start_vertex
         self.label = label
         self.max_hops = max_hops
         self.temporal_filter = temporal_filter
         self.graph_name = graph
+        self.score = score
 
     def execute(self, ctx: object) -> GraphPostingList:
         gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
@@ -81,7 +84,7 @@ class TemporalTraverseOperator:
         frozen_visited = frozenset(visited)
         frozen_edges = frozenset(all_edges)
         for vid in sorted(visited):
-            entry = PostingEntry(vid, Payload(score=0.9))
+            entry = PostingEntry(vid, Payload(score=self.score))
             entries.append(entry)
             graph_payloads[vid] = GraphPayload(
                 subgraph_vertices=frozen_visited,

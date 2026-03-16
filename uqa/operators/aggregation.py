@@ -110,6 +110,40 @@ class MaxMonoid(AggregationMonoid):
         return state
 
 
+class QuantileMonoid(AggregationMonoid):
+    """Quantile (percentile) aggregation.
+
+    Collects values and computes the requested quantile at finalize.
+    quantile=0.5 gives the median, quantile=0.95 gives P95, etc.
+    """
+
+    def __init__(self, quantile: float = 0.5) -> None:
+        if not 0.0 <= quantile <= 1.0:
+            raise ValueError(f"quantile must be in [0, 1], got {quantile}")
+        self.quantile = quantile
+
+    def identity(self) -> list[float]:
+        return []
+
+    def accumulate(self, state: list[float], value: float) -> list[float]:
+        state.append(float(value))
+        return state
+
+    def combine(self, state_a: list[float], state_b: list[float]) -> list[float]:
+        return state_a + state_b
+
+    def finalize(self, state: list[float]) -> float:
+        if not state:
+            return 0.0
+        sorted_values = sorted(state)
+        n = len(sorted_values)
+        idx = self.quantile * (n - 1)
+        lower = int(idx)
+        upper = min(lower + 1, n - 1)
+        frac = idx - lower
+        return sorted_values[lower] * (1.0 - frac) + sorted_values[upper] * frac
+
+
 class AggregateOperator(Operator):
     """Applies a monoid aggregation over a posting list field."""
 

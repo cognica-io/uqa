@@ -26,6 +26,8 @@ if TYPE_CHECKING:
     from uqa.graph.cypher.ast import CypherQuery
     from uqa.graph.store import GraphStore
 
+DEFAULT_GRAPH_SCORE: float = 0.9
+
 
 class TraverseOperator:
     """Definition 2.2.1: Traverse_{v,l,k}
@@ -43,12 +45,14 @@ class TraverseOperator:
         label: str | None = None,
         max_hops: int = 1,
         vertex_predicate: object | None = None,
+        score: float = DEFAULT_GRAPH_SCORE,
     ) -> None:
         self.start_vertex = start_vertex
         self.label = label
         self.max_hops = max_hops
         self.graph_name = graph
         self.vertex_predicate = vertex_predicate
+        self.score = score
 
     def execute(self, ctx: object) -> GraphPostingList:
         gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
@@ -93,7 +97,7 @@ class TraverseOperator:
         frozen_visited = frozenset(visited)
         frozen_edges = frozenset(all_edges)
         for vid in sorted(visited):
-            entry = PostingEntry(vid, Payload(score=0.9))
+            entry = PostingEntry(vid, Payload(score=self.score))
             entries.append(entry)
             graph_payloads[vid] = GraphPayload(
                 subgraph_vertices=frozen_visited,
@@ -113,9 +117,16 @@ class PatternMatchOperator:
     - Incremental edge validation during search
     """
 
-    def __init__(self, pattern: GraphPattern, *, graph: str) -> None:
+    def __init__(
+        self,
+        pattern: GraphPattern,
+        *,
+        graph: str,
+        score: float = DEFAULT_GRAPH_SCORE,
+    ) -> None:
         self.pattern = pattern
         self.graph_name = graph
+        self.score = score
 
     def execute(self, ctx: object) -> GraphPostingList:
         gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
@@ -126,7 +137,7 @@ class PatternMatchOperator:
         if subgraph_index is not None:
             cached = subgraph_index.lookup(self.pattern)
             if cached is not None:
-                return self._build_from_cached(cached, g)
+                return self._build_from_cached(cached, g, self.score)
 
         var_candidates = self._compute_candidates(gs, g)
 
@@ -167,7 +178,7 @@ class PatternMatchOperator:
             doc_id = i + 1
             entry = PostingEntry(
                 doc_id,
-                Payload(score=0.9, fields=dict(assignment)),
+                Payload(score=self.score, fields=dict(assignment)),
             )
             entries.append(entry)
             graph_payloads[doc_id] = GraphPayload(
@@ -182,6 +193,7 @@ class PatternMatchOperator:
     def _build_from_cached(
         cached: set[frozenset[int]],
         graph_name: str,
+        score: float = DEFAULT_GRAPH_SCORE,
     ) -> GraphPostingList:
         entries: list[PostingEntry] = []
         graph_payloads: dict[int, GraphPayload] = {}
@@ -190,7 +202,7 @@ class PatternMatchOperator:
         ):
             entry = PostingEntry(
                 i,
-                Payload(score=0.9, fields={}),
+                Payload(score=score, fields={}),
             )
             entries.append(entry)
             graph_payloads[i] = GraphPayload(
@@ -525,10 +537,12 @@ class RegularPathQueryOperator:
         *,
         graph: str,
         start_vertex: int | None = None,
+        score: float = DEFAULT_GRAPH_SCORE,
     ) -> None:
         self.path_expr = path_expr
         self.start_vertex = start_vertex
         self.graph_name = graph
+        self.score = score
 
     def execute(self, ctx: object) -> GraphPostingList:
         indexed_result = self._try_index_lookup(ctx)
@@ -615,7 +629,7 @@ class RegularPathQueryOperator:
             doc_id = end_v
             if doc_id not in seen_ids:
                 seen_ids.add(doc_id)
-                entries.append(PostingEntry(doc_id, Payload(score=0.9)))
+                entries.append(PostingEntry(doc_id, Payload(score=self.score)))
                 graph_payloads[doc_id] = GraphPayload(
                     subgraph_vertices=frozenset({start_v, end_v}),
                     subgraph_edges=frozenset(),
@@ -703,7 +717,7 @@ class RegularPathQueryOperator:
             doc_id = end_v
             if doc_id not in seen_ids:
                 seen_ids.add(doc_id)
-                entries.append(PostingEntry(doc_id, Payload(score=0.9)))
+                entries.append(PostingEntry(doc_id, Payload(score=self.score)))
                 graph_payloads[doc_id] = GraphPayload(
                     subgraph_vertices=frozenset({start_v, end_v}),
                     subgraph_edges=frozenset(),
@@ -737,6 +751,7 @@ class WeightedPathQueryOperator:
         aggregate_fn: str = "sum",
         predicate: object | None = None,
         start_vertex: int | None = None,
+        score: float = DEFAULT_GRAPH_SCORE,
     ) -> None:
         self.path_expr = path_expr
         self.weight_property = weight_property
@@ -744,6 +759,7 @@ class WeightedPathQueryOperator:
         self.predicate = predicate
         self.start_vertex = start_vertex
         self.graph_name = graph
+        self.score = score
 
     def execute(self, ctx: object) -> GraphPostingList:
         gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
@@ -815,7 +831,9 @@ class WeightedPathQueryOperator:
         for vid in sorted(result_entries.keys()):
             weight = result_entries[vid]
             entries.append(
-                PostingEntry(vid, Payload(score=0.9, fields={"path_weight": weight}))
+                PostingEntry(
+                    vid, Payload(score=self.score, fields={"path_weight": weight})
+                )
             )
             graph_payloads[vid] = GraphPayload(
                 subgraph_vertices=frozenset({vid}),

@@ -53,7 +53,7 @@ This foundational paper establishes **posting lists** as a universal abstraction
 
 - **Join operations.** Cross-paradigm joins — TextVectorJoin, VectorRelationalJoin, and a generalized multi-paradigm join — are formally defined with proofs of commutativity (up to payload ordering) and associativity (Theorems 4.3.1, 4.3.2). Generalized posting lists carry multi-document tuples for join results.
 
-- **Hierarchical data.** Path expressions and unnest operators handle nested JSON-like documents within the posting list framework.
+- **Hierarchical data.** Path expressions and unnest operators handle nested JSON-like documents within the posting list framework. All hierarchical operators (PathFilterOperator, PathUnnestOperator, PathAggregateOperator, VertexAggregateOperator) implement `cost_estimate()` for integration with the query optimizer's cost model.
 
 - **Category theory.** A query category with posting lists as objects and operators as morphisms is established. Functors between paradigm-specific subcategories (relational, text, vector) formalize the cross-paradigm transformations. Natural transformations enable systematic rewriting rules for query optimization.
 
@@ -196,16 +196,16 @@ Operators are functions that produce posting lists. They are the building blocks
 
 | Operator | Semantics |
 |----------|-----------|
-| TraverseOperator | BFS traversal from a vertex |
-| PatternMatchOperator | Subgraph isomorphism matching (MRV + arc consistency + incremental edge validation) |
-| RegularPathQueryOperator | NFA-based regular path evaluation |
+| TraverseOperator | BFS traversal from a vertex (configurable `score`, default 0.9) |
+| PatternMatchOperator | Subgraph isomorphism matching (MRV + arc consistency + incremental edge validation; configurable `score`, default 0.9) |
+| RegularPathQueryOperator | NFA-based regular path evaluation (configurable `score`, default 0.9) |
 
 **Temporal graph operators:**
 
 | Operator | Semantics |
 |----------|-----------|
-| TemporalTraverseOperator | BFS traversal filtered by valid_from/valid_to edge properties |
-| TemporalPatternMatchOperator | Subgraph isomorphism with temporal edge constraints |
+| TemporalTraverseOperator | BFS traversal filtered by valid_from/valid_to edge properties (configurable `score`, default 0.9) |
+| TemporalPatternMatchOperator | Subgraph isomorphism with temporal edge constraints (configurable `score`, default 0.9) |
 
 **GNN operators:**
 
@@ -220,6 +220,8 @@ Operators are functions that produce posting lists. They are the building blocks
 |----------|-----------|
 | GraphDelta | Records add/remove vertex/edge operations for atomic application |
 | VersionedGraphStore | Version-tracked graph with apply/rollback and inverse delta storage |
+
+All graph operators accept an optional `score` parameter (default: `DEFAULT_GRAPH_SCORE = 0.9`) that controls the score assigned to reachable/matched vertices. This allows tuning the graph contribution to log-odds fusion without modifying the operator source.
 
 All operators implement an `execute(context)` method that returns a PostingList, and a `cost_estimate(stats)` method used by the query optimizer.
 
@@ -562,6 +564,18 @@ WHERE fuse_log_odds(
 ) ORDER BY _score DESC;
 ```
 
+#### `fuse_mean(signal1, signal2, ...)`
+
+Log-odds mean aggregation (Definition 4.1.1, Paper 4). Computes the arithmetic mean in log-odds space and maps back to probability via sigmoid. Unlike `fuse_log_odds`, no confidence scaling ($n^\alpha$) is applied -- the result is purely scale-neutral: if all signals report the same probability $p$, the output is exactly $p$ regardless of $n$. This is the normalized Logarithmic Opinion Pool (Theorem 4.1.2a).
+
+```sql
+SELECT title, _score FROM papers
+WHERE fuse_mean(
+    bayesian_match(title, 'attention'),
+    knn_match(embedding, ARRAY[0.1, 0.2, ...], 5)
+) ORDER BY _score DESC;
+```
+
 #### `fuse_prob_and(signal1, signal2, ...)`
 
 Probabilistic AND. Computes $P = \prod_i P_i$.
@@ -649,7 +663,9 @@ WHERE path_filter('shipping.city', 'Seoul');
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `path` | string | Dot-separated path to a nested array field |
-| `func` | string | Aggregation function: `sum`, `count`, `avg`, `min`, `max` |
+| `func` | string | Aggregation function: `sum`, `count`, `avg`, `min`, `max`, `quantile` |
+
+**Aggregation monoids**: Each aggregation function is backed by a monoid (identity + associative combine) that enables parallel decomposition (Theorem 5.1.5, Paper 1): CountMonoid, SumMonoid, AvgMonoid (sum/count pair), MinMonoid, MaxMonoid, and **QuantileMonoid**. QuantileMonoid collects values and computes the requested quantile at finalize using linear interpolation between adjacent sorted values. `quantile=0.5` gives the median, `quantile=0.95` gives P95, etc.
 
 #### `path_value(path)`
 
@@ -1143,15 +1159,16 @@ The compiler translates WHERE clauses into operator trees (union/intersect/compl
 
 The optimizer applies equivalence-preserving rewrite rules:
 
-1. **Filter pushdown**: Pushes FilterOperator through IntersectOperator to reduce intermediate result sizes early.
-2. **Graph pattern filter pushdown**: Incorporates filter predicates into vertex pattern constraints, pruning during matching rather than post-filtering.
-3. **Vector threshold merge**: Combines multiple vector similarity operators with the same query vector into a single search (IVF if indexed, brute-force otherwise).
-4. **Intersect operand reordering**: Sorts operands by estimated cardinality (cheapest first) for optimal two-pointer intersection.
-5. **Fusion signal reordering**: Sorts signals by cost estimate for early termination.
-6. **R*Tree spatial index scan**: Uses the R*Tree index for POINT column range queries when available.
-7. **Index scan substitution**: Replaces full-table FilterOperator scans with B-tree index scans when the estimated cost is lower.
-8. **EXISTS subquery decorrelation**: Correlated `EXISTS` subqueries with equijoin predicates are decorrelated into a semi-join `FilterOperator(outer_col, InSet(values))`. The inner query executes once instead of once per outer row, yielding 116x speedup on the EXISTS benchmark.
-9. **Foreign table full query pushdown**: When all tables in a query are foreign tables on the same server, the entire query (JOINs, aggregates, window functions, subqueries) is delegated to the data source via AST deparsing. For `duckdb_fdw`, local tables under 100K rows are shipped as temporary tables for mixed pushdown.
+1. **Algebraic simplification**: Applies Boolean algebra identities before any other rewriting: idempotent elimination ($A \cap A = A$, $A \cup A = A$), absorption ($A \cap (A \cup B) = A$, $A \cup (A \cap B) = A$), and empty elimination (removes empty operands from Union/Intersect).
+2. **Filter pushdown**: Pushes FilterOperator through IntersectOperator to reduce intermediate result sizes early.
+3. **Graph pattern filter pushdown**: Incorporates filter predicates into vertex pattern constraints, pruning during matching rather than post-filtering.
+4. **Vector threshold merge**: Combines multiple vector similarity operators with the same query vector into a single search (IVF if indexed, brute-force otherwise).
+5. **Intersect operand reordering**: Sorts operands by estimated cardinality (cheapest first) for optimal two-pointer intersection.
+6. **Fusion signal reordering**: Sorts signals by cost estimate for early termination.
+7. **R*Tree spatial index scan**: Uses the R*Tree index for POINT column range queries when available.
+8. **Index scan substitution**: Replaces full-table FilterOperator scans with B-tree index scans when the estimated cost is lower.
+9. **EXISTS subquery decorrelation**: Correlated `EXISTS` subqueries with equijoin predicates are decorrelated into a semi-join `FilterOperator(outer_col, InSet(values))`. The inner query executes once instead of once per outer row, yielding 116x speedup on the EXISTS benchmark.
+10. **Foreign table full query pushdown**: When all tables in a query are foreign tables on the same server, the entire query (JOINs, aggregates, window functions, subqueries) is delegated to the data source via AST deparsing. For `duckdb_fdw`, local tables under 100K rows are shipped as temporary tables for mixed pushdown.
 
 The optimizer uses a **CardinalityEstimator** backed by per-column statistics: equi-depth histograms and Most Common Values (MCVs), populated by the ANALYZE command.
 
@@ -1991,7 +2008,7 @@ python -m pytest uqa/tests/ -v
 python -m pytest uqa/tests/test_sql.py -v
 ```
 
-2235 tests across 62 test files covering core algebra, operators, scoring, fusion, SQL compilation, physical execution, joins, graph operations, openCypher graph queries, SQLite persistence, transactions, cost optimization, parallel execution, PostgreSQL 17 compatibility, text analysis pipeline, Arrow/Parquet export, Foreign Data Wrappers (Hive partitioning, predicate pushdown), interactive SQL shell, calibration metrics, parameter learning, multi-field scoring, attention/learned fusion, multi-signal WAND, multi-stage retrieval, external priors, sparse thresholding, path index, graph delta, temporal graphs, GNN message passing, and end-to-end integration.
+2597 tests across 78 test files covering core algebra, operators, scoring, fusion, SQL compilation, physical execution, joins, graph operations, openCypher graph queries, SQLite persistence, transactions, cost optimization, parallel execution, PostgreSQL 17 compatibility, text analysis pipeline, Arrow/Parquet export, Foreign Data Wrappers (Hive partitioning, predicate pushdown), interactive SQL shell, calibration metrics, parameter learning, multi-field scoring, attention/learned fusion, multi-signal WAND, multi-stage retrieval, external priors, sparse thresholding, path index, graph delta, temporal graphs, GNN message passing, and end-to-end integration.
 
 Additionally, 269 benchmarks across 13 files (in the `benchmarks/` directory) measure performance of posting list operations, storage backends, SQL compilation, physical execution, DPccp join enumeration, BM25/vector/fusion scoring, graph traversal and pattern matching, and end-to-end SQL queries. Install with `pip install -e ".[benchmark]"` and run with `python -m pytest benchmarks/ --benchmark-sort=name`.
 

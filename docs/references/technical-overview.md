@@ -3,7 +3,7 @@
 **Jaepil Jeong**
 Cognica, Inc.
 *Email: jaepil@cognica.io*
-Date: Mar 14, 2026
+Date: Mar 16, 2026
 
 *"Logic pervades the world: the limits of the world are also its limits."*
 — Ludwig Wittgenstein
@@ -320,6 +320,9 @@ All computed in log-space for numerical stability.
 | `fuse_prob_or(...)` | `ProbabilisticBoolean` | `uqa/fusion/boolean.py` |
 | `fuse_prob_not(...)` | `ProbabilisticBoolean` | `uqa/fusion/boolean.py` |
 | `fuse_log_odds(..., 'relu')` | `LogOddsFusion(gating='relu')` | `uqa/fusion/log_odds.py` |
+| `fuse_mean(...)` | `LogOddsFusion` | `uqa/fusion/log_odds.py` |
+
+`fuse_mean()` computes the scale-neutral log-odds mean without confidence scaling: the arithmetic mean in log-odds space mapped back to probability via sigmoid. If all signals report the same probability $p$, the output is exactly $p$ regardless of $n$. This implements the normalized Logarithmic Opinion Pool (Definition 4.1.1, Paper 4).
 
 In SQL:
 
@@ -461,6 +464,8 @@ $$
 | $HITS_{iter}$ | Hub/authority mutual reinforcement | $O(\|V_G\| \cdot iter)$ | `HITSOperator` |
 | $BC$ | Brandes betweenness centrality | $O(\|V_G\| \cdot \|E_G\|)$ | `BetweennessCentralityOperator` |
 | $WRPQ_{R,w,f,p}$ | Weighted RPQ with aggregate predicates | $O(\|V_G\|^2 \cdot \|R\|)$ | `WeightedPathQueryOperator` |
+
+All graph operators accept a configurable `score` parameter (default `DEFAULT_GRAPH_SCORE = 0.9`) that controls the relevance probability assigned to reachable vertices. This replaces the previously hard-coded value and allows callers to tune how graph evidence contributes to log-odds fusion with other paradigm signals.
 
 ### 5.3 Subgraph Isomorphism: Complexity and Mitigations
 
@@ -744,12 +749,13 @@ The cost-based optimizer in `uqa/planner/` applies:
 - **EXISTS subquery decorrelation** — correlated `EXISTS` subqueries with equijoin predicates are decorrelated into semi-join `FilterOperator(outer_col, InSet(values))`, executing the inner query once instead of once per outer row (116x speedup on the EXISTS benchmark)
 - Edge property filter pushdown into graph pattern constraints (e.g., `"a_b.since" > 2020` pushed into `EdgePattern.constraints`)
 - Join-pattern fusion: merge intersected `PatternMatchOperator` children with shared vertex variables into single pattern
+- **Algebraic simplification** (Theorem 6.1.2, Paper 1) — idempotent intersection/union ($A \cap A = A$, $A \cup A = A$), absorption law ($A \cap (A \cup B) = A$), and empty elimination ($A \cap \emptyset = \emptyset$, $A \cup \emptyset = A$) are applied bottom-up before other rewrites, reducing operator tree size before cost estimation
 - Cross-paradigm join cost models for text similarity, vector similarity, graph, hybrid, and cross-paradigm joins
 - Threshold-aware vector selectivity estimation (4-tier threshold buckets: 0.9/0.7/0.5/<0.5)
 - Temporal graph cardinality correction with timestamp/range selectivity
 - Random-walk graph sampling for cardinality estimation on graphs with 10000+ vertices
 
-Cardinality estimation uses equi-depth histograms and Most Common Values (MCV), with specialized estimators for text, vector, graph, and fusion operators.
+Cardinality estimation uses equi-depth histograms and Most Common Values (MCV), with specialized estimators for text, vector, graph, and fusion operators. The `_column_entropy()` function estimates per-column entropy with a three-tier priority: (1) MCV frequencies when available, (2) histogram bucket frequencies for equi-depth histograms, (3) uniform assumption over the distinct count as a fallback.
 
 ### 6.6 Foreign Data Wrappers and Query Pushdown
 
@@ -835,6 +841,8 @@ The table below maps each formal definition and theorem from the four papers to 
 | Filter Operator (Definition 3.1.4) | `FilterOperator` in `uqa/operators/primitive.py` |
 | Score Operator (Definition 3.1.5) | `ScoreOperator` in `uqa/operators/primitive.py` |
 | Hierarchical Documents (Definition 5.2.1) | `HierarchicalDocument` in `uqa/core/hierarchical.py` |
+| Hierarchical Operators (Definitions 5.3.1-5.3.5) | `PathFilterOperator`, `PathProjectOperator`, `PathUnnestOperator`, `PathAggregateOperator`, `UnifiedFilterOperator` in `uqa/operators/hierarchical.py` — all five implement `cost_estimate()` for optimizer integration |
+| Aggregation Monoids (Definition 4.2.1) | `CountMonoid`, `SumMonoid`, `AvgMonoid`, `MinMonoid`, `MaxMonoid`, `QuantileMonoid` in `uqa/operators/aggregation.py` |
 | BM25 (Definition 3.2.1) | `BM25Scorer` in `uqa/scoring/bm25.py` |
 | UnionOperator | `UnionOperator` in `uqa/operators/boolean.py` |
 | IntersectOperator | `IntersectOperator` in `uqa/operators/boolean.py` |

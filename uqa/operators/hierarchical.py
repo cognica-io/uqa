@@ -14,6 +14,7 @@ from uqa.core.types import PathExpr, Payload, PostingEntry, Predicate
 from uqa.operators.base import ExecutionContext, Operator
 
 if TYPE_CHECKING:
+    from uqa.core.types import IndexStats
     from uqa.operators.aggregation import AggregationMonoid
 
 
@@ -53,6 +54,14 @@ class PathFilterOperator(Operator):
                 entries.append(PostingEntry(doc_id, Payload(score=0.0)))
         return PostingList.from_sorted(entries)
 
+    def cost_estimate(self, stats: IndexStats) -> float:
+        base = (
+            self.source.cost_estimate(stats)
+            if self.source is not None
+            else float(stats.total_docs)
+        )
+        return base  # linear scan over source docs
+
 
 class PathProjectOperator(Operator):
     """Definition 5.3.2: Project documents to a set of path expressions."""
@@ -85,6 +94,9 @@ class PathProjectOperator(Operator):
                 )
             )
         return PostingList.from_sorted(entries)
+
+    def cost_estimate(self, stats: IndexStats) -> float:
+        return self.source.cost_estimate(stats)
 
 
 class PathUnnestOperator(Operator):
@@ -121,6 +133,9 @@ class PathUnnestOperator(Operator):
                     )
                 )
         return PostingList(entries)
+
+    def cost_estimate(self, stats: IndexStats) -> float:
+        return self.source.cost_estimate(stats) * 2.0
 
 
 class PathAggregateOperator(Operator):
@@ -188,6 +203,14 @@ class PathAggregateOperator(Operator):
             )
         return PostingList.from_sorted(entries)
 
+    def cost_estimate(self, stats: IndexStats) -> float:
+        base = (
+            self.source.cost_estimate(stats)
+            if self.source is not None
+            else float(stats.total_docs)
+        )
+        return base
+
 
 class UnifiedFilterOperator(Operator):
     """Definition 5.3.5: Unified filter dispatching flat vs hierarchical.
@@ -221,3 +244,11 @@ class UnifiedFilterOperator(Operator):
 
             delegate = FilterOperator(self.field_expr, self.predicate, self.source)
         return delegate.execute(context)
+
+    def cost_estimate(self, stats: IndexStats) -> float:
+        base = (
+            self.source.cost_estimate(stats)
+            if self.source is not None
+            else float(stats.total_docs)
+        )
+        return base

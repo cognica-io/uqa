@@ -59,6 +59,28 @@ class LogOddsFusion:
             )
         )
 
+    def fuse_mean(self, probabilities: list[float]) -> float:
+        """Log-odds mean aggregation (Definition 4.1.1, Paper 4).
+
+        Computes the arithmetic mean in log-odds space and maps back to
+        probability via sigmoid.  Unlike fuse(), no confidence scaling
+        (n^alpha) is applied -- the result is scale-neutral: if all
+        signals report the same probability p, the output is exactly p
+        regardless of n.
+
+        This is the normalized Logarithmic Opinion Pool (Theorem 4.1.2a).
+        """
+        n = len(probabilities)
+        if n == 0:
+            return 0.5
+        if n == 1:
+            return probabilities[0]
+        arr = np.asarray(probabilities, dtype=np.float64)
+        arr = np.clip(arr, 1e-15, 1.0 - 1e-15)
+        logits = np.log(arr / (1.0 - arr))
+        mean_logit = float(np.mean(logits))
+        return float(1.0 / (1.0 + np.exp(-mean_logit)))
+
     def fuse_weighted(self, probabilities: list[float], weights: list[float]) -> float:
         """Weighted log-odds conjunction (attention-like, Section 8, Paper 4)."""
         n = len(probabilities)

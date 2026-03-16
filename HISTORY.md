@@ -2,9 +2,44 @@
 
 ## 0.20.0 (2026-03-16)
 
-Named graphs as primary abstraction, 14 paper-to-code improvements across all four papers. Named graphs replace the flat global graph store with per-graph partitioned adjacency indexes. Graph operators, indexes, and SQL functions are graph-scoped. All 2578 tests, 31 examples, and 14 benchmarks pass.
+Named graphs as primary abstraction, 20 paper-to-code improvements across all four papers. Named graphs replace the flat global graph store with per-graph partitioned adjacency indexes. Graph operators, indexes, and SQL functions are graph-scoped. All 2597 tests, 34 examples, and 309 benchmarks pass.
 
-### Named Graphs (#0)
+### Configurable Graph Operator Scores
+
+- **`DEFAULT_GRAPH_SCORE`**: Module-level constant in `uqa/graph/operators.py` (default 0.9). All graph operators now accept an optional `score` parameter instead of hard-coding `Payload(score=0.9)`.
+- **`TraverseOperator(score=...)`**, **`PatternMatchOperator(score=...)`**, **`RegularPathQueryOperator(score=...)`**, **`WeightedPathQueryOperator(score=...)`**: Configurable graph contribution to log-odds fusion without source modification.
+- **`TemporalTraverseOperator(score=...)`**, **`TemporalPatternMatchOperator(score=...)`**: Same treatment for temporal graph operators.
+
+### Hierarchical Operator Cost Estimation
+
+- **`PathFilterOperator.cost_estimate()`**: Source cost or full scan cost (Paper 1, Section 6.2).
+- **`PathProjectOperator.cost_estimate()`**: Streaming map, same cost as source.
+- **`PathUnnestOperator.cost_estimate()`**: Source cost with 2x fan-out factor for array expansion.
+- **`PathAggregateOperator.cost_estimate()`**: Streaming aggregate, same cost as source.
+- **`UnifiedFilterOperator.cost_estimate()`**: Dispatches cost estimate to delegate.
+
+### Log-Odds Mean Aggregation
+
+- **`LogOddsFusion.fuse_mean()`**: Scale-neutral log-odds mean (Definition 4.1.1, Paper 4). Computes the arithmetic mean in log-odds space and maps back via sigmoid without confidence scaling (no `n^alpha` amplification). Distinct from `fuse()` which applies Theorem 4.4.1 amplification. Implements the normalized Logarithmic Opinion Pool (Theorem 4.1.2a).
+
+### Quantile Aggregation Monoid
+
+- **`QuantileMonoid`**: Percentile aggregation monoid (Paper 1, Section 5.1). Supports median (`quantile=0.5`), P95 (`quantile=0.95`), and arbitrary quantiles with linear interpolation. Monoid contract: `combine()` concatenates value lists for parallel decomposition (Theorem 5.1.5).
+
+### Algebraic Simplification Rules
+
+- **`QueryOptimizer._simplify_algebra()`**: Four equivalence-preserving algebraic rewrite rules (Paper 1, Theorem 6.1.2):
+  - **Idempotent intersection**: `Intersect(A, A, ...)` removes duplicate operands by identity.
+  - **Idempotent union**: `Union(A, A, ...)` removes duplicate operands.
+  - **Absorption law**: `Union(A, Intersect(A, B))` simplifies to `A`; `Intersect(A, Union(A, B))` simplifies to `A`.
+  - **Empty elimination**: `Intersect(A, empty)` yields empty; `Union(A, empty)` drops empty children.
+- Applied first in the optimizer pipeline before filter pushdown and other rewrites.
+
+### Histogram-Based Entropy Estimation
+
+- **`_column_entropy()`** enhanced: When equi-depth histogram bounds are available (but no MCVs), computes entropy from bucket count: `log2(num_buckets)`. Three-tier priority: MCV frequencies > histogram buckets > uniform assumption.
+
+### Named Graphs
 
 - **`_GraphPartition`**: Per-named-graph adjacency state (vertex_ids, edge_ids, adj_out, adj_in, label_index, vertex_label_index). Vertices and edges are stored globally; adjacency indexes are per-graph with zero duplication.
 - **`GraphStore` redesign**: All mutations and queries require `graph` keyword parameter. Graph lifecycle (create_graph, drop_graph, has_graph, graph_names). Graph algebra (union_graphs, intersect_graphs, difference_graphs, copy_graph). Per-graph statistics (degree_distribution, label_degree, vertex_label_counts).
@@ -13,63 +48,63 @@ Named graphs as primary abstraction, 14 paper-to-code improvements across all fo
 - **`_NamedGraphOperatorWrapper` removed**: All graph operators accept `graph` directly.
 - **`GraphPayload.graph_name`**: Graph provenance tracked in posting list payloads.
 
-### Graph Join Operators (#2)
+### Graph Join Operators
 
 - **`GraphGraphJoinOperator`**: Hash join on shared vertex variable between two graph posting lists. Merges GraphPayload metadata (union of subgraph_vertices/edges).
 - **`CrossParadigmGraphJoinOperator`**: Joins graph posting list with relational posting list on vertex_field/doc_field match.
 
-### GeneralizedPostingList Operations (#3)
+### GeneralizedPostingList Operations
 
 - **`intersect()`**, **`difference()`**, **`complement()`**: Two-pointer merge on `doc_ids` tuples for GeneralizedPostingList (join results).
 - **`doc_ids_set`** property, **`__and__`**/**`__or__`**/**`__sub__`** operator overloads.
 
-### Semi-Join / Anti-Join (#6)
+### Semi-Join / Anti-Join
 
 - **`SemiJoinOperator`**: Returns left entries with a match in right (existence check only).
 - **`AntiJoinOperator`**: Returns left entries without a match in right.
 - Hash join pattern with optional custom condition callable.
 
-### Property Indexes (#8)
+### Property Indexes
 
 - **`VertexPropertyIndex`**: Equality (O(1) hash) + range (O(log n) bisect) index on vertex properties.
 - **`EdgePropertyIndex`**: Same pattern for edge properties.
 - Per-graph scoped via `build(graph_store, *, graph, properties)`.
 
-### Category-Theoretic Functors (#10)
+### Category-Theoretic Functors
 
 - **`Functor`** ABC with `map_object` and `map_morphism`.
 - **`GraphToRelationalFunctor`**, **`RelationalToGraphFunctor`**, **`TextToVectorFunctor`**.
 - Identity law and composition law verified via property tests.
 
-### Adaptive Confidence Scaling (#12)
+### Adaptive Confidence Scaling
 
 - **`SignalQuality`**: Coverage ratio, score variance, calibration error metrics per signal.
 - **`AdaptiveLogOddsFusion`**: Per-signal confidence alpha computed from quality metrics.
 - **`AdaptiveLogOddsFusionOperator`**: Quality-weighted log-odds fusion in the operator tree.
 
-### WAND Bound Tightness (#13)
+### WAND Bound Tightness
 
 - **`BoundTightnessAnalyzer`**: Tracks upper bound vs actual max for tightness ratio and slack analysis.
 - **`AdaptiveWANDScorer`**: Configurable tightening factor on upper bounds with empirical tightness tracking.
 - **`TightenedFusionWANDScorer`**: Tightened bounds for multi-signal fusion WAND.
 
-### Graph Cost Model & Cardinality (#1)
+### Graph Cost Model & Cardinality
 
 - **`GraphStats`** enhanced: `vertex_label_counts`, `degree_distribution`, `label_degree_map`, `graph_name`. `from_graph_store(gs, *, graph)` computes per-graph statistics.
 - **`CostModel(graph_stats)`**: Traverse `O(sum d^i)`, PatternMatch `O(V^k)`, RPQ `O(V^2 * |R|)` with `_expr_label_count()`.
 - **`CardinalityEstimator`**: Label-specific degree for traverse, vertex label selectivity for pattern match, NFA state count for RPQ.
 
-### Pattern Negation (#5)
+### Pattern Negation
 
 - **`EdgePattern.negated: bool`**: Negated edges skip arc consistency, are processed after positive edges, and invert validation (edge must NOT exist).
 - Cost model adds `(1 + 0.2 * negated_count)` overhead.
 
-### Distributivity & De Morgan (#4)
+### Distributivity & De Morgan
 
 - Property-based tests (Hypothesis) for De Morgan's laws on PostingList and GeneralizedPostingList.
 - `NOT (A AND B) == (NOT A) OR (NOT B)` and `NOT (A OR B) == (NOT A) AND (NOT B)` verified.
 
-### Information-Theoretic Bounds (#11)
+### Information-Theoretic Bounds
 
 - **`_column_entropy()`**: Entropy from histogram or MCV frequencies.
 - **`_mutual_information_estimate()`**: MI from column entropies and joint selectivity.
@@ -77,14 +112,14 @@ Named graphs as primary abstraction, 14 paper-to-code improvements across all fo
 - Filter selectivity clamped by `1/2^H(column)`.
 - Intersection damping uses MI-based correlation detection.
 
-### RPQ Optimization (#7)
+### RPQ Optimization
 
 - **`_simplify_expr()`**: `a|a -> a`, `(a*)* -> a*`, `a*|a -> a*`, `a*/a* -> a*`, alternation sorting.
 - **`_subset_construction()`**: NFA to DFA for small NFAs (<= 32 states).
 - **`RPQOperator.execute()`** integrated: simplify -> NFA -> optional DFA -> simulate.
 - **`_simulate_dfa()`**: Deterministic BFS without epsilon closures.
 
-### Cross-Paradigm Optimizer (#9)
+### Cross-Paradigm Optimizer
 
 - **`QueryOptimizer(stats, graph_stats=...)`**: Graph statistics forwarded to CostModel and CardinalityEstimator.
 - **Filter pushdown into traverse**: Vertex property filters absorbed into `TraverseOperator.vertex_predicate` for BFS pruning.

@@ -24,6 +24,8 @@ from uqa.storage.ivf_index import IVFIndex
 from uqa.storage.sqlite_document_store import SQLiteDocumentStore
 from uqa.storage.sqlite_inverted_index import SQLiteInvertedIndex
 
+GRAPH_NAME = "bench"
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -334,9 +336,10 @@ class TestGraphStore:
 
         def build() -> int:
             gs = GraphStore()
+            gs.create_graph(GRAPH_NAME)
             for v in vertices:
-                gs.add_vertex(v)
-            return len(gs.vertices)
+                gs.add_vertex(v, graph=GRAPH_NAME)
+            return len(gs.vertices_in_graph(GRAPH_NAME))
 
         count = benchmark(build)
         assert count == len(vertices)
@@ -345,14 +348,15 @@ class TestGraphStore:
         gen = BenchmarkDataGenerator(scale_factor=1, seed=42)
         vertices, edges = gen.graph()
         gs = GraphStore()
+        gs.create_graph(GRAPH_NAME)
         for v in vertices:
-            gs.add_vertex(v)
+            gs.add_vertex(v, graph=GRAPH_NAME)
         edges = edges[:1000]
 
         def add_edges() -> int:
             for e in edges:
-                gs.add_edge(e)
-            return len(gs.edges)
+                gs.add_edge(e, graph=GRAPH_NAME)
+            return len(gs.edges_in_graph(GRAPH_NAME))
 
         benchmark(add_edges)
 
@@ -360,16 +364,17 @@ class TestGraphStore:
         gen = BenchmarkDataGenerator(scale_factor=1, seed=42)
         vertices, edges = gen.graph()
         gs = GraphStore()
+        gs.create_graph(GRAPH_NAME)
         for v in vertices:
-            gs.add_vertex(v)
+            gs.add_vertex(v, graph=GRAPH_NAME)
         for e in edges:
-            gs.add_edge(e)
+            gs.add_edge(e, graph=GRAPH_NAME)
 
         # Pick a vertex with high degree
         vertex_id = edges[0].source_id
 
         def get_neighbors() -> int:
-            return len(gs.neighbors(vertex_id))
+            return len(gs.neighbors(vertex_id, graph=GRAPH_NAME))
 
         benchmark(get_neighbors)
 
@@ -377,14 +382,15 @@ class TestGraphStore:
         gen = BenchmarkDataGenerator(scale_factor=1, seed=42)
         vertices, edges = gen.graph()
         gs = GraphStore()
+        gs.create_graph(GRAPH_NAME)
         for v in vertices:
-            gs.add_vertex(v)
+            gs.add_vertex(v, graph=GRAPH_NAME)
         for e in edges:
-            gs.add_edge(e)
+            gs.add_edge(e, graph=GRAPH_NAME)
 
         vertex_id = edges[0].source_id
 
         def get_neighbors_labeled() -> int:
-            return len(gs.neighbors(vertex_id, label="knows"))
+            return len(gs.neighbors(vertex_id, label="knows", graph=GRAPH_NAME))
 
         benchmark(get_neighbors_labeled)

@@ -21,6 +21,7 @@ class QueryOptimizer:
     """Query optimizer with equivalence-preserving rewrite rules (Theorem 6.1.2, Paper 1).
 
     Rewrite rules:
+    - Algebraic simplification (idempotent, absorption, empty elimination)
     - Filter pushdown into intersections
     - Vector threshold merge (same query vector)
     - Intersect operand reordering by cardinality (cheapest first)
@@ -44,6 +45,7 @@ class QueryOptimizer:
         self._table_name = table_name
 
     def optimize(self, op: Operator) -> Operator:
+        op = self._simplify_algebra(op)
         op = self._push_filters_down(op)
         op = self._push_graph_pattern_filters(op)
         op = self._push_filter_into_traverse(op)
@@ -54,6 +56,133 @@ class QueryOptimizer:
         op = self._reorder_fusion_signals(op)
         op = self._apply_index_scan(op)
         return op
+
+    def _simplify_algebra(self, op: Operator) -> Operator:
+        """Apply algebraic simplification rules (Theorem 6.1.2, Paper 1).
+
+        Rules applied bottom-up:
+        1. Idempotent intersection: remove duplicate operands (by identity).
+        2. Idempotent union: remove duplicate operands (by identity).
+        3. Absorption: A union (A intersect B) => A;
+                        A intersect (A union B) => A.
+        4. Empty elimination: A intersect empty => empty;
+                              A union empty => A.
+
+        An operator is considered "empty" if it is an IntersectOperator or
+        UnionOperator with an empty operands list.
+        """
+        from uqa.operators.boolean import IntersectOperator, UnionOperator
+
+        # Recurse into children first (bottom-up simplification).
+        op = self._recurse_simplify(op)
+
+        if isinstance(op, IntersectOperator):
+            operands = op.operands
+
+            # Empty elimination: if any operand is empty, the whole
+            # intersection is empty.
+            for child in operands:
+                if self._is_empty_operator(child):
+                    return IntersectOperator([])
+
+            # Idempotent: remove duplicates by identity.
+            seen: list[Operator] = []
+            for child in operands:
+                if not any(child is s for s in seen):
+                    seen.append(child)
+            operands = seen
+
+            # Absorption: if an operand A appears and also a
+            # UnionOperator([A, ...]) appears, drop the union operand.
+            absorbed: list[Operator] = []
+            for child in operands:
+                if isinstance(child, UnionOperator) and any(
+                    any(other is uc for uc in child.operands)
+                    for other in operands
+                    if other is not child
+                ):
+                    continue
+                absorbed.append(child)
+            operands = absorbed
+
+            if len(operands) == 1:
+                return operands[0]
+            return IntersectOperator(operands)
+
+        if isinstance(op, UnionOperator):
+            operands = op.operands
+
+            # Empty elimination: drop empty children.
+            operands = [
+                child for child in operands if not self._is_empty_operator(child)
+            ]
+
+            # Idempotent: remove duplicates by identity.
+            seen = []
+            for child in operands:
+                if not any(child is s for s in seen):
+                    seen.append(child)
+            operands = seen
+
+            # Absorption: if an operand A appears and also an
+            # IntersectOperator([A, ...]) appears, drop the intersect operand.
+            absorbed = []
+            for child in operands:
+                if isinstance(child, IntersectOperator) and any(
+                    any(other is ic for ic in child.operands)
+                    for other in operands
+                    if other is not child
+                ):
+                    continue
+                absorbed.append(child)
+            operands = absorbed
+
+            if len(operands) == 1:
+                return operands[0]
+            if not operands:
+                return UnionOperator([])
+            return UnionOperator(operands)
+
+        return op
+
+    def _recurse_simplify(self, op: Operator) -> Operator:
+        """Recurse into children for algebraic simplification."""
+        from uqa.operators.base import ComposedOperator
+        from uqa.operators.boolean import (
+            ComplementOperator,
+            IntersectOperator,
+            UnionOperator,
+        )
+        from uqa.operators.primitive import FilterOperator
+
+        if isinstance(op, IntersectOperator):
+            return IntersectOperator([self._simplify_algebra(o) for o in op.operands])
+        if isinstance(op, UnionOperator):
+            return UnionOperator([self._simplify_algebra(o) for o in op.operands])
+        if isinstance(op, ComplementOperator):
+            return ComplementOperator(self._simplify_algebra(op.operand))
+        if isinstance(op, FilterOperator) and op.source is not None:
+            return FilterOperator(
+                op.field,
+                op.predicate,
+                self._simplify_algebra(op.source),
+            )
+        if isinstance(op, ComposedOperator):
+            return ComposedOperator([self._simplify_algebra(o) for o in op.operators])
+        return op
+
+    @staticmethod
+    def _is_empty_operator(op: Operator) -> bool:
+        """Check if an operator is structurally empty.
+
+        An IntersectOperator or UnionOperator with no operands always
+        produces an empty PostingList regardless of context.
+        """
+        from uqa.operators.boolean import IntersectOperator, UnionOperator
+
+        if isinstance(op, (IntersectOperator, UnionOperator)):
+            return len(op.operands) == 0
+        return False
 
     def _push_filters_down(self, op: Operator) -> Operator:
         """Push FilterOperator through IntersectOperator when possible."""

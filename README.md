@@ -247,18 +247,20 @@ uqa/
   core/           PostingList, types, hierarchical documents, functors
   analysis/       Text analysis pipeline: CharFilter, Tokenizer, TokenFilter, Analyzer, dual index/search analyzers
   storage/        SQLite-backed stores: documents, inverted index, vectors (IVF), spatial (R*Tree), graph
-  operators/      Operator algebra (boolean, primitive, hybrid, aggregation, hierarchical,
-                  sparse, multi-field, attention fusion, learned fusion, multi-stage)
+  operators/      Operator algebra (boolean, primitive, hybrid, aggregation (count/sum/avg/min/max/quantile),
+                  hierarchical (with cost estimation), sparse, multi-field, attention fusion,
+                  learned fusion, multi-stage)
   scoring/        BM25, Bayesian BM25, VectorScorer, WAND/BlockMaxWAND, calibration,
                   parameter learning, external prior, multi-field, fusion WAND (via bayesian-bm25),
                   adaptive WAND, bound tightness
-  fusion/         Log-odds conjunction, probabilistic boolean, attention fusion,
+  fusion/         Log-odds conjunction (fuse + fuse_mean), probabilistic boolean, attention fusion,
                   learned fusion, query features (via bayesian-bm25), adaptive fusion
   graph/          GraphStore, traversal, pattern matching, RPQ, bounded RPQ, weighted paths,
                   centrality (PageRank, HITS, betweenness), cross-paradigm, indexes,
                   subgraph index, incremental matching, temporal filter/traverse/pattern,
-                  delta/versioned store, message passing, embeddings,
-                  named graphs, property indexes, join operators, RPQ optimizer, pattern negation
+                  delta/versioned store, message passing, embeddings, named graphs,
+                  property indexes, join operators, RPQ optimizer, pattern negation,
+                  configurable graph scores (DEFAULT_GRAPH_SCORE)
     cypher/       openCypher lexer, parser, AST, posting-list-based compiler
   fdw/            Foreign Data Wrappers: DuckDB (Parquet/CSV/JSON), Arrow Flight SQL, Hive partitioning, full query pushdown
   joins/          Hash, sort-merge, index, graph, cross-paradigm, similarity joins,
@@ -268,7 +270,7 @@ uqa/
                   information-theoretic bounds, graph cost model
   sql/            SQL compiler (pglast), expression evaluator, FTS query parser, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          2578 tests across 70 test files
+  tests/          2597 tests across 78 test files
 benchmarks/       309 pytest-benchmark tests across 15 files (posting list, storage, compiler,
                   execution, planner, scoring, graph, graph centrality, end-to-end SQL,
                   calibration, multi-field, external prior, advanced scoring, advanced graph,
@@ -406,6 +408,7 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 
 ### Query Optimizer
 
+- Algebraic simplification (idempotent intersection/union, absorption law, empty elimination)
 - Cost-based optimization with equi-depth histograms and Most Common Values (MCV)
 - **DPccp join order optimization** (Moerkotte & Neumann, 2006) — O(3^n) dynamic programming over connected subgraph complement pairs; produces optimal bushy join trees for INNER JOIN chains with 2+ relations; greedy fallback for 16+ relations; bitmask DP table with bytearray connectivity lookup and incremental connected subgraph enumeration
 - Filter pushdown into intersections (recursive through nested IntersectOperators)
@@ -433,7 +436,8 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 - Filter pushdown into graph traverse operators (vertex predicate BFS pruning)
 - Graph-aware fusion signal reordering with per-graph cost model
 - Named graph scoped statistics (degree distribution, label degree, vertex label counts)
-- Information-theoretic cardinality lower bounds (entropy-based)
+- Information-theoretic cardinality lower bounds (entropy-based, histogram-aware)
+- Hierarchical operator cost estimation (PathFilter, PathProject, PathUnnest, PathAggregate)
 - Negation-aware pattern match cost estimation
 
 ### Disk Spilling

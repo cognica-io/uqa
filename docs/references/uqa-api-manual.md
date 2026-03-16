@@ -1097,6 +1097,7 @@ optimized_op = optimizer.optimize(operator_tree)
 ```
 
 Optimization passes:
+- `_simplify_algebra()` -- idempotent intersection/union, absorption law, empty elimination
 - Filter pushdown (into scans, intersect children, graph patterns)
 - Vector threshold merge
 - Intersect reordering by cardinality
@@ -1190,10 +1191,12 @@ from uqa.graph.operators import (
 
 | Operator | Description |
 |----------|-------------|
-| `TraverseOperator(start, label, max_hops)` | BFS graph traversal |
-| `PatternMatchOperator(pattern)` | Subgraph isomorphism |
-| `RegularPathQueryOperator(path_expr, start)` | NFA-based path query |
+| `TraverseOperator(start, label, max_hops, score=DEFAULT_GRAPH_SCORE)` | BFS graph traversal |
+| `PatternMatchOperator(pattern, score=DEFAULT_GRAPH_SCORE)` | Subgraph isomorphism |
+| `RegularPathQueryOperator(path_expr, start, score=DEFAULT_GRAPH_SCORE)` | NFA-based path query |
 | `VertexAggregationOperator(source, property, agg_fn)` | Aggregate vertex properties |
+
+`DEFAULT_GRAPH_SCORE` is 0.9 (defined in `uqa.graph.operators`). Reachable vertices receive this score in their payload, which integrates with log-odds fusion.
 
 ### Graph Centrality Operators
 
@@ -1332,6 +1335,15 @@ f = LogOddsFusion(confidence_alpha=0.5, gating="swish")
 
 The `gating` parameter is also available on `LogOddsFusionOperator` and `FusionWANDScorer`.
 
+#### `fuse_mean(probabilities: list[float]) -> float`
+
+Log-odds mean aggregation (Definition 4.1.1, Paper 4). Computes the arithmetic mean in log-odds space and maps back to probability via sigmoid. Unlike `fuse()`, no confidence scaling (`n^alpha`) is applied. Scale-neutral: if all signals report the same probability `p`, the output is exactly `p` regardless of `n`. This is the normalized Logarithmic Opinion Pool (Theorem 4.1.2a).
+
+```python
+f = LogOddsFusion(confidence_alpha=0.5)
+p = f.fuse_mean([0.8, 0.6, 0.7])  # mean in log-odds space
+```
+
 ### Hierarchical Operators
 
 ```python
@@ -1340,6 +1352,48 @@ from uqa.operators.hierarchical import (
     PathUnnestOperator, PathAggregateOperator,
 )
 ```
+
+All hierarchical operators expose a cost estimation method:
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `cost_estimate(stats: IndexStats)` | `float` | Estimated execution cost based on index statistics |
+
+### Aggregation Monoids
+
+```python
+from uqa.operators.aggregation import (
+    CountMonoid, SumMonoid, AvgMonoid,
+    MinMonoid, MaxMonoid, QuantileMonoid,
+)
+```
+
+| Monoid | `identity()` | `finalize()` | Description |
+|--------|-------------|--------------|-------------|
+| `CountMonoid` | `0` | `int` | Count of accumulated values |
+| `SumMonoid` | `0.0` | `float` | Sum of values |
+| `AvgMonoid` | `(0.0, 0)` | `float` | Arithmetic mean (sum, count) |
+| `MinMonoid` | `float('inf')` | `float` | Minimum value |
+| `MaxMonoid` | `float('-inf')` | `float` | Maximum value |
+| `QuantileMonoid(quantile=0.5)` | `list[float]` | `float` | Quantile via linear interpolation |
+
+All monoids implement `accumulate(state, value)` and `combine(state_a, state_b)` for parallel-safe aggregation.
+
+#### `QuantileMonoid(quantile: float = 0.5)`
+
+Collects values and computes the requested quantile at finalize using linear interpolation between adjacent values. `quantile=0.5` gives the median, `quantile=0.95` gives P95.
+
+```python
+median = QuantileMonoid(quantile=0.5)
+p95 = QuantileMonoid(quantile=0.95)
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `identity()` | `-> list[float]` | Returns empty list |
+| `accumulate()` | `(state: list[float], value: float) -> list[float]` | Appends value to state |
+| `combine()` | `(state_a: list[float], state_b: list[float]) -> list[float]` | Concatenates two states |
+| `finalize()` | `(state: list[float]) -> float` | Sorts and interpolates at the requested quantile |
 
 ### Join Operators
 

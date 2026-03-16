@@ -10,6 +10,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from uqa.core.types import Payload, PostingEntry
+from uqa.graph.operators import DEFAULT_GRAPH_SCORE
 from uqa.graph.posting_list import GraphPayload, GraphPostingList
 
 if TYPE_CHECKING:
@@ -33,10 +34,12 @@ class TemporalPatternMatchOperator:
         temporal_filter: TemporalFilter | None = None,
         *,
         graph: str,
+        score: float = DEFAULT_GRAPH_SCORE,
     ) -> None:
         self.pattern = pattern
         self.temporal_filter = temporal_filter
         self.graph_name = graph
+        self.score = score
 
     def execute(self, ctx: object) -> GraphPostingList:
         gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
@@ -64,7 +67,7 @@ class TemporalPatternMatchOperator:
             doc_id = i + 1
             entry = PostingEntry(
                 doc_id,
-                Payload(score=0.9, fields=dict(assignment)),
+                Payload(score=self.score, fields=dict(assignment)),
             )
             entries.append(entry)
             graph_payloads[doc_id] = GraphPayload(
