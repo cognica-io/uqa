@@ -338,3 +338,97 @@ class BlockMaxWANDScorer:
         for score, doc_id in top_k_heap:
             entries.append(PostingEntry(doc_id, Payload(score=score)))
         return PostingList(entries)
+
+
+class BoundTightnessAnalyzer:
+    """Analyze and report upper bound tightness for WAND scoring.
+
+    Measures how close the upper bounds are to actual maximum scores,
+    enabling adaptive bound selection.
+
+    Tightness ratio = actual_max / upper_bound (closer to 1.0 is tighter).
+    """
+
+    def __init__(self) -> None:
+        self._bound_data: list[tuple[float, float]] = []  # (upper_bound, actual_max)
+
+    def record(self, upper_bound: float, actual_max: float) -> None:
+        """Record a bound observation."""
+        self._bound_data.append((upper_bound, actual_max))
+
+    def tightness_ratio(self) -> float:
+        """Average tightness ratio across all observations."""
+        if not self._bound_data:
+            return 1.0
+        ratios = []
+        for ub, am in self._bound_data:
+            if ub > 0:
+                ratios.append(min(1.0, am / ub))
+            else:
+                ratios.append(1.0)
+        return sum(ratios) / len(ratios)
+
+    def slack(self) -> float:
+        """Average slack (wasted bound space): 1 - tightness_ratio."""
+        return 1.0 - self.tightness_ratio()
+
+    def worst_bound_index(self) -> int:
+        """Index of the loosest bound (highest slack)."""
+        if not self._bound_data:
+            return 0
+        worst = 0
+        worst_ratio = 1.0
+        for i, (ub, am) in enumerate(self._bound_data):
+            ratio = min(1.0, am / ub) if ub > 0 else 1.0
+            if ratio < worst_ratio:
+                worst_ratio = ratio
+                worst = i
+        return worst
+
+    def clear(self) -> None:
+        """Reset all recorded data."""
+        self._bound_data.clear()
+
+
+class AdaptiveWANDScorer(WANDScorer):
+    """WAND scorer with adaptive bound tightening.
+
+    Monitors bound tightness during scoring and adapts upper bounds
+    by tracking the maximum actual score seen per term. After initial
+    scoring rounds, uses tighter empirical bounds.
+    """
+
+    def __init__(
+        self,
+        scorers: list[object],
+        k: int,
+        posting_lists: list[PostingList],
+        inverted_index: object | None = None,
+        fields: list[str] | None = None,
+        terms: list[str] | None = None,
+        tightening_factor: float = 0.9,
+    ) -> None:
+        super().__init__(scorers, k, posting_lists, inverted_index, fields, terms)
+        self.tightening_factor = tightening_factor
+        self.analyzer = BoundTightnessAnalyzer()
+
+    def _compute_upper_bounds(self) -> list[float]:
+        """Compute initial upper bounds, then tighten by factor."""
+        base_bounds = super()._compute_upper_bounds()
+        # Apply tightening factor to reduce slack
+        return [ub * self.tightening_factor for ub in base_bounds]
+
+    def score_top_k(self) -> PostingList:
+        """Score with tightness tracking."""
+        result = super().score_top_k()
+
+        # Record tightness data for analysis
+        base_bounds = WANDScorer._compute_upper_bounds(self)
+        for i, ub in enumerate(base_bounds):
+            actual_max = 0.0
+            for entry in self.posting_lists[i]:
+                if entry.payload.score > actual_max:
+                    actual_max = entry.payload.score
+            self.analyzer.record(ub, actual_max)
+
+        return result

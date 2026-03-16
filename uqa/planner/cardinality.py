@@ -25,19 +25,34 @@ class GraphStats:
 
     Collects vertex count, edge count, label distribution, and edge
     density to replace heuristic graph cardinality estimates with
-    independence-based formulas.
+    independence-based formulas.  When ``graph_name`` is set, statistics
+    are scoped to that named graph.
     """
 
     num_vertices: int = 0
     num_edges: int = 0
     label_counts: dict[str, int] = field(default_factory=dict)
     avg_out_degree: float = 0.0
+    degree_distribution: dict[int, int] = field(default_factory=dict)
     min_timestamp: float | None = None
     max_timestamp: float | None = None
+    graph_name: str = ""
+    vertex_label_counts: dict[str, int] = field(default_factory=dict)
+    label_degree_map: dict[str, float] = field(default_factory=dict)
 
     @classmethod
-    def from_graph_store(cls, graph_store: object) -> GraphStats:
-        """Compute statistics from a GraphStore instance."""
+    def from_graph_store(cls, graph_store: object, *, graph: str = "") -> GraphStats:
+        """Compute statistics from a GraphStore instance.
+
+        When ``graph`` is provided and the store supports named graphs,
+        statistics are scoped to that graph partition.
+        """
+        from uqa.graph.store import GraphStore as GS
+
+        if isinstance(graph_store, GS) and graph:
+            return cls._from_named_graph(graph_store, graph)
+
+        # Fallback: global stats
         vertices = getattr(graph_store, "_vertices", {})
         edges = getattr(graph_store, "_edges", {})
         num_v = len(vertices)
@@ -55,6 +70,38 @@ class GraphStats:
             num_edges=num_e,
             label_counts=label_counts,
             avg_out_degree=avg_out,
+        )
+
+    @classmethod
+    def _from_named_graph(cls, gs: object, graph: str) -> GraphStats:
+        """Compute per-graph statistics using graph-scoped API."""
+        store = gs  # type: ignore[assignment]
+        vertices = store.vertices_in_graph(graph)
+        edges = store.edges_in_graph(graph)
+        num_v = len(vertices)
+        num_e = len(edges)
+
+        label_counts: dict[str, int] = {}
+        for edge in edges:
+            label_counts[edge.label] = label_counts.get(edge.label, 0) + 1
+
+        avg_out = num_e / num_v if num_v > 0 else 0.0
+
+        vlc = store.vertex_label_counts(graph)
+        ldm: dict[str, float] = {}
+        for label in label_counts:
+            ldm[label] = store.label_degree(label, graph)
+        dd = store.degree_distribution(graph)
+
+        return cls(
+            num_vertices=num_v,
+            num_edges=num_e,
+            label_counts=label_counts,
+            avg_out_degree=avg_out,
+            degree_distribution=dd,
+            graph_name=graph,
+            vertex_label_counts=vlc,
+            label_degree_map=ldm,
         )
 
     def label_selectivity(self, label: str | None) -> float:
@@ -129,6 +176,20 @@ class CardinalityEstimator:
                 for card in child_cards[1:]:
                     sel = card / n if n > 0 else 1.0
                     result *= sel**damping
+
+                # Apply entropy-based lower bound (Paper 1, Section 7)
+                # when column stats are available
+                if self._column_stats:
+                    entropies: list[float] = []
+                    for op_item in ops:
+                        if isinstance(op_item, FilterOperator) and op_item.field:
+                            cs = self._column_stats.get(op_item.field)
+                            if cs is not None:
+                                entropies.append(_column_entropy(cs))
+                    if entropies:
+                        lb = _entropy_cardinality_lower_bound(n, entropies)
+                        result = max(result, lb)
+
                 return max(1.0, result)
             case UnionOperator(operands=ops):
                 child_cards = [self.estimate(o, stats) for o in ops]
@@ -139,8 +200,7 @@ class CardinalityEstimator:
             case _:
                 return self._estimate_cross_paradigm(op, stats, n)
 
-    @staticmethod
-    def _intersection_damping(ops: list[Operator]) -> float:
+    def _intersection_damping(self, ops: list[Operator]) -> float:
         """Choose damping exponent based on predicate correlation.
 
         The exponent controls how aggressively the second predicate
@@ -148,10 +208,8 @@ class CardinalityEstimator:
         less reduction (more correlation), higher exponent means more
         reduction (more independence).
 
-        Same-column predicates (e.g., age > 30 AND age < 50) are highly
-        correlated, so use 0.1 (little additional reduction).
-        Different-column predicates are more independent, so use 0.5
-        (standard sqrt damping).
+        Uses mutual information when column stats are available to detect
+        correlation.  Falls back to field-name heuristic otherwise.
         """
         from uqa.operators.primitive import FilterOperator
 
@@ -165,6 +223,18 @@ class CardinalityEstimator:
 
         if len(set(fields)) == 1:
             return 0.1
+
+        # Use mutual information estimate when stats are available
+        if self._column_stats and len(fields) >= 2:
+            cs_a = self._column_stats.get(fields[0])
+            cs_b = self._column_stats.get(fields[1])
+            if cs_a is not None and cs_b is not None:
+                mi = _mutual_information_estimate(cs_a, cs_b, 0.1)
+                # Higher MI = more correlated = lower damping
+                if mi > 1.0:
+                    return 0.2
+                if mi > 0.5:
+                    return 0.3
 
         return 0.5
 
@@ -376,7 +446,8 @@ class CardinalityEstimator:
     def _estimate_traverse(self, op: object, n: float) -> float:
         """Traverse cardinality using graph statistics (Theorem 6.3.2, Paper 2).
 
-        With statistics: branching = avg_out_degree * label_selectivity.
+        With statistics and label_degree_map: use label-specific degree.
+        With statistics without map: branching = avg_out_degree * label_selectivity.
         Without statistics: fallback to heuristic min(n*0.1, 10).
         """
         hops = getattr(op, "max_hops", 1)
@@ -384,8 +455,14 @@ class CardinalityEstimator:
 
         if self._graph_stats is not None:
             gs = self._graph_stats
-            sel = gs.label_selectivity(label)
-            branching = gs.avg_out_degree * sel
+            # Use label-specific degree from label_degree_map when available
+            if label and hasattr(gs, "label_degree_map") and gs.label_degree_map:
+                branching = gs.label_degree_map.get(
+                    label, gs.avg_out_degree * gs.label_selectivity(label)
+                )
+            else:
+                sel = gs.label_selectivity(label)
+                branching = gs.avg_out_degree * sel
         else:
             branching = min(n * 0.1, 10.0)
 
@@ -429,8 +506,18 @@ class CardinalityEstimator:
             for ep in pattern.edge_patterns:
                 label_sel *= gs.label_selectivity(ep.label)
 
-            # |V|^k * density^e * label_selectivity
-            estimate = (nv**k) * (density**e) * label_sel
+            # Vertex label selectivity: use vertex_label_counts when available
+            vertex_sel = 1.0
+            if hasattr(gs, "vertex_label_counts") and gs.vertex_label_counts:
+                for vp in pattern.vertex_patterns:
+                    # Extract label from constraints if available
+                    vp_label = getattr(vp, "label", None)
+                    if vp_label and vp_label in gs.vertex_label_counts:
+                        vlc = gs.vertex_label_counts[vp_label]
+                        vertex_sel *= vlc / nv if nv > 0 else 1.0
+
+            # |V|^k * density^e * label_selectivity * vertex_selectivity
+            estimate = (nv**k) * (density**e) * label_sel * vertex_sel
             return max(1.0, min(nv, estimate))
 
         # Heuristic fallback: n^1.5 captures the super-linear growth of
@@ -484,20 +571,26 @@ class CardinalityEstimator:
     def _estimate_rpq(self, op: object, n: float) -> float:
         """RPQ cardinality using graph statistics (Theorem 6.3.2, Paper 2).
 
-        With statistics: |V|^2 * density * label_selectivity.
+        With statistics: |V|^2 * |R| * density where |R| is NFA state count
+        (estimated from expression structure).
         Without statistics: fallback to n^1.5.
         """
         if self._graph_stats is not None:
             gs = self._graph_stats
             nv = float(gs.num_vertices) if gs.num_vertices > 0 else n
             density = gs.edge_density()
-            # RPQ can reach any (start, end) pair; estimate fraction
-            estimate = (nv**2) * density
+            # Estimate |R| (NFA size) from expression structure
+            path_expr = getattr(op, "path_expr", None)
+            if path_expr is not None:
+                from uqa.planner.cost_model import _expr_label_count
+
+                r_size = _expr_label_count(path_expr)
+            else:
+                r_size = 1
+            # O(|V|^2 * |R|) scaled by density
+            estimate = (nv**2) * r_size * density
             return max(1.0, min(nv, estimate))
 
-        # Heuristic fallback: n^1.5 approximates RPQ result size when no
-        # graph stats are available.  RPQs can reach any (start, end) pair
-        # so result size is between n (single hop) and n^2 (all pairs).
         return min(n, n**1.5)
 
     @staticmethod
@@ -640,6 +733,9 @@ class CardinalityEstimator:
           2. Histogram-based estimation for range predicates
           3. Uniform assumption with min/max as fallback
           4. Default 0.5 when no stats available
+
+        The final selectivity is clamped by an entropy-based lower bound
+        (Paper 1, Section 7): selectivity >= 1 / 2^H(column).
         """
         from uqa.core.types import (
             Between,
@@ -657,27 +753,34 @@ class CardinalityEstimator:
             return 0.5
 
         ndv = cs.distinct_count
+        selectivity: float
 
         if isinstance(predicate, Equals):
-            return self._equality_selectivity(cs, predicate.target, ndv)
+            selectivity = self._equality_selectivity(cs, predicate.target, ndv)
+        elif isinstance(predicate, NotEquals):
+            selectivity = 1.0 - self._equality_selectivity(cs, predicate.target, ndv)
+        elif isinstance(predicate, InSet):
+            selectivity = min(
+                1.0,
+                sum(self._equality_selectivity(cs, v, ndv) for v in predicate.values),
+            )
+        elif isinstance(predicate, Between):
+            selectivity = self._range_selectivity(cs, predicate.low, predicate.high)
+        elif isinstance(predicate, (GreaterThan, GreaterThanOrEqual)):
+            selectivity = self._gt_selectivity(cs, predicate.target)
+        elif isinstance(predicate, (LessThan, LessThanOrEqual)):
+            selectivity = self._lt_selectivity(cs, predicate.target)
+        else:
+            selectivity = 0.5
 
-        if isinstance(predicate, NotEquals):
-            return 1.0 - self._equality_selectivity(cs, predicate.target, ndv)
+        # Entropy-based lower bound: selectivity >= 1 / 2^H(column)
+        if cs.distinct_count > 1:
+            h = _column_entropy(cs)
+            if h > 0:
+                min_sel = 1.0 / (2.0**h)
+                selectivity = max(min_sel, selectivity)
 
-        if isinstance(predicate, InSet):
-            sel = sum(self._equality_selectivity(cs, v, ndv) for v in predicate.values)
-            return min(1.0, sel)
-
-        if isinstance(predicate, Between):
-            return self._range_selectivity(cs, predicate.low, predicate.high)
-
-        if isinstance(predicate, GreaterThan | GreaterThanOrEqual):
-            return self._gt_selectivity(cs, predicate.target)
-
-        if isinstance(predicate, LessThan | LessThanOrEqual):
-            return self._lt_selectivity(cs, predicate.target)
-
-        return 0.5
+        return selectivity
 
     @staticmethod
     def _equality_selectivity(cs: ColumnStats, target: Any, ndv: int) -> float:
@@ -777,3 +880,90 @@ class CardinalityEstimator:
             except (TypeError, ValueError):
                 pass
         return 1.0 / 3.0
+
+
+# -- Information-Theoretic Bounds (Paper 1, Section 7) --
+
+
+def _column_entropy(cs: Any) -> float:
+    """Estimate column entropy from histogram or distinct count.
+
+    H(X) = -sum(p_i * log2(p_i)) for each distinct value.
+    With equi-depth histogram, each bucket has equal probability.
+    """
+    import math
+
+    if cs is None:
+        return 0.0
+
+    ndv = getattr(cs, "distinct_count", 0)
+    if ndv <= 1:
+        return 0.0
+
+    # If MCV frequencies are available, use them
+    mcv_freqs = getattr(cs, "mcv_frequencies", [])
+    if mcv_freqs:
+        entropy = 0.0
+        remaining = 1.0 - sum(mcv_freqs)
+        for freq in mcv_freqs:
+            if freq > 0:
+                entropy -= freq * math.log2(freq)
+        # Remaining probability spread uniformly over non-MCV values
+        remaining_ndv = max(1, ndv - len(mcv_freqs))
+        if remaining > 0 and remaining_ndv > 0:
+            p = remaining / remaining_ndv
+            entropy -= remaining * math.log2(p)
+        return max(0.0, entropy)
+
+    # Uniform assumption: H = log2(ndv)
+    return math.log2(ndv)
+
+
+def _mutual_information_estimate(
+    cs_x: Any, cs_y: Any, joint_selectivity: float
+) -> float:
+    """Estimate mutual information I(X;Y) = H(X) + H(Y) - H(X,Y).
+
+    Uses column entropies and an estimated joint entropy based on
+    joint selectivity (from join cardinality estimation).
+    """
+    import math
+
+    h_x = _column_entropy(cs_x)
+    h_y = _column_entropy(cs_y)
+
+    # Joint entropy lower bound: max(H(X), H(Y))
+    # Joint entropy upper bound: H(X) + H(Y) (independence)
+    # Estimate using joint selectivity as a correlation proxy
+    if joint_selectivity <= 0:
+        return 0.0
+
+    ndv_x = max(1, getattr(cs_x, "distinct_count", 1))
+    ndv_y = max(1, getattr(cs_y, "distinct_count", 1))
+
+    # Under independence, joint NDV = ndv_x * ndv_y.
+    # With correlation, the effective joint NDV is smaller.
+    # joint_selectivity is a fraction in [0,1] representing the join
+    # selectivity.  Lower selectivity = more correlation = smaller
+    # effective joint NDV.
+    independent_ndv = ndv_x * ndv_y
+    effective_ndv = max(1, independent_ndv * joint_selectivity)
+
+    h_joint = math.log2(max(1, effective_ndv))
+    mi = max(0.0, h_x + h_y - h_joint)
+    return mi
+
+
+def _entropy_cardinality_lower_bound(n: float, entropies: list[float]) -> float:
+    """Information-theoretic lower bound on join/intersection cardinality.
+
+    From the entropy power inequality, the result cardinality of an
+    intersection of k predicates is bounded below by:
+        |result| >= n * 2^(-sum(H_i))
+    where H_i is the entropy of each predicate's selectivity distribution.
+    """
+    if not entropies or n <= 0:
+        return 1.0
+    total_entropy = sum(entropies)
+    lb = n * (2.0 ** (-total_entropy))
+    return max(1.0, lb)

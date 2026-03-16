@@ -192,11 +192,14 @@ class Table:
             self.graph_store: GraphStore | SQLiteGraphStore = SQLiteGraphStore(
                 conn, table_name=name
             )
+            if not self.graph_store.has_graph(name):
+                self.graph_store.create_graph(name)
             self.block_max_index = BlockMaxIndex()
         else:
             self.document_store = DocumentStore()
             self.inverted_index = InvertedIndex()
             self.graph_store = GraphStore()
+            self.graph_store.create_graph(name)
             self.block_max_index = BlockMaxIndex()
 
         # Per-field vector indexes, created via CREATE INDEX ... USING hnsw/ivf.

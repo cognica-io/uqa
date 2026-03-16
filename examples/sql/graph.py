@@ -120,7 +120,7 @@ employees = [
     ),
 ]
 for v in employees:
-    gs.add_vertex(v)
+    gs.add_vertex(v, graph="employees")
 
 # Management edges
 edges = [
@@ -137,7 +137,7 @@ edges = [
     Edge(12, 7, 8, "mentors"),
 ]
 for e in edges:
-    gs.add_edge(e)
+    gs.add_edge(e, graph="employees")
 
 
 def show(label, result):

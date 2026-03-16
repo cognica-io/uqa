@@ -30,18 +30,29 @@ from uqa.operators.boolean import IntersectOperator
 from uqa.planner.cardinality import CardinalityEstimator, GraphStats
 from uqa.planner.optimizer import QueryOptimizer
 
+_GRAPH_NAME = "test"
+
 
 def _make_graph() -> GraphStore:
     """Build a small test graph: 1->2->3->4, 1->3."""
     g = GraphStore()
-    g.add_vertex(Vertex(1, "person", {"name": "Alice", "age": 30}))
-    g.add_vertex(Vertex(2, "person", {"name": "Bob", "age": 25}))
-    g.add_vertex(Vertex(3, "person", {"name": "Carol", "age": 35}))
-    g.add_vertex(Vertex(4, "person", {"name": "Dave", "age": 40}))
-    g.add_edge(Edge(1, 1, 2, "knows", {"since": 2020, "weight": 1.0}))
-    g.add_edge(Edge(2, 2, 3, "knows", {"since": 2021, "weight": 2.0}))
-    g.add_edge(Edge(3, 3, 4, "knows", {"since": 2022, "weight": 3.0}))
-    g.add_edge(Edge(4, 1, 3, "works_with", {"since": 2019, "weight": 0.5}))
+    g.create_graph(_GRAPH_NAME)
+    g.add_vertex(Vertex(1, "person", {"name": "Alice", "age": 30}), graph=_GRAPH_NAME)
+    g.add_vertex(Vertex(2, "person", {"name": "Bob", "age": 25}), graph=_GRAPH_NAME)
+    g.add_vertex(Vertex(3, "person", {"name": "Carol", "age": 35}), graph=_GRAPH_NAME)
+    g.add_vertex(Vertex(4, "person", {"name": "Dave", "age": 40}), graph=_GRAPH_NAME)
+    g.add_edge(
+        Edge(1, 1, 2, "knows", {"since": 2020, "weight": 1.0}), graph=_GRAPH_NAME
+    )
+    g.add_edge(
+        Edge(2, 2, 3, "knows", {"since": 2021, "weight": 2.0}), graph=_GRAPH_NAME
+    )
+    g.add_edge(
+        Edge(3, 3, 4, "knows", {"since": 2022, "weight": 3.0}), graph=_GRAPH_NAME
+    )
+    g.add_edge(
+        Edge(4, 1, 3, "works_with", {"since": 2019, "weight": 0.5}), graph=_GRAPH_NAME
+    )
     return g
 
 
@@ -62,7 +73,7 @@ class TestBoundedRPQ:
         g = _make_graph()
         ctx = ExecutionContext(graph_store=g)
         expr = parse_rpq("knows{2,3}")
-        op = RegularPathQueryOperator(expr, start_vertex=1)
+        op = RegularPathQueryOperator(expr, graph=_GRAPH_NAME, start_vertex=1)
         result = op.execute(ctx)
         reached = {e.doc_id for e in result}
         assert 3 in reached  # 2 hops: 1->2->3
@@ -73,7 +84,7 @@ class TestBoundedRPQ:
         g = _make_graph()
         ctx = ExecutionContext(graph_store=g)
         expr = parse_rpq("knows{0,1}")
-        op = RegularPathQueryOperator(expr, start_vertex=1)
+        op = RegularPathQueryOperator(expr, graph=_GRAPH_NAME, start_vertex=1)
         result = op.execute(ctx)
         reached = {e.doc_id for e in result}
         assert 1 in reached  # 0 hops: start vertex
@@ -86,6 +97,7 @@ class TestBoundedRPQ:
         expr = Label("knows")
         op = WeightedPathQueryOperator(
             expr,
+            graph=_GRAPH_NAME,
             weight_property="weight",
             aggregate_fn="sum",
             start_vertex=1,
@@ -102,6 +114,7 @@ class TestBoundedRPQ:
         expr = parse_rpq("knows/knows")
         op = WeightedPathQueryOperator(
             expr,
+            graph=_GRAPH_NAME,
             weight_property="weight",
             aggregate_fn="max",
             start_vertex=1,
@@ -119,6 +132,7 @@ class TestBoundedRPQ:
         # Only accept paths with total weight > 5
         op = WeightedPathQueryOperator(
             expr,
+            graph=_GRAPH_NAME,
             weight_property="weight",
             aggregate_fn="sum",
             predicate=lambda w: w > 5.0,
@@ -144,7 +158,7 @@ class TestEdgeFilterPushdown:
             [VertexPattern("a"), VertexPattern("b")],
             [EdgePattern("a", "b", "knows")],
         )
-        pm = PatternMatchOperator(pattern)
+        pm = PatternMatchOperator(pattern, graph=_GRAPH_NAME)
         # Filter: a_b.since > 2020
         filt = FilterOperator("a_b.since", GreaterThan(2020), pm)
         stats = IndexStats(total_docs=100)
@@ -175,7 +189,7 @@ class TestEdgeFilterPushdown:
             [VertexPattern("a"), VertexPattern("b")],
             [EdgePattern("a", "b", "knows")],
         )
-        pm = PatternMatchOperator(pattern)
+        pm = PatternMatchOperator(pattern, graph=_GRAPH_NAME)
         # First wrap in vertex filter, then edge filter
         vertex_filt = FilterOperator("a.name", Equals("Alice"), pm)
         edge_filt = FilterOperator("a_b.since", GreaterThan(2020), vertex_filt)
@@ -202,7 +216,7 @@ class TestEdgeFilterPushdown:
             [VertexPattern("a"), VertexPattern("b")],
             [EdgePattern("a", "b", "knows")],
         )
-        pm = PatternMatchOperator(pattern)
+        pm = PatternMatchOperator(pattern, graph=_GRAPH_NAME)
         filt = FilterOperator("x_y.prop", Equals("val"), pm)
         stats = IndexStats(total_docs=100)
         optimizer = QueryOptimizer(stats)
@@ -225,8 +239,8 @@ class TestJoinPatternFusion:
             [VertexPattern("a"), VertexPattern("c")],
             [EdgePattern("a", "c", "works_with")],
         )
-        pm1 = PatternMatchOperator(p1)
-        pm2 = PatternMatchOperator(p2)
+        pm1 = PatternMatchOperator(p1, graph=_GRAPH_NAME)
+        pm2 = PatternMatchOperator(p2, graph=_GRAPH_NAME)
         intersect = IntersectOperator([pm1, pm2])
         stats = IndexStats(total_docs=100)
         optimizer = QueryOptimizer(stats)
@@ -247,8 +261,8 @@ class TestJoinPatternFusion:
             [VertexPattern("c"), VertexPattern("d")],
             [EdgePattern("c", "d", "works_with")],
         )
-        pm1 = PatternMatchOperator(p1)
-        pm2 = PatternMatchOperator(p2)
+        pm1 = PatternMatchOperator(p1, graph=_GRAPH_NAME)
+        pm2 = PatternMatchOperator(p2, graph=_GRAPH_NAME)
         intersect = IntersectOperator([pm1, pm2])
         stats = IndexStats(total_docs=100)
         optimizer = QueryOptimizer(stats)
@@ -273,8 +287,8 @@ class TestJoinPatternFusion:
             [VertexPattern("a", [c2]), VertexPattern("c")],
             [EdgePattern("a", "c", "works_with")],
         )
-        pm1 = PatternMatchOperator(p1)
-        pm2 = PatternMatchOperator(p2)
+        pm1 = PatternMatchOperator(p1, graph=_GRAPH_NAME)
+        pm2 = PatternMatchOperator(p2, graph=_GRAPH_NAME)
         intersect = IntersectOperator([pm1, pm2])
         stats = IndexStats(total_docs=100)
         optimizer = QueryOptimizer(stats)
@@ -294,7 +308,7 @@ class TestJoinPatternFusion:
             [VertexPattern("a"), VertexPattern("b")],
             [EdgePattern("a", "b", "knows")],
         )
-        pm1 = PatternMatchOperator(p1)
+        pm1 = PatternMatchOperator(p1, graph=_GRAPH_NAME)
         term = TermOperator("test")
         intersect = IntersectOperator([pm1, term])
         stats = IndexStats(total_docs=100)
@@ -314,7 +328,7 @@ class TestSubgraphIndex:
             [VertexPattern("a"), VertexPattern("b")],
             [EdgePattern("a", "b", "knows")],
         )
-        idx = SubgraphIndex.build(g, [pattern])
+        idx = SubgraphIndex.build(g, [pattern], graph_name=_GRAPH_NAME)
         result = idx.lookup(pattern)
         assert result is not None
         assert len(result) > 0
@@ -329,7 +343,7 @@ class TestSubgraphIndex:
             [VertexPattern("x"), VertexPattern("y")],
             [EdgePattern("x", "y", "unknown_label")],
         )
-        idx = SubgraphIndex.build(g, [pattern1])
+        idx = SubgraphIndex.build(g, [pattern1], graph_name=_GRAPH_NAME)
         result = idx.lookup(pattern2)
         assert result is None
 
@@ -339,7 +353,7 @@ class TestSubgraphIndex:
             [VertexPattern("a"), VertexPattern("b")],
             [EdgePattern("a", "b", "knows")],
         )
-        idx = SubgraphIndex.build(g, [pattern])
+        idx = SubgraphIndex.build(g, [pattern], graph_name=_GRAPH_NAME)
         assert idx.has_pattern(pattern)
         idx.invalidate({"knows"})
         assert not idx.has_pattern(pattern)
@@ -350,9 +364,9 @@ class TestSubgraphIndex:
             [VertexPattern("a"), VertexPattern("b")],
             [EdgePattern("a", "b", "knows")],
         )
-        idx = SubgraphIndex.build(g, [pattern])
+        idx = SubgraphIndex.build(g, [pattern], graph_name=_GRAPH_NAME)
         ctx = ExecutionContext(graph_store=g, subgraph_index=idx)
-        pm = PatternMatchOperator(pattern)
+        pm = PatternMatchOperator(pattern, graph=_GRAPH_NAME)
         result = pm.execute(ctx)
         # Should return results from cache
         assert len(result) > 0
@@ -379,7 +393,7 @@ class TestIncrementalPatternMatcher:
         )
         # Get initial matches
         ctx = ExecutionContext(graph_store=g)
-        pm = PatternMatchOperator(pattern)
+        pm = PatternMatchOperator(pattern, graph=_GRAPH_NAME)
         initial_gpl = pm.execute(ctx)
         initial_matches = set()
         for entry in initial_gpl:
@@ -387,11 +401,13 @@ class TestIncrementalPatternMatcher:
             if gp:
                 initial_matches.add(gp.subgraph_vertices)
 
-        matcher = IncrementalPatternMatcher(pattern, initial_matches)
+        matcher = IncrementalPatternMatcher(
+            pattern, initial_matches, graph_name=_GRAPH_NAME
+        )
 
         # Add a new edge 4->1 "knows"
         new_eid = g.next_edge_id()
-        g.add_edge(Edge(new_eid, 4, 1, "knows"))
+        g.add_edge(Edge(new_eid, 4, 1, "knows"), graph=_GRAPH_NAME)
         delta = GraphDelta(added_edge_ids={new_eid})
         updated = matcher.update(g, delta)
         # Should now include (4, 1) match
@@ -405,7 +421,7 @@ class TestIncrementalPatternMatcher:
             [EdgePattern("a", "b", "knows")],
         )
         ctx = ExecutionContext(graph_store=g)
-        pm = PatternMatchOperator(pattern)
+        pm = PatternMatchOperator(pattern, graph=_GRAPH_NAME)
         initial_gpl = pm.execute(ctx)
         initial_matches = set()
         for entry in initial_gpl:
@@ -413,10 +429,12 @@ class TestIncrementalPatternMatcher:
             if gp:
                 initial_matches.add(gp.subgraph_vertices)
 
-        matcher = IncrementalPatternMatcher(pattern, initial_matches)
+        matcher = IncrementalPatternMatcher(
+            pattern, initial_matches, graph_name=_GRAPH_NAME
+        )
 
         # Remove vertex 2
-        g.remove_vertex(2)
+        g.remove_vertex(2, graph=_GRAPH_NAME)
         delta = GraphDelta(removed_vertex_ids={2})
         updated = matcher.update(g, delta)
         # No match should contain vertex 2
@@ -426,13 +444,13 @@ class TestIncrementalPatternMatcher:
     def test_unrelated_delta_no_change(self) -> None:
         g = _make_graph()
         # Add an isolated vertex
-        g.add_vertex(Vertex(99, "thing", {}))
+        g.add_vertex(Vertex(99, "thing", {}), graph=_GRAPH_NAME)
         pattern = GraphPattern(
             [VertexPattern("a"), VertexPattern("b")],
             [EdgePattern("a", "b", "knows")],
         )
         ctx = ExecutionContext(graph_store=g)
-        pm = PatternMatchOperator(pattern)
+        pm = PatternMatchOperator(pattern, graph=_GRAPH_NAME)
         initial_gpl = pm.execute(ctx)
         initial_matches = set()
         for entry in initial_gpl:
@@ -441,10 +459,12 @@ class TestIncrementalPatternMatcher:
                 initial_matches.add(gp.subgraph_vertices)
 
         original_count = len(initial_matches)
-        matcher = IncrementalPatternMatcher(pattern, initial_matches)
+        matcher = IncrementalPatternMatcher(
+            pattern, initial_matches, graph_name=_GRAPH_NAME
+        )
 
         # Add another isolated vertex -- should not affect pattern matches
-        g.add_vertex(Vertex(100, "thing", {}))
+        g.add_vertex(Vertex(100, "thing", {}), graph=_GRAPH_NAME)
         delta = GraphDelta(added_vertex_ids={100})
         updated = matcher.update(g, delta)
         assert len(updated) == original_count
@@ -462,7 +482,7 @@ class TestGraphSamplingCardinality:
             [VertexPattern("a"), VertexPattern("b")],
             [EdgePattern("a", "b", "knows", [])],
         )
-        pm = PatternMatchOperator(pattern)
+        pm = PatternMatchOperator(pattern, graph=_GRAPH_NAME)
         stats = IndexStats(total_docs=100)
         result = estimator.estimate(pm, stats)
         # Should use formula-based estimate, not sampling
@@ -481,7 +501,7 @@ class TestGraphSamplingCardinality:
             [VertexPattern("a"), VertexPattern("b")],
             [EdgePattern("a", "b", "knows", [])],
         )
-        pm = PatternMatchOperator(pattern)
+        pm = PatternMatchOperator(pattern, graph=_GRAPH_NAME)
         stats = IndexStats(total_docs=20000)
         result = estimator.estimate(pm, stats)
         assert result > 0
@@ -494,7 +514,7 @@ class TestGraphSamplingCardinality:
             [VertexPattern("a"), VertexPattern("b")],
             [EdgePattern("a", "b", "knows", [])],
         )
-        pm = PatternMatchOperator(pattern)
+        pm = PatternMatchOperator(pattern, graph=_GRAPH_NAME)
         stats = IndexStats(total_docs=0)
         result = estimator.estimate(pm, stats)
         assert result >= 0

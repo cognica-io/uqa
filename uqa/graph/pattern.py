@@ -32,6 +32,7 @@ class EdgePattern:
     target_var: str
     label: str | None = None
     constraints: list[Callable[[Edge], bool]] = field(default_factory=list)
+    negated: bool = False
 
 
 @dataclass

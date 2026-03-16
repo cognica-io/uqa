@@ -157,14 +157,18 @@ class TestSelectivityEstimation:
         assert abs(card - 150) < 1  # 0.15 * 1000
 
     def test_equality_mcv_miss(self, estimator_with_stats):
-        """Non-MCV value uses 1/NDV."""
+        """Non-MCV value uses 1/NDV, clamped by entropy lower bound."""
         from uqa.core.types import Equals, IndexStats
         from uqa.operators.primitive import FilterOperator
 
         stats = IndexStats(total_docs=1000)
         op = FilterOperator("val", Equals(999))
         card = estimator_with_stats.estimate(op, stats)
-        assert abs(card - 10) < 1  # 1/100 * 1000
+        # Base selectivity is 1/100 = 0.01 -> card = 10.
+        # The entropy-based lower bound (1/2^H) raises the minimum
+        # selectivity when column entropy is moderate, so the card
+        # is >= 10 but bounded well below the full table.
+        assert 10 <= card < 50
 
     def test_range_histogram(self, estimator_with_stats):
         """Range predicate uses histogram buckets."""

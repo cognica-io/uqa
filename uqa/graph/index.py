@@ -37,12 +37,16 @@ class LabelIndex:
         self._label_to_vertices: dict[str, set[int]] = defaultdict(set)
 
     @classmethod
-    def build(cls, graph: GraphStore) -> LabelIndex:
+    def build(cls, graph: GraphStore, *, graph_name: str) -> LabelIndex:
         idx = cls()
-        for eid, edge in graph._edges.items():
-            idx._label_to_edges[edge.label].append(eid)
-            idx._label_to_vertices[edge.label].add(edge.source_id)
-            idx._label_to_vertices[edge.label].add(edge.target_id)
+        for vid in graph.vertex_ids_in_graph(graph_name):
+            for eid in graph.out_edge_ids(vid, graph=graph_name):
+                edge = graph.get_edge(eid)
+                if edge is None:
+                    continue
+                idx._label_to_edges[edge.label].append(eid)
+                idx._label_to_vertices[edge.label].add(edge.source_id)
+                idx._label_to_vertices[edge.label].add(edge.target_id)
         for label in idx._label_to_edges:
             idx._label_to_edges[label].sort()
         return idx
@@ -77,17 +81,21 @@ class NeighborhoodIndex:
         graph: GraphStore,
         max_hops: int = 2,
         label: str | None = None,
+        *,
+        graph_name: str,
     ) -> NeighborhoodIndex:
         idx = cls(max_hops=max_hops)
-        for vid in graph._vertices:
+        for vid in sorted(graph.vertex_ids_in_graph(graph_name)):
             idx._cache[vid] = {}
             visited: set[int] = {vid}
             frontier: set[int] = {vid}
             for hop in range(1, max_hops + 1):
                 next_frontier: set[int] = set()
                 for v in frontier:
-                    for eid in graph._adj_out.get(v, []):
-                        edge = graph._edges[eid]
+                    for eid in graph.out_edge_ids(v, graph=graph_name):
+                        edge = graph.get_edge(eid)
+                        if edge is None:
+                            continue
                         if label is not None and edge.label != label:
                             continue
                         if edge.target_id not in visited:
@@ -124,26 +132,32 @@ class PathIndex:
         cls,
         graph: GraphStore,
         label_sequences: list[list[str]],
+        *,
+        graph_name: str,
     ) -> PathIndex:
         idx = cls()
         for seq in label_sequences:
             path_key = "/".join(seq)
             pairs: set[tuple[int, int]] = set()
-            for start_vid in graph._vertices:
-                ends = cls._follow_path(graph, start_vid, seq)
+            for start_vid in sorted(graph.vertex_ids_in_graph(graph_name)):
+                ends = cls._follow_path(graph, graph_name, start_vid, seq)
                 for end_vid in ends:
                     pairs.add((start_vid, end_vid))
             idx._path_pairs[path_key] = pairs
         return idx
 
     @staticmethod
-    def _follow_path(graph: GraphStore, start: int, labels: list[str]) -> set[int]:
+    def _follow_path(
+        graph: GraphStore, graph_name: str, start: int, labels: list[str]
+    ) -> set[int]:
         current: set[int] = {start}
         for label in labels:
             next_set: set[int] = set()
             for vid in current:
-                for eid in graph._adj_out.get(vid, []):
-                    edge = graph._edges[eid]
+                for eid in graph.out_edge_ids(vid, graph=graph_name):
+                    edge = graph.get_edge(eid)
+                    if edge is None:
+                        continue
                     if edge.label == label:
                         next_set.add(edge.target_id)
             current = next_set
@@ -178,6 +192,8 @@ class SubgraphIndex:
         cls,
         graph: GraphStore,
         patterns: list[GraphPattern],
+        *,
+        graph_name: str,
     ) -> SubgraphIndex:
         """Build index by running PatternMatchOperator for each pattern."""
         from uqa.graph.operators import PatternMatchOperator
@@ -187,7 +203,7 @@ class SubgraphIndex:
         ctx = ExecutionContext(graph_store=graph)
         for pattern in patterns:
             key = idx._canonicalize(pattern)
-            pm = PatternMatchOperator(pattern)
+            pm = PatternMatchOperator(pattern, graph=graph_name)
             gpl = pm.execute(ctx)
             match_set: set[frozenset[int]] = set()
             for entry in gpl:
@@ -229,3 +245,106 @@ class SubgraphIndex:
             (ep.source_var, ep.target_var, ep.label or "") for ep in edge_patterns
         )
         return f"V:{','.join(vertex_vars)}|E:{edge_tuples}"
+
+
+class VertexPropertyIndex:
+    """Equality + range index on vertex properties (Section 6.4, Paper 2).
+
+    Builds per-property sorted lists for O(log n) range queries
+    and hash maps for O(1) equality lookups.
+    """
+
+    def __init__(self) -> None:
+        self._eq_index: dict[str, dict[object, list[int]]] = {}
+        self._sorted_index: dict[str, list[tuple[object, int]]] = {}
+
+    @classmethod
+    def build(
+        cls,
+        graph_store: GraphStore,
+        *,
+        graph: str,
+        properties: list[str],
+    ) -> VertexPropertyIndex:
+        idx = cls()
+        for prop in properties:
+            eq_map: dict[object, list[int]] = defaultdict(list)
+            sorted_pairs: list[tuple[object, int]] = []
+            for vertex in graph_store.vertices_in_graph(graph):
+                val = vertex.properties.get(prop)
+                if val is not None:
+                    eq_map[val].append(vertex.vertex_id)
+                    sorted_pairs.append((val, vertex.vertex_id))
+            idx._eq_index[prop] = dict(eq_map)
+            sorted_pairs.sort(key=lambda x: (x[0], x[1]))
+            idx._sorted_index[prop] = sorted_pairs
+        return idx
+
+    def lookup_eq(self, prop: str, value: object) -> list[int]:
+        """O(1) equality lookup."""
+        return self._eq_index.get(prop, {}).get(value, [])
+
+    def lookup_range(self, prop: str, low: object, high: object) -> list[int]:
+        """O(log n + k) range lookup using bisect."""
+        import bisect
+
+        pairs = self._sorted_index.get(prop, [])
+        if not pairs:
+            return []
+        lo = bisect.bisect_left(pairs, (low,))
+        hi = bisect.bisect_right(pairs, (high, float("inf")))
+        return [vid for _, vid in pairs[lo:hi]]
+
+    def has_property(self, prop: str) -> bool:
+        return prop in self._eq_index
+
+
+class EdgePropertyIndex:
+    """Equality + range index on edge properties (Section 6.4, Paper 2).
+
+    Same structure as VertexPropertyIndex but for edges.
+    """
+
+    def __init__(self) -> None:
+        self._eq_index: dict[str, dict[object, list[int]]] = {}
+        self._sorted_index: dict[str, list[tuple[object, int]]] = {}
+
+    @classmethod
+    def build(
+        cls,
+        graph_store: GraphStore,
+        *,
+        graph: str,
+        properties: list[str],
+    ) -> EdgePropertyIndex:
+        idx = cls()
+        for prop in properties:
+            eq_map: dict[object, list[int]] = defaultdict(list)
+            sorted_pairs: list[tuple[object, int]] = []
+            for edge in graph_store.edges_in_graph(graph):
+                val = edge.properties.get(prop)
+                if val is not None:
+                    eq_map[val].append(edge.edge_id)
+                    sorted_pairs.append((val, edge.edge_id))
+            idx._eq_index[prop] = dict(eq_map)
+            sorted_pairs.sort(key=lambda x: (x[0], x[1]))
+            idx._sorted_index[prop] = sorted_pairs
+        return idx
+
+    def lookup_eq(self, prop: str, value: object) -> list[int]:
+        """O(1) equality lookup."""
+        return self._eq_index.get(prop, {}).get(value, [])
+
+    def lookup_range(self, prop: str, low: object, high: object) -> list[int]:
+        """O(log n + k) range lookup using bisect."""
+        import bisect
+
+        pairs = self._sorted_index.get(prop, [])
+        if not pairs:
+            return []
+        lo = bisect.bisect_left(pairs, (low,))
+        hi = bisect.bisect_right(pairs, (high, float("inf")))
+        return [eid for _, eid in pairs[lo:hi]]
+
+    def has_property(self, prop: str) -> bool:
+        return prop in self._eq_index

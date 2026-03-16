@@ -30,20 +30,28 @@ class MessagePassingOperator:
         k_layers: int = 2,
         aggregation: str = "mean",
         property_name: str | None = None,
+        *,
+        graph: str,
     ) -> None:
         self.k_layers = k_layers
         self.aggregation = aggregation
         self.property_name = property_name
+        self.graph_name = graph
 
     def execute(self, ctx: object) -> GraphPostingList:
-        graph: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
+        gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
+        g = self.graph_name
+        vertices = sorted(gs.vertex_ids_in_graph(g))
 
-        if not graph._vertices:
+        if not vertices:
             return GraphPostingList()
 
         # Initialize features from vertex properties
         features: dict[int, float] = {}
-        for vid, vertex in graph._vertices.items():
+        for vid in vertices:
+            vertex = gs.get_vertex(vid)
+            if vertex is None:
+                continue
             if self.property_name is not None:
                 val = vertex.properties.get(self.property_name, 0.0)
                 features[vid] = float(val) if isinstance(val, int | float) else 0.0
@@ -53,13 +61,17 @@ class MessagePassingOperator:
         # K rounds of message passing
         for _ in range(self.k_layers):
             new_features: dict[int, float] = {}
-            for vid in graph._vertices:
+            for vid in vertices:
                 neighbor_values: list[float] = []
-                for eid in graph._adj_out.get(vid, set()):
-                    edge = graph._edges[eid]
+                for eid in gs.out_edge_ids(vid, graph=g):
+                    edge = gs.get_edge(eid)
+                    if edge is None:
+                        continue
                     neighbor_values.append(features.get(edge.target_id, 0.0))
-                for eid in graph._adj_in.get(vid, set()):
-                    edge = graph._edges[eid]
+                for eid in gs.in_edge_ids(vid, graph=g):
+                    edge = gs.get_edge(eid)
+                    if edge is None:
+                        continue
                     neighbor_values.append(features.get(edge.source_id, 0.0))
 
                 if not neighbor_values:
@@ -83,7 +95,7 @@ class MessagePassingOperator:
         # Calibrate via sigmoid
         entries: list[PostingEntry] = []
         graph_payloads: dict[int, GraphPayload] = {}
-        for vid in sorted(graph._vertices):
+        for vid in sorted(vertices):
             score = 1.0 / (1.0 + math.exp(-features[vid]))
             entries.append(PostingEntry(vid, Payload(score=score)))
             graph_payloads[vid] = GraphPayload(

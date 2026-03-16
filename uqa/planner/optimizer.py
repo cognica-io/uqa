@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
-from uqa.planner.cardinality import CardinalityEstimator
+from uqa.planner.cardinality import CardinalityEstimator, GraphStats
 from uqa.planner.cost_model import CostModel
 
 if TYPE_CHECKING:
@@ -34,16 +34,20 @@ class QueryOptimizer:
         column_stats: dict | None = None,
         index_manager: IndexManager | None = None,
         table_name: str | None = None,
+        graph_stats: GraphStats | None = None,
     ):
         self.stats = stats
-        self.estimator = CardinalityEstimator(column_stats)
-        self._cost_model = CostModel()
+        self.estimator = CardinalityEstimator(column_stats, graph_stats=graph_stats)
+        self._cost_model = CostModel(graph_stats=graph_stats)
+        self._graph_stats = graph_stats
         self._index_manager = index_manager
         self._table_name = table_name
 
     def optimize(self, op: Operator) -> Operator:
         op = self._push_filters_down(op)
         op = self._push_graph_pattern_filters(op)
+        op = self._push_filter_into_traverse(op)
+        op = self._push_filter_below_graph_join(op)
         op = self._fuse_join_pattern(op)
         op = self._merge_vector_thresholds(op)
         op = self._reorder_intersect(op)
@@ -80,6 +84,86 @@ class QueryOptimizer:
             op.predicate,
             self._recurse_children(source),
         )
+
+    def _push_filter_into_traverse(self, op: Operator) -> Operator:
+        """Push vertex property filters into TraverseOperator as BFS pruning.
+
+        When a FilterOperator on a vertex property sits above a
+        TraverseOperator, the filter predicate is absorbed into the
+        traverse's vertex_predicate so vertices failing the predicate
+        are pruned during BFS rather than post-filtered.
+        """
+        from uqa.graph.operators import TraverseOperator
+        from uqa.operators.primitive import FilterOperator
+
+        if isinstance(op, FilterOperator) and op.source is not None:
+            inner = op.source
+            if isinstance(inner, TraverseOperator):
+                field = op.field
+                predicate = op.predicate
+
+                def vertex_filter(
+                    v: object, f: str = field, p: object = predicate
+                ) -> bool:
+                    props = getattr(v, "properties", {})
+                    val = props.get(f)
+                    if val is None:
+                        return False
+                    return p.evaluate(val)  # type: ignore[union-attr]
+
+                # Combine with existing vertex_predicate if any
+                existing = inner.vertex_predicate
+                if existing is not None:
+                    prev = existing
+
+                    def combined(v: object) -> bool:
+                        return prev(v) and vertex_filter(v)  # type: ignore[operator]
+
+                    new_pred = combined
+                else:
+                    new_pred = vertex_filter
+
+                return TraverseOperator(
+                    inner.start_vertex,
+                    graph=inner.graph_name,
+                    label=inner.label,
+                    max_hops=inner.max_hops,
+                    vertex_predicate=new_pred,
+                )
+
+        return self._recurse_traverse_filter(op)
+
+    def _recurse_traverse_filter(self, op: Operator) -> Operator:
+        """Recurse into composite operators for traverse filter pushdown."""
+        from uqa.operators.base import ComposedOperator
+        from uqa.operators.boolean import (
+            ComplementOperator,
+            IntersectOperator,
+            UnionOperator,
+        )
+        from uqa.operators.primitive import FilterOperator
+
+        if isinstance(op, IntersectOperator):
+            return IntersectOperator(
+                [self._push_filter_into_traverse(o) for o in op.operands]
+            )
+        if isinstance(op, UnionOperator):
+            return UnionOperator(
+                [self._push_filter_into_traverse(o) for o in op.operands]
+            )
+        if isinstance(op, ComplementOperator):
+            return ComplementOperator(self._push_filter_into_traverse(op.operand))
+        if isinstance(op, FilterOperator) and op.source is not None:
+            return FilterOperator(
+                op.field,
+                op.predicate,
+                self._push_filter_into_traverse(op.source),
+            )
+        if isinstance(op, ComposedOperator):
+            return ComposedOperator(
+                [self._push_filter_into_traverse(o) for o in op.operators]
+            )
+        return op
 
     def _push_graph_pattern_filters(self, op: Operator) -> Operator:
         """Push filter predicates into graph pattern matching constraints.
@@ -132,7 +216,10 @@ class QueryOptimizer:
                     new_pattern = GraphPattern(
                         new_vertex_patterns, pattern.edge_patterns
                     )
-                    return cast("Operator", PatternMatchOperator(new_pattern))
+                    return cast(
+                        "Operator",
+                        PatternMatchOperator(new_pattern, graph=inner.graph_name),
+                    )
 
                 # Edge pushdown: field like "a_b.since" matches edge (a -> b)
                 if not pushed:
@@ -174,7 +261,9 @@ class QueryOptimizer:
                                 )
                                 return cast(
                                     "Operator",
-                                    PatternMatchOperator(new_pattern),
+                                    PatternMatchOperator(
+                                        new_pattern, graph=inner.graph_name
+                                    ),
                                 )
 
         # Recurse into children
@@ -209,6 +298,69 @@ class QueryOptimizer:
         if isinstance(op, ComposedOperator):
             return ComposedOperator(
                 [self._push_graph_pattern_filters(o) for o in op.operators]
+            )
+        return op
+
+    def _push_filter_below_graph_join(self, op: Operator) -> Operator:
+        """Push filters below graph join operators to reduce join input size.
+
+        When FilterOperator(field, pred, GraphJoinOperator(left, right, ...)):
+        - Push the filter to the left (graph) side of the join, reducing the
+          number of rows entering the join.
+        - If the source is not a GraphJoinOperator, recurse into children.
+        """
+        from uqa.joins.cross_paradigm import GraphJoinOperator
+        from uqa.operators.primitive import FilterOperator
+
+        if isinstance(op, FilterOperator) and op.source is not None:
+            source = op.source
+            if isinstance(source, GraphJoinOperator):
+                # Push filter below the join -- apply to left operand
+                new_left = FilterOperator(op.field, op.predicate, source.left)
+                new_join = GraphJoinOperator(
+                    new_left,
+                    source.right,
+                    source.label,
+                    graph=source.graph_name,
+                )
+                return cast("Operator", new_join)
+            return FilterOperator(
+                op.field,
+                op.predicate,
+                self._push_filter_below_graph_join(op.source),
+            )
+
+        return self._recurse_graph_join(op)
+
+    def _recurse_graph_join(self, op: Operator) -> Operator:
+        """Recurse into composite operators for graph join filter pushdown."""
+        from uqa.operators.base import ComposedOperator
+        from uqa.operators.boolean import (
+            ComplementOperator,
+            IntersectOperator,
+            UnionOperator,
+        )
+        from uqa.operators.primitive import FilterOperator
+
+        if isinstance(op, IntersectOperator):
+            return IntersectOperator(
+                [self._push_filter_below_graph_join(o) for o in op.operands]
+            )
+        if isinstance(op, UnionOperator):
+            return UnionOperator(
+                [self._push_filter_below_graph_join(o) for o in op.operands]
+            )
+        if isinstance(op, ComplementOperator):
+            return ComplementOperator(self._push_filter_below_graph_join(op.operand))
+        if isinstance(op, FilterOperator) and op.source is not None:
+            return FilterOperator(
+                op.field,
+                op.predicate,
+                self._push_filter_below_graph_join(op.source),
+            )
+        if isinstance(op, ComposedOperator):
+            return ComposedOperator(
+                [self._push_filter_below_graph_join(o) for o in op.operators]
             )
         return op
 
@@ -319,7 +471,7 @@ class QueryOptimizer:
             list(merged_vps.values()),
             merged_edges,
         )
-        return PatternMatchOperator(merged_pattern)
+        return PatternMatchOperator(merged_pattern, graph=pm1.graph_name)
 
     def _merge_vector_thresholds(self, op: Operator) -> Operator:
         """Merge V_theta1(q) AND V_theta2(q) into V_max(theta1,theta2)(q)."""
@@ -389,6 +541,11 @@ class QueryOptimizer:
         cheaper signals first enables earlier threshold checks and reduces
         wasted computation on expensive signals whose contribution cannot
         change the final ranking.
+
+        When graph_stats are available, graph operators (TraverseOperator,
+        PatternMatchOperator, RegularPathQueryOperator) receive a cost
+        discount factor of 0.5 because graph indexes make them cheaper
+        than their raw cardinality estimate suggests.
         """
         from uqa.operators.hybrid import (
             LogOddsFusionOperator,
@@ -397,15 +554,35 @@ class QueryOptimizer:
 
         if isinstance(op, LogOddsFusionOperator):
             signals = [self._reorder_fusion_signals(s) for s in op.signals]
-            signals.sort(key=lambda s: self.estimator.estimate(s, self.stats))
+            signals.sort(key=self._graph_aware_signal_cost)
             return LogOddsFusionOperator(signals, alpha=op.alpha, gating=op.gating)
 
         if isinstance(op, ProbBoolFusionOperator):
             signals = [self._reorder_fusion_signals(s) for s in op.signals]
-            signals.sort(key=lambda s: self.estimator.estimate(s, self.stats))
+            signals.sort(key=self._graph_aware_signal_cost)
             return ProbBoolFusionOperator(signals, mode=op.mode)
 
         return self._recurse_fusion(op)
+
+    def _graph_aware_signal_cost(self, signal: Operator) -> float:
+        """Estimate signal cost with graph-aware discount.
+
+        When graph_stats are available, graph operators benefit from
+        indexed lookups and are assigned a lower effective cost (0.5x)
+        to prefer evaluating them before text/vector operators.
+        """
+        from uqa.graph.operators import (
+            PatternMatchOperator,
+            RegularPathQueryOperator,
+            TraverseOperator,
+        )
+
+        base = self.estimator.estimate(signal, self.stats)
+        if self._graph_stats is not None and isinstance(
+            signal, (TraverseOperator, PatternMatchOperator, RegularPathQueryOperator)
+        ):
+            base *= 0.5
+        return base
 
     def _recurse_fusion(self, op: Operator) -> Operator:
         """Recurse into composite operators for fusion signal reordering."""

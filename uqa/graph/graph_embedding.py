@@ -33,26 +33,37 @@ class GraphEmbeddingOperator:
         self,
         dimensions: int = 32,
         k_layers: int = 2,
+        *,
+        graph: str,
     ) -> None:
         self.dimensions = dimensions
         self.k_layers = k_layers
+        self.graph_name = graph
 
     def execute(self, ctx: object) -> GraphPostingList:
-        graph: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
+        gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
+        g = self.graph_name
+        vertices = sorted(gs.vertex_ids_in_graph(g))
 
-        if not graph._vertices:
+        if not vertices:
             return GraphPostingList()
 
         # Collect all edge labels for one-hot encoding
-        all_labels = sorted(graph._label_index.keys())
-        label_to_idx: dict[str, int] = {l: i for i, l in enumerate(all_labels)}
-        n_labels = len(all_labels)
+        all_labels: set[str] = set()
+        for vid in vertices:
+            for eid in gs.out_edge_ids(vid, graph=g):
+                edge = gs.get_edge(eid)
+                if edge is not None:
+                    all_labels.add(edge.label)
+        sorted_labels = sorted(all_labels)
+        label_to_idx: dict[str, int] = {l: i for i, l in enumerate(sorted_labels)}
+        n_labels = len(sorted_labels)
 
         entries: list[PostingEntry] = []
         graph_payloads: dict[int, GraphPayload] = {}
 
-        for vid in sorted(graph._vertices):
-            embedding = self._compute_embedding(graph, vid, label_to_idx, n_labels)
+        for vid in vertices:
+            embedding = self._compute_embedding(gs, g, vid, label_to_idx, n_labels)
             entries.append(
                 PostingEntry(
                     vid,
@@ -71,23 +82,24 @@ class GraphEmbeddingOperator:
 
     def _compute_embedding(
         self,
-        graph: object,
+        gs: GraphStore,
+        g: str,
         vid: int,
         label_to_idx: dict[str, int],
         n_labels: int,
     ) -> list[float]:
         """Compute structural embedding for a vertex."""
-        g = graph  # type: ignore[assignment]
-
         # Feature 1: degree features (2 dims)
-        out_degree = len(g._adj_out.get(vid, set()))
-        in_degree = len(g._adj_in.get(vid, set()))
+        out_degree = len(gs.out_edge_ids(vid, graph=g))
+        in_degree = len(gs.in_edge_ids(vid, graph=g))
 
         # Feature 2: label distribution (n_labels dims, capped at dims/2)
         label_dims = min(n_labels, self.dimensions // 2)
         label_dist = [0.0] * label_dims
-        for eid in g._adj_out.get(vid, set()):
-            edge = g._edges[eid]
+        for eid in gs.out_edge_ids(vid, graph=g):
+            edge = gs.get_edge(eid)
+            if edge is None:
+                continue
             idx = label_to_idx.get(edge.label, -1)
             if 0 <= idx < label_dims:
                 label_dist[idx] += 1.0
@@ -103,8 +115,11 @@ class GraphEmbeddingOperator:
         for _ in range(self.k_layers):
             next_frontier: set[int] = set()
             for v in frontier:
-                for eid in g._adj_out.get(v, set()):
-                    neighbor = g._edges[eid].target_id
+                for eid in gs.out_edge_ids(v, graph=g):
+                    edge = gs.get_edge(eid)
+                    if edge is None:
+                        continue
+                    neighbor = edge.target_id
                     if neighbor not in visited:
                         next_frontier.add(neighbor)
                         visited.add(neighbor)

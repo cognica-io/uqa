@@ -17,6 +17,8 @@ from uqa.graph.centrality import (
 from uqa.graph.store import GraphStore
 from uqa.operators.base import ExecutionContext
 
+_GRAPH_NAME = "test"
+
 
 def _make_star_graph() -> GraphStore:
     """Star/hub graph: center vertex 1, spokes 2, 3, 4.
@@ -24,25 +26,27 @@ def _make_star_graph() -> GraphStore:
     Edges: 1->2, 1->3, 1->4, 2->1, 3->1, 4->1 (bidirectional hub).
     """
     g = GraphStore()
+    g.create_graph(_GRAPH_NAME)
     for i in range(1, 5):
-        g.add_vertex(Vertex(i, "node", {}))
-    g.add_edge(Edge(1, 1, 2, "link", {}))
-    g.add_edge(Edge(2, 1, 3, "link", {}))
-    g.add_edge(Edge(3, 1, 4, "link", {}))
-    g.add_edge(Edge(4, 2, 1, "link", {}))
-    g.add_edge(Edge(5, 3, 1, "link", {}))
-    g.add_edge(Edge(6, 4, 1, "link", {}))
+        g.add_vertex(Vertex(i, "node", {}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(1, 1, 2, "link", {}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(2, 1, 3, "link", {}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(3, 1, 4, "link", {}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(4, 2, 1, "link", {}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(5, 3, 1, "link", {}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(6, 4, 1, "link", {}), graph=_GRAPH_NAME)
     return g
 
 
 def _make_chain_graph() -> GraphStore:
     """Chain graph: 1 -> 2 -> 3 -> 4."""
     g = GraphStore()
+    g.create_graph(_GRAPH_NAME)
     for i in range(1, 5):
-        g.add_vertex(Vertex(i, "node", {}))
-    g.add_edge(Edge(1, 1, 2, "link", {}))
-    g.add_edge(Edge(2, 2, 3, "link", {}))
-    g.add_edge(Edge(3, 3, 4, "link", {}))
+        g.add_vertex(Vertex(i, "node", {}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(1, 1, 2, "link", {}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(2, 2, 3, "link", {}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(3, 3, 4, "link", {}), graph=_GRAPH_NAME)
     return g
 
 
@@ -52,24 +56,26 @@ def _make_bipartite_graph() -> GraphStore:
     Edges: 1->3, 1->4, 1->5, 2->3, 2->4, 2->5.
     """
     g = GraphStore()
+    g.create_graph(_GRAPH_NAME)
     for i in range(1, 6):
-        g.add_vertex(Vertex(i, "node", {}))
-    g.add_edge(Edge(1, 1, 3, "link", {}))
-    g.add_edge(Edge(2, 1, 4, "link", {}))
-    g.add_edge(Edge(3, 1, 5, "link", {}))
-    g.add_edge(Edge(4, 2, 3, "link", {}))
-    g.add_edge(Edge(5, 2, 4, "link", {}))
-    g.add_edge(Edge(6, 2, 5, "link", {}))
+        g.add_vertex(Vertex(i, "node", {}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(1, 1, 3, "link", {}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(2, 1, 4, "link", {}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(3, 1, 5, "link", {}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(4, 2, 3, "link", {}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(5, 2, 4, "link", {}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(6, 2, 5, "link", {}), graph=_GRAPH_NAME)
     return g
 
 
 def _make_line_graph() -> GraphStore:
     """Line graph: 1 -> 2 -> 3 (3 vertices)."""
     g = GraphStore()
+    g.create_graph(_GRAPH_NAME)
     for i in range(1, 4):
-        g.add_vertex(Vertex(i, "node", {}))
-    g.add_edge(Edge(1, 1, 2, "link", {}))
-    g.add_edge(Edge(2, 2, 3, "link", {}))
+        g.add_vertex(Vertex(i, "node", {}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(1, 1, 2, "link", {}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(2, 2, 3, "link", {}), graph=_GRAPH_NAME)
     return g
 
 
@@ -83,7 +89,7 @@ class TestPageRankOperator:
         """Center vertex has highest rank in a star/hub graph."""
         graph = _make_star_graph()
         ctx = ExecutionContext(graph_store=graph)
-        op = PageRankOperator()
+        op = PageRankOperator(graph=_GRAPH_NAME)
         result = op.execute(ctx)
 
         scores = {e.doc_id: e.payload.score for e in result}
@@ -94,7 +100,7 @@ class TestPageRankOperator:
         """Last vertex in a chain receives the most incoming influence."""
         graph = _make_chain_graph()
         ctx = ExecutionContext(graph_store=graph)
-        op = PageRankOperator()
+        op = PageRankOperator(graph=_GRAPH_NAME)
         result = op.execute(ctx)
 
         scores = {e.doc_id: e.payload.score for e in result}
@@ -104,8 +110,9 @@ class TestPageRankOperator:
     def test_empty_graph(self) -> None:
         """Empty graph returns empty result."""
         graph = GraphStore()
+        graph.create_graph(_GRAPH_NAME)
         ctx = ExecutionContext(graph_store=graph)
-        op = PageRankOperator()
+        op = PageRankOperator(graph=_GRAPH_NAME)
         result = op.execute(ctx)
 
         assert len(list(result)) == 0
@@ -113,9 +120,10 @@ class TestPageRankOperator:
     def test_single_vertex(self) -> None:
         """Single vertex returns score 1.0."""
         graph = GraphStore()
-        graph.add_vertex(Vertex(1, "node", {}))
+        graph.create_graph(_GRAPH_NAME)
+        graph.add_vertex(Vertex(1, "node", {}), graph=_GRAPH_NAME)
         ctx = ExecutionContext(graph_store=graph)
-        op = PageRankOperator()
+        op = PageRankOperator(graph=_GRAPH_NAME)
         result = op.execute(ctx)
 
         entries = list(result)
@@ -126,7 +134,7 @@ class TestPageRankOperator:
         """Running PageRank twice gives the same result."""
         graph = _make_star_graph()
         ctx = ExecutionContext(graph_store=graph)
-        op = PageRankOperator()
+        op = PageRankOperator(graph=_GRAPH_NAME)
         result1 = op.execute(ctx)
         result2 = op.execute(ctx)
 
@@ -138,7 +146,7 @@ class TestPageRankOperator:
     def test_cost_estimate(self) -> None:
         """Verify cost formula: total_docs * max_iterations * 0.1."""
         stats = IndexStats(total_docs=1000)
-        op = PageRankOperator(max_iterations=50)
+        op = PageRankOperator(max_iterations=50, graph=_GRAPH_NAME)
         assert op.cost_estimate(stats) == pytest.approx(1000 * 50 * 0.1)
 
 
@@ -153,7 +161,7 @@ class TestHITSOperator:
         authority score in a bipartite graph."""
         graph = _make_bipartite_graph()
         ctx = ExecutionContext(graph_store=graph)
-        op = HITSOperator()
+        op = HITSOperator(graph=_GRAPH_NAME)
         result = op.execute(ctx)
 
         hub_scores: dict[int, float] = {}
@@ -179,7 +187,7 @@ class TestHITSOperator:
         """Verify hub_score and authority_score fields are in payload."""
         graph = _make_star_graph()
         ctx = ExecutionContext(graph_store=graph)
-        op = HITSOperator()
+        op = HITSOperator(graph=_GRAPH_NAME)
         result = op.execute(ctx)
 
         for entry in result:
@@ -189,8 +197,9 @@ class TestHITSOperator:
     def test_empty_graph(self) -> None:
         """Empty graph returns empty result."""
         graph = GraphStore()
+        graph.create_graph(_GRAPH_NAME)
         ctx = ExecutionContext(graph_store=graph)
-        op = HITSOperator()
+        op = HITSOperator(graph=_GRAPH_NAME)
         result = op.execute(ctx)
 
         assert len(list(result)) == 0
@@ -206,7 +215,7 @@ class TestBetweennessCentralityOperator:
         """Middle vertex in a line graph has the highest betweenness."""
         graph = _make_line_graph()
         ctx = ExecutionContext(graph_store=graph)
-        op = BetweennessCentralityOperator()
+        op = BetweennessCentralityOperator(graph=_GRAPH_NAME)
         result = op.execute(ctx)
 
         scores = {e.doc_id: e.payload.score for e in result}
@@ -218,7 +227,7 @@ class TestBetweennessCentralityOperator:
         """Center vertex has highest betweenness in a star graph."""
         graph = _make_star_graph()
         ctx = ExecutionContext(graph_store=graph)
-        op = BetweennessCentralityOperator()
+        op = BetweennessCentralityOperator(graph=_GRAPH_NAME)
         result = op.execute(ctx)
 
         scores = {e.doc_id: e.payload.score for e in result}
@@ -228,7 +237,7 @@ class TestBetweennessCentralityOperator:
         """All betweenness scores must be in [0, 1]."""
         graph = _make_star_graph()
         ctx = ExecutionContext(graph_store=graph)
-        op = BetweennessCentralityOperator()
+        op = BetweennessCentralityOperator(graph=_GRAPH_NAME)
         result = op.execute(ctx)
 
         for entry in result:
@@ -237,8 +246,9 @@ class TestBetweennessCentralityOperator:
     def test_empty_graph(self) -> None:
         """Empty graph returns empty result."""
         graph = GraphStore()
+        graph.create_graph(_GRAPH_NAME)
         ctx = ExecutionContext(graph_store=graph)
-        op = BetweennessCentralityOperator()
+        op = BetweennessCentralityOperator(graph=_GRAPH_NAME)
         result = op.execute(ctx)
 
         assert len(list(result)) == 0

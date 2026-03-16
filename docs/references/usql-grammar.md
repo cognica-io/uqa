@@ -1183,13 +1183,13 @@ graph_add_edge_call
     ;
 
 graph_source
-    = string_literal        (* table name or 'graph:name' *)
+    = string_literal        (* table name or graph name (direct, no prefix required) *)
     ;
 ```
 
 Path expressions support bounded repetition: `'knows{2,4}'` matches paths of 2 to 4 hops.
 
-`PAGERANK`, `HITS`, `BETWEENNESS` work as both FROM-clause table sources and WHERE-clause scored signals. The optional `graph_source` argument accepts `'graph:name'` for named graphs or a table name.
+`PAGERANK`, `HITS`, `BETWEENNESS` work as both FROM-clause table sources and WHERE-clause scored signals. The optional `graph_source` argument accepts a graph name directly (e.g., `'social'`) or a table name. The `graph:` prefix is accepted for backward compatibility but not required.
 
 `WEIGHTED_RPQ` evaluates a regular path query tracking cumulative edge weight. `aggregate_fn` is `'sum'` (default), `'max'`, or `'min'`. When `threshold` is provided, only paths with cumulative weight exceeding the threshold are returned.
 

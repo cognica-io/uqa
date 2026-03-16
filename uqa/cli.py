@@ -698,17 +698,18 @@ class UQAShell:
         print(SQLResult(["server_name", "fdw_type", "options"], rows))
 
     def _cmd_list_graphs(self) -> None:
-        graphs = self._engine._named_graphs
-        if not graphs:
+        gs = self._engine._graph_store
+        names = gs.graph_names()
+        if not names:
             print("No named graphs.")
             return
         rows = []
-        for name, store in sorted(graphs.items()):
+        for name in names:
             rows.append(
                 {
                     "graph_name": name,
-                    "vertices": len(store._vertices),
-                    "edges": len(store._edges),
+                    "vertices": len(gs.vertex_ids_in_graph(name)),
+                    "edges": len(gs.edges_in_graph(name)),
                 }
             )
         print(SQLResult(["graph_name", "vertices", "edges"], rows))

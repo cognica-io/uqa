@@ -384,3 +384,85 @@ class ProbNotOperator(Operator):
 
     def cost_estimate(self, stats: IndexStats) -> float:
         return self.signal.cost_estimate(stats)
+
+
+class AdaptiveLogOddsFusionOperator(Operator):
+    """Multi-signal fusion with adaptive per-signal confidence (Paper 4, Section 6).
+
+    Computes signal quality metrics (coverage, variance, calibration error)
+    from each signal's output, then uses AdaptiveLogOddsFusion for
+    quality-weighted combination.
+    """
+
+    def __init__(
+        self,
+        signals: list[Operator],
+        base_alpha: float = 0.5,
+        gating: str | None = None,
+    ) -> None:
+        self.signals = signals
+        self.base_alpha = base_alpha
+        self.gating = gating
+
+    def execute(self, context: ExecutionContext) -> PostingList:
+        from uqa.fusion.log_odds import AdaptiveLogOddsFusion, SignalQuality
+
+        par = context.parallel_executor
+        if par is not None and par.enabled:
+            posting_lists = par.execute_branches(self.signals, context)
+        else:
+            posting_lists = [sig.execute(context) for sig in self.signals]
+
+        all_doc_ids: set[int] = set()
+        score_maps: list[dict[int, float]] = []
+        for pl in posting_lists:
+            smap: dict[int, float] = {}
+            for entry in pl:
+                smap[entry.doc_id] = entry.payload.score
+                all_doc_ids.add(entry.doc_id)
+            score_maps.append(smap)
+
+        sorted_ids = sorted(all_doc_ids)
+        num_docs = len(sorted_ids)
+
+        if num_docs == 0:
+            return PostingList()
+
+        # Compute signal quality metrics
+        qualities: list[SignalQuality] = []
+        for smap in score_maps:
+            coverage = len(smap) / num_docs if num_docs > 0 else 0.0
+            scores = list(smap.values())
+            if len(scores) > 1:
+                mean_s = sum(scores) / len(scores)
+                variance = sum((s - mean_s) ** 2 for s in scores) / len(scores)
+            else:
+                variance = 0.0
+            # Calibration error: |mean_score - 0.5| as proxy
+            mean_score = sum(scores) / len(scores) if scores else 0.5
+            cal_error = abs(mean_score - 0.5)
+            qualities.append(
+                SignalQuality(
+                    coverage_ratio=coverage,
+                    score_variance=variance,
+                    calibration_error=cal_error,
+                )
+            )
+
+        defaults = [_coverage_based_default(len(smap), num_docs) for smap in score_maps]
+
+        fusion = AdaptiveLogOddsFusion(
+            base_alpha=self.base_alpha,
+            gating=self.gating,
+        )
+
+        entries: list[PostingEntry] = []
+        for doc_id in sorted_ids:
+            probs = [smap.get(doc_id, defaults[j]) for j, smap in enumerate(score_maps)]
+            fused = fusion.fuse_adaptive(probs, qualities)
+            entries.append(PostingEntry(doc_id, Payload(score=fused)))
+
+        return PostingList.from_sorted(entries)
+
+    def cost_estimate(self, stats: IndexStats) -> float:
+        return sum(sig.cost_estimate(stats) for sig in self.signals)

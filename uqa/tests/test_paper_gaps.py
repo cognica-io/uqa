@@ -80,10 +80,11 @@ def _make_graph() -> GraphStore:
         Edge(7, 4, 5, "knows", {"weight": 0.3}),
     ]
     g = GraphStore()
+    g.create_graph("test")
     for v in vertices:
-        g.add_vertex(v)
+        g.add_vertex(v, graph="test")
     for e in edges:
-        g.add_edge(e)
+        g.add_edge(e, graph="test")
     return g
 
 
@@ -372,7 +373,9 @@ class TestVertexAggregationOperator:
 
         graph = _make_graph()
         ctx = _GraphContext(graph)
-        traverse = TraverseOperator(start_vertex=1, label="knows", max_hops=1)
+        traverse = TraverseOperator(
+            start_vertex=1, graph="test", label="knows", max_hops=1
+        )
         agg = VertexAggregationOperator(traverse, "age", "sum")
         result = agg.execute(ctx)
         assert len(result) == 1
@@ -385,7 +388,9 @@ class TestVertexAggregationOperator:
 
         graph = _make_graph()
         ctx = _GraphContext(graph)
-        traverse = TraverseOperator(start_vertex=1, label="knows", max_hops=1)
+        traverse = TraverseOperator(
+            start_vertex=1, graph="test", label="knows", max_hops=1
+        )
         agg = VertexAggregationOperator(traverse, "age", "avg")
         result = agg.execute(ctx)
         assert result.entries[0].payload.score == pytest.approx(30.0)
@@ -395,7 +400,9 @@ class TestVertexAggregationOperator:
 
         graph = _make_graph()
         ctx = _GraphContext(graph)
-        traverse = TraverseOperator(start_vertex=1, label="knows", max_hops=1)
+        traverse = TraverseOperator(
+            start_vertex=1, graph="test", label="knows", max_hops=1
+        )
 
         min_agg = VertexAggregationOperator(traverse, "age", "min")
         min_result = min_agg.execute(ctx)
@@ -410,7 +417,9 @@ class TestVertexAggregationOperator:
 
         graph = _make_graph()
         ctx = _GraphContext(graph)
-        traverse = TraverseOperator(start_vertex=1, label="knows", max_hops=1)
+        traverse = TraverseOperator(
+            start_vertex=1, graph="test", label="knows", max_hops=1
+        )
         agg = VertexAggregationOperator(traverse, "age", "count")
         result = agg.execute(ctx)
         assert result.entries[0].payload.score == pytest.approx(3.0)
@@ -420,7 +429,9 @@ class TestVertexAggregationOperator:
 
         graph = _make_graph()
         ctx = _GraphContext(graph)
-        traverse = TraverseOperator(start_vertex=1, label="knows", max_hops=1)
+        traverse = TraverseOperator(
+            start_vertex=1, graph="test", label="knows", max_hops=1
+        )
         agg = VertexAggregationOperator(traverse, "nonexistent", "sum")
         result = agg.execute(ctx)
         assert result.entries[0].payload.score == pytest.approx(0.0)
@@ -430,7 +441,9 @@ class TestVertexAggregationOperator:
 
         graph = _make_graph()
         ctx = _GraphContext(graph)
-        traverse = TraverseOperator(start_vertex=1, label="knows", max_hops=1)
+        traverse = TraverseOperator(
+            start_vertex=1, graph="test", label="knows", max_hops=1
+        )
         agg = VertexAggregationOperator(traverse, "age", "sum")
         result = agg.execute(ctx)
         entry = result.entries[0]
@@ -461,7 +474,7 @@ class TestGraphPatternPushdown:
                 EdgePattern("a", "b", "knows", []),
             ],
         )
-        pm = PatternMatchOperator(pattern)
+        pm = PatternMatchOperator(pattern, graph="test")
         # Filter on "a.age" > 30 (qualified to vertex "a")
         filtered = FilterOperator("a.age", GreaterThan(30), pm)
 
@@ -489,7 +502,7 @@ class TestGraphPatternPushdown:
                 EdgePattern("a", "b", "knows", []),
             ],
         )
-        pm = PatternMatchOperator(pattern)
+        pm = PatternMatchOperator(pattern, graph="test")
         filtered = FilterOperator("a.dept", Equals("eng"), pm)
 
         stats = IndexStats(total_docs=5)
@@ -537,7 +550,7 @@ class TestJoinPatternFusion:
         )
         # Simulate join -> pattern match composition
         join_op = _FixedOperator([])  # dummy join
-        pm = PatternMatchOperator(pattern)
+        pm = PatternMatchOperator(pattern, graph="test")
         composed = ComposedOperator([join_op, pm])
 
         stats = IndexStats(total_docs=5)
@@ -561,11 +574,13 @@ class TestGraphCardinality:
         from uqa.planner.cardinality import CardinalityEstimator, GraphStats
 
         graph = _make_graph()
-        gs = GraphStats.from_graph_store(graph)
+        gs = GraphStats.from_graph_store(graph, graph="test")
         estimator = CardinalityEstimator(graph_stats=gs)
 
         stats = IndexStats(total_docs=5)
-        traverse = TraverseOperator(start_vertex=1, label="knows", max_hops=2)
+        traverse = TraverseOperator(
+            start_vertex=1, graph="test", label="knows", max_hops=2
+        )
         card = estimator.estimate(traverse, stats)
 
         # With stats, should use avg_out_degree * label_selectivity
@@ -578,7 +593,9 @@ class TestGraphCardinality:
 
         estimator = CardinalityEstimator()
         stats = IndexStats(total_docs=100)
-        traverse = TraverseOperator(start_vertex=1, label="knows", max_hops=1)
+        traverse = TraverseOperator(
+            start_vertex=1, graph="test", label="knows", max_hops=1
+        )
         card = estimator.estimate(traverse, stats)
         # Fallback heuristic
         assert card > 0
@@ -589,14 +606,14 @@ class TestGraphCardinality:
         from uqa.planner.cardinality import CardinalityEstimator, GraphStats
 
         graph = _make_graph()
-        gs = GraphStats.from_graph_store(graph)
+        gs = GraphStats.from_graph_store(graph, graph="test")
         estimator = CardinalityEstimator(graph_stats=gs)
 
         pattern = GraphPattern(
             vertex_patterns=[VertexPattern("a", []), VertexPattern("b", [])],
             edge_patterns=[EdgePattern("a", "b", "knows", [])],
         )
-        pm = PatternMatchOperator(pattern)
+        pm = PatternMatchOperator(pattern, graph="test")
         stats = IndexStats(total_docs=5)
         card = estimator.estimate(pm, stats)
 
@@ -610,10 +627,10 @@ class TestGraphCardinality:
         from uqa.planner.cardinality import CardinalityEstimator, GraphStats
 
         graph = _make_graph()
-        gs = GraphStats.from_graph_store(graph)
+        gs = GraphStats.from_graph_store(graph, graph="test")
         estimator = CardinalityEstimator(graph_stats=gs)
 
-        rpq = RegularPathQueryOperator(Label("knows"), start_vertex=1)
+        rpq = RegularPathQueryOperator(Label("knows"), graph="test", start_vertex=1)
         stats = IndexStats(total_docs=5)
         card = estimator.estimate(rpq, stats)
         assert card >= 1.0
@@ -623,7 +640,7 @@ class TestGraphCardinality:
         from uqa.planner.cardinality import GraphStats
 
         graph = _make_graph()
-        gs = GraphStats.from_graph_store(graph)
+        gs = GraphStats.from_graph_store(graph, graph="test")
 
         assert gs.num_vertices == 5
         assert gs.num_edges == 7
@@ -637,7 +654,7 @@ class TestGraphCardinality:
         from uqa.planner.cardinality import GraphStats
 
         graph = _make_graph()
-        gs = GraphStats.from_graph_store(graph)
+        gs = GraphStats.from_graph_store(graph, graph="test")
 
         assert gs.label_selectivity("knows") == pytest.approx(5 / 7)
         assert gs.label_selectivity("works_with") == pytest.approx(2 / 7)
@@ -648,7 +665,7 @@ class TestGraphCardinality:
         from uqa.planner.cardinality import GraphStats
 
         graph = _make_graph()
-        gs = GraphStats.from_graph_store(graph)
+        gs = GraphStats.from_graph_store(graph, graph="test")
         assert gs.edge_density() == pytest.approx(7 / 25)
 
 
@@ -662,7 +679,7 @@ class TestLabelIndex:
         from uqa.graph.index import LabelIndex
 
         graph = _make_graph()
-        idx = LabelIndex.build(graph)
+        idx = LabelIndex.build(graph, graph_name="test")
 
         knows_edges = idx.edges_by_label("knows")
         assert len(knows_edges) == 5
@@ -675,7 +692,7 @@ class TestLabelIndex:
         from uqa.graph.index import LabelIndex
 
         graph = _make_graph()
-        idx = LabelIndex.build(graph)
+        idx = LabelIndex.build(graph, graph_name="test")
 
         knows_verts = idx.vertices_by_label("knows")
         # All vertices involved in "knows" edges
@@ -687,7 +704,7 @@ class TestLabelIndex:
         from uqa.graph.index import LabelIndex
 
         graph = _make_graph()
-        idx = LabelIndex.build(graph)
+        idx = LabelIndex.build(graph, graph_name="test")
 
         assert idx.label_count("knows") == 5
         assert idx.label_count("works_with") == 2
@@ -697,14 +714,15 @@ class TestLabelIndex:
         from uqa.graph.index import LabelIndex
 
         graph = _make_graph()
-        idx = LabelIndex.build(graph)
+        idx = LabelIndex.build(graph, graph_name="test")
         assert idx.labels() == ["knows", "works_with"]
 
     def test_empty_graph(self) -> None:
         from uqa.graph.index import LabelIndex
 
         graph = GraphStore()
-        idx = LabelIndex.build(graph)
+        graph.create_graph("test")
+        idx = LabelIndex.build(graph, graph_name="test")
         assert idx.labels() == []
         assert idx.edges_by_label("knows") == []
 
@@ -714,7 +732,7 @@ class TestNeighborhoodIndex:
         from uqa.graph.index import NeighborhoodIndex
 
         graph = _make_graph()
-        idx = NeighborhoodIndex.build(graph, max_hops=2)
+        idx = NeighborhoodIndex.build(graph, max_hops=2, graph_name="test")
 
         n1_hop1 = idx.neighbors(1, 1)
         assert 1 in n1_hop1
@@ -729,7 +747,9 @@ class TestNeighborhoodIndex:
         from uqa.graph.index import NeighborhoodIndex
 
         graph = _make_graph()
-        idx = NeighborhoodIndex.build(graph, max_hops=2, label="knows")
+        idx = NeighborhoodIndex.build(
+            graph, max_hops=2, label="knows", graph_name="test"
+        )
 
         n1 = idx.neighbors(1, 1)
         assert 2 in n1
@@ -743,7 +763,7 @@ class TestNeighborhoodIndex:
         from uqa.graph.index import NeighborhoodIndex
 
         graph = _make_graph()
-        idx = NeighborhoodIndex.build(graph, max_hops=1)
+        idx = NeighborhoodIndex.build(graph, max_hops=1, graph_name="test")
         assert idx.neighbors(999, 1) == set()
         assert not idx.has_vertex(999)
 
@@ -751,7 +771,7 @@ class TestNeighborhoodIndex:
         from uqa.graph.index import NeighborhoodIndex
 
         graph = _make_graph()
-        idx = NeighborhoodIndex.build(graph, max_hops=1)
+        idx = NeighborhoodIndex.build(graph, max_hops=1, graph_name="test")
         for vid in range(1, 6):
             assert idx.has_vertex(vid)
 
@@ -759,7 +779,8 @@ class TestNeighborhoodIndex:
         from uqa.graph.index import NeighborhoodIndex
 
         graph = GraphStore()
-        idx = NeighborhoodIndex.build(graph, max_hops=2)
+        graph.create_graph("test")
+        idx = NeighborhoodIndex.build(graph, max_hops=2, graph_name="test")
         assert idx.neighbors(1, 1) == set()
 
 
@@ -768,7 +789,7 @@ class TestPathIndex:
         from uqa.graph.index import PathIndex
 
         graph = _make_graph()
-        idx = PathIndex.build(graph, [["knows"]])
+        idx = PathIndex.build(graph, [["knows"]], graph_name="test")
 
         pairs = idx.lookup(["knows"])
         assert pairs is not None
@@ -780,7 +801,7 @@ class TestPathIndex:
         from uqa.graph.index import PathIndex
 
         graph = _make_graph()
-        idx = PathIndex.build(graph, [["knows", "knows"]])
+        idx = PathIndex.build(graph, [["knows", "knows"]], graph_name="test")
 
         pairs = idx.lookup(["knows", "knows"])
         assert pairs is not None
@@ -793,7 +814,7 @@ class TestPathIndex:
         from uqa.graph.index import PathIndex
 
         graph = _make_graph()
-        idx = PathIndex.build(graph, [["knows", "works_with"]])
+        idx = PathIndex.build(graph, [["knows", "works_with"]], graph_name="test")
 
         pairs = idx.lookup(["knows", "works_with"])
         assert pairs is not None
@@ -806,7 +827,7 @@ class TestPathIndex:
         from uqa.graph.index import PathIndex
 
         graph = _make_graph()
-        idx = PathIndex.build(graph, [["knows"]])
+        idx = PathIndex.build(graph, [["knows"]], graph_name="test")
         assert idx.lookup(["works_with"]) is None
         assert not idx.has_path(["works_with"])
 
@@ -814,14 +835,17 @@ class TestPathIndex:
         from uqa.graph.index import PathIndex
 
         graph = _make_graph()
-        idx = PathIndex.build(graph, [["knows"], ["knows", "works_with"]])
+        idx = PathIndex.build(
+            graph, [["knows"], ["knows", "works_with"]], graph_name="test"
+        )
         assert idx.indexed_paths() == ["knows", "knows/works_with"]
 
     def test_empty_graph(self) -> None:
         from uqa.graph.index import PathIndex
 
         graph = GraphStore()
-        idx = PathIndex.build(graph, [["knows"]])
+        graph.create_graph("test")
+        idx = PathIndex.build(graph, [["knows"]], graph_name="test")
         pairs = idx.lookup(["knows"])
         assert pairs is not None
         assert len(pairs) == 0
@@ -858,7 +882,9 @@ class TestCostModelNewOperators:
         from uqa.graph.operators import TraverseOperator, VertexAggregationOperator
         from uqa.planner.cost_model import CostModel
 
-        traverse = TraverseOperator(start_vertex=1, label="knows", max_hops=1)
+        traverse = TraverseOperator(
+            start_vertex=1, graph="test", label="knows", max_hops=1
+        )
         agg = VertexAggregationOperator(traverse, "age", "sum")
         stats = IndexStats(total_docs=100)
         cost = CostModel().estimate(agg, stats)
@@ -896,7 +922,9 @@ class TestCardinalityNewOperators:
         from uqa.graph.operators import TraverseOperator, VertexAggregationOperator
         from uqa.planner.cardinality import CardinalityEstimator
 
-        traverse = TraverseOperator(start_vertex=1, label="knows", max_hops=1)
+        traverse = TraverseOperator(
+            start_vertex=1, graph="test", label="knows", max_hops=1
+        )
         agg = VertexAggregationOperator(traverse, "age", "sum")
         stats = IndexStats(total_docs=100)
         card = CardinalityEstimator().estimate(agg, stats)

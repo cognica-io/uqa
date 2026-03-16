@@ -198,7 +198,7 @@ DROP FOREIGN TABLE [IF EXISTS] name;
 
 Foreign tables are read-only. INSERT, UPDATE, and DELETE are rejected.
 
-**Full Query Pushdown (v0.19.0):**
+**Full Query Pushdown:**
 
 When every table referenced in a SELECT lives on the same DuckDB server, UQA pushes the entire query -- including JOINs, GROUP BY, ORDER BY, LIMIT, window functions, and subqueries -- down to DuckDB for execution. No rows are materialized in Python; DuckDB processes the data natively, making large-scale analytics fast even on datasets with tens of millions of rows.
 
@@ -1050,7 +1050,7 @@ SELECT * FROM rpq('knows{2,3}', 1);
 -- PageRank as table source (FROM clause)
 SELECT _doc_id, title, _score FROM pagerank() ORDER BY _score DESC;
 SELECT _doc_id, _score FROM pagerank(0.95) ORDER BY _score DESC;  -- custom damping
-SELECT _doc_id, _score FROM pagerank('graph:social') ORDER BY _score DESC;  -- named graph
+SELECT _doc_id, _score FROM pagerank('social') ORDER BY _score DESC;  -- named graph (direct name)
 
 -- HITS hub/authority scoring
 SELECT _doc_id, title, _score FROM hits() ORDER BY _score DESC;
@@ -1233,11 +1233,26 @@ WHERE fuse_log_odds(
 
 ## 15. Cypher / Graph Integration
 
-### Create and Drop Named Graphs
+### Named Graph Management
+
+Named graphs partition the graph store into isolated namespaces. Each named graph has its own adjacency indexes (per-graph `_GraphPartition`) while vertices and edges are stored globally. Named graphs are persisted via `_graph_catalog` and `_graph_membership` SQLite tables.
 
 ```sql
+-- Create and drop named graphs
 SELECT * FROM create_graph('social');
 SELECT * FROM drop_graph('social');
+```
+
+All graph functions accept direct graph names without the `graph:` prefix (backward compatible):
+
+```sql
+-- Traverse, RPQ, and centrality with named graphs
+SELECT * FROM traverse(1, 'knows', 2, 'social');
+SELECT * FROM rpq('knows/works_with', 1, 'social');
+SELECT * FROM temporal_traverse(1, 'knows', 2, 150, 'net');
+SELECT * FROM pagerank(0.85, 'social');
+SELECT * FROM hits(20, 'social');
+SELECT * FROM betweenness('social');
 ```
 
 ### Cypher Queries in SQL

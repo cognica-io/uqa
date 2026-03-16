@@ -38,42 +38,54 @@ class TraverseOperator:
     def __init__(
         self,
         start_vertex: int,
+        *,
+        graph: str,
         label: str | None = None,
         max_hops: int = 1,
+        vertex_predicate: object | None = None,
     ) -> None:
         self.start_vertex = start_vertex
         self.label = label
         self.max_hops = max_hops
+        self.graph_name = graph
+        self.vertex_predicate = vertex_predicate
 
     def execute(self, ctx: object) -> GraphPostingList:
-        graph: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
+        gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
         visited: set[int] = set()
         frontier: set[int] = {self.start_vertex}
         all_edges: set[int] = set()
+        g = self.graph_name
 
         for _ in range(self.max_hops):
             next_frontier: set[int] = set()
             for v in frontier:
-                # Collect edges and neighbors
-                adj = graph._adj_out.get(v, set())
+                adj = gs.out_edge_ids(v, graph=g)
                 if self.label is not None:
-                    label_eids = graph._label_index.get(self.label, set())
+                    label_eids = gs.edge_ids_by_label(self.label, graph=g)
                     edge_ids = adj & label_eids
                 else:
                     edge_ids = adj
                 for eid in edge_ids:
-                    edge = graph._edges[eid]
+                    edge = gs.get_edge(eid)
+                    if edge is None:
+                        continue
                     neighbor = edge.target_id
-                    if neighbor not in visited:
-                        next_frontier.add(neighbor)
-                        all_edges.add(eid)
+                    if neighbor in visited:
+                        continue
+                    # Prune via vertex_predicate during BFS
+                    if self.vertex_predicate is not None:
+                        vtx = gs.get_vertex(neighbor)
+                        if vtx is not None and not self.vertex_predicate(vtx):
+                            continue
+                    next_frontier.add(neighbor)
+                    all_edges.add(eid)
             visited.update(frontier)
             frontier = next_frontier
             if not frontier:
                 break
         visited.update(frontier)
 
-        # Build GraphPostingList: each reached vertex (excluding start) is an entry
         entries: list[PostingEntry] = []
         graph_payloads: dict[int, GraphPayload] = {}
         frozen_visited = frozenset(visited)
@@ -84,10 +96,10 @@ class TraverseOperator:
             graph_payloads[vid] = GraphPayload(
                 subgraph_vertices=frozen_visited,
                 subgraph_edges=frozen_edges,
+                graph_name=g,
             )
 
-        gpl = GraphPostingList(entries, graph_payloads)
-        return gpl
+        return GraphPostingList(entries, graph_payloads)
 
 
 class PatternMatchOperator:
@@ -99,25 +111,34 @@ class PatternMatchOperator:
     - Incremental edge validation during search
     """
 
-    def __init__(self, pattern: GraphPattern) -> None:
+    def __init__(self, pattern: GraphPattern, *, graph: str) -> None:
         self.pattern = pattern
+        self.graph_name = graph
 
     def execute(self, ctx: object) -> GraphPostingList:
-        graph: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
+        gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
+        g = self.graph_name
 
         # Check subgraph index cache (Section 9.1, Paper 2)
         subgraph_index = getattr(ctx, "subgraph_index", None)
         if subgraph_index is not None:
             cached = subgraph_index.lookup(self.pattern)
             if cached is not None:
-                return self._build_from_cached(cached)
+                return self._build_from_cached(cached, g)
 
-        # Pre-compute candidate sets with arc consistency filtering
-        var_candidates = self._compute_candidates(graph)
+        var_candidates = self._compute_candidates(gs, g)
 
-        # Build edge lookup for incremental validation
-        var_edges: dict[str, list[EdgePattern]] = defaultdict(list)
+        # Separate positive and negated edge patterns
+        positive_edges: list[EdgePattern] = []
+        negated_edges: list[EdgePattern] = []
         for ep in self.pattern.edge_patterns:
+            if ep.negated:
+                negated_edges.append(ep)
+            else:
+                positive_edges.append(ep)
+
+        var_edges: dict[str, list[EdgePattern]] = defaultdict(list)
+        for ep in positive_edges:
             var_edges[ep.source_var].append(ep)
             var_edges[ep.target_var].append(ep)
 
@@ -125,14 +146,22 @@ class PatternMatchOperator:
         unassigned = set(variables)
         matches: list[dict[str, int]] = []
         self._backtrack(
-            graph, var_candidates, var_edges, unassigned, {}, set(), matches
+            gs, g, var_candidates, var_edges, unassigned, {}, set(), matches
         )
+
+        # Post-filter: remove matches that violate negated edge constraints
+        if negated_edges:
+            filtered: list[dict[str, int]] = []
+            for assignment in matches:
+                if self._check_negated_edges(gs, g, negated_edges, assignment):
+                    filtered.append(assignment)
+            matches = filtered
 
         entries: list[PostingEntry] = []
         graph_payloads: dict[int, GraphPayload] = {}
         for i, assignment in enumerate(matches):
             match_vertices = frozenset(assignment.values())
-            match_edges = self._collect_match_edges(graph, assignment)
+            match_edges = self._collect_match_edges(gs, g, assignment)
             doc_id = i + 1
             entry = PostingEntry(
                 doc_id,
@@ -142,6 +171,7 @@ class PatternMatchOperator:
             graph_payloads[doc_id] = GraphPayload(
                 subgraph_vertices=match_vertices,
                 subgraph_edges=match_edges,
+                graph_name=g,
             )
 
         return GraphPostingList(entries, graph_payloads)
@@ -149,8 +179,8 @@ class PatternMatchOperator:
     @staticmethod
     def _build_from_cached(
         cached: set[frozenset[int]],
+        graph_name: str,
     ) -> GraphPostingList:
-        """Build GraphPostingList from cached vertex sets."""
         entries: list[PostingEntry] = []
         graph_payloads: dict[int, GraphPayload] = {}
         for i, vertex_set in enumerate(
@@ -164,30 +194,29 @@ class PatternMatchOperator:
             graph_payloads[i] = GraphPayload(
                 subgraph_vertices=vertex_set,
                 subgraph_edges=frozenset(),
+                graph_name=graph_name,
             )
         return GraphPostingList(entries, graph_payloads)
 
-    def _compute_candidates(self, graph: GraphStore) -> dict[str, list[int]]:
-        """Pre-compute candidate vertex IDs per variable with arc consistency.
-
-        Step 1: Evaluate vertex constraints once for all vertices.
-        Step 2: Propagate edge constraints until no further reduction
-                (arc consistency fixpoint).
-        """
+    def _compute_candidates(self, gs: GraphStore, g: str) -> dict[str, list[int]]:
         vp_map = {vp.variable: vp for vp in self.pattern.vertex_patterns}
         candidates: dict[str, list[int]] = {}
+        graph_vids = gs.vertex_ids_in_graph(g)
         for var, vp in vp_map.items():
             candidates[var] = [
                 vid
-                for vid, vertex in graph._vertices.items()
-                if all(c(vertex) for c in vp.constraints)
+                for vid in graph_vids
+                if vid in gs._vertices
+                and all(c(gs._vertices[vid]) for c in vp.constraints)
             ]
 
-        # Arc consistency: narrow candidates via edge constraints
+        # Arc consistency (skip negated edges -- they are checked post-match)
         changed = True
         while changed:
             changed = False
             for ep in self.pattern.edge_patterns:
+                if ep.negated:
+                    continue
                 src_var, tgt_var = ep.source_var, ep.target_var
                 if src_var not in candidates or tgt_var not in candidates:
                     continue
@@ -196,7 +225,7 @@ class PatternMatchOperator:
                 new_src = [
                     vid
                     for vid in candidates[src_var]
-                    if self._has_matching_edge_out(graph, vid, tgt_set, ep)
+                    if self._has_matching_edge_out(gs, g, vid, tgt_set, ep)
                 ]
                 if len(new_src) < len(candidates[src_var]):
                     candidates[src_var] = new_src
@@ -206,7 +235,7 @@ class PatternMatchOperator:
                 new_tgt = [
                     vid
                     for vid in candidates[tgt_var]
-                    if self._has_matching_edge_in(graph, vid, src_set, ep)
+                    if self._has_matching_edge_in(gs, g, vid, src_set, ep)
                 ]
                 if len(new_tgt) < len(candidates[tgt_var]):
                     candidates[tgt_var] = new_tgt
@@ -216,13 +245,16 @@ class PatternMatchOperator:
 
     @staticmethod
     def _has_matching_edge_out(
-        graph: GraphStore,
+        gs: GraphStore,
+        g: str,
         src_vid: int,
         tgt_set: set[int],
         ep: EdgePattern,
     ) -> bool:
-        for eid in graph._adj_out.get(src_vid, []):
-            edge = graph._edges[eid]
+        for eid in gs.out_edge_ids(src_vid, graph=g):
+            edge = gs.get_edge(eid)
+            if edge is None:
+                continue
             if edge.target_id not in tgt_set:
                 continue
             if ep.label is not None and edge.label != ep.label:
@@ -233,13 +265,16 @@ class PatternMatchOperator:
 
     @staticmethod
     def _has_matching_edge_in(
-        graph: GraphStore,
+        gs: GraphStore,
+        g: str,
         tgt_vid: int,
         src_set: set[int],
         ep: EdgePattern,
     ) -> bool:
-        for eid in graph._adj_in.get(tgt_vid, []):
-            edge = graph._edges[eid]
+        for eid in gs.in_edge_ids(tgt_vid, graph=g):
+            edge = gs.get_edge(eid)
+            if edge is None:
+                continue
             if edge.source_id not in src_set:
                 continue
             if ep.label is not None and edge.label != ep.label:
@@ -250,7 +285,8 @@ class PatternMatchOperator:
 
     def _backtrack(
         self,
-        graph: GraphStore,
+        gs: GraphStore,
+        g: str,
         var_candidates: dict[str, list[int]],
         var_edges: dict[str, list[EdgePattern]],
         unassigned: set[str],
@@ -262,7 +298,6 @@ class PatternMatchOperator:
             matches.append(dict(assignment))
             return
 
-        # MRV: pick the unassigned variable with fewest candidates
         var = min(unassigned, key=lambda v: len(var_candidates[v]))
 
         for vid in var_candidates[var]:
@@ -273,10 +308,10 @@ class PatternMatchOperator:
             assigned_values.add(vid)
             unassigned.discard(var)
 
-            # Incremental edge validation
-            if self._validate_edges_for(graph, var, var_edges, assignment):
+            if self._validate_edges_for(gs, g, var, var_edges, assignment):
                 self._backtrack(
-                    graph,
+                    gs,
+                    g,
                     var_candidates,
                     var_edges,
                     unassigned,
@@ -291,20 +326,22 @@ class PatternMatchOperator:
 
     @staticmethod
     def _validate_edges_for(
-        graph: GraphStore,
+        gs: GraphStore,
+        g: str,
         var: str,
         var_edges: dict[str, list[EdgePattern]],
         assignment: dict[str, int],
     ) -> bool:
-        """Check edge constraints involving *var* and already-bound variables."""
         for ep in var_edges.get(var, []):
             src_id = assignment.get(ep.source_var)
             tgt_id = assignment.get(ep.target_var)
             if src_id is None or tgt_id is None:
                 continue
             found = False
-            for eid in graph._adj_out.get(src_id, []):
-                edge = graph._edges[eid]
+            for eid in gs.out_edge_ids(src_id, graph=g):
+                edge = gs.get_edge(eid)
+                if edge is None:
+                    continue
                 if edge.target_id != tgt_id:
                     continue
                 if ep.label is not None and edge.label != ep.label:
@@ -316,17 +353,50 @@ class PatternMatchOperator:
                 return False
         return True
 
+    @staticmethod
+    def _check_negated_edges(
+        gs: GraphStore,
+        g: str,
+        negated_edges: list[EdgePattern],
+        assignment: dict[str, int],
+    ) -> bool:
+        """Return True if the assignment satisfies all negated edge constraints.
+
+        A negated edge means "there must NOT exist such an edge".
+        """
+        for ep in negated_edges:
+            src_id = assignment.get(ep.source_var)
+            tgt_id = assignment.get(ep.target_var)
+            if src_id is None or tgt_id is None:
+                continue
+            for eid in gs.out_edge_ids(src_id, graph=g):
+                edge = gs.get_edge(eid)
+                if edge is None:
+                    continue
+                if edge.target_id != tgt_id:
+                    continue
+                if ep.label is not None and edge.label != ep.label:
+                    continue
+                if all(c(edge) for c in ep.constraints):
+                    # Found a matching edge for a negated pattern -- invalid
+                    return False
+        return True
+
     def _collect_match_edges(
-        self, graph: GraphStore, assignment: dict[str, int]
+        self, gs: GraphStore, g: str, assignment: dict[str, int]
     ) -> frozenset[int]:
         edge_ids: set[int] = set()
         for ep in self.pattern.edge_patterns:
+            if ep.negated:
+                continue
             src_id = assignment[ep.source_var]
             tgt_id = assignment[ep.target_var]
-            for eid in graph._adj_out.get(src_id, []):
-                edge = graph._edges[eid]
-                if edge.target_id == tgt_id and (
-                    ep.label is None or edge.label == ep.label
+            for eid in gs.out_edge_ids(src_id, graph=g):
+                edge = gs.get_edge(eid)
+                if (
+                    edge is not None
+                    and edge.target_id == tgt_id
+                    and (ep.label is None or edge.label == ep.label)
                 ):
                     edge_ids.add(eid)
                     break
@@ -377,7 +447,6 @@ def _build_nfa(expr: RegularPathExpr) -> _NFA:
     if isinstance(expr, Concat):
         left_nfa = _build_nfa(expr.left)
         right_nfa = _build_nfa(expr.right)
-        # Connect left accept to right start via epsilon
         left_nfa.accept.transitions.append((None, right_nfa.start))
         return _NFA(left_nfa.start, right_nfa.accept)
 
@@ -403,11 +472,9 @@ def _build_nfa(expr: RegularPathExpr) -> _NFA:
         return _NFA(start, accept)
 
     if isinstance(expr, BoundedLabel):
-        # Chain min_hops mandatory copies + (max_hops - min_hops) optional copies
         start = _new_state()
         current_end = start
 
-        # Mandatory copies
         for _ in range(expr.min_hops):
             inner_nfa = _build_nfa(expr.inner)
             current_end.transitions.append((None, inner_nfa.start))
@@ -418,7 +485,6 @@ def _build_nfa(expr: RegularPathExpr) -> _NFA:
         if expr.min_hops == expr.max_hops:
             current_end.transitions.append((None, accept))
         else:
-            # Optional copies with epsilon bypass
             current_end.transitions.append((None, accept))
             for _ in range(expr.max_hops - expr.min_hops):
                 inner_nfa = _build_nfa(expr.inner)
@@ -454,84 +520,92 @@ class RegularPathQueryOperator:
     def __init__(
         self,
         path_expr: RegularPathExpr,
+        *,
+        graph: str,
         start_vertex: int | None = None,
     ) -> None:
         self.path_expr = path_expr
         self.start_vertex = start_vertex
+        self.graph_name = graph
 
     def execute(self, ctx: object) -> GraphPostingList:
-        # Try path index first (Section 9.1, Paper 2)
         indexed_result = self._try_index_lookup(ctx)
         if indexed_result is not None:
             return indexed_result
 
-        # Fall back to NFA simulation
-        graph: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
-        _reset_state_counter()
-        nfa = _build_nfa(self.path_expr)
+        from uqa.graph.rpq_optimizer import _simplify_expr, _subset_construction
 
-        # Determine starting vertices
+        gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
+        g = self.graph_name
+        _reset_state_counter()
+
+        # Step 1: Simplify expression
+        simplified = _simplify_expr(self.path_expr)
+        nfa = _build_nfa(simplified)
+
         if self.start_vertex is not None:
             start_vertices = [self.start_vertex]
         else:
-            start_vertices = list(graph._vertices.keys())
+            start_vertices = sorted(gs.vertex_ids_in_graph(g))
 
-        # For each start vertex, simulate NFA across graph
-        # State = (graph_vertex, nfa_state)
-        # BFS until reaching accepting states
-        result_pairs: set[tuple[int, int]] = set()  # (start, end) pairs
+        result_pairs: set[tuple[int, int]] = set()
 
-        # Build state_id -> _NFAState lookup once for all start vertices.
         all_nfa_states = self._collect_nfa_states(nfa)
-        state_map = {s.state_id: s for s in all_nfa_states}
 
-        initial_nfa_states = _epsilon_closure({nfa.start})
-        initial_ids = frozenset(s.state_id for s in initial_nfa_states)
-        accept_id = nfa.accept.state_id
+        # Step 2: Try DFA conversion for small NFAs (<= 32 states)
+        if len(all_nfa_states) <= 32:
+            dfa_transitions, dfa_start, dfa_accepts = _subset_construction(nfa)
+            result_pairs = self._simulate_dfa(
+                gs, g, start_vertices, dfa_transitions, dfa_start, dfa_accepts
+            )
+        else:
+            # Fall back to NFA simulation for large NFAs
+            state_map = {s.state_id: s for s in all_nfa_states}
 
-        for sv in start_vertices:
-            # Queue: (graph_vertex, nfa_states_set_as_frozenset)
-            queue: deque[tuple[int, frozenset[int]]] = deque()
-            queue.append((sv, initial_ids))
-            visited_configs: set[tuple[int, frozenset[int]]] = {(sv, initial_ids)}
+            initial_nfa_states = _epsilon_closure({nfa.start})
+            initial_ids = frozenset(s.state_id for s in initial_nfa_states)
+            accept_id = nfa.accept.state_id
 
-            # Check if start is already accepting
-            if accept_id in initial_ids:
-                result_pairs.add((sv, sv))
+            for sv in start_vertices:
+                queue: deque[tuple[int, frozenset[int]]] = deque()
+                queue.append((sv, initial_ids))
+                visited_configs: set[tuple[int, frozenset[int]]] = {(sv, initial_ids)}
 
-            while queue:
-                gv, nfa_state_ids = queue.popleft()
-                # For each edge label from current graph vertex
-                for eid in graph._adj_out.get(gv, []):
-                    edge = graph._edges[eid]
-                    edge_label = edge.label
-                    neighbor = edge.target_id
+                if accept_id in initial_ids:
+                    result_pairs.add((sv, sv))
 
-                    # Compute next NFA states after consuming this label
-                    next_nfa: set[_NFAState] = set()
-                    for sid in nfa_state_ids:
-                        state = state_map.get(sid)
-                        if state is None:
+                while queue:
+                    gv, nfa_state_ids = queue.popleft()
+                    for eid in gs.out_edge_ids(gv, graph=g):
+                        edge = gs.get_edge(eid)
+                        if edge is None:
                             continue
-                        for trans_label, target in state.transitions:
-                            if trans_label == edge_label:
-                                next_nfa.add(target)
+                        edge_label = edge.label
+                        neighbor = edge.target_id
 
-                    if not next_nfa:
-                        continue
+                        next_nfa: set[_NFAState] = set()
+                        for sid in nfa_state_ids:
+                            state = state_map.get(sid)
+                            if state is None:
+                                continue
+                            for trans_label, target in state.transitions:
+                                if trans_label == edge_label:
+                                    next_nfa.add(target)
 
-                    next_nfa = _epsilon_closure(next_nfa)
-                    next_ids = frozenset(s.state_id for s in next_nfa)
+                        if not next_nfa:
+                            continue
 
-                    if accept_id in next_ids:
-                        result_pairs.add((sv, neighbor))
+                        next_nfa = _epsilon_closure(next_nfa)
+                        next_ids = frozenset(s.state_id for s in next_nfa)
 
-                    config = (neighbor, next_ids)
-                    if config not in visited_configs:
-                        visited_configs.add(config)
-                        queue.append(config)
+                        if accept_id in next_ids:
+                            result_pairs.add((sv, neighbor))
 
-        # Build GraphPostingList from result pairs
+                        config = (neighbor, next_ids)
+                        if config not in visited_configs:
+                            visited_configs.add(config)
+                            queue.append(config)
+
         entries: list[PostingEntry] = []
         graph_payloads: dict[int, GraphPayload] = {}
         seen_ids: set[int] = set()
@@ -543,13 +617,56 @@ class RegularPathQueryOperator:
                 graph_payloads[doc_id] = GraphPayload(
                     subgraph_vertices=frozenset({start_v, end_v}),
                     subgraph_edges=frozenset(),
+                    graph_name=g,
                 )
 
         entries.sort(key=lambda e: e.doc_id)
         return GraphPostingList(entries, graph_payloads)
 
+    @staticmethod
+    def _simulate_dfa(
+        gs: GraphStore,
+        g: str,
+        start_vertices: list[int],
+        dfa_transitions: dict[frozenset[int], dict[str, frozenset[int]]],
+        dfa_start: frozenset[int],
+        dfa_accepts: set[frozenset[int]],
+    ) -> set[tuple[int, int]]:
+        """DFA-based simulation -- deterministic, no epsilon transitions."""
+        result_pairs: set[tuple[int, int]] = set()
+
+        for sv in start_vertices:
+            queue: deque[tuple[int, frozenset[int]]] = deque()
+            queue.append((sv, dfa_start))
+            visited: set[tuple[int, frozenset[int]]] = {(sv, dfa_start)}
+
+            if dfa_start in dfa_accepts:
+                result_pairs.add((sv, sv))
+
+            while queue:
+                gv, dfa_state = queue.popleft()
+                trans = dfa_transitions.get(dfa_state, {})
+
+                for eid in gs.out_edge_ids(gv, graph=g):
+                    edge = gs.get_edge(eid)
+                    if edge is None:
+                        continue
+                    next_state = trans.get(edge.label)
+                    if next_state is None:
+                        continue
+
+                    neighbor = edge.target_id
+                    if next_state in dfa_accepts:
+                        result_pairs.add((sv, neighbor))
+
+                    config = (neighbor, next_state)
+                    if config not in visited:
+                        visited.add(config)
+                        queue.append(config)
+
+        return result_pairs
+
     def _collect_nfa_states(self, nfa: _NFA) -> set[_NFAState]:
-        """Collect all states reachable from nfa.start."""
         visited: set[_NFAState] = set()
         stack = [nfa.start]
         while stack:
@@ -562,11 +679,6 @@ class RegularPathQueryOperator:
         return visited
 
     def _try_index_lookup(self, ctx: object) -> GraphPostingList | None:
-        """Try to answer the RPQ from the path index (Section 9.1, Paper 2).
-
-        Only works for simple Concat-of-Labels expressions.  Returns None
-        if the expression is not indexable or not indexed.
-        """
         labels = self._extract_label_sequence(self.path_expr)
         if labels is None:
             return None
@@ -579,7 +691,6 @@ class RegularPathQueryOperator:
         if pairs is None:
             return None
 
-        # Filter by start_vertex if specified
         if self.start_vertex is not None:
             pairs = {(s, e) for s, e in pairs if s == self.start_vertex}
 
@@ -594,16 +705,13 @@ class RegularPathQueryOperator:
                 graph_payloads[doc_id] = GraphPayload(
                     subgraph_vertices=frozenset({start_v, end_v}),
                     subgraph_edges=frozenset(),
+                    graph_name=self.graph_name,
                 )
         entries.sort(key=lambda e: e.doc_id)
         return GraphPostingList(entries, graph_payloads)
 
     @staticmethod
     def _extract_label_sequence(expr: RegularPathExpr) -> list[str] | None:
-        """Extract label sequence from a Concat-of-Labels expression.
-
-        Returns None for expressions containing Alternation or KleeneStar.
-        """
         if isinstance(expr, Label):
             return [expr.name]
         if isinstance(expr, Concat):
@@ -616,18 +724,13 @@ class RegularPathQueryOperator:
 
 
 class WeightedPathQueryOperator:
-    """RPQ with cumulative edge weight tracking and predicate filtering.
-
-    Paper 2, Section 5.1: extends RPQ expressiveness with aggregate predicates.
-
-    NFA simulation carrying cumulative weight in BFS state:
-    (vertex, nfa_states, cumulative_weight).
-    At accepting states: filter by predicate(cumulative_weight).
-    """
+    """RPQ with cumulative edge weight tracking and predicate filtering."""
 
     def __init__(
         self,
         path_expr: RegularPathExpr,
+        *,
+        graph: str,
         weight_property: str = "weight",
         aggregate_fn: str = "sum",
         predicate: object | None = None,
@@ -638,16 +741,18 @@ class WeightedPathQueryOperator:
         self.aggregate_fn = aggregate_fn
         self.predicate = predicate
         self.start_vertex = start_vertex
+        self.graph_name = graph
 
     def execute(self, ctx: object) -> GraphPostingList:
-        graph: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
+        gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
+        g = self.graph_name
         _reset_state_counter()
         nfa = _build_nfa(self.path_expr)
 
         if self.start_vertex is not None:
             start_vertices = [self.start_vertex]
         else:
-            start_vertices = list(graph._vertices.keys())
+            start_vertices = sorted(gs.vertex_ids_in_graph(g))
 
         all_nfa_states = self._collect_nfa_states(nfa)
         state_map = {s.state_id: s for s in all_nfa_states}
@@ -656,14 +761,12 @@ class WeightedPathQueryOperator:
         initial_ids = frozenset(s.state_id for s in initial_nfa_states)
         accept_id = nfa.accept.state_id
 
-        result_entries: dict[int, float] = {}  # end_vertex -> best_weight
+        result_entries: dict[int, float] = {}
 
         for sv in start_vertices:
-            # Queue: (graph_vertex, nfa_states, cumulative_weight)
             queue: deque[tuple[int, frozenset[int], float]] = deque()
             init_weight = 0.0
             queue.append((sv, initial_ids, init_weight))
-            # Track visited as (vertex, nfa_states) to allow weight differences
             visited: set[tuple[int, frozenset[int]]] = {(sv, initial_ids)}
 
             if accept_id in initial_ids and self._check_predicate(init_weight):
@@ -672,8 +775,10 @@ class WeightedPathQueryOperator:
             while queue:
                 gv, nfa_state_ids, cum_weight = queue.popleft()
 
-                for eid in graph._adj_out.get(gv, []):
-                    edge = graph._edges[eid]
+                for eid in gs.out_edge_ids(gv, graph=g):
+                    edge = gs.get_edge(eid)
+                    if edge is None:
+                        continue
                     edge_label = edge.label
                     neighbor = edge.target_id
 
@@ -713,6 +818,7 @@ class WeightedPathQueryOperator:
             graph_payloads[vid] = GraphPayload(
                 subgraph_vertices=frozenset({vid}),
                 subgraph_edges=frozenset(),
+                graph_name=g,
             )
 
         return GraphPostingList(entries, graph_payloads)
@@ -756,15 +862,7 @@ class WeightedPathQueryOperator:
 
 
 class VertexAggregationOperator:
-    """Definition 2.2.3: Aggregate vertex properties over traversal results.
-
-    Given a traversal result (GraphPostingList), aggregates a specified
-    vertex property across all reached vertices using a provided
-    aggregation function.
-
-    Returns a GraphPostingList with a single entry containing the
-    aggregated result.
-    """
+    """Definition 2.2.3: Aggregate vertex properties over traversal results."""
 
     def __init__(
         self,
@@ -777,7 +875,7 @@ class VertexAggregationOperator:
         self.agg_fn = agg_fn
 
     def execute(self, ctx: object) -> GraphPostingList:
-        graph: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
+        gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
         source_gpl = self.source.execute(ctx)
 
         vertex_ids: set[int] = set()
@@ -788,7 +886,7 @@ class VertexAggregationOperator:
 
         values: list[Any] = []
         for vid in sorted(vertex_ids):
-            vertex = graph.get_vertex(vid)
+            vertex = gs.get_vertex(vid)
             if vertex is not None:
                 val = vertex.properties.get(self.property_name)
                 if val is not None:
@@ -838,26 +936,20 @@ class VertexAggregationOperator:
 
 
 class CypherQueryOperator:
-    """Execute an openCypher query against a named graph.
-
-    Integrates into the operator tree alongside TraverseOperator and
-    RegularPathQueryOperator.  The execute() method runs the Cypher
-    compiler and returns a GraphPostingList with projected fields.
-
-    When *col_names* is provided (from the SQL ``AS`` clause), the
-    Cypher result keys are remapped positionally to the SQL column
-    names so downstream physical operators see the expected names.
-    """
+    """Execute an openCypher query against a named graph."""
 
     def __init__(
         self,
         graph: GraphStore,
         query: CypherQuery,
+        *,
+        graph_name: str,
         params: dict[str, Any] | None = None,
         col_names: list[str] | None = None,
     ) -> None:
         self.graph = graph
         self.query = query
+        self.graph_name = graph_name
         self.params = params or {}
         self.col_names = col_names
 
@@ -865,13 +957,17 @@ class CypherQueryOperator:
         from uqa.graph.cypher.compiler import CypherCompiler
 
         path_index = getattr(ctx, "path_index", None)
-        compiler = CypherCompiler(self.graph, params=self.params, path_index=path_index)
+        compiler = CypherCompiler(
+            self.graph,
+            graph_name=self.graph_name,
+            params=self.params,
+            path_index=path_index,
+        )
         gpl = compiler.execute_posting_list(self.query)
 
         if self.col_names is None:
             return gpl
 
-        # Remap Cypher result keys to AS clause column names.
         cypher_keys: list[str] | None = None
         remapped_entries: list[PostingEntry] = []
         remapped_payloads: dict[int, GraphPayload] = {}

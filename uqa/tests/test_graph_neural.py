@@ -17,17 +17,24 @@ from uqa.graph.message_passing import MessagePassingOperator
 from uqa.graph.store import GraphStore
 from uqa.operators.base import ExecutionContext
 
+_GRAPH_NAME = "test"
+
 
 def _build_test_graph() -> GraphStore:
     g = GraphStore()
-    g.add_vertex(Vertex(1, "person", {"name": "Alice", "score": 0.8}))
-    g.add_vertex(Vertex(2, "person", {"name": "Bob", "score": 0.6}))
-    g.add_vertex(Vertex(3, "person", {"name": "Carol", "score": 0.4}))
-    g.add_vertex(Vertex(4, "person", {"name": "Dave", "score": 0.2}))
-    g.add_edge(Edge(1, 1, 2, "knows"))
-    g.add_edge(Edge(2, 2, 3, "knows"))
-    g.add_edge(Edge(3, 3, 4, "works_with"))
-    g.add_edge(Edge(4, 1, 3, "works_with"))
+    g.create_graph(_GRAPH_NAME)
+    g.add_vertex(
+        Vertex(1, "person", {"name": "Alice", "score": 0.8}), graph=_GRAPH_NAME
+    )
+    g.add_vertex(Vertex(2, "person", {"name": "Bob", "score": 0.6}), graph=_GRAPH_NAME)
+    g.add_vertex(
+        Vertex(3, "person", {"name": "Carol", "score": 0.4}), graph=_GRAPH_NAME
+    )
+    g.add_vertex(Vertex(4, "person", {"name": "Dave", "score": 0.2}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(1, 1, 2, "knows"), graph=_GRAPH_NAME)
+    g.add_edge(Edge(2, 2, 3, "knows"), graph=_GRAPH_NAME)
+    g.add_edge(Edge(3, 3, 4, "works_with"), graph=_GRAPH_NAME)
+    g.add_edge(Edge(4, 1, 3, "works_with"), graph=_GRAPH_NAME)
     return g
 
 
@@ -38,7 +45,7 @@ class TestMessagePassingOperator:
         g = _build_test_graph()
         ctx = ExecutionContext(graph_store=g)
         op = MessagePassingOperator(
-            k_layers=1, aggregation="mean", property_name="score"
+            k_layers=1, aggregation="mean", property_name="score", graph=_GRAPH_NAME
         )
         result = op.execute(ctx)
         assert len(result) == 4
@@ -47,7 +54,7 @@ class TestMessagePassingOperator:
         g = _build_test_graph()
         ctx = ExecutionContext(graph_store=g)
         op = MessagePassingOperator(
-            k_layers=2, aggregation="mean", property_name="score"
+            k_layers=2, aggregation="mean", property_name="score", graph=_GRAPH_NAME
         )
         result = op.execute(ctx)
         for entry in result:
@@ -57,7 +64,7 @@ class TestMessagePassingOperator:
         g = _build_test_graph()
         ctx = ExecutionContext(graph_store=g)
         op = MessagePassingOperator(
-            k_layers=1, aggregation="sum", property_name="score"
+            k_layers=1, aggregation="sum", property_name="score", graph=_GRAPH_NAME
         )
         result = op.execute(ctx)
         assert len(result) == 4
@@ -66,7 +73,7 @@ class TestMessagePassingOperator:
         g = _build_test_graph()
         ctx = ExecutionContext(graph_store=g)
         op = MessagePassingOperator(
-            k_layers=1, aggregation="max", property_name="score"
+            k_layers=1, aggregation="max", property_name="score", graph=_GRAPH_NAME
         )
         result = op.execute(ctx)
         assert len(result) == 4
@@ -74,30 +81,38 @@ class TestMessagePassingOperator:
     def test_no_property_uses_default(self) -> None:
         g = _build_test_graph()
         ctx = ExecutionContext(graph_store=g)
-        op = MessagePassingOperator(k_layers=1)
+        op = MessagePassingOperator(k_layers=1, graph=_GRAPH_NAME)
         result = op.execute(ctx)
         assert len(result) == 4
 
     def test_empty_graph(self) -> None:
         g = GraphStore()
+        g.create_graph(_GRAPH_NAME)
         ctx = ExecutionContext(graph_store=g)
-        op = MessagePassingOperator()
+        op = MessagePassingOperator(graph=_GRAPH_NAME)
         result = op.execute(ctx)
         assert len(result) == 0
 
     def test_isolated_vertex(self) -> None:
         g = GraphStore()
-        g.add_vertex(Vertex(1, "person", {"score": 0.5}))
+        g.create_graph(_GRAPH_NAME)
+        g.add_vertex(Vertex(1, "person", {"score": 0.5}), graph=_GRAPH_NAME)
         ctx = ExecutionContext(graph_store=g)
-        op = MessagePassingOperator(k_layers=1, property_name="score")
+        op = MessagePassingOperator(
+            k_layers=1, property_name="score", graph=_GRAPH_NAME
+        )
         result = op.execute(ctx)
         assert len(result) == 1
 
     def test_k_layers_effect(self) -> None:
         g = _build_test_graph()
         ctx = ExecutionContext(graph_store=g)
-        op1 = MessagePassingOperator(k_layers=1, property_name="score")
-        op2 = MessagePassingOperator(k_layers=3, property_name="score")
+        op1 = MessagePassingOperator(
+            k_layers=1, property_name="score", graph=_GRAPH_NAME
+        )
+        op2 = MessagePassingOperator(
+            k_layers=3, property_name="score", graph=_GRAPH_NAME
+        )
         r1 = op1.execute(ctx)
         r2 = op2.execute(ctx)
         # More layers should produce different scores
@@ -108,7 +123,7 @@ class TestMessagePassingOperator:
     def test_cost_estimate(self) -> None:
         from uqa.core.types import IndexStats
 
-        op = MessagePassingOperator(k_layers=3)
+        op = MessagePassingOperator(k_layers=3, graph=_GRAPH_NAME)
         stats = IndexStats(total_docs=100)
         assert op.cost_estimate(stats) == pytest.approx(300.0)
 
@@ -119,14 +134,14 @@ class TestGraphEmbeddingOperator:
     def test_basic_execution(self) -> None:
         g = _build_test_graph()
         ctx = ExecutionContext(graph_store=g)
-        op = GraphEmbeddingOperator(dimensions=16, k_layers=2)
+        op = GraphEmbeddingOperator(dimensions=16, k_layers=2, graph=_GRAPH_NAME)
         result = op.execute(ctx)
         assert len(result) == 4
 
     def test_embedding_dimensions(self) -> None:
         g = _build_test_graph()
         ctx = ExecutionContext(graph_store=g)
-        op = GraphEmbeddingOperator(dimensions=8, k_layers=1)
+        op = GraphEmbeddingOperator(dimensions=8, k_layers=1, graph=_GRAPH_NAME)
         result = op.execute(ctx)
         for entry in result:
             emb = entry.payload.fields.get("_embedding")
@@ -136,7 +151,7 @@ class TestGraphEmbeddingOperator:
     def test_embedding_normalized(self) -> None:
         g = _build_test_graph()
         ctx = ExecutionContext(graph_store=g)
-        op = GraphEmbeddingOperator(dimensions=16)
+        op = GraphEmbeddingOperator(dimensions=16, graph=_GRAPH_NAME)
         result = op.execute(ctx)
         for entry in result:
             emb = entry.payload.fields["_embedding"]
@@ -147,7 +162,7 @@ class TestGraphEmbeddingOperator:
     def test_different_vertices_different_embeddings(self) -> None:
         g = _build_test_graph()
         ctx = ExecutionContext(graph_store=g)
-        op = GraphEmbeddingOperator(dimensions=16)
+        op = GraphEmbeddingOperator(dimensions=16, graph=_GRAPH_NAME)
         result = op.execute(ctx)
         embeddings = {e.doc_id: e.payload.fields["_embedding"] for e in result}
         # At least some vertices should have different embeddings
@@ -155,15 +170,16 @@ class TestGraphEmbeddingOperator:
 
     def test_empty_graph(self) -> None:
         g = GraphStore()
+        g.create_graph(_GRAPH_NAME)
         ctx = ExecutionContext(graph_store=g)
-        op = GraphEmbeddingOperator()
+        op = GraphEmbeddingOperator(graph=_GRAPH_NAME)
         result = op.execute(ctx)
         assert len(result) == 0
 
     def test_cost_estimate(self) -> None:
         from uqa.core.types import IndexStats
 
-        op = GraphEmbeddingOperator(dimensions=32, k_layers=2)
+        op = GraphEmbeddingOperator(dimensions=32, k_layers=2, graph=_GRAPH_NAME)
         stats = IndexStats(total_docs=100)
         assert op.cost_estimate(stats) == pytest.approx(400.0)
 
@@ -176,9 +192,9 @@ class TestGNNSQL:
         e = Engine()
         e.sql("CREATE TABLE g (id SERIAL PRIMARY KEY, name TEXT)")
         g = e._tables["g"].graph_store
-        g.add_vertex(Vertex(1, "person", {"score": 0.8}))
-        g.add_vertex(Vertex(2, "person", {"score": 0.6}))
-        g.add_edge(Edge(1, 1, 2, "knows"))
+        g.add_vertex(Vertex(1, "person", {"score": 0.8}), graph="g")
+        g.add_vertex(Vertex(2, "person", {"score": 0.6}), graph="g")
+        g.add_edge(Edge(1, 1, 2, "knows"), graph="g")
         return e
 
     def test_message_passing_sql(self, engine: Engine) -> None:
@@ -198,9 +214,9 @@ class TestGNNQueryBuilder:
         e = Engine()
         e.sql("CREATE TABLE g (id SERIAL PRIMARY KEY, name TEXT)")
         g = e._tables["g"].graph_store
-        g.add_vertex(Vertex(1, "person", {"score": 0.8}))
-        g.add_vertex(Vertex(2, "person", {"score": 0.6}))
-        g.add_edge(Edge(1, 1, 2, "knows"))
+        g.add_vertex(Vertex(1, "person", {"score": 0.8}), graph="g")
+        g.add_vertex(Vertex(2, "person", {"score": 0.6}), graph="g")
+        g.add_edge(Edge(1, 1, 2, "knows"), graph="g")
         return e
 
     def test_query_builder_message_passing(self, engine: Engine) -> None:

@@ -14,6 +14,7 @@ from bayesian_bm25 import log_odds_conjunction
 
 from uqa.core.posting_list import PostingList
 from uqa.core.types import Payload, PostingEntry
+from uqa.scoring.wand import BoundTightnessAnalyzer
 
 
 def _sigmoid(x: float) -> float:
@@ -143,3 +144,41 @@ class FusionWANDScorer:
         for score, doc_id in top_k_heap:
             entries.append(PostingEntry(doc_id, Payload(score=score)))
         return PostingList(entries)
+
+
+class TightenedFusionWANDScorer(FusionWANDScorer):
+    """FusionWAND with tightened per-signal bounds.
+
+    Uses empirical maximum scores instead of theoretical upper bounds
+    when available, reducing false positives in the WAND pivot check.
+    """
+
+    def __init__(
+        self,
+        signal_posting_lists: list[PostingList],
+        signal_upper_bounds: list[float],
+        alpha: float = 0.5,
+        k: int = 10,
+        gating: str | None = None,
+        tightening_factor: float = 0.9,
+    ) -> None:
+        # Tighten upper bounds before passing to parent
+        tightened = [ub * tightening_factor for ub in signal_upper_bounds]
+        super().__init__(signal_posting_lists, tightened, alpha, k, gating)
+        self.tightening_factor = tightening_factor
+        self.original_bounds = list(signal_upper_bounds)
+        self.analyzer = BoundTightnessAnalyzer()
+
+    def score_top_k(self) -> PostingList:
+        """Score with tightness analysis."""
+        result = super().score_top_k()
+
+        # Record empirical bounds for analysis
+        for i, pl in enumerate(self.signal_posting_lists):
+            actual_max = 0.0
+            for entry in pl:
+                if entry.payload.score > actual_max:
+                    actual_max = entry.payload.score
+            self.analyzer.record(self.original_bounds[i], actual_max)
+
+        return result

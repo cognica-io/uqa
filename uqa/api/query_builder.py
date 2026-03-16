@@ -205,7 +205,7 @@ class QueryBuilder:
     ) -> QueryBuilder:
         from uqa.graph.operators import TraverseOperator
 
-        op = TraverseOperator(start, label, max_hops)
+        op = TraverseOperator(start, graph=self._table, label=label, max_hops=max_hops)
         return self._chain(op)
 
     def temporal_traverse(
@@ -225,13 +225,13 @@ class QueryBuilder:
         if timestamp is not None or time_range is not None:
             tf = TemporalFilter(timestamp=timestamp, time_range=time_range)
 
-        op = TemporalTraverseOperator(start, label, max_hops, tf)
+        op = TemporalTraverseOperator(start, label, max_hops, tf, graph=self._table)
         return self._chain(op)
 
     def match_pattern(self, pattern: Any) -> QueryBuilder:
         from uqa.graph.operators import PatternMatchOperator
 
-        op = PatternMatchOperator(pattern)
+        op = PatternMatchOperator(pattern, graph=self._table)
         return self._chain(op)
 
     def rpq(self, expr: str, start: int | None = None) -> QueryBuilder:
@@ -239,7 +239,7 @@ class QueryBuilder:
         from uqa.graph.pattern import parse_rpq
 
         path_expr = parse_rpq(expr)
-        op = RegularPathQueryOperator(path_expr, start_vertex=start)
+        op = RegularPathQueryOperator(path_expr, graph=self._table, start_vertex=start)
         return self._chain(op)
 
     def vertex_aggregate(
@@ -305,7 +305,9 @@ class QueryBuilder:
         """K-layer message-passing aggregation (Paper 2 + Paper 4)."""
         from uqa.graph.message_passing import MessagePassingOperator
 
-        op = MessagePassingOperator(k_layers, aggregation, property_name)
+        op = MessagePassingOperator(
+            k_layers, aggregation, property_name, graph=self._table
+        )
         return self._chain(op)
 
     # -- Aggregation (Section 5.1, Paper 1) --

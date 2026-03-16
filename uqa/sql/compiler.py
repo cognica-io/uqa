@@ -448,6 +448,7 @@ class SQLCompiler:
         self._expanded_views: list[str] = []
         self._shadowed_tables: dict[str, Table] = {}
         self._inlined_ctes: dict[str, SelectStmt] = {}
+        self._current_graph_name: str = ""
 
     def execute(self, sql: str, params: list[Any] | None = None) -> SQLResult:
         """Parse and execute a SQL statement.
@@ -3847,6 +3848,8 @@ class SQLCompiler:
 
         # 4. Build execution context from resolved table
         ctx = self._context_for_table(table)
+        if table is not None:
+            self._current_graph_name = table.name
 
         # 5. Check if FROM is a graph source (traverse/rpq) or join.
         #    Graph/join-sourced queries defer relational WHERE to the
@@ -5018,6 +5021,7 @@ class SQLCompiler:
 
         if table is None:
             return ExecutionContext(
+                graph_store=getattr(self._engine, "_graph_store", None),
                 index_manager=index_manager,
                 parallel_executor=parallel_executor,
             )
@@ -5173,26 +5177,38 @@ class SQLCompiler:
         """Build traverse() FROM-clause.
 
         Per-table graph:
-            traverse(start, 'label', hops[, 'table'])
+            traverse(start, 'label', hops, 'table_name')
         Named graph:
-            traverse(start, 'label', hops, 'graph:name')
+            traverse(start, 'label', hops, 'graph_name')
+
+        The 4th argument is looked up as a table first, then as a named
+        graph.  The legacy ``'graph:name'`` prefix is still accepted for
+        backward compatibility but is no longer required.
         """
         from uqa.graph.operators import TraverseOperator
 
         start = self._extract_int_value(args[0])
         label = self._extract_string_value(args[1]) if len(args) > 1 else None
         max_hops = self._extract_int_value(args[2]) if len(args) > 2 else 1
-        op = TraverseOperator(start, label, max_hops)
 
         if len(args) > 3:
             source_name = self._extract_string_value(args[3])
+            # Strip legacy 'graph:' prefix if present (backward compat)
             if source_name.startswith("graph:"):
-                graph_store = self._engine.get_graph(source_name[6:])
-                return None, _NamedGraphOperatorWrapper(op, graph_store)
+                source_name = source_name[6:]
+            # Try table first, then named graph
             table = self._engine._tables.get(source_name)
-            if table is None:
-                raise ValueError(f"Table '{source_name}' does not exist")
-            return table, op
+            if table is not None:
+                op = TraverseOperator(
+                    start, graph=source_name, label=label, max_hops=max_hops
+                )
+                return table, op
+            if self._engine.has_graph(source_name):
+                op = TraverseOperator(
+                    start, graph=source_name, label=label, max_hops=max_hops
+                )
+                return None, op
+            raise ValueError(f"'{source_name}' is not a table or named graph")
 
         if not self._engine._tables:
             raise ValueError("traverse() requires a table or graph argument")
@@ -5200,18 +5216,23 @@ class SQLCompiler:
         table = self._engine._tables.get(table_name)
         if table is None:
             raise ValueError(f"Table '{table_name}' does not exist")
+        op = TraverseOperator(start, graph=table_name, label=label, max_hops=max_hops)
         return table, op
 
     def _build_temporal_traverse_from(self, args: tuple) -> tuple[Table | None, Any]:
         """Build temporal_traverse() FROM-clause.
 
         Per-table graph:
-            temporal_traverse(start, 'label', hops, timestamp[, 'table'])
-            temporal_traverse(start, 'label', hops, from_ts, to_ts[, 'table'])
+            temporal_traverse(start, 'label', hops, timestamp, 'table_name')
+            temporal_traverse(start, 'label', hops, from_ts, to_ts, 'table_name')
 
         Named graph:
-            temporal_traverse(start, 'label', hops, timestamp, 'graph:name')
-            temporal_traverse(start, 'label', hops, from_ts, to_ts, 'graph:name')
+            temporal_traverse(start, 'label', hops, timestamp, 'graph_name')
+            temporal_traverse(start, 'label', hops, from_ts, to_ts, 'graph_name')
+
+        The source argument is looked up as a table first, then as a named
+        graph.  The legacy ``'graph:name'`` prefix is still accepted for
+        backward compatibility but is no longer required.
         """
         from uqa.graph.temporal_filter import TemporalFilter
         from uqa.graph.temporal_traverse import TemporalTraverseOperator
@@ -5250,25 +5271,35 @@ class SQLCompiler:
         else:
             tf = TemporalFilter()
 
-        op = TemporalTraverseOperator(start, label, max_hops, tf)
-
-        # Named graph: "graph:name" prefix
+        # Strip legacy 'graph:' prefix if present (backward compat)
         if source_name is not None and source_name.startswith("graph:"):
-            graph_name = source_name[6:]
-            graph_store = self._engine.get_graph(graph_name)
-            return None, _NamedGraphOperatorWrapper(op, graph_store)
+            source_name = source_name[6:]
 
-        # Per-table graph
-        table_name = source_name
-        if table_name is None:
-            if not self._engine._tables:
-                raise ValueError(
-                    "temporal_traverse() requires a table or graph argument"
-                )
-            table_name = next(iter(self._engine._tables))
-        table = self._engine._tables.get(table_name)
+        # Resolve graph name
+        if source_name is not None:
+            resolved_graph_name = source_name
+        elif self._engine._tables:
+            resolved_graph_name = next(iter(self._engine._tables))
+        else:
+            raise ValueError("temporal_traverse() requires a table or graph argument")
+
+        op = TemporalTraverseOperator(
+            start, label, max_hops, tf, graph=resolved_graph_name
+        )
+
+        # Try table first, then named graph
+        if source_name is not None:
+            table = self._engine._tables.get(resolved_graph_name)
+            if table is not None:
+                return table, op
+            if self._engine.has_graph(resolved_graph_name):
+                return None, op
+            raise ValueError(f"'{resolved_graph_name}' is not a table or named graph")
+
+        # No explicit source -- fall back to first table
+        table = self._engine._tables.get(resolved_graph_name)
         if table is None:
-            raise ValueError(f"Table '{table_name}' does not exist")
+            raise ValueError(f"Table '{resolved_graph_name}' does not exist")
         return table, op
 
     @staticmethod
@@ -5280,26 +5311,38 @@ class SQLCompiler:
         """Build rpq() FROM-clause.
 
         Per-table graph:
-            rpq('expr', start[, 'table'])
+            rpq('expr', start, 'table_name')
         Named graph:
-            rpq('expr', start, 'graph:name')
+            rpq('expr', start, 'graph_name')
+
+        The 3rd argument is looked up as a table first, then as a named
+        graph.  The legacy ``'graph:name'`` prefix is still accepted for
+        backward compatibility but is no longer required.
         """
         from uqa.graph.operators import RegularPathQueryOperator
         from uqa.graph.pattern import parse_rpq
 
         expr = self._extract_string_value(args[0])
         start = self._extract_int_value(args[1]) if len(args) > 1 else None
-        op = RegularPathQueryOperator(parse_rpq(expr), start_vertex=start)
 
         if len(args) > 2:
             source_name = self._extract_string_value(args[2])
+            # Strip legacy 'graph:' prefix if present (backward compat)
             if source_name.startswith("graph:"):
-                graph_store = self._engine.get_graph(source_name[6:])
-                return None, _NamedGraphOperatorWrapper(op, graph_store)
+                source_name = source_name[6:]
+            # Try table first, then named graph
             table = self._engine._tables.get(source_name)
-            if table is None:
-                raise ValueError(f"Table '{source_name}' does not exist")
-            return table, op
+            if table is not None:
+                op = RegularPathQueryOperator(
+                    parse_rpq(expr), graph=source_name, start_vertex=start
+                )
+                return table, op
+            if self._engine.has_graph(source_name):
+                op = RegularPathQueryOperator(
+                    parse_rpq(expr), graph=source_name, start_vertex=start
+                )
+                return None, op
+            raise ValueError(f"'{source_name}' is not a table or named graph")
 
         if not self._engine._tables:
             raise ValueError("rpq() requires a table or graph argument")
@@ -5307,6 +5350,9 @@ class SQLCompiler:
         table = self._engine._tables.get(table_name)
         if table is None:
             raise ValueError(f"Table '{table_name}' does not exist")
+        op = RegularPathQueryOperator(
+            parse_rpq(expr), graph=table_name, start_vertex=start
+        )
         return table, op
 
     def _build_centrality_from(
@@ -5355,9 +5401,6 @@ class SQLCompiler:
             )
             if source_args:
                 table_name_arg = self._extract_string_value(source_args[0])
-            op = PageRankOperator(
-                damping=damping, max_iterations=max_iter, tolerance=tol
-            )
         elif kind == "hits":
             # hits([max_iter[, tol]][, 'source'])
             numeric_args = [a for a in args if not _is_source_arg(a)]
@@ -5374,28 +5417,47 @@ class SQLCompiler:
             )
             if source_args:
                 table_name_arg = self._extract_string_value(source_args[0])
-            op = HITSOperator(max_iterations=max_iter, tolerance=tol)
         else:
             # betweenness(['source'])
             if len(args) > 0:
                 table_name_arg = self._extract_string_value(args[0])
-            op = BetweennessCentralityOperator()
+
+        # Strip legacy 'graph:' prefix if present (backward compat)
+        if table_name_arg is not None and table_name_arg.startswith("graph:"):
+            table_name_arg = table_name_arg[6:]
+
+        # Resolve the graph name for the operator
+        if table_name_arg is not None:
+            graph_name = table_name_arg
+        elif self._engine._tables:
+            graph_name = next(iter(self._engine._tables))
+        else:
+            raise ValueError(f"{kind}() requires a table argument")
+
+        if kind == "pagerank":
+            op = PageRankOperator(
+                damping=damping,
+                max_iterations=max_iter,
+                tolerance=tol,
+                graph=graph_name,
+            )
+        elif kind == "hits":
+            op = HITSOperator(max_iterations=max_iter, tolerance=tol, graph=graph_name)
+        else:
+            op = BetweennessCentralityOperator(graph=graph_name)
 
         if table_name_arg is not None:
-            if table_name_arg.startswith("graph:"):
-                graph_store = self._engine.get_graph(table_name_arg[6:])
-                return None, _NamedGraphOperatorWrapper(op, graph_store)
+            # Try table first, then named graph
             table = self._engine._tables.get(table_name_arg)
-            if table is None:
-                raise ValueError(f"Table '{table_name_arg}' does not exist")
-            return table, op
+            if table is not None:
+                return table, op
+            if self._engine.has_graph(table_name_arg):
+                return None, op
+            raise ValueError(f"'{table_name_arg}' is not a table or named graph")
 
-        if not self._engine._tables:
-            raise ValueError(f"{kind}() requires a table argument")
-        first_table_name = next(iter(self._engine._tables))
-        table = self._engine._tables.get(first_table_name)
+        table = self._engine._tables.get(graph_name)
         if table is None:
-            raise ValueError(f"Table '{first_table_name}' does not exist")
+            raise ValueError(f"Table '{graph_name}' does not exist")
         return table, op
 
     def _build_create_graph(self, args: tuple) -> tuple[Table | None, Any]:
@@ -5662,6 +5724,7 @@ class SQLCompiler:
         op = CypherQueryOperator(
             graph,
             ast,
+            graph_name=graph_name,
             params=self._cypher_params(),
             col_names=col_names,
         )
@@ -6785,7 +6848,7 @@ class SQLCompiler:
         k = self._extract_int_value(args[0]) if len(args) > 0 else 2
         agg = self._extract_string_value(args[1]) if len(args) > 1 else "mean"
         prop = self._extract_string_value(args[2]) if len(args) > 2 else None
-        return MessagePassingOperator(k, agg, prop)
+        return MessagePassingOperator(k, agg, prop, graph=self._current_graph_name)
 
     def _make_graph_embedding_op(self, args: tuple) -> Any:
         """graph_embedding(dimensions, k_layers)"""
@@ -6793,7 +6856,7 @@ class SQLCompiler:
 
         dims = self._extract_int_value(args[0]) if len(args) > 0 else 32
         k = self._extract_int_value(args[1]) if len(args) > 1 else 2
-        return GraphEmbeddingOperator(dims, k)
+        return GraphEmbeddingOperator(dims, k, graph=self._current_graph_name)
 
     def _make_bayesian_with_prior_op(self, args: tuple, ctx: ExecutionContext) -> Any:
         """bayesian_match_with_prior(field, query, prior_field, prior_mode)
@@ -6929,7 +6992,9 @@ class SQLCompiler:
         start = self._extract_int_value(args[0])
         label = self._extract_string_value(args[1]) if len(args) > 1 else None
         max_hops = self._extract_int_value(args[2]) if len(args) > 2 else 1
-        return TraverseOperator(start, label, max_hops)
+        return TraverseOperator(
+            start, graph=self._current_graph_name, label=label, max_hops=max_hops
+        )
 
     def _make_temporal_traverse_op(self, args: tuple) -> Any:
         """temporal_traverse(start, label, hops, timestamp) or
@@ -6959,7 +7024,9 @@ class SQLCompiler:
         else:
             tf = TemporalFilter()
 
-        return TemporalTraverseOperator(start, label, max_hops, tf)
+        return TemporalTraverseOperator(
+            start, label, max_hops, tf, graph=self._current_graph_name
+        )
 
     def _make_path_filter_op(self, args: tuple) -> Any:
         """path_filter('path', value) or path_filter('path', 'op', value).
@@ -7194,7 +7261,12 @@ class SQLCompiler:
         damping = float(self._extract_const_value(args[0])) if len(args) > 0 else 0.85
         max_iter = self._extract_int_value(args[1]) if len(args) > 1 else 100
         tol = float(self._extract_const_value(args[2])) if len(args) > 2 else 1e-6
-        return PageRankOperator(damping=damping, max_iterations=max_iter, tolerance=tol)
+        return PageRankOperator(
+            damping=damping,
+            max_iterations=max_iter,
+            tolerance=tol,
+            graph=self._current_graph_name,
+        )
 
     def _make_hits_op(self, args: tuple) -> Any:
         """hits([max_iterations[, tolerance]])
@@ -7205,7 +7277,9 @@ class SQLCompiler:
 
         max_iter = self._extract_int_value(args[0]) if len(args) > 0 else 100
         tol = float(self._extract_const_value(args[1])) if len(args) > 1 else 1e-6
-        return HITSOperator(max_iterations=max_iter, tolerance=tol)
+        return HITSOperator(
+            max_iterations=max_iter, tolerance=tol, graph=self._current_graph_name
+        )
 
     def _make_betweenness_op(self, _args: tuple) -> Any:
         """betweenness()
@@ -7214,7 +7288,7 @@ class SQLCompiler:
         """
         from uqa.graph.centrality import BetweennessCentralityOperator
 
-        return BetweennessCentralityOperator()
+        return BetweennessCentralityOperator(graph=self._current_graph_name)
 
     def _make_weighted_rpq_op(self, args: tuple) -> Any:
         """weighted_rpq('path_expr', start, 'weight_prop'[, 'agg_fn'[, threshold]])
@@ -7243,6 +7317,7 @@ class SQLCompiler:
 
         return WeightedPathQueryOperator(
             path_expr=parse_rpq(expr_str),
+            graph=self._current_graph_name,
             weight_property=weight_prop,
             aggregate_fn=agg_fn,
             predicate=predicate,
@@ -8041,33 +8116,6 @@ class SQLCompiler:
                 return value if isinstance(value, list) else [value]
             return _cast_value(value, type_name)
         return self._extract_const_value(node)
-
-
-class _NamedGraphOperatorWrapper:
-    """Wraps a graph operator to execute against a named graph store.
-
-    Injects the named graph into the execution context so that graph
-    operators (TemporalTraverseOperator, etc.) that read ctx.graph_store
-    see the named graph instead of the per-table graph.
-    """
-
-    def __init__(self, inner: Any, graph_store: Any) -> None:
-        self.inner = inner
-        self.graph_store = graph_store
-
-    def execute(self, context: Any) -> PostingList:
-        from dataclasses import replace
-
-        from uqa.operators.base import ExecutionContext
-
-        if isinstance(context, ExecutionContext):
-            ctx = replace(context, graph_store=self.graph_store)
-        else:
-            ctx = ExecutionContext(graph_store=self.graph_store)
-        return self.inner.execute(ctx)
-
-    def cost_estimate(self, stats: Any) -> float:
-        return getattr(self.inner, "cost_estimate", lambda _: 100.0)(stats)
 
 
 class _ScanOperator:

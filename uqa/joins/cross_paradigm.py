@@ -246,10 +246,13 @@ class GraphJoinOperator:
         left: object,
         right: object,
         label: str | None = None,
+        *,
+        graph: str = "test",
     ) -> None:
         self.left = left
         self.right = right
         self.label = label
+        self.graph_name = graph
 
     def execute(self, context: object) -> GeneralizedPostingList:
         graph: GraphStore = context.graph_store  # type: ignore[attr-defined]
@@ -261,7 +264,10 @@ class GraphJoinOperator:
         result: list[GeneralizedPostingEntry] = []
         for left_entry in left_entries:
             neighbors = graph.neighbors(
-                left_entry.doc_id, label=self.label, direction="out"
+                left_entry.doc_id,
+                label=self.label,
+                direction="out",
+                graph=self.graph_name,
             )
             for neighbor_id in neighbors:
                 right_entry = right_set.get(neighbor_id)

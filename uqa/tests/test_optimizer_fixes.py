@@ -39,7 +39,7 @@ class TestGraphFilterPushdownC2:
                 EdgePattern("a", "b", "knows", []),
             ],
         )
-        pm = PatternMatchOperator(pattern)
+        pm = PatternMatchOperator(pattern, graph="test")
         filtered = FilterOperator("b.name", Equals("Alice"), pm)
 
         stats = IndexStats(total_docs=5)
@@ -68,7 +68,7 @@ class TestGraphFilterPushdownC2:
                 EdgePattern("a", "b", "knows", []),
             ],
         )
-        pm = PatternMatchOperator(pattern)
+        pm = PatternMatchOperator(pattern, graph="test")
         filtered = FilterOperator("name", Equals("Alice"), pm)
 
         stats = IndexStats(total_docs=5)

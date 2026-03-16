@@ -40,8 +40,11 @@ class IncrementalPatternMatcher:
         self,
         pattern: GraphPattern,
         base_matches: set[frozenset[int]] | None = None,
+        *,
+        graph_name: str,
     ) -> None:
         self.pattern = pattern
+        self.graph_name = graph_name
         self.base_matches: set[frozenset[int]] = (
             set(base_matches) if base_matches is not None else set()
         )
@@ -102,7 +105,7 @@ class IncrementalPatternMatcher:
             constrained_pattern = GraphPattern(
                 constrained_vps, self.pattern.edge_patterns
             )
-            pm = PatternMatchOperator(constrained_pattern)
+            pm = PatternMatchOperator(constrained_pattern, graph=self.graph_name)
             gpl = pm.execute(ctx)
 
             for entry in gpl:

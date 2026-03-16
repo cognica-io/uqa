@@ -97,10 +97,13 @@ class CypherCompiler:
     def __init__(
         self,
         graph: GraphStore,
+        *,
+        graph_name: str,
         params: dict[str, Any] | None = None,
         path_index: PathIndex | None = None,
     ) -> None:
         self._graph = graph
+        self._graph_name = graph_name
         self._params = params or {}
         self._path_index = path_index
         self._next_doc_id = 1
@@ -445,7 +448,11 @@ class CypherCompiler:
         return tuple(result)
 
     def _node_candidates(self, pat: NodePattern, fields: BindingFields) -> list[Vertex]:
-        """Return candidate vertices matching a node pattern."""
+        """Return candidate vertices matching a node pattern.
+
+        Returns an empty list when the named graph does not yet exist
+        (e.g. during a MERGE on a fresh GraphStore before any CREATE).
+        """
         if pat.variable and pat.variable in fields:
             val = fields[pat.variable]
             if val is None:
@@ -455,16 +462,19 @@ class CypherCompiler:
                 return [vtx]
             return []
 
+        if not self._graph.has_graph(self._graph_name):
+            return []
+
         if pat.labels:
             candidates: list[Vertex] = []
             seen: set[int] = set()
             for label in pat.labels:
-                for v in self._graph.vertices_by_label(label):
+                for v in self._graph.vertices_by_label(label, graph=self._graph_name):
                     if v.vertex_id not in seen:
                         seen.add(v.vertex_id)
                         candidates.append(v)
         else:
-            candidates = list(self._graph._vertices.values())
+            candidates = self._graph.vertices_in_graph(self._graph_name)
 
         return [v for v in candidates if self._vertex_matches(v, pat, fields)]
 
@@ -589,13 +599,15 @@ class CypherCompiler:
         direction = rel_pat.direction
 
         if direction in ("right", "both"):
-            for eid in self._graph._adj_out.get(vertex_id, []):
-                edge = self._graph._edges[eid]
-                results.append((edge, edge.target_id))
+            for eid in self._graph.out_edge_ids(vertex_id, graph=self._graph_name):
+                edge = self._graph.get_edge(eid)
+                if edge is not None:
+                    results.append((edge, edge.target_id))
         if direction in ("left", "both"):
-            for eid in self._graph._adj_in.get(vertex_id, []):
-                edge = self._graph._edges[eid]
-                results.append((edge, edge.source_id))
+            for eid in self._graph.in_edge_ids(vertex_id, graph=self._graph_name):
+                edge = self._graph.get_edge(eid)
+                if edge is not None:
+                    results.append((edge, edge.source_id))
 
         if rel_pat.types:
             results = [(e, n) for e, n in results if e.label in rel_pat.types]
@@ -688,7 +700,7 @@ class CypherCompiler:
             for k, v_expr in pat.properties.items():
                 props[k] = self._eval(v_expr, fields)
         vtx = Vertex(vertex_id=vid, label=label, properties=props)
-        self._graph.add_vertex(vtx)
+        self._graph.add_vertex(vtx, graph=self._graph_name)
         return vtx
 
     def _create_edge(
@@ -715,7 +727,7 @@ class CypherCompiler:
             label=label,
             properties=props,
         )
-        self._graph.add_edge(edge)
+        self._graph.add_edge(edge, graph=self._graph_name)
         return edge
 
     # -- MERGE ---------------------------------------------------------
@@ -801,7 +813,7 @@ class CypherCompiler:
                     properties=new_props,
                 )
                 # Write-through: add_vertex does INSERT OR REPLACE
-                self._graph.add_vertex(new_vtx)
+                self._graph.add_vertex(new_vtx, graph=self._graph_name)
                 return
 
             edge = (
@@ -822,7 +834,7 @@ class CypherCompiler:
                     label=edge.label,
                     properties=new_props,
                 )
-                self._graph.add_edge(new_edge)
+                self._graph.add_edge(new_edge, graph=self._graph_name)
 
         elif isinstance(item.target, Variable):
             vid = fields.get(item.target.name)
@@ -840,7 +852,7 @@ class CypherCompiler:
                     label=vtx.label,
                     properties=new_props,
                 )
-                self._graph.add_vertex(new_vtx)
+                self._graph.add_vertex(new_vtx, graph=self._graph_name)
 
     # -- DELETE --------------------------------------------------------
 
@@ -867,18 +879,18 @@ class CypherCompiler:
                         to_delete_edges.append(val)
 
         for eid in to_delete_edges:
-            self._graph.remove_edge(eid)
+            self._graph.remove_edge(eid, graph=self._graph_name)
 
         for vid in to_delete_vertices:
             if not clause.detach:
-                has_out = bool(self._graph._adj_out.get(vid, []))
-                has_in = bool(self._graph._adj_in.get(vid, []))
+                has_out = bool(self._graph.out_edge_ids(vid, graph=self._graph_name))
+                has_in = bool(self._graph.in_edge_ids(vid, graph=self._graph_name))
                 if has_out or has_in:
                     raise ValueError(
                         f"Cannot delete vertex {vid}: has incident edges. "
                         f"Use DETACH DELETE."
                     )
-            self._graph.remove_vertex(vid)
+            self._graph.remove_vertex(vid, graph=self._graph_name)
 
         return bindings
 

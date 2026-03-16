@@ -40,7 +40,7 @@ vertices = [
     Vertex(6, "person", {"name": "Frank", "influence": 0.4}),
 ]
 for v in vertices:
-    gs.add_vertex(v)
+    gs.add_vertex(v, graph="network")
 
 # -- Temporal edges with valid_from/valid_to timestamps --
 # Timestamps represent months (1-12)
@@ -59,7 +59,7 @@ edges = [
     Edge(11, 2, 5, "mentors", {"valid_from": 3, "valid_to": 10}),
 ]
 for e in edges:
-    gs.add_edge(e)
+    gs.add_edge(e, graph="network")
 
 print("=" * 70)
 print("Advanced Graph Features (Fluent API)")
@@ -173,9 +173,9 @@ print("\n--- 7. Path index + RPQ ---")
 # Create a named graph for path index demonstration
 named_graph = engine.create_graph("team")
 for v in vertices:
-    named_graph.add_vertex(v)
+    named_graph.add_vertex(v, graph="team")
 for e in edges:
-    named_graph.add_edge(e)
+    named_graph.add_edge(e, graph="team")
 
 engine.build_path_index("team", [["follows"], ["follows", "follows"]])
 path_idx = engine.get_path_index("team")

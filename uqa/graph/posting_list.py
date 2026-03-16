@@ -19,6 +19,7 @@ class GraphPayload:
     subgraph_vertices: frozenset[int] = field(default_factory=frozenset)
     subgraph_edges: frozenset[int] = field(default_factory=frozenset)
     score: float = 0.0
+    graph_name: str = ""
 
 
 class GraphPostingList(PostingList):

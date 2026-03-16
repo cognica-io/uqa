@@ -61,7 +61,7 @@ skills = [
 ]
 
 for v in employees + departments + projects + skills:
-    gs.add_vertex(v)
+    gs.add_vertex(v, graph="network")
 
 # -- Edges --
 edges = [
@@ -96,7 +96,7 @@ edges = [
     Edge(35, 6, 303, "has_skill"),
 ]
 for e in edges:
-    gs.add_edge(e)
+    gs.add_edge(e, graph="network")
 
 print("=" * 70)
 print("Graph Query Examples (Fluent API)")
@@ -228,7 +228,7 @@ for entry in results:
 # 8. LabelIndex: edge statistics
 # ------------------------------------------------------------------
 print("\n--- 8. LabelIndex: edge counts by label ---")
-label_idx = LabelIndex.build(gs)
+label_idx = LabelIndex.build(gs, graph_name="network")
 for label in ("manages", "belongs_to", "works_on", "has_skill"):
     edge_ids = label_idx.edges_by_label(label)
     print(f"  {label:>12}: {len(edge_ids)} edges")
@@ -238,7 +238,7 @@ for label in ("manages", "belongs_to", "works_on", "has_skill"):
 # 9. NeighborhoodIndex: pre-computed 2-hop neighborhoods
 # ------------------------------------------------------------------
 print("\n--- 9. NeighborhoodIndex: Bob's 2-hop neighborhood ---")
-nbr_idx = NeighborhoodIndex.build(gs, max_hops=2)
+nbr_idx = NeighborhoodIndex.build(gs, max_hops=2, graph_name="network")
 neighbors = nbr_idx.neighbors(2, hops=2)
 print(f"  {len(neighbors)} vertices within 2 hops:")
 for vid in sorted(neighbors):
@@ -251,7 +251,9 @@ for vid in sorted(neighbors):
 # 10. PathIndex: pre-computed labeled paths
 # ------------------------------------------------------------------
 print("\n--- 10. PathIndex: 'manages' paths from Alice ---")
-path_idx = PathIndex.build(gs, label_sequences=[["manages"], ["manages", "manages"]])
+path_idx = PathIndex.build(
+    gs, label_sequences=[["manages"], ["manages", "manages"]], graph_name="network"
+)
 pairs_1 = path_idx.lookup(["manages"])
 pairs_2 = path_idx.lookup(["manages", "manages"])
 # Filter to paths starting from Alice (vertex 1)
@@ -273,7 +275,7 @@ for vid in from_alice_2:
 # 11. GraphStats and CardinalityEstimator
 # ------------------------------------------------------------------
 print("\n--- 11. Graph statistics ---")
-stats = GraphStats.from_graph_store(gs)
+stats = GraphStats.from_graph_store(gs, graph="network")
 print(f"  Vertices: {stats.num_vertices}")
 print(f"  Edges: {stats.num_edges}")
 print(f"  Avg out-degree: {stats.avg_out_degree:.2f}")

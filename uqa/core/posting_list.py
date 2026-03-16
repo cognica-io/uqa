@@ -221,6 +221,8 @@ class GeneralizedPostingList:
     def __bool__(self) -> bool:
         return len(self._entries) > 0
 
+    # -- Boolean Algebra Operations --
+
     def union(self, other: GeneralizedPostingList) -> GeneralizedPostingList:
         """Two-pointer merge keeping all unique doc_ids tuples."""
         result: list[GeneralizedPostingEntry] = []
@@ -242,6 +244,68 @@ class GeneralizedPostingList:
         gpl = GeneralizedPostingList.__new__(GeneralizedPostingList)
         gpl._entries = result
         return gpl
+
+    def intersect(self, other: GeneralizedPostingList) -> GeneralizedPostingList:
+        """Two-pointer merge keeping only matching doc_ids tuples."""
+        result: list[GeneralizedPostingEntry] = []
+        i, j = 0, 0
+        while i < len(self._entries) and j < len(other._entries):
+            a, b = self._entries[i], other._entries[j]
+            if a.doc_ids == b.doc_ids:
+                result.append(a)
+                i += 1
+                j += 1
+            elif a.doc_ids < b.doc_ids:
+                i += 1
+            else:
+                j += 1
+        gpl = GeneralizedPostingList.__new__(GeneralizedPostingList)
+        gpl._entries = result
+        return gpl
+
+    def difference(self, other: GeneralizedPostingList) -> GeneralizedPostingList:
+        """A - B: entries in A where doc_ids tuple is not in B.
+
+        Uses set-based lookup on doc_ids_set for O(1) membership check.
+        The result preserves the sorted invariant since self._entries is
+        already sorted and we only filter (never reorder).
+        """
+        other_ids = other.doc_ids_set
+        result = [e for e in self._entries if e.doc_ids not in other_ids]
+        gpl = GeneralizedPostingList.__new__(GeneralizedPostingList)
+        gpl._entries = result
+        return gpl
+
+    def complement(self, universal: GeneralizedPostingList) -> GeneralizedPostingList:
+        """Complement of A with respect to universal set U: U - A."""
+        return universal.difference(self)
+
+    # -- Properties --
+
+    @property
+    def doc_ids_set(self) -> set[tuple[DocId, ...]]:
+        """Return the set of doc_ids tuples from entries."""
+        return {e.doc_ids for e in self._entries}
+
+    # -- Operator overloads --
+
+    def __and__(self, other: GeneralizedPostingList) -> GeneralizedPostingList:
+        return self.intersect(other)
+
+    def __or__(self, other: GeneralizedPostingList) -> GeneralizedPostingList:
+        return self.union(other)
+
+    def __sub__(self, other: GeneralizedPostingList) -> GeneralizedPostingList:
+        return self.difference(other)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, GeneralizedPostingList):
+            return NotImplemented
+        if len(self._entries) != len(other._entries):
+            return False
+        return all(
+            a.doc_ids == b.doc_ids for a, b in zip(self._entries, other._entries)
+        )
 
     def __repr__(self) -> str:
         tuples = [e.doc_ids for e in self._entries]

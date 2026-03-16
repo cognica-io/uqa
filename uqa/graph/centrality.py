@@ -35,14 +35,18 @@ class PageRankOperator:
         damping: float = 0.85,
         max_iterations: int = 100,
         tolerance: float = 1e-6,
+        *,
+        graph: str,
     ) -> None:
         self.damping = damping
         self.max_iterations = max_iterations
         self.tolerance = tolerance
+        self.graph_name = graph
 
     def execute(self, ctx: object) -> GraphPostingList:
-        graph: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
-        vertices = list(graph._vertices.keys())
+        gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
+        g = self.graph_name
+        vertices = sorted(gs.vertex_ids_in_graph(g))
         n = len(vertices)
 
         if n == 0:
@@ -64,13 +68,15 @@ class PageRankOperator:
         # Precompute out-degree for each vertex
         out_degree: dict[int, int] = {}
         for v in vertices:
-            out_degree[v] = len(graph._adj_out.get(v, set()))
+            out_degree[v] = len(gs.out_edge_ids(v, graph=g))
 
         # Precompute in-neighbors for each vertex
         in_neighbors: dict[int, list[int]] = defaultdict(list)
         for v in vertices:
-            for eid in graph._adj_in.get(v, set()):
-                edge = graph._edges[eid]
+            for eid in gs.in_edge_ids(v, graph=g):
+                edge = gs.get_edge(eid)
+                if edge is None:
+                    continue
                 in_neighbors[v].append(edge.source_id)
 
         for _ in range(self.max_iterations):
@@ -101,7 +107,6 @@ class PageRankOperator:
 
         # Build GraphPostingList sorted by doc_id
         all_vids = frozenset(vertices)
-        all_eids = frozenset(graph._edges.keys())
         entries: list[PostingEntry] = []
         graph_payloads: dict[int, GraphPayload] = {}
         for vid in sorted(vertices):
@@ -109,7 +114,7 @@ class PageRankOperator:
             entries.append(entry)
             graph_payloads[vid] = GraphPayload(
                 subgraph_vertices=all_vids,
-                subgraph_edges=all_eids,
+                subgraph_edges=frozenset(),
             )
 
         return GraphPostingList(entries, graph_payloads)
@@ -133,13 +138,17 @@ class HITSOperator:
         self,
         max_iterations: int = 100,
         tolerance: float = 1e-6,
+        *,
+        graph: str,
     ) -> None:
         self.max_iterations = max_iterations
         self.tolerance = tolerance
+        self.graph_name = graph
 
     def execute(self, ctx: object) -> GraphPostingList:
-        graph: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
-        vertices = list(graph._vertices.keys())
+        gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
+        g = self.graph_name
+        vertices = sorted(gs.vertex_ids_in_graph(g))
         n = len(vertices)
 
         if n == 0:
@@ -153,11 +162,15 @@ class HITSOperator:
         in_neighbors: dict[int, list[int]] = defaultdict(list)
         out_neighbors: dict[int, list[int]] = defaultdict(list)
         for v in vertices:
-            for eid in graph._adj_in.get(v, set()):
-                edge = graph._edges[eid]
+            for eid in gs.in_edge_ids(v, graph=g):
+                edge = gs.get_edge(eid)
+                if edge is None:
+                    continue
                 in_neighbors[v].append(edge.source_id)
-            for eid in graph._adj_out.get(v, set()):
-                edge = graph._edges[eid]
+            for eid in gs.out_edge_ids(v, graph=g):
+                edge = gs.get_edge(eid)
+                if edge is None:
+                    continue
                 out_neighbors[v].append(edge.target_id)
 
         for _ in range(self.max_iterations):
@@ -196,7 +209,6 @@ class HITSOperator:
 
         # Build GraphPostingList sorted by doc_id
         all_vids = frozenset(vertices)
-        all_eids = frozenset(graph._edges.keys())
         entries: list[PostingEntry] = []
         graph_payloads: dict[int, GraphPayload] = {}
         for vid in sorted(vertices):
@@ -213,7 +225,7 @@ class HITSOperator:
             entries.append(entry)
             graph_payloads[vid] = GraphPayload(
                 subgraph_vertices=all_vids,
-                subgraph_edges=all_eids,
+                subgraph_edges=frozenset(),
             )
 
         return GraphPostingList(entries, graph_payloads)
@@ -230,9 +242,13 @@ class BetweennessCentralityOperator:
     to [0, 1].
     """
 
+    def __init__(self, *, graph: str) -> None:
+        self.graph_name = graph
+
     def execute(self, ctx: object) -> GraphPostingList:
-        graph: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
-        vertices = list(graph._vertices.keys())
+        gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
+        g = self.graph_name
+        vertices = sorted(gs.vertex_ids_in_graph(g))
         n = len(vertices)
 
         if n == 0:
@@ -251,8 +267,10 @@ class BetweennessCentralityOperator:
         # Precompute out-neighbors
         out_neighbors: dict[int, list[int]] = defaultdict(list)
         for v in vertices:
-            for eid in graph._adj_out.get(v, set()):
-                edge = graph._edges[eid]
+            for eid in gs.out_edge_ids(v, graph=g):
+                edge = gs.get_edge(eid)
+                if edge is None:
+                    continue
                 out_neighbors[v].append(edge.target_id)
 
         # Brandes algorithm
@@ -303,7 +321,6 @@ class BetweennessCentralityOperator:
 
         # Build GraphPostingList sorted by doc_id
         all_vids = frozenset(vertices)
-        all_eids = frozenset(graph._edges.keys())
         entries: list[PostingEntry] = []
         graph_payloads: dict[int, GraphPayload] = {}
         for vid in sorted(vertices):
@@ -311,7 +328,7 @@ class BetweennessCentralityOperator:
             entries.append(entry)
             graph_payloads[vid] = GraphPayload(
                 subgraph_vertices=all_vids,
-                subgraph_edges=all_eids,
+                subgraph_edges=frozenset(),
             )
 
         return GraphPostingList(entries, graph_payloads)

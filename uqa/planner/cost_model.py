@@ -24,6 +24,9 @@ TRAVERSE_FRACTION = 0.1
 class CostModel:
     """Operator cost estimation for query optimization (Definition 6.2.1, Paper 1)."""
 
+    def __init__(self, graph_stats: object | None = None) -> None:
+        self._graph_stats = graph_stats
+
     def estimate(self, op: Operator, stats: IndexStats) -> float:
         from uqa.graph.graph_embedding import GraphEmbeddingOperator
         from uqa.graph.message_passing import MessagePassingOperator
@@ -121,9 +124,35 @@ class CostModel:
             case VertexAggregationOperator():
                 return float(stats.total_docs) * VERTEX_AGG_FRACTION
             case TraverseOperator():
+                if self._graph_stats is not None:
+                    gs = self._graph_stats
+                    label = getattr(op, "label", None)
+                    hops = getattr(op, "max_hops", 1)
+                    sel = gs.label_selectivity(label)
+                    d = gs.avg_out_degree * sel
+                    # O(sum d^i for i=1..hops)
+                    cost = sum(d**i for i in range(1, hops + 1))
+                    return max(1.0, cost)
                 return float(stats.total_docs) * TRAVERSE_FRACTION
             case PatternMatchOperator():
-                return float(stats.total_docs) ** 2
+                if self._graph_stats is not None:
+                    gs = self._graph_stats
+                    nv = (
+                        float(gs.num_vertices)
+                        if gs.num_vertices > 0
+                        else float(stats.total_docs)
+                    )
+                    k = len(op.pattern.vertex_patterns)
+                    # O(V^k) with pruning factor
+                    base_cost = max(1.0, nv**k * 0.01)
+                else:
+                    base_cost = float(stats.total_docs) ** 2
+                # Negation scan overhead: each negated edge requires
+                # an extra full-scan to verify absence
+                negated_count = sum(1 for ep in op.pattern.edge_patterns if ep.negated)
+                if negated_count > 0:
+                    base_cost *= 1.0 + 0.2 * negated_count
+                return base_cost
             case TemporalTraverseOperator():
                 return float(stats.total_docs) * TRAVERSE_FRACTION
             case TemporalPatternMatchOperator():
@@ -133,12 +162,23 @@ class CostModel:
                 labels = RegularPathQueryOperator._extract_label_sequence(op.path_expr)
                 if labels is not None:
                     return float(stats.total_docs) * 0.1
+                if self._graph_stats is not None:
+                    gs = self._graph_stats
+                    nv = float(gs.num_vertices)
+                    # O(V^2 * |R|) where |R| is estimated from expression structure
+                    r_size = _expr_label_count(op.path_expr)
+                    return max(1.0, nv**2 * r_size * 0.001)
                 return float(stats.total_docs) ** 2
             case WeightedPathQueryOperator():
-                # Same cost as RPQ
+                # Same cost model as RPQ
                 labels = RegularPathQueryOperator._extract_label_sequence(op.path_expr)
                 if labels is not None:
                     return float(stats.total_docs) * 0.1
+                if self._graph_stats is not None:
+                    gs = self._graph_stats
+                    nv = float(gs.num_vertices)
+                    r_size = _expr_label_count(op.path_expr)
+                    return max(1.0, nv**2 * r_size * 0.001)
                 return float(stats.total_docs) ** 2
             case SparseThresholdOperator(source=src):
                 return self.estimate(src, stats) * 0.5
@@ -191,3 +231,22 @@ class CostModel:
                     return op.cost_estimate(stats)
 
                 return n
+
+
+def _expr_label_count(expr: object) -> int:
+    """Count label nodes in an RPQ expression (proxy for NFA size).
+
+    Used by ``CostModel`` to estimate |R| in the O(V^2 * |R|) RPQ
+    cost formula without constructing the full NFA.
+    """
+    from uqa.graph.pattern import Alternation, BoundedLabel, Concat, KleeneStar, Label
+
+    if isinstance(expr, Label):
+        return 1
+    if isinstance(expr, (Concat, Alternation)):
+        return _expr_label_count(expr.left) + _expr_label_count(expr.right)
+    if isinstance(expr, KleeneStar):
+        return _expr_label_count(expr.inner) * 2
+    if isinstance(expr, BoundedLabel):
+        return _expr_label_count(expr.inner) * expr.max_hops
+    return 1

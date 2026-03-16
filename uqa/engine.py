@@ -23,7 +23,6 @@ from uqa.planner.parallel import ParallelExecutor
 from uqa.sql.table import _SQL_TYPE_MAP, ColumnDef, ColumnStats, Table
 from uqa.storage.catalog import Catalog
 from uqa.storage.index_manager import IndexManager
-from uqa.storage.sqlite_graph_store import SQLiteGraphStore
 from uqa.storage.transaction import Transaction
 
 
@@ -48,7 +47,7 @@ class Engine:
         self._prepared: dict[str, Any] = {}  # name -> PrepareStmt AST
         self._sequences: dict[str, dict[str, int]] = {}
         self._temp_tables: set[str] = set()
-        self._named_graphs: dict[str, GraphStore] = {}
+        self._graph_store: GraphStore = GraphStore()
         self._versioned_graphs: dict[str, Any] = {}
         self._path_indexes: dict[str, PathIndex] = {}
 
@@ -160,17 +159,17 @@ class Engine:
 
         # -- Named graphs ----------------------------------------------
         for graph_name in catalog.load_named_graphs():
-            self._named_graphs[graph_name] = SQLiteGraphStore(
-                catalog.conn, table_name=f"_graph_{graph_name}"
-            )
+            if not self._graph_store.has_graph(graph_name):
+                self._graph_store.create_graph(graph_name)
 
         # -- Path indexes ----------------------------------------------
         from uqa.graph.index import PathIndex
 
         for graph_name, label_sequences in catalog.load_path_indexes():
-            store = self._named_graphs.get(graph_name)
-            if store is not None:
-                self._path_indexes[graph_name] = PathIndex.build(store, label_sequences)
+            if self._graph_store.has_graph(graph_name):
+                self._path_indexes[graph_name] = PathIndex.build(
+                    self._graph_store, label_sequences, graph_name=graph_name
+                )
 
         # -- Foreign servers and tables --------------------------------
         from uqa.fdw.foreign_table import ForeignServer, ForeignTable
@@ -390,56 +389,44 @@ class Engine:
         tbl = self._tables.get(table)
         if tbl is None:
             raise ValueError(f"Table '{table}' does not exist")
-        tbl.graph_store.add_vertex(vertex)
+        tbl.graph_store.add_vertex(vertex, graph=table)
 
     def add_graph_edge(self, edge: Edge, table: str) -> None:
         """Add a graph edge to a table's graph store."""
         tbl = self._tables.get(table)
         if tbl is None:
             raise ValueError(f"Table '{table}' does not exist")
-        tbl.graph_store.add_edge(edge)
+        tbl.graph_store.add_edge(edge, graph=table)
 
     # -- Named graph management ----------------------------------------
 
     def create_graph(self, name: str) -> GraphStore:
-        """Create a named graph (Apache AGE ``create_graph``)."""
-        if name in self._named_graphs:
-            raise ValueError(f"Graph '{name}' already exists")
+        """Create a named graph."""
+        self._graph_store.create_graph(name)
         if self._catalog is not None:
-            store: GraphStore = SQLiteGraphStore(
-                self._catalog.conn, table_name=f"_graph_{name}"
-            )
             self._catalog.save_named_graph(name)
-        else:
-            store = GraphStore()
-        self._named_graphs[name] = store
-        return store
+        return self._graph_store
 
     def drop_graph(self, name: str) -> None:
         """Drop a named graph and all its data."""
-        store = self._named_graphs.pop(name, None)
-        if store is None:
-            raise ValueError(f"Graph '{name}' does not exist")
-        store.clear()
+        self._graph_store.drop_graph(name)
         if self._catalog is not None:
             self._catalog.drop_named_graph(name)
-            # Drop the per-graph SQLite tables
-            conn = self._catalog.conn
-            prefix = f"_graph_{name}"
-            conn.execute(f'DROP TABLE IF EXISTS "_graph_vertices_{prefix}"')
-            conn.execute(f'DROP TABLE IF EXISTS "_graph_edges_{prefix}"')
-            conn.commit()
 
     def get_graph(self, name: str) -> GraphStore:
-        """Return the named graph store, raising if it does not exist."""
-        store = self._named_graphs.get(name)
-        if store is None:
+        """Return the graph store, raising if named graph does not exist."""
+        if not self._graph_store.has_graph(name):
             raise ValueError(f"Graph '{name}' does not exist")
-        return store
+        return self._graph_store
 
     def has_graph(self, name: str) -> bool:
         """Return True if a named graph with *name* exists."""
-        return name in self._named_graphs
+        return self._graph_store.has_graph(name)
+
+    @property
+    def graph_store(self) -> GraphStore:
+        """Return the global graph store."""
+        return self._graph_store
 
     # -- Path index management -----------------------------------------
 
@@ -453,10 +440,9 @@ class Engine:
         """
         from uqa.graph.index import PathIndex
 
-        store = self._named_graphs.get(graph_name)
-        if store is None:
+        if not self._graph_store.has_graph(graph_name):
             raise ValueError(f"Graph '{graph_name}' does not exist")
-        idx = PathIndex.build(store, label_sequences)
+        idx = PathIndex.build(self._graph_store, label_sequences, graph_name=graph_name)
         self._path_indexes[graph_name] = idx
         if self._catalog is not None:
             self._catalog.save_path_index(graph_name, label_sequences)
@@ -482,14 +468,13 @@ class Engine:
         """
         from uqa.graph.versioned_store import VersionedGraphStore
 
-        store = self._named_graphs.get(graph_name)
-        if store is None:
+        if not self._graph_store.has_graph(graph_name):
             raise ValueError(f"Graph '{graph_name}' does not exist")
 
         # Wrap in VersionedGraphStore if not already tracked
         versioned = self._versioned_graphs.get(graph_name)
         if versioned is None:
-            versioned = VersionedGraphStore(store)
+            versioned = VersionedGraphStore(self._graph_store, graph_name=graph_name)
             self._versioned_graphs[graph_name] = versioned
 
         version = versioned.apply(delta)

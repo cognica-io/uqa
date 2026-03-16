@@ -105,12 +105,15 @@ engine.get_graph(name: str) -> GraphStore
 engine.has_graph(name: str) -> bool
 ```
 
-Manage named graphs for Cypher queries and FROM-clause graph functions. Named graphs are persisted via the SQLite catalog. The `traverse()`, `rpq()`, and `temporal_traverse()` FROM-clause table functions accept a `'graph:name'` source argument to target a named graph instead of a per-table graph store:
+Manage named graphs for Cypher queries and FROM-clause graph functions. Named graphs are persisted via the SQLite catalog (`_graph_catalog` and `_graph_membership` tables). All graph functions now accept direct graph names without the `graph:` prefix (backward compatible):
 
 ```sql
-SELECT * FROM traverse(1, 'knows', 2, 'graph:social');
-SELECT * FROM rpq('knows/works_with', 1, 'graph:social');
-SELECT * FROM temporal_traverse(1, 'knows', 2, 150, 'graph:net');
+SELECT * FROM traverse(1, 'knows', 2, 'social');
+SELECT * FROM rpq('knows/works_with', 1, 'social');
+SELECT * FROM temporal_traverse(1, 'knows', 2, 150, 'net');
+SELECT * FROM pagerank(0.85, 'social');
+SELECT * FROM hits(20, 'social');
+SELECT * FROM betweenness('social');
 ```
 
 ### Analyzer Management
@@ -891,21 +894,38 @@ from uqa.core.types import Vertex, Edge
 
 gs = GraphStore()
 
-# Add vertices
-gs.add_vertex(Vertex(1, "Person", {"name": "Alice"}))
-gs.add_vertex(Vertex(2, "Person", {"name": "Bob"}))
+# --- Named Graph Lifecycle ---
+gs.create_graph("social")          # Create a named graph
+gs.has_graph("social")             # True
+gs.graph_names()                   # ["social"]
 
-# Add edges
-gs.add_edge(Edge(1, source_id=1, target_id=2, label="KNOWS", properties={}))
+# Add vertices and edges (graph= keyword required)
+gs.add_vertex(Vertex(1, "Person", {"name": "Alice"}), graph="social")
+gs.add_vertex(Vertex(2, "Person", {"name": "Bob"}), graph="social")
+gs.add_edge(Edge(1, source_id=1, target_id=2, label="KNOWS", properties={}), graph="social")
 
-# Query
-v = gs.get_vertex(1)
-neighbors = gs.neighbors(1, label="KNOWS", direction="out")  # [2]
-people = gs.vertices_by_label("Person")  # [Vertex(1, ...), Vertex(2, ...)]
+# Query (graph= keyword required)
+v = gs.get_vertex(1, graph="social")
+neighbors = gs.neighbors(1, label="KNOWS", direction="out", graph="social")  # [2]
+people = gs.vertices_by_label("Person", graph="social")  # [Vertex(1, ...), Vertex(2, ...)]
 
 # Remove
-gs.remove_vertex(1)  # also removes incident edges
-gs.remove_edge(1)
+gs.remove_vertex(1, graph="social")  # also removes incident edges
+gs.remove_edge(1, graph="social")
+
+# --- Graph Algebra ---
+gs.union_graphs("combined", "graph_a", "graph_b")       # Union of two graphs
+gs.intersect_graphs("shared", "graph_a", "graph_b")     # Intersection
+gs.difference_graphs("only_a", "graph_a", "graph_b")    # Difference
+gs.copy_graph("backup", "social")                        # Deep copy
+
+# --- Per-Graph Statistics ---
+gs.degree_distribution(graph="social")     # {vertex_id: degree}
+gs.label_degree(graph="social")            # {label: avg_degree}
+gs.vertex_label_counts(graph="social")     # {label: count}
+
+# --- Drop ---
+gs.drop_graph("social")
 ```
 
 ### Graph Indexes
@@ -1607,9 +1627,9 @@ Built-in handlers:
 | `DuckDBFDWHandler` | `duckdb_fdw` | In-process DuckDB. Parquet, CSV, JSON, S3, attached DBs. |
 | `ArrowFlightSQLFDWHandler` | `arrow_fdw` | Remote Arrow Flight SQL client (Dremio, DataFusion, etc.). |
 
-### Full Query Pushdown (v0.19.0)
+### Full Query Pushdown
 
-Starting with v0.19.0, UQA automatically delegates entire SQL queries to the foreign data source when possible, rather than scanning raw rows into the UQA pipeline. This eliminates Python-side materialization and lets the external engine handle joins, aggregation, window functions, subqueries, and sorting natively.
+UQA automatically delegates entire SQL queries to the foreign data source when possible, rather than scanning raw rows into the UQA pipeline. This eliminates Python-side materialization and lets the external engine handle joins, aggregation, window functions, subqueries, and sorting natively.
 
 **How it works.** Before building a UQA operator tree, the compiler inspects every table referenced in the SELECT statement (FROM, JOINs, subqueries, CTEs). If all tables resolve to foreign tables on a single server, the original SQL is deparsed from the AST and sent directly to that server. The result comes back as a PyArrow table and is converted to an `SQLResult` -- the UQA operator pipeline is never constructed.
 

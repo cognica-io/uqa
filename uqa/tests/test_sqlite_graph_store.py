@@ -49,10 +49,11 @@ def _sample_edges() -> list[Edge]:
 
 
 def _populate(store: SQLiteGraphStore) -> None:
+    store.create_graph("test")
     for v in _sample_vertices():
-        store.add_vertex(v)
+        store.add_vertex(v, graph="test")
     for e in _sample_edges():
-        store.add_edge(e)
+        store.add_edge(e, graph="test")
 
 
 # ======================================================================
@@ -99,7 +100,8 @@ class TestWriteThrough:
     def test_add_vertex_persisted(self, tmp_path):
         catalog = _make_catalog(tmp_path)
         store = SQLiteGraphStore(catalog.conn)
-        store.add_vertex(Vertex(1, "", {"name": "Alice"}))
+        store.create_graph("test")
+        store.add_vertex(Vertex(1, "", {"name": "Alice"}), graph="test")
 
         row = catalog.conn.execute(
             "SELECT vertex_id, properties_json FROM _graph_vertices WHERE vertex_id = 1"
@@ -111,9 +113,10 @@ class TestWriteThrough:
     def test_add_edge_persisted(self, tmp_path):
         catalog = _make_catalog(tmp_path)
         store = SQLiteGraphStore(catalog.conn)
-        store.add_vertex(Vertex(1, "", {"name": "Alice"}))
-        store.add_vertex(Vertex(2, "", {"name": "Bob"}))
-        store.add_edge(Edge(1, 1, 2, "knows", {"since": 2020}))
+        store.create_graph("test")
+        store.add_vertex(Vertex(1, "", {"name": "Alice"}), graph="test")
+        store.add_vertex(Vertex(2, "", {"name": "Bob"}), graph="test")
+        store.add_edge(Edge(1, 1, 2, "knows", {"since": 2020}), graph="test")
 
         row = catalog.conn.execute(
             "SELECT source_id, target_id, label FROM _graph_edges WHERE edge_id = 1"
@@ -153,7 +156,7 @@ class TestNeighborsSQL:
         store = SQLiteGraphStore(catalog.conn)
         _populate(store)
 
-        neighbors = store.neighbors(1, direction="out")
+        neighbors = store.neighbors(1, direction="out", graph="test")
         assert set(neighbors) == {2, 3}
         catalog.close()
 
@@ -162,7 +165,9 @@ class TestNeighborsSQL:
         store = SQLiteGraphStore(catalog.conn)
         _populate(store)
 
-        neighbors = store.neighbors(2, label="works_with", direction="out")
+        neighbors = store.neighbors(
+            2, label="works_with", direction="out", graph="test"
+        )
         assert set(neighbors) == {3}
         catalog.close()
 
@@ -171,7 +176,7 @@ class TestNeighborsSQL:
         store = SQLiteGraphStore(catalog.conn)
         _populate(store)
 
-        neighbors = store.neighbors(3, direction="in")
+        neighbors = store.neighbors(3, direction="in", graph="test")
         assert set(neighbors) == {1, 2}
         catalog.close()
 
@@ -180,7 +185,7 @@ class TestNeighborsSQL:
         store = SQLiteGraphStore(catalog.conn)
         _populate(store)
 
-        neighbors = store.neighbors(3, label="knows", direction="in")
+        neighbors = store.neighbors(3, label="knows", direction="in", graph="test")
         assert set(neighbors) == {1}
         catalog.close()
 
@@ -188,7 +193,8 @@ class TestNeighborsSQL:
         catalog = _make_catalog(tmp_path)
         store = SQLiteGraphStore(catalog.conn)
 
-        assert store.neighbors(999) == []
+        store.create_graph("test")
+        assert store.neighbors(999, graph="test") == []
         catalog.close()
 
 
@@ -203,7 +209,7 @@ class TestEdgesByLabel:
         store = SQLiteGraphStore(catalog.conn)
         _populate(store)
 
-        knows_edges = store.edges_by_label("knows")
+        knows_edges = store.edges_by_label("knows", graph="test")
         assert len(knows_edges) == 2
         assert all(e.label == "knows" for e in knows_edges)
         catalog.close()
@@ -213,7 +219,7 @@ class TestEdgesByLabel:
         store = SQLiteGraphStore(catalog.conn)
         _populate(store)
 
-        missing = store.edges_by_label("nonexistent")
+        missing = store.edges_by_label("nonexistent", graph="test")
         assert missing == []
         catalog.close()
 
@@ -269,8 +275,8 @@ class TestPersistence:
         cat2 = Catalog(db)
         store2 = SQLiteGraphStore(cat2.conn)
 
-        assert set(store2.neighbors(1, direction="out")) == {2, 3}
-        assert set(store2.neighbors(3, direction="in")) == {1, 2}
+        assert set(store2.neighbors(1, direction="out", graph="test")) == {2, 3}
+        assert set(store2.neighbors(3, direction="in", graph="test")) == {1, 2}
         cat2.close()
 
     def test_in_memory_cache_rebuilt_on_reconnection(self, tmp_path):
@@ -284,12 +290,13 @@ class TestPersistence:
         cat2 = Catalog(db)
         store2 = SQLiteGraphStore(cat2.conn)
 
-        # _adj_out should be rebuilt from SQLite
-        assert 1 in store2._adj_out
-        assert len(store2._adj_out[1]) == 2
-        # _label_index should be rebuilt
-        assert "knows" in store2._label_index
-        assert len(store2._label_index["knows"]) == 2
+        # Per-graph adj_out should be rebuilt from SQLite
+        partition = store2._graphs["test"]
+        assert 1 in partition.adj_out
+        assert len(partition.adj_out[1]) == 2
+        # Per-graph label_index should be rebuilt
+        assert "knows" in partition.label_index
+        assert len(partition.label_index["knows"]) == 2
         cat2.close()
 
 
@@ -342,7 +349,7 @@ class TestEngineIntegration:
             assert e is not None
             assert e.label == "knows"
 
-            neighbors = gs.neighbors(1, direction="out")
+            neighbors = gs.neighbors(1, direction="out", graph="g")
             assert 2 in neighbors
 
     def test_graph_operators_work_with_sqlite_store(self, tmp_path):
@@ -359,7 +366,7 @@ class TestEngineIntegration:
             engine.add_graph_edge(Edge(2, 2, 3, "knows", {}), table="g")
 
             ctx = engine._context_for_table("g")
-            op = TraverseOperator(start_vertex=1, label="knows", max_hops=2)
+            op = TraverseOperator(start_vertex=1, graph="g", label="knows", max_hops=2)
             result = op.execute(ctx)
             doc_ids = {e.doc_id for e in result}
             assert {1, 2, 3} == doc_ids
@@ -383,7 +390,7 @@ class TestEngineIntegration:
                 vertex_patterns=[VertexPattern("a"), VertexPattern("b")],
                 edge_patterns=[EdgePattern("a", "b", "knows")],
             )
-            op = PatternMatchOperator(pattern)
+            op = PatternMatchOperator(pattern, graph="g")
             result = op.execute(ctx)
             assert len(result) >= 2
 
@@ -403,7 +410,7 @@ class TestEngineIntegration:
 
             ctx = engine._context_for_table("g")
             expr = Concat(Label("knows"), Label("follows"))
-            op = RegularPathQueryOperator(expr, start_vertex=1)
+            op = RegularPathQueryOperator(expr, graph="g", start_vertex=1)
             result = op.execute(ctx)
             doc_ids = {e.doc_id for e in result}
             assert 3 in doc_ids

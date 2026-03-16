@@ -730,7 +730,7 @@ class TestEnginePersistenceAPI:
             v1 = gs.get_vertex(1)
             assert v1 is not None
             assert v1.properties == {"name": "A"}
-            neighbors = gs.neighbors(1, "knows")
+            neighbors = gs.neighbors(1, "knows", graph="graph_data")
             assert neighbors == [2]
 
     def test_delete_document(self, tmp_path):

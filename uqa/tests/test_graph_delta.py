@@ -14,6 +14,8 @@ from uqa.graph.delta import GraphDelta
 from uqa.graph.store import GraphStore
 from uqa.graph.versioned_store import VersionedGraphStore
 
+_GRAPH_NAME = "test"
+
 
 class TestGraphDelta:
     """Tests for GraphDelta (Paper 2, Section 9.3)."""
@@ -76,12 +78,14 @@ class TestVersionedGraphStore:
 
     def test_initial_version(self) -> None:
         g = GraphStore()
-        vg = VersionedGraphStore(g)
+        g.create_graph(_GRAPH_NAME)
+        vg = VersionedGraphStore(g, graph_name=_GRAPH_NAME)
         assert vg.version == 0
 
     def test_apply_increments_version(self) -> None:
         g = GraphStore()
-        vg = VersionedGraphStore(g)
+        g.create_graph(_GRAPH_NAME)
+        vg = VersionedGraphStore(g, graph_name=_GRAPH_NAME)
         delta = GraphDelta()
         delta.add_vertex(Vertex(1, "person", {"name": "Alice"}))
         version = vg.apply(delta)
@@ -90,7 +94,8 @@ class TestVersionedGraphStore:
 
     def test_apply_adds_vertex(self) -> None:
         g = GraphStore()
-        vg = VersionedGraphStore(g)
+        g.create_graph(_GRAPH_NAME)
+        vg = VersionedGraphStore(g, graph_name=_GRAPH_NAME)
         delta = GraphDelta()
         delta.add_vertex(Vertex(1, "person", {"name": "Alice"}))
         vg.apply(delta)
@@ -99,9 +104,10 @@ class TestVersionedGraphStore:
 
     def test_apply_adds_edge(self) -> None:
         g = GraphStore()
-        g.add_vertex(Vertex(1, "person"))
-        g.add_vertex(Vertex(2, "person"))
-        vg = VersionedGraphStore(g)
+        g.create_graph(_GRAPH_NAME)
+        g.add_vertex(Vertex(1, "person"), graph=_GRAPH_NAME)
+        g.add_vertex(Vertex(2, "person"), graph=_GRAPH_NAME)
+        vg = VersionedGraphStore(g, graph_name=_GRAPH_NAME)
         delta = GraphDelta()
         delta.add_edge(Edge(1, 1, 2, "knows"))
         vg.apply(delta)
@@ -109,8 +115,9 @@ class TestVersionedGraphStore:
 
     def test_apply_removes_vertex(self) -> None:
         g = GraphStore()
-        g.add_vertex(Vertex(1, "person"))
-        vg = VersionedGraphStore(g)
+        g.create_graph(_GRAPH_NAME)
+        g.add_vertex(Vertex(1, "person"), graph=_GRAPH_NAME)
+        vg = VersionedGraphStore(g, graph_name=_GRAPH_NAME)
         delta = GraphDelta()
         delta.remove_vertex(1)
         vg.apply(delta)
@@ -118,10 +125,11 @@ class TestVersionedGraphStore:
 
     def test_apply_removes_edge(self) -> None:
         g = GraphStore()
-        g.add_vertex(Vertex(1, "person"))
-        g.add_vertex(Vertex(2, "person"))
-        g.add_edge(Edge(1, 1, 2, "knows"))
-        vg = VersionedGraphStore(g)
+        g.create_graph(_GRAPH_NAME)
+        g.add_vertex(Vertex(1, "person"), graph=_GRAPH_NAME)
+        g.add_vertex(Vertex(2, "person"), graph=_GRAPH_NAME)
+        g.add_edge(Edge(1, 1, 2, "knows"), graph=_GRAPH_NAME)
+        vg = VersionedGraphStore(g, graph_name=_GRAPH_NAME)
         delta = GraphDelta()
         delta.remove_edge(1)
         vg.apply(delta)
@@ -129,7 +137,8 @@ class TestVersionedGraphStore:
 
     def test_rollback_to_initial(self) -> None:
         g = GraphStore()
-        vg = VersionedGraphStore(g)
+        g.create_graph(_GRAPH_NAME)
+        vg = VersionedGraphStore(g, graph_name=_GRAPH_NAME)
         delta = GraphDelta()
         delta.add_vertex(Vertex(1, "person", {"name": "Alice"}))
         vg.apply(delta)
@@ -140,7 +149,8 @@ class TestVersionedGraphStore:
 
     def test_rollback_partial(self) -> None:
         g = GraphStore()
-        vg = VersionedGraphStore(g)
+        g.create_graph(_GRAPH_NAME)
+        vg = VersionedGraphStore(g, graph_name=_GRAPH_NAME)
         d1 = GraphDelta()
         d1.add_vertex(Vertex(1, "person"))
         vg.apply(d1)
@@ -155,10 +165,11 @@ class TestVersionedGraphStore:
 
     def test_rollback_edge_removal(self) -> None:
         g = GraphStore()
-        g.add_vertex(Vertex(1, "person"))
-        g.add_vertex(Vertex(2, "person"))
-        g.add_edge(Edge(1, 1, 2, "knows"))
-        vg = VersionedGraphStore(g)
+        g.create_graph(_GRAPH_NAME)
+        g.add_vertex(Vertex(1, "person"), graph=_GRAPH_NAME)
+        g.add_vertex(Vertex(2, "person"), graph=_GRAPH_NAME)
+        g.add_edge(Edge(1, 1, 2, "knows"), graph=_GRAPH_NAME)
+        vg = VersionedGraphStore(g, graph_name=_GRAPH_NAME)
         delta = GraphDelta()
         delta.remove_edge(1)
         vg.apply(delta)
@@ -168,13 +179,15 @@ class TestVersionedGraphStore:
 
     def test_rollback_invalid_version(self) -> None:
         g = GraphStore()
-        vg = VersionedGraphStore(g)
+        g.create_graph(_GRAPH_NAME)
+        vg = VersionedGraphStore(g, graph_name=_GRAPH_NAME)
         with pytest.raises(ValueError, match="Cannot rollback"):
             vg.rollback(5)
 
     def test_multiple_deltas(self) -> None:
         g = GraphStore()
-        vg = VersionedGraphStore(g)
+        g.create_graph(_GRAPH_NAME)
+        vg = VersionedGraphStore(g, graph_name=_GRAPH_NAME)
         for i in range(1, 6):
             d = GraphDelta()
             d.add_vertex(Vertex(i, "person"))
@@ -184,9 +197,10 @@ class TestVersionedGraphStore:
 
     def test_invalidation_callback(self) -> None:
         g = GraphStore()
-        g.add_vertex(Vertex(1, "person"))
-        g.add_vertex(Vertex(2, "person"))
-        vg = VersionedGraphStore(g)
+        g.create_graph(_GRAPH_NAME)
+        g.add_vertex(Vertex(1, "person"), graph=_GRAPH_NAME)
+        g.add_vertex(Vertex(2, "person"), graph=_GRAPH_NAME)
+        vg = VersionedGraphStore(g, graph_name=_GRAPH_NAME)
         invalidated: list[set[str]] = []
         vg.on_invalidate(lambda labels: invalidated.append(labels))
         delta = GraphDelta()
@@ -218,9 +232,9 @@ class TestEngineGraphDelta:
     def test_apply_delta_invalidates_path_index(self) -> None:
         e = Engine()
         g = e.create_graph("social")
-        g.add_vertex(Vertex(1, "person"))
-        g.add_vertex(Vertex(2, "person"))
-        g.add_edge(Edge(1, 1, 2, "knows"))
+        g.add_vertex(Vertex(1, "person"), graph="social")
+        g.add_vertex(Vertex(2, "person"), graph="social")
+        g.add_edge(Edge(1, 1, 2, "knows"), graph="social")
         e.build_path_index("social", [["knows"]])
         assert e.get_path_index("social") is not None
 
@@ -233,9 +247,9 @@ class TestEngineGraphDelta:
     def test_apply_delta_no_invalidation_for_unrelated_labels(self) -> None:
         e = Engine()
         g = e.create_graph("social")
-        g.add_vertex(Vertex(1, "person"))
-        g.add_vertex(Vertex(2, "person"))
-        g.add_edge(Edge(1, 1, 2, "knows"))
+        g.add_vertex(Vertex(1, "person"), graph="social")
+        g.add_vertex(Vertex(2, "person"), graph="social")
+        g.add_edge(Edge(1, 1, 2, "knows"), graph="social")
         e.build_path_index("social", [["knows"]])
 
         delta = GraphDelta()

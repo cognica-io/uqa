@@ -223,7 +223,7 @@ graph TD
     PAR --> II[Inverted Index<br/>SQLite + Analyzer]
     PAR --> VI["Vector Index<br/>IVF"]
     PAR --> SI[Spatial Index<br/>R*Tree]
-    PAR --> GS[Graph Store<br/>SQLite]
+    PAR --> GS[Graph Store<br/>SQLite<br/>Named Graphs]
 
     subgraph Scoring ["Scoring (bayesian-bm25)"]
         BM25[BM25]
@@ -244,30 +244,35 @@ graph TD
 
 ```
 uqa/
-  core/           PostingList, types, hierarchical documents
+  core/           PostingList, types, hierarchical documents, functors
   analysis/       Text analysis pipeline: CharFilter, Tokenizer, TokenFilter, Analyzer, dual index/search analyzers
   storage/        SQLite-backed stores: documents, inverted index, vectors (IVF), spatial (R*Tree), graph
   operators/      Operator algebra (boolean, primitive, hybrid, aggregation, hierarchical,
                   sparse, multi-field, attention fusion, learned fusion, multi-stage)
   scoring/        BM25, Bayesian BM25, VectorScorer, WAND/BlockMaxWAND, calibration,
-                  parameter learning, external prior, multi-field, fusion WAND (via bayesian-bm25)
+                  parameter learning, external prior, multi-field, fusion WAND (via bayesian-bm25),
+                  adaptive WAND, bound tightness
   fusion/         Log-odds conjunction, probabilistic boolean, attention fusion,
-                  learned fusion, query features (via bayesian-bm25)
+                  learned fusion, query features (via bayesian-bm25), adaptive fusion
   graph/          GraphStore, traversal, pattern matching, RPQ, bounded RPQ, weighted paths,
                   centrality (PageRank, HITS, betweenness), cross-paradigm, indexes,
                   subgraph index, incremental matching, temporal filter/traverse/pattern,
-                  delta/versioned store, message passing, embeddings
+                  delta/versioned store, message passing, embeddings,
+                  named graphs, property indexes, join operators, RPQ optimizer, pattern negation
     cypher/       openCypher lexer, parser, AST, posting-list-based compiler
   fdw/            Foreign Data Wrappers: DuckDB (Parquet/CSV/JSON), Arrow Flight SQL, Hive partitioning, full query pushdown
-  joins/          Hash, sort-merge, index, graph, cross-paradigm, similarity joins
+  joins/          Hash, sort-merge, index, graph, cross-paradigm, similarity joins,
+                  semi-join, anti-join
   execution/      Volcano iterator engine: Apache Arrow columnar batches, vectorized operators, disk spilling
-  planner/        Cost model, cardinality estimator, optimizer, DPccp join enumerator, parallel executor
+  planner/        Cost model, cardinality estimator, optimizer, DPccp join enumerator, parallel executor,
+                  information-theoretic bounds, graph cost model
   sql/            SQL compiler (pglast), expression evaluator, FTS query parser, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          2318 tests across 65 test files
-benchmarks/       295 pytest-benchmark tests across 14 files (posting list, storage, compiler,
+  tests/          2578 tests across 70 test files
+benchmarks/       309 pytest-benchmark tests across 15 files (posting list, storage, compiler,
                   execution, planner, scoring, graph, graph centrality, end-to-end SQL,
-                  calibration, multi-field, external prior, advanced scoring, advanced graph)
+                  calibration, multi-field, external prior, advanced scoring, advanced graph,
+                  named graphs)
 ```
 
 ## Key Features
@@ -364,9 +369,9 @@ benchmarks/       295 pytest-benchmark tests across 14 files (posting list, stor
 | `regexp_split_to_table(str, pattern)` | Split string by regex into rows |
 | `json_each(json)` / `json_each_text(json)` | Expand JSON object to key/value rows |
 | `json_array_elements(json)` | Expand JSON array to a set of rows |
-| `pagerank([damping][, 'table'\|'graph:name'])` | PageRank centrality as table source |
-| `hits([iter][, 'table'\|'graph:name'])` | HITS hub/authority as table source |
-| `betweenness(['table'\|'graph:name'])` | Betweenness centrality as table source |
+| `pagerank([damping][, 'table_or_graph'])` | PageRank centrality as table source |
+| `hits([iter][, 'table_or_graph'])` | HITS hub/authority as table source |
+| `betweenness(['table_or_graph'])` | Betweenness centrality as table source |
 | `graph_add_vertex(id, 'label', 'table'[, 'props'])` | Add graph vertex to table's graph store |
 | `graph_add_edge(eid, src, tgt, 'label', 'table'[, 'props'])` | Add graph edge to table's graph store |
 | `create_graph('name')` | Create a named graph namespace |
@@ -390,7 +395,7 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 | Vectors | `_ivf_centroids_{table}_{field}`, `_ivf_lists_{table}_{field}` | IVF index via `CREATE INDEX ... USING hnsw` or `USING ivf`; centroids in memory, posting lists in SQLite |
 | Spatial | `_rtree_{table}_{field}` | R*Tree virtual table for POINT columns; created via `CREATE INDEX ... USING rtree` |
 | Graph | `_graph_vertices_{table}`, `_graph_edges_{table}` | Per-table adjacency-indexed graph with vertex labels |
-| Named Graphs | `_named_graphs`, `_graph_{name}_*` | Isolated graph namespaces for Cypher queries |
+| Named Graphs | `_graph_catalog_{table}`, `_graph_membership_{table}` | Per-graph partitioned adjacency with catalog and membership tables |
 | B-tree Indexes | SQLite indexes on `_data_{table}` | `CREATE INDEX` support |
 | Analyzers | `_analyzers` | Custom text analyzer configurations |
 | Field Analyzers | `_table_field_analyzers` | Per-field index/search analyzer assignments |
@@ -425,6 +430,11 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 - CTE inlining for single-reference non-recursive CTEs
 - Predicate pushdown into views and derived tables
 - Implicit cross join reordering via DPccp when equijoin predicates exist in WHERE
+- Filter pushdown into graph traverse operators (vertex predicate BFS pruning)
+- Graph-aware fusion signal reordering with per-graph cost model
+- Named graph scoped statistics (degree distribution, label degree, vertex label counts)
+- Information-theoretic cardinality lower bounds (entropy-based)
+- Negation-aware pattern match cost estimation
 
 ### Disk Spilling
 
@@ -627,6 +637,7 @@ python examples/fluent/scoring.py             # Bayesian BM25, sparse threshold,
 python examples/fluent/fusion_advanced.py     # Attention/learned fusion, multi-stage pipelines
 python examples/fluent/graph_advanced.py      # Temporal traversal, message passing, path index, delta
 python examples/fluent/graph_centrality.py    # PageRank, HITS, betweenness, bounded RPQ, weighted paths, indexing
+python examples/fluent/named_graphs.py        # Named graphs, graph algebra, property indexes, functors, adaptive fusion
 python examples/fluent/analysis.py            # Text analysis pipeline, tokenizers, filters, stemming
 python examples/fluent/export.py              # Arrow/Parquet export from fluent queries
 ```
@@ -653,6 +664,7 @@ python examples/sql/fdw.py                    # Foreign Data Wrappers, Hive part
 python examples/sql/nyc_taxi.py               # NYC Taxi analytics, remote Parquet, full query pushdown, spatial JOIN
 python examples/sql/fusion_gating.py          # ReLU/Swish gating, alpha+gating, progressive fusion
 python examples/sql/graph_centrality.py       # PageRank, HITS, betweenness, bounded RPQ, weighted RPQ via SQL
+python examples/sql/named_graphs.py           # Named graphs via SQL: traverse, RPQ, Cypher, centrality, algebra
 ```
 
 ### Interactive Shell

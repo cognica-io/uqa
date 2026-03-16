@@ -18,18 +18,21 @@ from uqa.graph.pattern import Alternation, Concat, KleeneStar, Label
 from uqa.graph.store import GraphStore
 from uqa.operators.base import ExecutionContext
 
+_GRAPH_NAME = "test"
+
 
 def _build_test_graph() -> GraphStore:
     """Build a test graph: A -knows-> B -works_with-> C -manages-> D"""
     g = GraphStore()
-    g.add_vertex(Vertex(1, "person", {"name": "Alice"}))
-    g.add_vertex(Vertex(2, "person", {"name": "Bob"}))
-    g.add_vertex(Vertex(3, "person", {"name": "Carol"}))
-    g.add_vertex(Vertex(4, "person", {"name": "Dave"}))
-    g.add_edge(Edge(1, 1, 2, "knows"))
-    g.add_edge(Edge(2, 2, 3, "works_with"))
-    g.add_edge(Edge(3, 3, 4, "manages"))
-    g.add_edge(Edge(4, 1, 3, "knows"))
+    g.create_graph(_GRAPH_NAME)
+    g.add_vertex(Vertex(1, "person", {"name": "Alice"}), graph=_GRAPH_NAME)
+    g.add_vertex(Vertex(2, "person", {"name": "Bob"}), graph=_GRAPH_NAME)
+    g.add_vertex(Vertex(3, "person", {"name": "Carol"}), graph=_GRAPH_NAME)
+    g.add_vertex(Vertex(4, "person", {"name": "Dave"}), graph=_GRAPH_NAME)
+    g.add_edge(Edge(1, 1, 2, "knows"), graph=_GRAPH_NAME)
+    g.add_edge(Edge(2, 2, 3, "works_with"), graph=_GRAPH_NAME)
+    g.add_edge(Edge(3, 3, 4, "manages"), graph=_GRAPH_NAME)
+    g.add_edge(Edge(4, 1, 3, "knows"), graph=_GRAPH_NAME)
     return g
 
 
@@ -38,7 +41,7 @@ class TestPathIndex:
 
     def test_build_single_label(self) -> None:
         g = _build_test_graph()
-        idx = PathIndex.build(g, [["knows"]])
+        idx = PathIndex.build(g, [["knows"]], graph_name=_GRAPH_NAME)
         pairs = idx.lookup(["knows"])
         assert pairs is not None
         assert (1, 2) in pairs
@@ -46,25 +49,25 @@ class TestPathIndex:
 
     def test_build_two_label_sequence(self) -> None:
         g = _build_test_graph()
-        idx = PathIndex.build(g, [["knows", "works_with"]])
+        idx = PathIndex.build(g, [["knows", "works_with"]], graph_name=_GRAPH_NAME)
         pairs = idx.lookup(["knows", "works_with"])
         assert pairs is not None
         assert (1, 3) in pairs
 
     def test_lookup_unindexed_path(self) -> None:
         g = _build_test_graph()
-        idx = PathIndex.build(g, [["knows"]])
+        idx = PathIndex.build(g, [["knows"]], graph_name=_GRAPH_NAME)
         assert idx.lookup(["works_with"]) is None
 
     def test_has_path(self) -> None:
         g = _build_test_graph()
-        idx = PathIndex.build(g, [["knows"]])
+        idx = PathIndex.build(g, [["knows"]], graph_name=_GRAPH_NAME)
         assert idx.has_path(["knows"])
         assert not idx.has_path(["manages"])
 
     def test_indexed_paths(self) -> None:
         g = _build_test_graph()
-        idx = PathIndex.build(g, [["knows"], ["works_with"]])
+        idx = PathIndex.build(g, [["knows"], ["works_with"]], graph_name=_GRAPH_NAME)
         paths = idx.indexed_paths()
         assert "knows" in paths
         assert "works_with" in paths
@@ -75,10 +78,10 @@ class TestRPQWithPathIndex:
 
     def test_rpq_uses_index_for_simple_label(self) -> None:
         g = _build_test_graph()
-        idx = PathIndex.build(g, [["knows"]])
+        idx = PathIndex.build(g, [["knows"]], graph_name=_GRAPH_NAME)
         ctx = ExecutionContext(graph_store=g, path_index=idx)
 
-        op = RegularPathQueryOperator(Label("knows"), start_vertex=1)
+        op = RegularPathQueryOperator(Label("knows"), graph=_GRAPH_NAME, start_vertex=1)
         result = op.execute(ctx)
         doc_ids = {e.doc_id for e in result}
         assert 2 in doc_ids
@@ -86,33 +89,33 @@ class TestRPQWithPathIndex:
 
     def test_rpq_uses_index_for_concat(self) -> None:
         g = _build_test_graph()
-        idx = PathIndex.build(g, [["knows", "works_with"]])
+        idx = PathIndex.build(g, [["knows", "works_with"]], graph_name=_GRAPH_NAME)
         ctx = ExecutionContext(graph_store=g, path_index=idx)
 
         expr = Concat(Label("knows"), Label("works_with"))
-        op = RegularPathQueryOperator(expr, start_vertex=1)
+        op = RegularPathQueryOperator(expr, graph=_GRAPH_NAME, start_vertex=1)
         result = op.execute(ctx)
         doc_ids = {e.doc_id for e in result}
         assert 3 in doc_ids
 
     def test_rpq_falls_back_for_alternation(self) -> None:
         g = _build_test_graph()
-        idx = PathIndex.build(g, [["knows"]])
+        idx = PathIndex.build(g, [["knows"]], graph_name=_GRAPH_NAME)
         ctx = ExecutionContext(graph_store=g, path_index=idx)
 
         expr = Alternation(Label("knows"), Label("works_with"))
-        op = RegularPathQueryOperator(expr, start_vertex=1)
+        op = RegularPathQueryOperator(expr, graph=_GRAPH_NAME, start_vertex=1)
         result = op.execute(ctx)
         doc_ids = {e.doc_id for e in result}
         assert 2 in doc_ids or 3 in doc_ids
 
     def test_rpq_falls_back_for_kleene_star(self) -> None:
         g = _build_test_graph()
-        idx = PathIndex.build(g, [["knows"]])
+        idx = PathIndex.build(g, [["knows"]], graph_name=_GRAPH_NAME)
         ctx = ExecutionContext(graph_store=g, path_index=idx)
 
         expr = KleeneStar(Label("knows"))
-        op = RegularPathQueryOperator(expr, start_vertex=1)
+        op = RegularPathQueryOperator(expr, graph=_GRAPH_NAME, start_vertex=1)
         result = op.execute(ctx)
         assert len(result) > 0
 
@@ -120,17 +123,17 @@ class TestRPQWithPathIndex:
         g = _build_test_graph()
         ctx = ExecutionContext(graph_store=g)
 
-        op = RegularPathQueryOperator(Label("knows"), start_vertex=1)
+        op = RegularPathQueryOperator(Label("knows"), graph=_GRAPH_NAME, start_vertex=1)
         result = op.execute(ctx)
         doc_ids = {e.doc_id for e in result}
         assert 2 in doc_ids
 
     def test_rpq_all_starts_with_index(self) -> None:
         g = _build_test_graph()
-        idx = PathIndex.build(g, [["knows"]])
+        idx = PathIndex.build(g, [["knows"]], graph_name=_GRAPH_NAME)
         ctx = ExecutionContext(graph_store=g, path_index=idx)
 
-        op = RegularPathQueryOperator(Label("knows"))
+        op = RegularPathQueryOperator(Label("knows"), graph=_GRAPH_NAME)
         result = op.execute(ctx)
         doc_ids = {e.doc_id for e in result}
         assert 2 in doc_ids
@@ -167,9 +170,9 @@ class TestEnginePathIndex:
     def test_build_and_get_path_index(self) -> None:
         e = Engine()
         g = e.create_graph("social")
-        g.add_vertex(Vertex(1, "person", {"name": "Alice"}))
-        g.add_vertex(Vertex(2, "person", {"name": "Bob"}))
-        g.add_edge(Edge(1, 1, 2, "knows"))
+        g.add_vertex(Vertex(1, "person", {"name": "Alice"}), graph="social")
+        g.add_vertex(Vertex(2, "person", {"name": "Bob"}), graph="social")
+        g.add_edge(Edge(1, 1, 2, "knows"), graph="social")
 
         e.build_path_index("social", [["knows"]])
         idx = e.get_path_index("social")
@@ -179,9 +182,9 @@ class TestEnginePathIndex:
     def test_drop_path_index(self) -> None:
         e = Engine()
         g = e.create_graph("social")
-        g.add_vertex(Vertex(1, "person"))
-        g.add_vertex(Vertex(2, "person"))
-        g.add_edge(Edge(1, 1, 2, "knows"))
+        g.add_vertex(Vertex(1, "person"), graph="social")
+        g.add_vertex(Vertex(2, "person"), graph="social")
+        g.add_edge(Edge(1, 1, 2, "knows"), graph="social")
 
         e.build_path_index("social", [["knows"]])
         e.drop_path_index("social")
@@ -197,9 +200,9 @@ class TestEnginePathIndex:
 
         e1 = Engine(db_path=db_path)
         g = e1.create_graph("social")
-        g.add_vertex(Vertex(1, "person", {"name": "Alice"}))
-        g.add_vertex(Vertex(2, "person", {"name": "Bob"}))
-        g.add_edge(Edge(1, 1, 2, "knows"))
+        g.add_vertex(Vertex(1, "person", {"name": "Alice"}), graph="social")
+        g.add_vertex(Vertex(2, "person", {"name": "Bob"}), graph="social")
+        g.add_edge(Edge(1, 1, 2, "knows"), graph="social")
         e1.build_path_index("social", [["knows"]])
         e1.close()
 
@@ -220,9 +223,10 @@ class TestCostModelWithPathIndex:
         stats = IndexStats(total_docs=100)
         model = CostModel()
 
-        simple_op = RegularPathQueryOperator(Label("knows"))
+        simple_op = RegularPathQueryOperator(Label("knows"), graph=_GRAPH_NAME)
         complex_op = RegularPathQueryOperator(
-            Alternation(Label("knows"), Label("works_with"))
+            Alternation(Label("knows"), Label("works_with")),
+            graph=_GRAPH_NAME,
         )
 
         simple_cost = model.estimate(simple_op, stats)

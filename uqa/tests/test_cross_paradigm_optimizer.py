@@ -50,8 +50,8 @@ class TestCrossParadigmCardinality:
         """Graph traversal cardinality uses branching factor heuristic."""
         from uqa.graph.operators import TraverseOperator
 
-        op_1hop = TraverseOperator(1, "cites", max_hops=1)
-        op_2hop = TraverseOperator(1, "cites", max_hops=2)
+        op_1hop = TraverseOperator(1, graph="test", label="cites", max_hops=1)
+        op_2hop = TraverseOperator(1, graph="test", label="cites", max_hops=2)
 
         est = CardinalityEstimator()
         card_1 = est.estimate(op_1hop, stats)
@@ -65,7 +65,7 @@ class TestCrossParadigmCardinality:
         from uqa.graph.pattern import GraphPattern
 
         pattern = GraphPattern(vertex_patterns=[], edge_patterns=[])
-        op = PatternMatchOperator(pattern)
+        op = PatternMatchOperator(pattern, graph="test")
 
         est = CardinalityEstimator()
         card = est.estimate(op, stats)
@@ -307,7 +307,7 @@ class TestCrossParadigmCostModel:
         """Traversal is cheaper than full scan."""
         from uqa.graph.operators import TraverseOperator
 
-        op = TraverseOperator(1, "cites", max_hops=2)
+        op = TraverseOperator(1, graph="test", label="cites", max_hops=2)
         model = CostModel()
         cost = model.estimate(op, stats)
         assert cost < stats.total_docs
@@ -318,7 +318,7 @@ class TestCrossParadigmCostModel:
         from uqa.graph.pattern import GraphPattern
 
         pattern = GraphPattern(vertex_patterns=[], edge_patterns=[])
-        op = PatternMatchOperator(pattern)
+        op = PatternMatchOperator(pattern, graph="test")
         model = CostModel()
         cost = model.estimate(op, stats)
         assert cost > stats.total_docs
@@ -398,7 +398,7 @@ class TestCrossParadigmExplain:
         from uqa.graph.operators import TraverseOperator
         from uqa.planner.executor import PlanExecutor
 
-        op = TraverseOperator(1, "cites", max_hops=3)
+        op = TraverseOperator(1, graph="test", label="cites", max_hops=3)
         plan = PlanExecutor(ctx).explain(op)
         assert "TraverseOp" in plan
         assert "start=1" in plan
@@ -423,7 +423,7 @@ class TestCrossParadigmExplain:
                 EdgePattern("a", "b", label="knows"),
             ],
         )
-        op = PatternMatchOperator(pattern)
+        op = PatternMatchOperator(pattern, graph="test")
         plan = PlanExecutor(ctx).explain(op)
         assert "PatternMatchOp" in plan
         assert "vertices=2" in plan
@@ -434,7 +434,7 @@ class TestCrossParadigmExplain:
         from uqa.graph.pattern import Label
         from uqa.planner.executor import PlanExecutor
 
-        op = RegularPathQueryOperator(Label("cites"), start_vertex=1)
+        op = RegularPathQueryOperator(Label("cites"), graph="test", start_vertex=1)
         plan = PlanExecutor(ctx).explain(op)
         assert "RPQOp" in plan
         assert "start=1" in plan

@@ -4,22 +4,13 @@
 # Copyright (c) 2023-2026 Cognica, Inc.
 #
 
-"""SQLite-backed graph store with adjacency indexes.
+"""SQLite-backed graph store with per-graph adjacency indexes.
 
-Inherits from :class:`GraphStore` so that graph operators (which access
-``_adj_out``, ``_edges``, ``_vertices`` directly) work unchanged.
-Every mutation is persisted via write-through.
+Inherits from :class:`GraphStore` and persists every mutation via
+write-through.  Named graphs are tracked in a ``_graph_catalog`` table.
 
-When *table_name* is ``None`` the store uses the global catalog tables
-(``_graph_vertices`` / ``_graph_edges``).  When a table name is given
-the store uses per-table tables (``_graph_vertices_{name}`` /
-``_graph_edges_{name}``), enabling each SQL table to maintain its own
-graph independently.
-
-On construction all existing vertices and edges are loaded from SQLite
-into the inherited in-memory dicts, making subsequent operator access
-O(1).  The public :meth:`neighbors` method is overridden to query SQLite
-directly, taking advantage of the adjacency indexes.
+On construction all existing vertices, edges, and graph memberships are
+loaded from SQLite into the inherited in-memory structures.
 """
 
 from __future__ import annotations
@@ -42,8 +33,7 @@ class SQLiteGraphStore(GraphStore):
     conn : sqlite3.Connection
         Shared SQLite connection (from catalog or managed connection).
     table_name : str | None
-        When set, the store uses per-table SQLite tables
-        (``_graph_vertices_{table_name}`` / ``_graph_edges_{table_name}``).
+        When set, the store uses per-table SQLite tables.
         When ``None`` (default), the global catalog tables are used.
     """
 
@@ -58,22 +48,28 @@ class SQLiteGraphStore(GraphStore):
         if table_name is not None:
             self._vtx_table = f"_graph_vertices_{table_name}"
             self._edge_table = f"_graph_edges_{table_name}"
+            self._membership_table = f"_graph_membership_{table_name}"
+            self._catalog_table = f"_graph_catalog_{table_name}"
         else:
             self._vtx_table = "_graph_vertices"
             self._edge_table = "_graph_edges"
+            self._membership_table = "_graph_membership"
+            self._catalog_table = "_graph_catalog"
         self._ensure_tables()
         self._load_from_sqlite()
 
     # -- Schema --------------------------------------------------------
 
     def _ensure_tables(self) -> None:
-        """Create per-table graph SQLite tables and indexes if needed."""
-        if self._table_name is None:
-            # Global tables are created by Catalog._SCHEMA_SQL.
-            self._migrate_vertex_label()
-            return
+        """Create graph SQLite tables and indexes if needed."""
         vtx = self._vtx_table
         edg = self._edge_table
+        mem = self._membership_table
+        cat = self._catalog_table
+
+        if self._table_name is None:
+            self._migrate_vertex_label()
+
         self._conn.execute(
             f'CREATE TABLE IF NOT EXISTS "{vtx}" ('
             f"vertex_id INTEGER PRIMARY KEY, "
@@ -89,6 +85,16 @@ class SQLiteGraphStore(GraphStore):
             f"properties_json TEXT NOT NULL)"
         )
         self._conn.execute(
+            f'CREATE TABLE IF NOT EXISTS "{mem}" ('
+            f"entity_type TEXT NOT NULL, "  # 'vertex' or 'edge'
+            f"entity_id INTEGER NOT NULL, "
+            f"graph_name TEXT NOT NULL, "
+            f"PRIMARY KEY (entity_type, entity_id, graph_name))"
+        )
+        self._conn.execute(
+            f'CREATE TABLE IF NOT EXISTS "{cat}" (graph_name TEXT PRIMARY KEY)'
+        )
+        self._conn.execute(
             f'CREATE INDEX IF NOT EXISTS "{vtx}_label" ON "{vtx}" (label)'
         )
         self._conn.execute(
@@ -100,16 +106,22 @@ class SQLiteGraphStore(GraphStore):
         self._conn.execute(
             f'CREATE INDEX IF NOT EXISTS "{edg}_label" ON "{edg}" (label)'
         )
+        self._conn.execute(
+            f'CREATE INDEX IF NOT EXISTS "{mem}_graph" ON "{mem}" (graph_name)'
+        )
         self._conn.commit()
 
     def _migrate_vertex_label(self) -> None:
         """Add the ``label`` column to an existing vertex table if missing."""
         vtx = self._vtx_table
-        cols = {
-            row[1]
-            for row in self._conn.execute(f'PRAGMA table_info("{vtx}")').fetchall()
-        }
-        if "label" not in cols:
+        try:
+            cols = {
+                row[1]
+                for row in self._conn.execute(f'PRAGMA table_info("{vtx}")').fetchall()
+            }
+        except Exception:
+            return
+        if cols and "label" not in cols:
             self._conn.execute(
                 f"ALTER TABLE \"{vtx}\" ADD COLUMN label TEXT NOT NULL DEFAULT ''"
             )
@@ -124,61 +136,148 @@ class SQLiteGraphStore(GraphStore):
         """Populate in-memory dicts from SQLite tables."""
         vtx = self._vtx_table
         edg = self._edge_table
+        mem = self._membership_table
+        cat = self._catalog_table
 
-        cursor = self._conn.execute(
-            f'SELECT vertex_id, label, properties_json FROM "{vtx}"'
-        )
-        for vid, label, props_json in cursor:
-            vertex = Vertex(
-                vertex_id=vid, label=label, properties=json.loads(props_json)
-            )
-            super().add_vertex(vertex)
+        # Load graph catalog
+        try:
+            for (name,) in self._conn.execute(
+                f'SELECT graph_name FROM "{cat}"'
+            ).fetchall():
+                if not self.has_graph(name):
+                    self._graphs[name] = __import__(
+                        "uqa.graph.store", fromlist=["_GraphPartition"]
+                    )._GraphPartition()
+        except Exception:
+            pass
 
-        cursor = self._conn.execute(
-            f'SELECT edge_id, source_id, target_id, label, properties_json FROM "{edg}"'
-        )
-        for eid, src, tgt, label, props_json in cursor:
-            edge = Edge(
-                edge_id=eid,
-                source_id=src,
-                target_id=tgt,
-                label=label,
-                properties=json.loads(props_json),
+        # Load vertices (global)
+        try:
+            cursor = self._conn.execute(
+                f'SELECT vertex_id, label, properties_json FROM "{vtx}"'
             )
-            super().add_edge(edge)
+            for vid, label, props_json in cursor:
+                vertex = Vertex(
+                    vertex_id=vid, label=label, properties=json.loads(props_json)
+                )
+                self._vertices[vid] = vertex
+                if vid >= self._next_vertex_id:
+                    self._next_vertex_id = vid + 1
+        except Exception:
+            pass
+
+        # Load edges (global)
+        try:
+            cursor = self._conn.execute(
+                f"SELECT edge_id, source_id, target_id, label, properties_json "
+                f'FROM "{edg}"'
+            )
+            for eid, src, tgt, label, props_json in cursor:
+                edge = Edge(
+                    edge_id=eid,
+                    source_id=src,
+                    target_id=tgt,
+                    label=label,
+                    properties=json.loads(props_json),
+                )
+                self._edges[eid] = edge
+                if eid >= self._next_edge_id:
+                    self._next_edge_id = eid + 1
+        except Exception:
+            pass
+
+        # Load memberships and rebuild partitions
+        try:
+            cursor = self._conn.execute(
+                f'SELECT entity_type, entity_id, graph_name FROM "{mem}"'
+            )
+            for entity_type, entity_id, graph_name in cursor:
+                self._ensure_graph(graph_name)
+                partition = self._graphs[graph_name]
+                if entity_type == "vertex":
+                    vertex = self._vertices.get(entity_id)
+                    if vertex is not None:
+                        partition.add_vertex(vertex)
+                        self._vertex_membership[entity_id].add(graph_name)
+                elif entity_type == "edge":
+                    edge = self._edges.get(entity_id)
+                    if edge is not None:
+                        partition.add_edge(edge)
+                        self._edge_membership[entity_id].add(graph_name)
+        except Exception:
+            pass
 
     def clear(self) -> None:
-        """Remove all vertices and edges from both memory and SQLite."""
+        """Remove all vertices, edges, and graphs from both memory and SQLite."""
         super().clear()
         self._conn.execute(f'DELETE FROM "{self._vtx_table}"')
         self._conn.execute(f'DELETE FROM "{self._edge_table}"')
+        self._conn.execute(f'DELETE FROM "{self._membership_table}"')
+        self._conn.execute(f'DELETE FROM "{self._catalog_table}"')
+        self._conn.commit()
+
+    # -- Graph lifecycle (write-through) --------------------------------
+
+    def create_graph(self, name: str) -> None:
+        super().create_graph(name)
+        self._conn.execute(
+            f'INSERT OR IGNORE INTO "{self._catalog_table}" (graph_name) VALUES (?)',
+            (name,),
+        )
+        self._conn.commit()
+
+    def drop_graph(self, name: str) -> None:
+        super().drop_graph(name)
+        self._conn.execute(
+            f'DELETE FROM "{self._membership_table}" WHERE graph_name = ?',
+            (name,),
+        )
+        self._conn.execute(
+            f'DELETE FROM "{self._catalog_table}" WHERE graph_name = ?',
+            (name,),
+        )
         self._conn.commit()
 
     # -- Mutations (write-through) -------------------------------------
 
-    def add_vertex(self, vertex: Vertex) -> None:
-        super().add_vertex(vertex)
+    def add_vertex(self, vertex: Vertex, *, graph: str) -> None:
+        super().add_vertex(vertex, graph=graph)
         self._conn.execute(
             f'INSERT OR REPLACE INTO "{self._vtx_table}" '
             f"(vertex_id, label, properties_json) VALUES (?, ?, ?)",
             (vertex.vertex_id, vertex.label, json.dumps(vertex.properties)),
         )
-        self._conn.commit()
-
-    def remove_vertex(self, vertex_id: int) -> None:
-        super().remove_vertex(vertex_id)
         self._conn.execute(
-            f'DELETE FROM "{self._edge_table}" WHERE source_id = ? OR target_id = ?',
-            (vertex_id, vertex_id),
-        )
-        self._conn.execute(
-            f'DELETE FROM "{self._vtx_table}" WHERE vertex_id = ?',
-            (vertex_id,),
+            f'INSERT OR IGNORE INTO "{self._membership_table}" '
+            f"(entity_type, entity_id, graph_name) VALUES (?, ?, ?)",
+            ("vertex", vertex.vertex_id, graph),
         )
         self._conn.commit()
 
-    def add_edge(self, edge: Edge) -> None:
-        super().add_edge(edge)
+    def remove_vertex(self, vertex_id: int, *, graph: str) -> None:
+        super().remove_vertex(vertex_id, graph=graph)
+        # Check if vertex is still in any graph
+        if vertex_id not in self._vertex_membership:
+            self._conn.execute(
+                f'DELETE FROM "{self._vtx_table}" WHERE vertex_id = ?',
+                (vertex_id,),
+            )
+        self._conn.execute(
+            f'DELETE FROM "{self._membership_table}" '
+            f"WHERE entity_type = 'vertex' AND entity_id = ? AND graph_name = ?",
+            (vertex_id, graph),
+        )
+        # Remove orphaned edges from this graph
+        self._conn.execute(
+            f'DELETE FROM "{self._membership_table}" '
+            f"WHERE entity_type = 'edge' AND graph_name = ? AND entity_id NOT IN "
+            f'(SELECT edge_id FROM "{self._edge_table}")',
+            (graph,),
+        )
+        self._conn.commit()
+
+    def add_edge(self, edge: Edge, *, graph: str) -> None:
+        super().add_edge(edge, graph=graph)
         self._conn.execute(
             f'INSERT OR REPLACE INTO "{self._edge_table}" '
             f"(edge_id, source_id, target_id, label, properties_json) "
@@ -191,81 +290,46 @@ class SQLiteGraphStore(GraphStore):
                 json.dumps(edge.properties),
             ),
         )
-        self._conn.commit()
-
-    def remove_edge(self, edge_id: int) -> None:
-        super().remove_edge(edge_id)
         self._conn.execute(
-            f'DELETE FROM "{self._edge_table}" WHERE edge_id = ?',
-            (edge_id,),
+            f'INSERT OR IGNORE INTO "{self._membership_table}" '
+            f"(entity_type, entity_id, graph_name) VALUES (?, ?, ?)",
+            ("edge", edge.edge_id, graph),
         )
         self._conn.commit()
 
-    # -- SQLite-backed adjacency queries --------------------------------
+    def remove_edge(self, edge_id: int, *, graph: str) -> None:
+        super().remove_edge(edge_id, graph=graph)
+        if edge_id not in self._edge_membership:
+            self._conn.execute(
+                f'DELETE FROM "{self._edge_table}" WHERE edge_id = ?',
+                (edge_id,),
+            )
+        self._conn.execute(
+            f'DELETE FROM "{self._membership_table}" '
+            f"WHERE entity_type = 'edge' AND entity_id = ? AND graph_name = ?",
+            (edge_id, graph),
+        )
+        self._conn.commit()
+
+    # -- SQLite-backed queries -----------------------------------------
 
     def neighbors(
         self,
         vertex_id: int,
         label: str | None = None,
         direction: str = "out",
+        *,
+        graph: str,
     ) -> list[int]:
-        """Query neighbors using SQLite adjacency indexes."""
-        edg = self._edge_table
-        if direction == "out":
-            if label is not None:
-                rows = self._conn.execute(
-                    f'SELECT target_id FROM "{edg}" WHERE source_id = ? AND label = ?',
-                    (vertex_id, label),
-                ).fetchall()
-            else:
-                rows = self._conn.execute(
-                    f'SELECT target_id FROM "{edg}" WHERE source_id = ?',
-                    (vertex_id,),
-                ).fetchall()
-        else:
-            if label is not None:
-                rows = self._conn.execute(
-                    f'SELECT source_id FROM "{edg}" WHERE target_id = ? AND label = ?',
-                    (vertex_id, label),
-                ).fetchall()
-            else:
-                rows = self._conn.execute(
-                    f'SELECT source_id FROM "{edg}" WHERE target_id = ?',
-                    (vertex_id,),
-                ).fetchall()
-        return [r[0] for r in rows]
+        """Query neighbors using graph-scoped partition (in-memory)."""
+        return super().neighbors(vertex_id, label, direction, graph=graph)
 
-    def vertices_by_label(self, label: str) -> list[Vertex]:
-        """Return all vertices with the given label using the label index."""
-        vtx = self._vtx_table
-        rows = self._conn.execute(
-            f'SELECT vertex_id, label, properties_json FROM "{vtx}" WHERE label = ?',
-            (label,),
-        ).fetchall()
-        return [
-            Vertex(
-                vertex_id=vid,
-                label=lbl,
-                properties=json.loads(props_json),
-            )
-            for vid, lbl, props_json in rows
-        ]
+    def vertices_by_label(self, label: str, *, graph: str) -> list[Vertex]:
+        """Return all vertices with the given label in the specified graph."""
+        return super().vertices_by_label(label, graph=graph)
 
-    def edges_by_label(self, label: str) -> list[Edge]:
-        """Return all edges with the given label using the label index."""
-        edg = self._edge_table
-        rows = self._conn.execute(
-            f"SELECT edge_id, source_id, target_id, label, properties_json "
-            f'FROM "{edg}" WHERE label = ?',
-            (label,),
-        ).fetchall()
-        return [
-            Edge(
-                edge_id=eid,
-                source_id=src,
-                target_id=tgt,
-                label=lbl,
-                properties=json.loads(props_json),
-            )
-            for eid, src, tgt, lbl, props_json in rows
-        ]
+    def edges_by_label(self, label: str, *, graph: str) -> list[Edge]:
+        """Return all edges with the given label in the specified graph."""
+        partition = self._require_graph(graph)
+        eids = partition.label_index.get(label, set())
+        return [self._edges[eid] for eid in eids if eid in self._edges]

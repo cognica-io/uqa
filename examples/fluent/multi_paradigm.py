@@ -184,7 +184,8 @@ for pid, name, desc, cat, price, rating, stock in catalog:
                 "price": price,
                 "rating": rating,
             },
-        )
+        ),
+        graph="products",
     )
 
 bought_together = [
@@ -204,7 +205,7 @@ bought_together = [
     (6, 8, "also_bought"),  # ssd -> dock
 ]
 for i, (src, dst, label) in enumerate(bought_together, start=1):
-    gs.add_edge(Edge(i, src, dst, label))
+    gs.add_edge(Edge(i, src, dst, label), graph="products")
 
 # -- Orders table (hierarchical nested data) --
 engine.sql("""

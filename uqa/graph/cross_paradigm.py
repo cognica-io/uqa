@@ -40,6 +40,7 @@ class ToGraphOperator:
 
     def execute(self, ctx: object) -> GraphStore:
         graph = GraphStore()
+        graph.create_graph("default")
         documents: list[dict[str, Any]]
         if hasattr(self.source, "execute"):
             result = self.source.execute(ctx)
@@ -51,7 +52,7 @@ class ToGraphOperator:
         for doc in documents:
             vid = doc.get(self.id_field, 0)
             props = {k: v for k, v in doc.items() if k != self.id_field}
-            graph.add_vertex(Vertex(vid, "", props))
+            graph.add_vertex(Vertex(vid, "", props), graph="default")
 
         for doc in documents:
             vid = doc.get(self.id_field, 0)
@@ -59,7 +60,7 @@ class ToGraphOperator:
             if isinstance(targets, list):
                 for target_id in targets:
                     edge = Edge(edge_counter, vid, target_id, "link")
-                    graph.add_edge(edge)
+                    graph.add_edge(edge, graph="default")
                     edge_counter += 1
 
         return graph
@@ -100,6 +101,8 @@ class SemanticGraphSearchOperator:
         query_vector: np.ndarray,
         vector_field: str = "embedding",
         threshold: float = 0.5,
+        *,
+        graph: str,
     ) -> None:
         self.start_vertex = start_vertex
         self.label = label
@@ -107,11 +110,17 @@ class SemanticGraphSearchOperator:
         self.query_vector = query_vector
         self.vector_field = vector_field
         self.threshold = threshold
+        self.graph_name = graph
 
     def execute(self, ctx: object) -> GraphPostingList:
         graph: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
         # First traverse
-        traverse = TraverseOperator(self.start_vertex, self.label, self.max_hops)
+        traverse = TraverseOperator(
+            self.start_vertex,
+            graph=self.graph_name,
+            label=self.label,
+            max_hops=self.max_hops,
+        )
         gpl = traverse.execute(ctx)
 
         # Filter by vector similarity
@@ -159,15 +168,22 @@ class VertexEmbeddingOperator:
         query_vector: np.ndarray,
         vector_field: str = "embedding",
         threshold: float = 0.0,
+        *,
+        graph: str,
     ) -> None:
         self.query_vector = query_vector
         self.vector_field = vector_field
         self.threshold = threshold
+        self.graph_name = graph
 
     def execute(self, ctx: object) -> PostingList:
-        graph: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
+        gs: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
+        g = self.graph_name
         entries: list[PostingEntry] = []
-        for vid, vertex in graph._vertices.items():
+        for vid in sorted(gs.vertex_ids_in_graph(g)):
+            vertex = gs.get_vertex(vid)
+            if vertex is None:
+                continue
             vec = vertex.properties.get(self.vector_field)
             if vec is None:
                 continue
@@ -202,16 +218,19 @@ class VectorEnhancedMatchOperator:
         score_variable: str,
         vector_field: str = "embedding",
         threshold: float = 0.0,
+        *,
+        graph: str,
     ) -> None:
         self.pattern = pattern
         self.query_vector = query_vector
         self.score_variable = score_variable
         self.vector_field = vector_field
         self.threshold = threshold
+        self.graph_name = graph
 
     def execute(self, ctx: object) -> GraphPostingList:
         graph: GraphStore = ctx.graph_store  # type: ignore[attr-defined]
-        match_op = PatternMatchOperator(self.pattern)
+        match_op = PatternMatchOperator(self.pattern, graph=self.graph_name)
         match_result = match_op.execute(ctx)
 
         entries: list[PostingEntry] = []
@@ -306,17 +325,18 @@ class TextToGraphOperator:
                             cooccurrences[pair] += 1
 
         graph = GraphStore()
+        graph.create_graph("default")
         token_to_id: dict[str, int] = {}
         for vid, token in enumerate(sorted(token_set), start=1):
             token_to_id[token] = vid
-            graph.add_vertex(Vertex(vid, "", {"token": token}))
+            graph.add_vertex(Vertex(vid, "", {"token": token}), graph="default")
 
         edge_id = 1
         for (t1, t2), weight in cooccurrences.items():
             src = token_to_id[t1]
             tgt = token_to_id[t2]
             edge = Edge(edge_id, src, tgt, "co_occurs", {"weight": weight})
-            graph.add_edge(edge)
+            graph.add_edge(edge, graph="default")
             edge_id += 1
 
         return graph

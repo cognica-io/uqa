@@ -541,12 +541,21 @@ SELECT * FROM cypher('social', $$
 $$) AS (person agtype, friend agtype);
 ```
 
-**Named graph support for traverse/rpq/temporal_traverse.** The `traverse()`, `rpq()`, and `temporal_traverse()` FROM-clause table functions accept a `'graph:name'` source argument to operate on named graphs created via `create_graph()` or `cypher()`, rather than per-table graph stores. This enables graph traversal and regular path queries directly against the Cypher-managed graph namespace:
+**Named Graphs as Primary Abstraction (v0.20.0).** Named graphs replace the flat global graph store with per-graph partitioned adjacency indexes. The `_GraphPartition` class holds per-named-graph adjacency state (vertex_ids, edge_ids, adj_out, adj_in, label_index, vertex_label_index). Vertices and edges are stored globally; adjacency indexes are per-graph with zero duplication. The `GraphStore` redesign requires a `graph` keyword parameter on all mutations and queries.
+
+Graph lifecycle management is provided via `create_graph()`, `drop_graph()`, `has_graph()`, and `graph_names()`. Graph algebra operations -- `union_graphs()`, `intersect_graphs()`, `difference_graphs()`, `copy_graph()` -- compose named graphs. Per-graph statistics (`degree_distribution`, `label_degree`, `vertex_label_counts`) feed the graph cost model.
+
+`SQLiteGraphStore` persists named graphs via `_graph_catalog` and `_graph_membership` tables, ensuring named graphs survive close/reopen cycles.
+
+SQL graph functions now accept direct graph names without the `graph:` prefix (backward compatible):
 
 ```sql
-SELECT * FROM traverse(1, 'knows', 2, 'graph:social');
-SELECT * FROM rpq('knows/works_with', 1, 'graph:social');
-SELECT * FROM temporal_traverse(1, 'knows', 2, 150, 'graph:net');
+SELECT * FROM traverse(1, 'knows', 2, 'social');
+SELECT * FROM rpq('knows/works_with', 1, 'social');
+SELECT * FROM temporal_traverse(1, 'knows', 2, 150, 'net');
+SELECT * FROM pagerank(0.85, 'social');
+SELECT * FROM hits(20, 'social');
+SELECT * FROM betweenness('social');
 ```
 
 ### 5.6 Path Index Integration
@@ -766,7 +775,7 @@ CREATE FOREIGN TABLE events (
 
 For single-table scans, the compiler extracts pushable predicates from the WHERE clause and forwards them to the FDW handler. Supported predicate types: comparison (`=`, `<`, `>`, `<=`, `>=`, `!=`), `IN`, `LIKE`, `ILIKE`, and `BETWEEN`. Predicates that cannot be pushed down are retained as post-scan filters in the physical execution layer. The extraction is handled by `_extract_pushdown_predicates()` in `uqa/sql/compiler.py`, which splits the WHERE AST into pushable and remaining parts.
 
-#### 6.6.2 Full Query Pushdown (v0.19.0)
+#### 6.6.2 Full Query Pushdown (v0.19.0+)
 
 When a SELECT statement references only foreign tables (and optionally small local tables) that all reside on the same FDW server, the compiler pushes the **entire query** -- including JOINs, aggregations, window functions, subqueries, ORDER BY, and LIMIT -- to the remote engine. This eliminates PostingEntry materialization in Python entirely.
 

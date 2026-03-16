@@ -47,10 +47,11 @@ def graph_store(
     sample_graph_edges: list[Edge],
 ) -> GraphStore:
     store = GraphStore()
+    store.create_graph("test")
     for v in sample_graph_vertices:
-        store.add_vertex(v)
+        store.add_vertex(v, graph="test")
     for e in sample_graph_edges:
-        store.add_edge(e)
+        store.add_edge(e, graph="test")
     return store
 
 
@@ -76,15 +77,17 @@ class TestGraphStore:
         assert e.label == "knows"
 
     def test_neighbors_out(self, graph_store: GraphStore) -> None:
-        neighbors = graph_store.neighbors(1, direction="out")
+        neighbors = graph_store.neighbors(1, direction="out", graph="test")
         assert set(neighbors) == {2, 3}
 
     def test_neighbors_out_with_label(self, graph_store: GraphStore) -> None:
-        neighbors = graph_store.neighbors(3, label="works_with", direction="out")
+        neighbors = graph_store.neighbors(
+            3, label="works_with", direction="out", graph="test"
+        )
         assert set(neighbors) == {5}
 
     def test_neighbors_in(self, graph_store: GraphStore) -> None:
-        neighbors = graph_store.neighbors(3, direction="in")
+        neighbors = graph_store.neighbors(3, direction="in", graph="test")
         assert set(neighbors) == {1, 2}
 
     def test_missing_vertex(self, graph_store: GraphStore) -> None:
@@ -99,28 +102,28 @@ class TestGraphStore:
 
 class TestTraverseOperator:
     def test_single_hop(self, ctx: _ExecutionContext) -> None:
-        op = TraverseOperator(start_vertex=1, max_hops=1)
+        op = TraverseOperator(start_vertex=1, graph="test", max_hops=1)
         result = op.execute(ctx)
         doc_ids = {e.doc_id for e in result}
         # From vertex 1: can reach 2 and 3 in 1 hop, plus start vertex 1
         assert {1, 2, 3} == doc_ids
 
     def test_two_hops(self, ctx: _ExecutionContext) -> None:
-        op = TraverseOperator(start_vertex=1, max_hops=2)
+        op = TraverseOperator(start_vertex=1, graph="test", max_hops=2)
         result = op.execute(ctx)
         doc_ids = {e.doc_id for e in result}
         # Hop 1: {2, 3}, Hop 2: from 2->{3,4}, from 3->{4,5}
         assert {1, 2, 3, 4, 5} == doc_ids
 
     def test_with_label_filter(self, ctx: _ExecutionContext) -> None:
-        op = TraverseOperator(start_vertex=1, label="knows", max_hops=2)
+        op = TraverseOperator(start_vertex=1, graph="test", label="knows", max_hops=2)
         result = op.execute(ctx)
         doc_ids = {e.doc_id for e in result}
         # Hop 1: {2,3} via "knows", Hop 2: 2->3 "knows", 2->4 "works_with" (skip), 3->4 "knows", 3->5 "works_with" (skip)
         assert {1, 2, 3, 4} == doc_ids
 
     def test_max_hops_zero(self, ctx: _ExecutionContext) -> None:
-        op = TraverseOperator(start_vertex=1, max_hops=0)
+        op = TraverseOperator(start_vertex=1, graph="test", max_hops=0)
         result = op.execute(ctx)
         doc_ids = {e.doc_id for e in result}
         # Zero hops: only the start vertex
@@ -129,18 +132,18 @@ class TestTraverseOperator:
     def test_bfs_correctness_at_each_depth(self, ctx: _ExecutionContext) -> None:
         """Verify BFS visits correct vertices at each depth."""
         # depth 1
-        op1 = TraverseOperator(start_vertex=1, max_hops=1)
+        op1 = TraverseOperator(start_vertex=1, graph="test", max_hops=1)
         r1 = {e.doc_id for e in op1.execute(ctx)}
 
         # depth 2
-        op2 = TraverseOperator(start_vertex=1, max_hops=2)
+        op2 = TraverseOperator(start_vertex=1, graph="test", max_hops=2)
         r2 = {e.doc_id for e in op2.execute(ctx)}
 
         # depth 2 should be a superset of depth 1
         assert r1.issubset(r2)
 
         # depth 3
-        op3 = TraverseOperator(start_vertex=1, max_hops=3)
+        op3 = TraverseOperator(start_vertex=1, graph="test", max_hops=3)
         r3 = {e.doc_id for e in op3.execute(ctx)}
         assert r2.issubset(r3)
 
@@ -163,7 +166,7 @@ class TestPatternMatchOperator:
                 EdgePattern("a", "c", "knows"),
             ],
         )
-        op = PatternMatchOperator(pattern)
+        op = PatternMatchOperator(pattern, graph="test")
         result = op.execute(ctx)
         # Triangle: (1,2,3) - edges: 1->2 knows, 2->3 knows, 1->3 knows
         assert len(result) >= 1
@@ -189,7 +192,7 @@ class TestPatternMatchOperator:
                 EdgePattern("center", "leaf2", "knows"),
             ],
         )
-        op = PatternMatchOperator(pattern)
+        op = PatternMatchOperator(pattern, graph="test")
         result = op.execute(ctx)
         # Vertex 1 knows 2 and 3, vertex 3 knows 4 (and 1->2, 1->3)
         assert len(result) >= 1
@@ -205,7 +208,7 @@ class TestPatternMatchOperator:
                 EdgePattern("a", "b", "knows"),
             ],
         )
-        op = PatternMatchOperator(pattern)
+        op = PatternMatchOperator(pattern, graph="test")
         result = op.execute(ctx)
         # Only Bob (25) and Diana (28) have age < 30
         # Bob knows Charlie (edge 3), Diana knows Eve (edge 7)
@@ -228,7 +231,7 @@ class TestPatternMatchOperator:
                 EdgePattern("a", "b", "nonexistent_label"),
             ],
         )
-        op = PatternMatchOperator(pattern)
+        op = PatternMatchOperator(pattern, graph="test")
         result = op.execute(ctx)
         assert len(result) == 0
 
@@ -239,7 +242,7 @@ class TestPatternMatchOperator:
 class TestRegularPathQueryOperator:
     def test_single_label(self, ctx: _ExecutionContext) -> None:
         expr = Label("knows")
-        op = RegularPathQueryOperator(expr, start_vertex=1)
+        op = RegularPathQueryOperator(expr, graph="test", start_vertex=1)
         result = op.execute(ctx)
         doc_ids = {e.doc_id for e in result}
         # 1 -knows-> 2, 1 -knows-> 3
@@ -247,7 +250,7 @@ class TestRegularPathQueryOperator:
 
     def test_concat(self, ctx: _ExecutionContext) -> None:
         expr = Concat(Label("knows"), Label("knows"))
-        op = RegularPathQueryOperator(expr, start_vertex=1)
+        op = RegularPathQueryOperator(expr, graph="test", start_vertex=1)
         result = op.execute(ctx)
         doc_ids = {e.doc_id for e in result}
         # 1-knows->2-knows->3, 1-knows->3-knows->4
@@ -257,7 +260,7 @@ class TestRegularPathQueryOperator:
 
     def test_alternation(self, ctx: _ExecutionContext) -> None:
         expr = Alternation(Label("knows"), Label("works_with"))
-        op = RegularPathQueryOperator(expr, start_vertex=2)
+        op = RegularPathQueryOperator(expr, graph="test", start_vertex=2)
         result = op.execute(ctx)
         doc_ids = {e.doc_id for e in result}
         # 2-knows->3, 2-works_with->4
@@ -265,7 +268,7 @@ class TestRegularPathQueryOperator:
 
     def test_kleene_star(self, ctx: _ExecutionContext) -> None:
         expr = KleeneStar(Label("knows"))
-        op = RegularPathQueryOperator(expr, start_vertex=1)
+        op = RegularPathQueryOperator(expr, graph="test", start_vertex=1)
         result = op.execute(ctx)
         doc_ids = {e.doc_id for e in result}
         # Kleene star includes zero hops (start vertex itself)
@@ -276,7 +279,7 @@ class TestRegularPathQueryOperator:
     def test_all_vertices_start(self, ctx: _ExecutionContext) -> None:
         """RPQ without start_vertex searches from all vertices."""
         expr = Label("works_with")
-        op = RegularPathQueryOperator(expr)
+        op = RegularPathQueryOperator(expr, graph="test")
         result = op.execute(ctx)
         doc_ids = {e.doc_id for e in result}
         # edges: 2-works_with->4, 3-works_with->5
@@ -393,16 +396,17 @@ class TestGraphPostingListIsomorphism:
 class TestVertexEmbeddingOperator:
     def test_basic_embedding_search(self) -> None:
         store = GraphStore()
+        store.create_graph("test")
         v1 = np.array([1.0, 0.0, 0.0])
         v2 = np.array([0.9, 0.1, 0.0])
         v3 = np.array([0.0, 0.0, 1.0])
-        store.add_vertex(Vertex(1, "", {"embedding": v1}))
-        store.add_vertex(Vertex(2, "", {"embedding": v2}))
-        store.add_vertex(Vertex(3, "", {"embedding": v3}))
+        store.add_vertex(Vertex(1, "", {"embedding": v1}), graph="test")
+        store.add_vertex(Vertex(2, "", {"embedding": v2}), graph="test")
+        store.add_vertex(Vertex(3, "", {"embedding": v3}), graph="test")
         ctx = _ExecutionContext(store)
 
         query = np.array([1.0, 0.0, 0.0])
-        op = VertexEmbeddingOperator(query, threshold=0.8)
+        op = VertexEmbeddingOperator(query, threshold=0.8, graph="test")
         result = op.execute(ctx)
         doc_ids = {e.doc_id for e in result}
         # v1 is identical (sim=1.0), v2 is close, v3 is orthogonal
@@ -412,22 +416,26 @@ class TestVertexEmbeddingOperator:
 
     def test_no_embedding_field(self) -> None:
         store = GraphStore()
-        store.add_vertex(Vertex(1, "", {"name": "Alice"}))
+        store.create_graph("test")
+        store.add_vertex(Vertex(1, "", {"name": "Alice"}), graph="test")
         ctx = _ExecutionContext(store)
 
         query = np.array([1.0, 0.0])
-        op = VertexEmbeddingOperator(query, threshold=0.0)
+        op = VertexEmbeddingOperator(query, threshold=0.0, graph="test")
         result = op.execute(ctx)
         assert len(result) == 0
 
     def test_sorted_output(self) -> None:
         store = GraphStore()
+        store.create_graph("test")
         for i in [5, 3, 1]:
-            store.add_vertex(Vertex(i, "", {"embedding": np.array([1.0, 0.0])}))
+            store.add_vertex(
+                Vertex(i, "", {"embedding": np.array([1.0, 0.0])}), graph="test"
+            )
         ctx = _ExecutionContext(store)
 
         query = np.array([1.0, 0.0])
-        op = VertexEmbeddingOperator(query, threshold=0.0)
+        op = VertexEmbeddingOperator(query, threshold=0.0, graph="test")
         result = op.execute(ctx)
         ids = [e.doc_id for e in result]
         assert ids == sorted(ids)
@@ -439,12 +447,17 @@ class TestVertexEmbeddingOperator:
 class TestVectorEnhancedMatchOperator:
     def test_pattern_match_with_vector_scoring(self) -> None:
         store = GraphStore()
+        store.create_graph("test")
         v_embed = np.array([1.0, 0.0])
-        store.add_vertex(Vertex(1, "", {"embedding": v_embed}))
-        store.add_vertex(Vertex(2, "", {"embedding": np.array([0.9, 0.1])}))
-        store.add_vertex(Vertex(3, "", {"embedding": np.array([0.0, 1.0])}))
-        store.add_edge(Edge(1, 1, 2, "knows"))
-        store.add_edge(Edge(2, 1, 3, "knows"))
+        store.add_vertex(Vertex(1, "", {"embedding": v_embed}), graph="test")
+        store.add_vertex(
+            Vertex(2, "", {"embedding": np.array([0.9, 0.1])}), graph="test"
+        )
+        store.add_vertex(
+            Vertex(3, "", {"embedding": np.array([0.0, 1.0])}), graph="test"
+        )
+        store.add_edge(Edge(1, 1, 2, "knows"), graph="test")
+        store.add_edge(Edge(2, 1, 3, "knows"), graph="test")
         ctx = _ExecutionContext(store)
 
         pattern = GraphPattern(
@@ -453,7 +466,7 @@ class TestVectorEnhancedMatchOperator:
         )
         query = np.array([1.0, 0.0])
         op = VectorEnhancedMatchOperator(
-            pattern, query, score_variable="b", threshold=0.5
+            pattern, query, score_variable="b", threshold=0.5, graph="test"
         )
         result = op.execute(ctx)
         # Matches: (a=1,b=2) with sim(v2, query) high
@@ -463,9 +476,14 @@ class TestVectorEnhancedMatchOperator:
 
     def test_threshold_filtering(self) -> None:
         store = GraphStore()
-        store.add_vertex(Vertex(1, "", {"embedding": np.array([1.0, 0.0])}))
-        store.add_vertex(Vertex(2, "", {"embedding": np.array([0.0, 1.0])}))
-        store.add_edge(Edge(1, 1, 2, "link"))
+        store.create_graph("test")
+        store.add_vertex(
+            Vertex(1, "", {"embedding": np.array([1.0, 0.0])}), graph="test"
+        )
+        store.add_vertex(
+            Vertex(2, "", {"embedding": np.array([0.0, 1.0])}), graph="test"
+        )
+        store.add_edge(Edge(1, 1, 2, "link"), graph="test")
         ctx = _ExecutionContext(store)
 
         pattern = GraphPattern(
@@ -475,7 +493,7 @@ class TestVectorEnhancedMatchOperator:
         query = np.array([1.0, 0.0])
         # High threshold: v2 is orthogonal to query
         op = VectorEnhancedMatchOperator(
-            pattern, query, score_variable="b", threshold=0.9
+            pattern, query, score_variable="b", threshold=0.9, graph="test"
         )
         result = op.execute(ctx)
         assert len(result) == 0

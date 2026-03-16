@@ -38,6 +38,7 @@ def temporal_graph() -> GraphStore:
       4->5 knows  [300, 500]
     """
     store = GraphStore()
+    store.create_graph("test")
     vertices = [
         Vertex(1, "person", {"name": "Alice"}),
         Vertex(2, "person", {"name": "Bob"}),
@@ -55,9 +56,9 @@ def temporal_graph() -> GraphStore:
         Edge(7, 4, 5, "knows", {"valid_from": 300, "valid_to": 500}),
     ]
     for v in vertices:
-        store.add_vertex(v)
+        store.add_vertex(v, graph="test")
     for e in edges:
-        store.add_edge(e)
+        store.add_edge(e, graph="test")
     return store
 
 
@@ -143,7 +144,7 @@ class TestTemporalTraverse:
         So from vertex 1, only vertex 2 is reachable in 1 hop.
         """
         tf = TemporalFilter(timestamp=110.0)
-        op = TemporalTraverseOperator(1, "knows", 1, tf)
+        op = TemporalTraverseOperator(1, "knows", 1, tf, graph="test")
         result = op.execute(temporal_ctx)
         reached = {e.doc_id for e in result}
         assert 2 in reached
@@ -155,7 +156,7 @@ class TestTemporalTraverse:
         reachable in 1 hop.
         """
         tf = TemporalFilter(timestamp=160.0)
-        op = TemporalTraverseOperator(1, "knows", 1, tf)
+        op = TemporalTraverseOperator(1, "knows", 1, tf, graph="test")
         result = op.execute(temporal_ctx)
         reached = {e.doc_id for e in result}
         assert 2 in reached
@@ -168,7 +169,7 @@ class TestTemporalTraverse:
         So vertices 2 and 3 should be reachable.
         """
         tf = TemporalFilter(timestamp=110.0)
-        op = TemporalTraverseOperator(1, "knows", 2, tf)
+        op = TemporalTraverseOperator(1, "knows", 2, tf, graph="test")
         result = op.execute(temporal_ctx)
         reached = {e.doc_id for e in result}
         assert 2 in reached
@@ -181,7 +182,7 @@ class TestTemporalTraverse:
         Only vertex 2 reachable.
         """
         tf = TemporalFilter(time_range=(90.0, 110.0))
-        op = TemporalTraverseOperator(1, "knows", 1, tf)
+        op = TemporalTraverseOperator(1, "knows", 1, tf, graph="test")
         result = op.execute(temporal_ctx)
         reached = {e.doc_id for e in result}
         assert 2 in reached
@@ -189,7 +190,7 @@ class TestTemporalTraverse:
 
     def test_traverse_no_filter(self, temporal_ctx: _ExecutionContext) -> None:
         """Without a temporal filter, all edges are traversable."""
-        op = TemporalTraverseOperator(1, "knows", 1, None)
+        op = TemporalTraverseOperator(1, "knows", 1, None, graph="test")
         result = op.execute(temporal_ctx)
         reached = {e.doc_id for e in result}
         assert 2 in reached
@@ -202,7 +203,7 @@ class TestTemporalTraverse:
         Both 4 and 5 reachable.
         """
         tf = TemporalFilter(timestamp=250.0)
-        op = TemporalTraverseOperator(3, None, 1, tf)
+        op = TemporalTraverseOperator(3, None, 1, tf, graph="test")
         result = op.execute(temporal_ctx)
         reached = {e.doc_id for e in result}
         assert 4 in reached
@@ -211,7 +212,7 @@ class TestTemporalTraverse:
     def test_cost_estimate(self) -> None:
         stats = IndexStats(total_docs=100)
         tf = TemporalFilter(timestamp=100.0)
-        op = TemporalTraverseOperator(1, "knows", 1, tf)
+        op = TemporalTraverseOperator(1, "knows", 1, tf, graph="test")
         cost = op.cost_estimate(stats)
         assert cost == pytest.approx(10.0)
 
@@ -235,7 +236,7 @@ class TestTemporalPatternMatch:
             edge_patterns=[EdgePattern("a", "b", "knows")],
         )
         tf = TemporalFilter(timestamp=110.0)
-        op = TemporalPatternMatchOperator(pattern, tf)
+        op = TemporalPatternMatchOperator(pattern, tf, graph="test")
         result = op.execute(temporal_ctx)
         assignments = [(e.payload.fields["a"], e.payload.fields["b"]) for e in result]
         assert (1, 2) in assignments
@@ -250,7 +251,7 @@ class TestTemporalPatternMatch:
             vertex_patterns=[VertexPattern("a"), VertexPattern("b")],
             edge_patterns=[EdgePattern("a", "b", "knows")],
         )
-        op = TemporalPatternMatchOperator(pattern, None)
+        op = TemporalPatternMatchOperator(pattern, None, graph="test")
         result = op.execute(temporal_ctx)
         assignments = [(e.payload.fields["a"], e.payload.fields["b"]) for e in result]
         # All 5 knows edges should be found
@@ -275,7 +276,7 @@ class TestTemporalPatternMatch:
             edge_patterns=[EdgePattern("a", "b", "knows")],
         )
         tf = TemporalFilter(time_range=(200.0, 350.0))
-        op = TemporalPatternMatchOperator(pattern, tf)
+        op = TemporalPatternMatchOperator(pattern, tf, graph="test")
         result = op.execute(temporal_ctx)
         assignments = [(e.payload.fields["a"], e.payload.fields["b"]) for e in result]
         assert (1, 2) in assignments
@@ -290,7 +291,7 @@ class TestTemporalPatternMatch:
             edge_patterns=[EdgePattern("a", "b", "knows")],
         )
         stats = IndexStats(total_docs=10)
-        op = TemporalPatternMatchOperator(pattern, None)
+        op = TemporalPatternMatchOperator(pattern, None, graph="test")
         cost = op.cost_estimate(stats)
         assert cost == pytest.approx(100.0)
 
@@ -418,12 +419,21 @@ class TestNamedGraphTemporalTraverse:
 
     def _build_named_graph(self, engine):
         g = engine.create_graph("temporal_net")
-        g.add_vertex(Vertex(1, "person", {"name": "Alice"}))
-        g.add_vertex(Vertex(2, "person", {"name": "Bob"}))
-        g.add_vertex(Vertex(3, "person", {"name": "Carol"}))
-        g.add_edge(Edge(1, 1, 2, "knows", {"valid_from": 100, "valid_to": 200}))
-        g.add_edge(Edge(2, 1, 3, "knows", {"valid_from": 300, "valid_to": 400}))
-        g.add_edge(Edge(3, 2, 3, "works_with", {"valid_from": 150, "valid_to": 350}))
+        g.add_vertex(Vertex(1, "person", {"name": "Alice"}), graph="temporal_net")
+        g.add_vertex(Vertex(2, "person", {"name": "Bob"}), graph="temporal_net")
+        g.add_vertex(Vertex(3, "person", {"name": "Carol"}), graph="temporal_net")
+        g.add_edge(
+            Edge(1, 1, 2, "knows", {"valid_from": 100, "valid_to": 200}),
+            graph="temporal_net",
+        )
+        g.add_edge(
+            Edge(2, 1, 3, "knows", {"valid_from": 300, "valid_to": 400}),
+            graph="temporal_net",
+        )
+        g.add_edge(
+            Edge(3, 2, 3, "works_with", {"valid_from": 150, "valid_to": 350}),
+            graph="temporal_net",
+        )
         return g
 
     def test_temporal_traverse_named_graph_sql(self) -> None:
@@ -472,11 +482,11 @@ class TestNamedGraphTraverseAndRPQ:
 
         engine = Engine()
         g = engine.create_graph("social")
-        g.add_vertex(Vertex(1, "person"))
-        g.add_vertex(Vertex(2, "person"))
-        g.add_vertex(Vertex(3, "person"))
-        g.add_edge(Edge(1, 1, 2, "knows"))
-        g.add_edge(Edge(2, 2, 3, "knows"))
+        g.add_vertex(Vertex(1, "person"), graph="social")
+        g.add_vertex(Vertex(2, "person"), graph="social")
+        g.add_vertex(Vertex(3, "person"), graph="social")
+        g.add_edge(Edge(1, 1, 2, "knows"), graph="social")
+        g.add_edge(Edge(2, 2, 3, "knows"), graph="social")
 
         result = engine.sql("SELECT * FROM traverse(1, 'knows', 2, 'graph:social')")
         ids = {row["_doc_id"] for row in result.rows}
@@ -488,11 +498,11 @@ class TestNamedGraphTraverseAndRPQ:
 
         engine = Engine()
         g = engine.create_graph("social2")
-        g.add_vertex(Vertex(1, "person"))
-        g.add_vertex(Vertex(2, "person"))
-        g.add_vertex(Vertex(3, "person"))
-        g.add_edge(Edge(1, 1, 2, "knows"))
-        g.add_edge(Edge(2, 2, 3, "works_with"))
+        g.add_vertex(Vertex(1, "person"), graph="social2")
+        g.add_vertex(Vertex(2, "person"), graph="social2")
+        g.add_vertex(Vertex(3, "person"), graph="social2")
+        g.add_edge(Edge(1, 1, 2, "knows"), graph="social2")
+        g.add_edge(Edge(2, 2, 3, "works_with"), graph="social2")
 
         result = engine.sql("SELECT * FROM rpq('knows/works_with', 1, 'graph:social2')")
         ids = {row["_doc_id"] for row in result.rows}

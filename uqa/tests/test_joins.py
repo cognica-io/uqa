@@ -568,11 +568,12 @@ class TestIndexJoinOperator:
 class TestGraphJoinOperator:
     def test_basic_graph_join(self) -> None:
         store = GraphStore()
-        store.add_vertex(Vertex(1, "", {"name": "A"}))
-        store.add_vertex(Vertex(2, "", {"name": "B"}))
-        store.add_vertex(Vertex(3, "", {"name": "C"}))
-        store.add_edge(Edge(1, 1, 2, "knows"))
-        store.add_edge(Edge(2, 1, 3, "knows"))
+        store.create_graph("test")
+        store.add_vertex(Vertex(1, "", {"name": "A"}), graph="test")
+        store.add_vertex(Vertex(2, "", {"name": "B"}), graph="test")
+        store.add_vertex(Vertex(3, "", {"name": "C"}), graph="test")
+        store.add_edge(Edge(1, 1, 2, "knows"), graph="test")
+        store.add_edge(Edge(2, 1, 3, "knows"), graph="test")
         ctx = _MockContext(graph_store=store)
 
         left = PostingList(
@@ -599,11 +600,12 @@ class TestGraphJoinOperator:
 
     def test_label_filter(self) -> None:
         store = GraphStore()
-        store.add_vertex(Vertex(1, "", {}))
-        store.add_vertex(Vertex(2, "", {}))
-        store.add_vertex(Vertex(3, "", {}))
-        store.add_edge(Edge(1, 1, 2, "knows"))
-        store.add_edge(Edge(2, 1, 3, "works_with"))
+        store.create_graph("test")
+        store.add_vertex(Vertex(1, "", {}), graph="test")
+        store.add_vertex(Vertex(2, "", {}), graph="test")
+        store.add_vertex(Vertex(3, "", {}), graph="test")
+        store.add_edge(Edge(1, 1, 2, "knows"), graph="test")
+        store.add_edge(Edge(2, 1, 3, "works_with"), graph="test")
         ctx = _MockContext(graph_store=store)
 
         left = PostingList([PostingEntry(1, Payload())])
@@ -622,11 +624,12 @@ class TestGraphJoinOperator:
 
     def test_no_label_filter(self) -> None:
         store = GraphStore()
-        store.add_vertex(Vertex(1, "", {}))
-        store.add_vertex(Vertex(2, "", {}))
-        store.add_vertex(Vertex(3, "", {}))
-        store.add_edge(Edge(1, 1, 2, "knows"))
-        store.add_edge(Edge(2, 1, 3, "works_with"))
+        store.create_graph("test")
+        store.add_vertex(Vertex(1, "", {}), graph="test")
+        store.add_vertex(Vertex(2, "", {}), graph="test")
+        store.add_vertex(Vertex(3, "", {}), graph="test")
+        store.add_edge(Edge(1, 1, 2, "knows"), graph="test")
+        store.add_edge(Edge(2, 1, 3, "works_with"), graph="test")
         ctx = _MockContext(graph_store=store)
 
         left = PostingList([PostingEntry(1, Payload())])
@@ -648,8 +651,9 @@ class TestGraphJoinOperator:
 class TestCrossParadigmJoinOperator:
     def test_vertex_to_document_join(self) -> None:
         store = GraphStore()
-        store.add_vertex(Vertex(1, "", {"department": "eng"}))
-        store.add_vertex(Vertex(2, "", {"department": "sales"}))
+        store.create_graph("test")
+        store.add_vertex(Vertex(1, "", {"department": "eng"}), graph="test")
+        store.add_vertex(Vertex(2, "", {"department": "sales"}), graph="test")
         ctx = _MockContext(graph_store=store)
 
         left = PostingList(
@@ -676,7 +680,8 @@ class TestCrossParadigmJoinOperator:
 
     def test_no_match(self) -> None:
         store = GraphStore()
-        store.add_vertex(Vertex(1, "", {"category": "A"}))
+        store.create_graph("test")
+        store.add_vertex(Vertex(1, "", {"category": "A"}), graph="test")
         ctx = _MockContext(graph_store=store)
 
         left = PostingList([PostingEntry(1, Payload())])
@@ -692,7 +697,8 @@ class TestCrossParadigmJoinOperator:
 
     def test_merged_fields_include_vertex_properties(self) -> None:
         store = GraphStore()
-        store.add_vertex(Vertex(1, "", {"name": "Alice", "dept": "eng"}))
+        store.create_graph("test")
+        store.add_vertex(Vertex(1, "", {"name": "Alice", "dept": "eng"}), graph="test")
         ctx = _MockContext(graph_store=store)
 
         left = PostingList([PostingEntry(1, Payload(score=1.0))])

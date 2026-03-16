@@ -44,6 +44,7 @@ from uqa.operators.base import ExecutionContext
 # ======================================================================
 
 gs = GraphStore()
+gs.create_graph("citations")
 
 papers = [
     Vertex(
@@ -68,7 +69,7 @@ papers = [
     ),
 ]
 for v in papers:
-    gs.add_vertex(v)
+    gs.add_vertex(v, graph="citations")
 
 # Citation edges with weight = log(citations) and year metadata
 edges = [
@@ -84,7 +85,7 @@ edges = [
     Edge(10, 8, 1, "cites", {"weight": 4.0, "year": 2020}),  # Efficient -> Attention
 ]
 for e in edges:
-    gs.add_edge(e)
+    gs.add_edge(e, graph="citations")
 
 ctx = ExecutionContext(graph_store=gs)
 
@@ -97,7 +98,9 @@ print("=" * 70)
 # 1. PageRank: identify most influential papers
 # ------------------------------------------------------------------
 print("\n--- 1. PageRank: paper influence ranking ---")
-pr = PageRankOperator(damping=0.85, max_iterations=100, tolerance=1e-6)
+pr = PageRankOperator(
+    damping=0.85, max_iterations=100, tolerance=1e-6, graph="citations"
+)
 results = pr.execute(ctx)
 ranked = sorted(results, key=lambda e: e.payload.score, reverse=True)
 for entry in ranked:
@@ -112,7 +115,7 @@ for entry in ranked:
 # 2. HITS: hub and authority scores
 # ------------------------------------------------------------------
 print("\n--- 2. HITS: papers as hubs and authorities ---")
-hits = HITSOperator(max_iterations=100, tolerance=1e-6)
+hits = HITSOperator(max_iterations=100, tolerance=1e-6, graph="citations")
 results = hits.execute(ctx)
 print("  Top authorities (most-cited):")
 by_auth = sorted(results, key=lambda e: e.payload.score, reverse=True)
@@ -128,7 +131,7 @@ for entry in by_auth[:4]:
 # 3. Betweenness centrality: bridge papers
 # ------------------------------------------------------------------
 print("\n--- 3. Betweenness centrality: bridge papers ---")
-bc = BetweennessCentralityOperator()
+bc = BetweennessCentralityOperator(graph="citations")
 results = bc.execute(ctx)
 ranked = sorted(results, key=lambda e: e.payload.score, reverse=True)
 for entry in ranked[:4]:
@@ -154,12 +157,12 @@ print(f"  Betweenness cost:  {bc.cost_estimate(stats):>10.1f}")
 # ------------------------------------------------------------------
 print("\n--- 5. Bounded RPQ: cites{2,3} from Attention (paper 1) ---")
 expr = parse_rpq("cites{2,3}")
-rpq = RegularPathQueryOperator(expr, start_vertex=1)
+rpq = RegularPathQueryOperator(expr, graph="citations", start_vertex=1)
 results = rpq.execute(ctx)
 # Note: edges go FROM citing TO cited, so start from a citing paper
 # Let's start from RLHF (7) which cites papers that cite others
 expr2 = parse_rpq("cites{1,2}")
-rpq2 = RegularPathQueryOperator(expr2, start_vertex=7)
+rpq2 = RegularPathQueryOperator(expr2, graph="citations", start_vertex=7)
 results2 = rpq2.execute(ctx)
 print(f"  cites{{1,2}} from RLHF: {len(results2)} papers reachable")
 for entry in sorted(results2, key=lambda e: e.doc_id):
@@ -174,6 +177,7 @@ for entry in sorted(results2, key=lambda e: e.doc_id):
 print("\n--- 6. Weighted path: sum of citation weights from RLHF ---")
 wop = WeightedPathQueryOperator(
     path_expr=parse_rpq("cites/cites"),
+    graph="citations",
     weight_property="weight",
     aggregate_fn="sum",
     start_vertex=7,
@@ -194,6 +198,7 @@ for entry in sorted(
 print("\n--- 7. Weighted path: only chains with total weight > 6.0 ---")
 wop_filtered = WeightedPathQueryOperator(
     path_expr=parse_rpq("cites/cites"),
+    graph="citations",
     weight_property="weight",
     aggregate_fn="sum",
     predicate=lambda w: w > 6.0,
@@ -218,14 +223,14 @@ pattern = GraphPattern(
     [VertexPattern("a"), VertexPattern("b")],
     [EdgePattern("a", "b", "cites")],
 )
-idx = SubgraphIndex.build(gs, [pattern])
+idx = SubgraphIndex.build(gs, [pattern], graph_name="citations")
 cached = idx.lookup(pattern)
 print(f"  Cached {len(cached)} citation pair matches")
 print(f"  Index has pattern: {idx.has_pattern(pattern)}")
 
 # Use the index for fast pattern matching
 ctx_indexed = ExecutionContext(graph_store=gs, subgraph_index=idx)
-pm = PatternMatchOperator(pattern)
+pm = PatternMatchOperator(pattern, graph="citations")
 result = pm.execute(ctx_indexed)
 print(f"  PatternMatch via cache: {len(result)} results (O(1) lookup)")
 
@@ -243,7 +248,7 @@ pattern2 = GraphPattern(
     [EdgePattern("a", "b", "cites")],
 )
 # Get initial matches
-pm2 = PatternMatchOperator(pattern2)
+pm2 = PatternMatchOperator(pattern2, graph="citations")
 initial_gpl = pm2.execute(ctx)
 initial_matches = set()
 for entry in initial_gpl:
@@ -251,12 +256,12 @@ for entry in initial_gpl:
     if gp:
         initial_matches.add(gp.subgraph_vertices)
 
-matcher = IncrementalPatternMatcher(pattern2, initial_matches)
+matcher = IncrementalPatternMatcher(pattern2, initial_matches, graph_name="citations")
 print(f"  Initial matches: {len(matcher.base_matches)}")
 
 # Add a new citation edge: Efficient Attention (8) -> BERT (2)
 new_eid = gs.next_edge_id()
-gs.add_edge(Edge(new_eid, 8, 2, "cites", {"weight": 2.5}))
+gs.add_edge(Edge(new_eid, 8, 2, "cites", {"weight": 2.5}), graph="citations")
 delta = GraphDelta(added_edge_ids={new_eid})
 updated = matcher.update(gs, delta)
 print(f"  After adding edge 8->2: {len(updated)} matches")

@@ -44,7 +44,7 @@ vertices = [
     Vertex(6, "person", {"name": "Frank", "influence": 0.4}),
 ]
 for v in vertices:
-    gs.add_vertex(v)
+    gs.add_vertex(v, graph="social")
 
 # -- Temporal edges with valid_from/valid_to timestamps --
 # Timestamps represent months (e.g., 1 = Jan, 6 = Jun, 12 = Dec)
@@ -60,7 +60,7 @@ edges = [
     Edge(9, 5, 6, "follows", {}),  # No temporal constraint -- always valid
 ]
 for e in edges:
-    gs.add_edge(e)
+    gs.add_edge(e, graph="social")
 
 
 def show(label, result):
@@ -251,7 +251,7 @@ if alice_id is not None:
         "12. Named graph: temporal_traverse at month 4 from Alice",
         engine.sql(
             f"SELECT * FROM temporal_traverse({alice_id}, 'mentors', 2, 4, "
-            f"'graph:project_net')"
+            f"'project_net')"
         ),
     )
 
@@ -260,9 +260,7 @@ if alice_id is not None:
     # ==================================================================
     show(
         "13. Named graph: traverse from Alice (all edges, 2 hops)",
-        engine.sql(
-            f"SELECT * FROM traverse({alice_id}, 'mentors', 2, 'graph:project_net')"
-        ),
+        engine.sql(f"SELECT * FROM traverse({alice_id}, 'mentors', 2, 'project_net')"),
     )
 
     # ==================================================================
@@ -270,9 +268,7 @@ if alice_id is not None:
     # ==================================================================
     show(
         "14. Named graph: rpq('mentors/mentors') from Alice",
-        engine.sql(
-            f"SELECT * FROM rpq('mentors/mentors', {alice_id}, 'graph:project_net')"
-        ),
+        engine.sql(f"SELECT * FROM rpq('mentors/mentors', {alice_id}, 'project_net')"),
     )
 
 

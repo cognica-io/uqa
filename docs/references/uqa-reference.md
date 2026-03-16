@@ -339,7 +339,7 @@ Returns: PostingList with `_score` set to cosine similarity.
 
 #### `traverse_match(start, label, max_hops)`
 
-Graph reachability as a scored signal. Performs BFS from a starting vertex along edges with the given label, up to `max_hops` hops. Reachable vertices receive a score of 0.9. The FROM-clause variant `traverse()` (Section 4.4) supports named graphs via the `'graph:name'` source argument.
+Graph reachability as a scored signal. Performs BFS from a starting vertex along edges with the given label, up to `max_hops` hops. Reachable vertices receive a score of 0.9. The FROM-clause variant `traverse()` (Section 4.4) supports named graphs via a direct graph name argument (the `graph:` prefix is accepted for backward compatibility but not required).
 
 ```sql
 SELECT title, _score FROM papers
@@ -481,7 +481,7 @@ Returns: PostingList with posterior probabilities incorporating the external pri
 
 #### `temporal_traverse(start, label, hops, timestamp[, source])` / `temporal_traverse(start, label, hops, from_ts, to_ts[, source])`
 
-Time-aware graph traversal (Paper 2, Section 10). Same BFS as `traverse_match` but filters edges by `valid_from`/`valid_to` temporal properties. The 4-argument form checks a single timestamp; the 5-argument form checks interval overlap. An optional trailing `'graph:name'` argument targets a named graph instead of the per-table graph store.
+Time-aware graph traversal (Paper 2, Section 10). Same BFS as `traverse_match` but filters edges by `valid_from`/`valid_to` temporal properties. The 4-argument form checks a single timestamp; the 5-argument form checks interval overlap. An optional trailing graph name argument targets a named graph instead of the per-table graph store. The `graph:` prefix is accepted for backward compatibility but not required.
 
 ```sql
 -- Point-in-time traversal
@@ -490,8 +490,8 @@ SELECT * FROM temporal_traverse(1, 'knows', 2, 1700000000);
 -- Range traversal
 SELECT * FROM temporal_traverse(1, 'knows', 2, 1690000000, 1710000000);
 
--- Named graph traversal
-SELECT * FROM temporal_traverse(1, 'knows', 2, 150, 'graph:net');
+-- Named graph traversal (direct name)
+SELECT * FROM temporal_traverse(1, 'knows', 2, 150, 'net');
 ```
 
 | Parameter | Type | Description |
@@ -501,7 +501,7 @@ SELECT * FROM temporal_traverse(1, 'knows', 2, 150, 'graph:net');
 | `hops` | integer | Maximum traversal depth |
 | `timestamp` | float | Point-in-time filter |
 | `from_ts, to_ts` | floats | Time range filter (interval overlap) |
-| `source` | string | Optional `'graph:name'` to target a named graph |
+| `source` | string | Optional graph name to target a named graph |
 
 Returns: PostingList of reachable vertices with `_score = 0.9`.
 
@@ -700,7 +700,7 @@ ORDER BY name;
 
 #### `traverse(start, label, max_hops[, source])`
 
-BFS graph traversal as a virtual table. Returns one row per reachable vertex with its properties as columns. An optional trailing `'graph:name'` argument targets a named graph (created via `create_graph()` or `cypher()`) instead of the per-table graph store.
+BFS graph traversal as a virtual table. Returns one row per reachable vertex with its properties as columns. An optional trailing graph name argument targets a named graph (created via `create_graph()` or `cypher()`) instead of the per-table graph store. The `graph:` prefix is accepted for backward compatibility but not required.
 
 ```sql
 SELECT _doc_id, _score FROM traverse(1, 'cited_by', 2);
@@ -709,8 +709,8 @@ SELECT _doc_id, _score FROM traverse(1, 'cited_by', 2);
 SELECT _doc_id, title FROM traverse(1, 'cited_by', 3)
 WHERE _score > 0.5;
 
--- Named graph traversal
-SELECT * FROM traverse(1, 'knows', 2, 'graph:social');
+-- Named graph traversal (direct name)
+SELECT * FROM traverse(1, 'knows', 2, 'social');
 ```
 
 | Parameter | Type | Description |
@@ -718,11 +718,11 @@ SELECT * FROM traverse(1, 'knows', 2, 'graph:social');
 | `start` | integer | Starting vertex ID |
 | `label` | string | Edge label to follow |
 | `max_hops` | integer | Maximum traversal depth |
-| `source` | string | Optional `'graph:name'` to target a named graph |
+| `source` | string | Optional graph name to target a named graph |
 
 #### `rpq(path_expr, start[, source])`
 
-Regular path query. Evaluates a regular path expression using NFA simulation and returns matching vertices. An optional trailing `'graph:name'` argument targets a named graph instead of the per-table graph store.
+Regular path query. Evaluates a regular path expression using NFA simulation and returns matching vertices. An optional trailing graph name argument targets a named graph instead of the per-table graph store. The `graph:` prefix is accepted for backward compatibility but not required.
 
 ```sql
 -- Follow two 'cited_by' edges
@@ -731,26 +731,26 @@ SELECT _doc_id, title FROM rpq('cited_by/cited_by', 1);
 -- Alternation: follow 'cited_by' or 'references'
 SELECT _doc_id FROM rpq('cited_by|references', 1);
 
--- Named graph RPQ
-SELECT * FROM rpq('knows/works_with', 1, 'graph:social');
+-- Named graph RPQ (direct name)
+SELECT * FROM rpq('knows/works_with', 1, 'social');
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `path_expr` | string | Path expression using `/` (concatenation) and `\|` (alternation) |
 | `start` | integer | Starting vertex ID (optional) |
-| `source` | string | Optional `'graph:name'` to target a named graph |
+| `source` | string | Optional graph name to target a named graph |
 
 #### `temporal_traverse(start, label, hops, timestamp[, source])` / `temporal_traverse(start, label, hops, from_ts, to_ts[, source])`
 
-Time-aware graph traversal as a FROM-clause table function. Same BFS as `traverse()` but filters edges by `valid_from`/`valid_to` temporal properties. The 4-argument form checks a single timestamp; the 5-argument form checks interval overlap. An optional trailing `'graph:name'` argument targets a named graph.
+Time-aware graph traversal as a FROM-clause table function. Same BFS as `traverse()` but filters edges by `valid_from`/`valid_to` temporal properties. The 4-argument form checks a single timestamp; the 5-argument form checks interval overlap. An optional trailing graph name argument targets a named graph. The `graph:` prefix is accepted for backward compatibility but not required.
 
 ```sql
 -- Point-in-time traversal
 SELECT * FROM temporal_traverse(1, 'knows', 2, 1700000000);
 
--- Range traversal with named graph
-SELECT * FROM temporal_traverse(1, 'knows', 2, 150, 'graph:net');
+-- Range traversal with named graph (direct name)
+SELECT * FROM temporal_traverse(1, 'knows', 2, 150, 'net');
 ```
 
 | Parameter | Type | Description |
@@ -760,7 +760,7 @@ SELECT * FROM temporal_traverse(1, 'knows', 2, 150, 'graph:net');
 | `hops` | integer | Maximum traversal depth |
 | `timestamp` | float | Point-in-time filter |
 | `from_ts, to_ts` | floats | Time range filter (interval overlap) |
-| `source` | string | Optional `'graph:name'` to target a named graph |
+| `source` | string | Optional graph name to target a named graph |
 
 #### `text_search(query, field, table)`
 
@@ -1131,7 +1131,7 @@ The SQL compiler uses pglast (PostgreSQL parser) to parse SQL into an AST, then 
 - **Date/Time**: EXTRACT, DATE_TRUNC, DATE_PART, NOW, CURRENT_DATE/TIME/TIMESTAMP, CLOCK_TIMESTAMP, TIMEOFDAY, AGE, TO_CHAR/TO_DATE/TO_TIMESTAMP, MAKE_DATE/MAKE_TIMESTAMP/MAKE_INTERVAL, TO_NUMBER, OVERLAPS, ISFINITE
 - **Table functions**: GENERATE_SERIES, UNNEST, REGEXP_SPLIT_TO_TABLE, JSON_EACH/JSON_EACH_TEXT, JSON_ARRAY_ELEMENTS/JSON_ARRAY_ELEMENTS_TEXT
 - **Graph functions**: cypher() (Apache AGE compatible openCypher), create_graph(), drop_graph()
-- **FDW**: CREATE/DROP SERVER, CREATE/DROP FOREIGN TABLE, DuckDB FDW (Parquet/CSV/JSON), Arrow Flight SQL FDW, Hive partitioning (`hive_partitioning` option), predicate pushdown (=, !=, <, >, IN, LIKE, ILIKE, BETWEEN), full query pushdown (v0.19.0) -- entire queries on same-server foreign tables are delegated to the data source via AST deparsing, mixed foreign-local pushdown (local tables shipped as temp tables to DuckDB), LIMIT pushdown to `FDWHandler.scan()`
+- **FDW**: CREATE/DROP SERVER, CREATE/DROP FOREIGN TABLE, DuckDB FDW (Parquet/CSV/JSON), Arrow Flight SQL FDW, Hive partitioning (`hive_partitioning` option), predicate pushdown (=, !=, <, >, IN, LIKE, ILIKE, BETWEEN), full query pushdown -- entire queries on same-server foreign tables are delegated to the data source via AST deparsing, mixed foreign-local pushdown (local tables shipped as temp tables to DuckDB), LIMIT pushdown to `FDWHandler.scan()`
 - **Analysis functions**: create_analyzer(), drop_analyzer(), list_analyzers(), set_table_analyzer()
 - **System catalogs**: information_schema.columns, pg_catalog.pg_tables, pg_catalog.pg_views, pg_catalog.pg_indexes, pg_catalog.pg_type
 - **Transactions**: BEGIN, COMMIT, ROLLBACK, SAVEPOINT
@@ -1560,7 +1560,7 @@ The `FDWHandler.scan()` method accepts an optional `limit` parameter. When a que
 SELECT * FROM orders LIMIT 10;
 ```
 
-**Full Query Pushdown (v0.19.0)**
+**Full Query Pushdown**
 
 When every table referenced in a SELECT statement -- including tables in JOINs, subqueries, CTEs, and window functions -- is a foreign table on the same server, UQA delegates the entire query to the data source instead of pulling raw rows into the UQA operator pipeline.
 

@@ -287,3 +287,311 @@ def test_generalized_posting_list_sorted() -> None:
     entries = gpl.entries
     for i in range(len(entries) - 1):
         assert entries[i].doc_ids <= entries[i + 1].doc_ids
+
+
+# -- GeneralizedPostingList Boolean Algebra --
+
+
+class TestGeneralizedPostingListAlgebra:
+    """Tests for GeneralizedPostingList intersect, difference, complement,
+    doc_ids_set, operator overloads, and __eq__."""
+
+    # Shared fixtures
+
+    @staticmethod
+    def _make_gpl(
+        tuples: list[tuple[int, ...]],
+    ) -> GeneralizedPostingList:
+        entries = [
+            GeneralizedPostingEntry(t, Payload(score=float(sum(t)))) for t in tuples
+        ]
+        return GeneralizedPostingList(entries)
+
+    # -- intersect --
+
+    def test_intersect_shared_tuples_only(self) -> None:
+        """intersect keeps only doc_ids tuples present in both operands."""
+        a = self._make_gpl([(1, 2), (3, 4), (5, 6)])
+        b = self._make_gpl([(3, 4), (5, 6), (7, 8)])
+        result = a.intersect(b)
+        assert {e.doc_ids for e in result} == {(3, 4), (5, 6)}
+
+    def test_intersect_preserves_left_payload(self) -> None:
+        """intersect keeps the entry from self (left operand)."""
+        a = GeneralizedPostingList(
+            [GeneralizedPostingEntry((1, 2), Payload(score=9.0))]
+        )
+        b = GeneralizedPostingList(
+            [GeneralizedPostingEntry((1, 2), Payload(score=1.0))]
+        )
+        result = a.intersect(b)
+        assert len(result) == 1
+        assert next(iter(result)).payload.score == 9.0
+
+    def test_intersect_sorted_invariant(self) -> None:
+        """intersect result is sorted by doc_ids."""
+        a = self._make_gpl([(1, 2), (3, 4), (5, 6), (7, 8)])
+        b = self._make_gpl([(5, 6), (1, 2)])
+        result = a.intersect(b)
+        entries = result.entries
+        for i in range(len(entries) - 1):
+            assert entries[i].doc_ids <= entries[i + 1].doc_ids
+
+    # -- difference --
+
+    def test_difference_self_minus_other(self) -> None:
+        """difference removes tuples present in other."""
+        a = self._make_gpl([(1, 2), (3, 4), (5, 6)])
+        b = self._make_gpl([(3, 4)])
+        result = a.difference(b)
+        assert {e.doc_ids for e in result} == {(1, 2), (5, 6)}
+
+    def test_difference_preserves_payload(self) -> None:
+        """difference keeps original payloads from self."""
+        a = GeneralizedPostingList(
+            [
+                GeneralizedPostingEntry((1, 2), Payload(score=5.0)),
+                GeneralizedPostingEntry((3, 4), Payload(score=7.0)),
+            ]
+        )
+        b = self._make_gpl([(3, 4)])
+        result = a.difference(b)
+        assert len(result) == 1
+        assert next(iter(result)).payload.score == 5.0
+
+    def test_difference_sorted_invariant(self) -> None:
+        """difference result is sorted by doc_ids."""
+        a = self._make_gpl([(1, 2), (3, 4), (5, 6), (7, 8)])
+        b = self._make_gpl([(3, 4)])
+        result = a.difference(b)
+        entries = result.entries
+        for i in range(len(entries) - 1):
+            assert entries[i].doc_ids <= entries[i + 1].doc_ids
+
+    # -- complement --
+
+    def test_complement_universal_minus_self(self) -> None:
+        """complement returns universal - self."""
+        universal = self._make_gpl([(1, 2), (3, 4), (5, 6), (7, 8)])
+        a = self._make_gpl([(3, 4), (7, 8)])
+        result = a.complement(universal)
+        assert {e.doc_ids for e in result} == {(1, 2), (5, 6)}
+
+    def test_complement_of_empty_is_universal(self) -> None:
+        """complement of empty set is the universal set."""
+        universal = self._make_gpl([(1, 2), (3, 4)])
+        empty = GeneralizedPostingList()
+        result = empty.complement(universal)
+        assert result == universal
+
+    def test_complement_of_universal_is_empty(self) -> None:
+        """complement of universal set is empty."""
+        universal = self._make_gpl([(1, 2), (3, 4)])
+        result = universal.complement(universal)
+        assert len(result) == 0
+
+    # -- doc_ids_set --
+
+    def test_doc_ids_set_property(self) -> None:
+        """doc_ids_set returns the set of all doc_ids tuples."""
+        gpl = self._make_gpl([(1, 2), (3, 4), (5, 6)])
+        assert gpl.doc_ids_set == {(1, 2), (3, 4), (5, 6)}
+
+    def test_doc_ids_set_empty(self) -> None:
+        """doc_ids_set on empty list returns empty set."""
+        gpl = GeneralizedPostingList()
+        assert gpl.doc_ids_set == set()
+
+    # -- operator overloads --
+
+    def test_and_operator(self) -> None:
+        """__and__ delegates to intersect."""
+        a = self._make_gpl([(1, 2), (3, 4), (5, 6)])
+        b = self._make_gpl([(3, 4), (7, 8)])
+        result = a & b
+        assert {e.doc_ids for e in result} == {(3, 4)}
+
+    def test_or_operator(self) -> None:
+        """__or__ delegates to union."""
+        a = self._make_gpl([(1, 2), (3, 4)])
+        b = self._make_gpl([(3, 4), (5, 6)])
+        result = a | b
+        assert {e.doc_ids for e in result} == {(1, 2), (3, 4), (5, 6)}
+
+    def test_sub_operator(self) -> None:
+        """__sub__ delegates to difference."""
+        a = self._make_gpl([(1, 2), (3, 4), (5, 6)])
+        b = self._make_gpl([(3, 4)])
+        result = a - b
+        assert {e.doc_ids for e in result} == {(1, 2), (5, 6)}
+
+    # -- __eq__ --
+
+    def test_eq_same_entries(self) -> None:
+        """Two GPLs with same doc_ids tuples (same order) are equal."""
+        a = self._make_gpl([(1, 2), (3, 4)])
+        b = self._make_gpl([(1, 2), (3, 4)])
+        assert a == b
+
+    def test_eq_different_entries(self) -> None:
+        """Two GPLs with different doc_ids tuples are not equal."""
+        a = self._make_gpl([(1, 2), (3, 4)])
+        b = self._make_gpl([(1, 2), (5, 6)])
+        assert a != b
+
+    def test_eq_different_lengths(self) -> None:
+        """Two GPLs with different lengths are not equal."""
+        a = self._make_gpl([(1, 2), (3, 4)])
+        b = self._make_gpl([(1, 2)])
+        assert a != b
+
+    def test_eq_not_implemented_for_other_types(self) -> None:
+        """__eq__ returns NotImplemented for non-GPL objects."""
+        a = self._make_gpl([(1, 2)])
+        assert a.__eq__("not a gpl") is NotImplemented
+
+    def test_eq_ignores_payload_differences(self) -> None:
+        """__eq__ compares only doc_ids, not payloads."""
+        a = GeneralizedPostingList(
+            [GeneralizedPostingEntry((1, 2), Payload(score=1.0))]
+        )
+        b = GeneralizedPostingList(
+            [GeneralizedPostingEntry((1, 2), Payload(score=99.0))]
+        )
+        assert a == b
+
+    # -- empty operands --
+
+    def test_intersect_with_empty(self) -> None:
+        """intersect with empty returns empty."""
+        a = self._make_gpl([(1, 2), (3, 4)])
+        empty = GeneralizedPostingList()
+        assert len(a.intersect(empty)) == 0
+        assert len(empty.intersect(a)) == 0
+
+    def test_difference_with_empty(self) -> None:
+        """difference from empty returns self; difference with empty returns self."""
+        a = self._make_gpl([(1, 2), (3, 4)])
+        empty = GeneralizedPostingList()
+        assert a.difference(empty) == a
+        assert len(empty.difference(a)) == 0
+
+    def test_union_with_empty(self) -> None:
+        """union with empty returns self."""
+        a = self._make_gpl([(1, 2), (3, 4)])
+        empty = GeneralizedPostingList()
+        assert a.union(empty) == a
+        assert empty.union(a) == a
+
+    # -- no-overlap cases --
+
+    def test_intersect_no_overlap(self) -> None:
+        """intersect of disjoint sets is empty."""
+        a = self._make_gpl([(1, 2), (3, 4)])
+        b = self._make_gpl([(5, 6), (7, 8)])
+        result = a.intersect(b)
+        assert len(result) == 0
+
+    def test_difference_no_overlap(self) -> None:
+        """difference of disjoint sets returns self unchanged."""
+        a = self._make_gpl([(1, 2), (3, 4)])
+        b = self._make_gpl([(5, 6), (7, 8)])
+        result = a.difference(b)
+        assert result == a
+
+
+# -- De Morgan property tests (Theorem 2.1.2, Paper 1) --
+
+
+class TestDeMorganProperties:
+    """De Morgan's laws for PostingList Boolean algebra:
+
+    NOT (A AND B) == (NOT A) OR (NOT B)
+    NOT (A OR B) == (NOT A) AND (NOT B)
+    """
+
+    @staticmethod
+    def _ids(pl: PostingList) -> set[int]:
+        return {e.doc_id for e in pl}
+
+    @given(posting_list_strategy, posting_list_strategy)
+    @settings(max_examples=50, deadline=None)
+    def test_de_morgan_intersect(self, a: PostingList, b: PostingList) -> None:
+        """NOT (A AND B) == (NOT A) OR (NOT B)."""
+        u = a.union(b).union(
+            PostingList([PostingEntry(i, Payload()) for i in range(51)])
+        )
+        lhs = a.intersect(b).complement(u)
+        rhs = a.complement(u).union(b.complement(u))
+        assert self._ids(lhs) == self._ids(rhs)
+
+    @given(posting_list_strategy, posting_list_strategy)
+    @settings(max_examples=50, deadline=None)
+    def test_de_morgan_union(self, a: PostingList, b: PostingList) -> None:
+        """NOT (A OR B) == (NOT A) AND (NOT B)."""
+        u = a.union(b).union(
+            PostingList([PostingEntry(i, Payload()) for i in range(51)])
+        )
+        lhs = a.union(b).complement(u)
+        rhs = a.complement(u).intersect(b.complement(u))
+        assert self._ids(lhs) == self._ids(rhs)
+
+    @given(posting_list_strategy, posting_list_strategy, posting_list_strategy)
+    @settings(max_examples=30, deadline=None)
+    def test_distributivity(
+        self, a: PostingList, b: PostingList, c: PostingList
+    ) -> None:
+        """A AND (B OR C) == (A AND B) OR (A AND C)."""
+        lhs = a.intersect(b.union(c))
+        rhs = a.intersect(b).union(a.intersect(c))
+        assert self._ids(lhs) == self._ids(rhs)
+
+
+# -- GeneralizedPostingList algebra property tests --
+
+
+gpl_entry_strategy = st.builds(
+    GeneralizedPostingEntry,
+    doc_ids=st.tuples(
+        st.integers(min_value=0, max_value=10),
+        st.integers(min_value=0, max_value=10),
+    ),
+    payload=st.builds(Payload, score=st.just(0.0)),
+)
+
+gpl_strategy = st.lists(gpl_entry_strategy, min_size=0, max_size=8).map(
+    GeneralizedPostingList
+)
+
+
+class TestGPLAlgebraProperties:
+    """Property-based tests for GeneralizedPostingList algebra."""
+
+    @staticmethod
+    def _tuples(gpl: GeneralizedPostingList) -> set[tuple[int, ...]]:
+        return {e.doc_ids for e in gpl}
+
+    @given(gpl_strategy, gpl_strategy)
+    @settings(max_examples=30, deadline=None)
+    def test_gpl_union_commutative(
+        self, a: GeneralizedPostingList, b: GeneralizedPostingList
+    ) -> None:
+        assert self._tuples(a.union(b)) == self._tuples(b.union(a))
+
+    @given(gpl_strategy, gpl_strategy)
+    @settings(max_examples=30, deadline=None)
+    def test_gpl_intersect_commutative(
+        self, a: GeneralizedPostingList, b: GeneralizedPostingList
+    ) -> None:
+        assert self._tuples(a.intersect(b)) == self._tuples(b.intersect(a))
+
+    @given(gpl_strategy, gpl_strategy)
+    @settings(max_examples=30, deadline=None)
+    def test_gpl_de_morgan_intersect(
+        self, a: GeneralizedPostingList, b: GeneralizedPostingList
+    ) -> None:
+        """NOT (A AND B) == (NOT A) OR (NOT B) for GPL."""
+        u = a.union(b)
+        lhs = self._tuples(a.intersect(b).complement(u))
+        rhs = self._tuples(a.complement(u).union(b.complement(u)))
+        assert lhs == rhs
