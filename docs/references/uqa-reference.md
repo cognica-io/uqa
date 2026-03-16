@@ -1131,7 +1131,7 @@ The SQL compiler uses pglast (PostgreSQL parser) to parse SQL into an AST, then 
 - **Date/Time**: EXTRACT, DATE_TRUNC, DATE_PART, NOW, CURRENT_DATE/TIME/TIMESTAMP, CLOCK_TIMESTAMP, TIMEOFDAY, AGE, TO_CHAR/TO_DATE/TO_TIMESTAMP, MAKE_DATE/MAKE_TIMESTAMP/MAKE_INTERVAL, TO_NUMBER, OVERLAPS, ISFINITE
 - **Table functions**: GENERATE_SERIES, UNNEST, REGEXP_SPLIT_TO_TABLE, JSON_EACH/JSON_EACH_TEXT, JSON_ARRAY_ELEMENTS/JSON_ARRAY_ELEMENTS_TEXT
 - **Graph functions**: cypher() (Apache AGE compatible openCypher), create_graph(), drop_graph()
-- **FDW**: CREATE/DROP SERVER, CREATE/DROP FOREIGN TABLE, DuckDB FDW (Parquet/CSV/JSON), Arrow Flight SQL FDW, Hive partitioning (`hive_partitioning` option), predicate pushdown (=, !=, <, >, IN, LIKE, ILIKE, BETWEEN)
+- **FDW**: CREATE/DROP SERVER, CREATE/DROP FOREIGN TABLE, DuckDB FDW (Parquet/CSV/JSON), Arrow Flight SQL FDW, Hive partitioning (`hive_partitioning` option), predicate pushdown (=, !=, <, >, IN, LIKE, ILIKE, BETWEEN), full query pushdown (v0.19.0) -- entire queries on same-server foreign tables are delegated to the data source via AST deparsing, mixed foreign-local pushdown (local tables shipped as temp tables to DuckDB), LIMIT pushdown to `FDWHandler.scan()`
 - **Analysis functions**: create_analyzer(), drop_analyzer(), list_analyzers(), set_table_analyzer()
 - **System catalogs**: information_schema.columns, pg_catalog.pg_tables, pg_catalog.pg_views, pg_catalog.pg_indexes, pg_catalog.pg_type
 - **Transactions**: BEGIN, COMMIT, ROLLBACK, SAVEPOINT
@@ -1151,6 +1151,7 @@ The optimizer applies equivalence-preserving rewrite rules:
 6. **R*Tree spatial index scan**: Uses the R*Tree index for POINT column range queries when available.
 7. **Index scan substitution**: Replaces full-table FilterOperator scans with B-tree index scans when the estimated cost is lower.
 8. **EXISTS subquery decorrelation**: Correlated `EXISTS` subqueries with equijoin predicates are decorrelated into a semi-join `FilterOperator(outer_col, InSet(values))`. The inner query executes once instead of once per outer row, yielding 116x speedup on the EXISTS benchmark.
+9. **Foreign table full query pushdown**: When all tables in a query are foreign tables on the same server, the entire query (JOINs, aggregates, window functions, subqueries) is delegated to the data source via AST deparsing. For `duckdb_fdw`, local tables under 100K rows are shipped as temporary tables for mixed pushdown.
 
 The optimizer uses a **CardinalityEstimator** backed by per-column statistics: equi-depth histograms and Most Common Values (MCVs), populated by the ANALYZE command.
 
@@ -1491,6 +1492,156 @@ WHERE text_match(title, 'attention') ORDER BY _score DESC;
 ANALYZE papers;
 ```
 
+#### Foreign Data Wrappers
+
+Foreign Data Wrappers (FDW) let UQA query external data sources -- Parquet files, CSV files, JSON files, S3 objects, attached DuckDB databases, and remote Arrow Flight SQL endpoints -- as if they were regular SQL tables.
+
+**Server and Foreign Table Setup**
+
+```sql
+-- DuckDB FDW: in-process access to local/remote files
+CREATE SERVER warehouse FOREIGN DATA WRAPPER duckdb_fdw;
+
+-- Foreign table backed by a Parquet file
+CREATE FOREIGN TABLE orders (
+    order_id INTEGER,
+    product_id INTEGER,
+    customer TEXT,
+    quantity INTEGER,
+    total REAL
+) SERVER warehouse OPTIONS (source '/data/orders.parquet');
+
+-- CSV file (reader auto-detected from file extension)
+CREATE FOREIGN TABLE customers (
+    customer_id INTEGER,
+    name TEXT,
+    region TEXT
+) SERVER warehouse OPTIONS (source '/data/customers.csv');
+
+-- Hive-partitioned directory layout
+CREATE FOREIGN TABLE events (
+    event_id INTEGER,
+    event_type TEXT,
+    year INTEGER,
+    month INTEGER
+) SERVER warehouse OPTIONS (
+    source '/data/events/',
+    hive_partitioning 'true'
+);
+
+-- Arrow Flight SQL: remote SQL endpoint
+CREATE SERVER analytics FOREIGN DATA WRAPPER arrow_fdw
+    OPTIONS (host 'analytics.example.com', port '8815');
+
+CREATE FOREIGN TABLE remote_sales (
+    region TEXT,
+    revenue REAL,
+    quarter INTEGER
+) SERVER analytics OPTIONS (source 'sales_summary');
+```
+
+**Predicate Pushdown**
+
+WHERE predicates on foreign table columns are automatically extracted from the AST and forwarded to the FDW handler for server-side filtering. Supported operators: `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, `IN`, `LIKE`, `NOT LIKE`, `ILIKE`, `NOT ILIKE`, `BETWEEN`. For Hive-partitioned sources, partition columns are pruned at the file-system level before any data is read.
+
+```sql
+-- Predicates pushed to DuckDB; only matching partitions are scanned
+SELECT * FROM events
+WHERE year = 2025 AND month IN (1, 2, 3)
+ORDER BY event_id;
+```
+
+**LIMIT Pushdown**
+
+The `FDWHandler.scan()` method accepts an optional `limit` parameter. When a query has a LIMIT clause with no WHERE, ORDER BY, or GROUP BY that would require full materialization, the limit is pushed down to the data source so it can stop reading early.
+
+```sql
+-- Only 10 rows fetched from DuckDB, not the full file
+SELECT * FROM orders LIMIT 10;
+```
+
+**Full Query Pushdown (v0.19.0)**
+
+When every table referenced in a SELECT statement -- including tables in JOINs, subqueries, CTEs, and window functions -- is a foreign table on the same server, UQA delegates the entire query to the data source instead of pulling raw rows into the UQA operator pipeline.
+
+The pushdown mechanism:
+
+1. Walk the AST to collect every `RangeVar` table reference (FROM, JOINs, subqueries).
+2. Verify all tables resolve to foreign tables on a single server.
+3. Register each foreign table as a DuckDB view pointing to its source expression (e.g., `read_parquet(...)`) or map to its Flight SQL source.
+4. Deparse the original AST back to SQL via `pglast.stream.RawStream`.
+5. Execute the full SQL on DuckDB (or send to the Flight SQL endpoint) and convert the Arrow result to `SQLResult`.
+
+This means JOINs, window functions, aggregates, subqueries, ORDER BY, and LIMIT are all executed natively by DuckDB (or the Flight SQL server) in a single pass, avoiding row-by-row materialization in Python.
+
+```sql
+-- Both tables are on the same DuckDB server: entire query pushed down
+SELECT o.customer,
+       COUNT(*) AS num_orders,
+       SUM(p.price * o.quantity) AS total_spent
+FROM orders o
+INNER JOIN products p ON o.product_id = p.product_id
+GROUP BY o.customer
+ORDER BY total_spent DESC;
+
+-- Window functions are also pushed down
+SELECT o.customer, o.order_id, o.total,
+       ROW_NUMBER() OVER (PARTITION BY o.customer ORDER BY o.total DESC) AS rank
+FROM orders o;
+
+-- Subqueries pushed down as well
+SELECT * FROM orders
+WHERE product_id IN (SELECT product_id FROM products WHERE price > 50);
+```
+
+Full query pushdown is transparent -- no SQL syntax changes are needed. It is skipped for EXPLAIN queries (which need the UQA plan tree) and when the query references CTEs, views, or tables that are not foreign tables.
+
+**Arrow Flight SQL Pushdown**
+
+For `arrow_fdw` servers, the same full-pushdown logic applies to pure-foreign queries. The AST is deparsed to SQL, table names are replaced with their remote source expressions, and the rewritten SQL is sent to the Flight SQL endpoint as a single request. The server (Dremio, DataFusion, DuckDB Flight SQL, etc.) executes the full query and returns Arrow record batches.
+
+```sql
+-- Both tables on the same Flight SQL server: one remote round-trip
+SELECT r.region, r.revenue, q.target
+FROM remote_sales r
+INNER JOIN remote_quotas q ON r.region = q.region
+WHERE r.quarter = 4;
+```
+
+Arrow Flight SQL pushdown requires all tables in the query to be foreign tables on the same `arrow_fdw` server. Mixed queries (foreign + local tables) are not supported for Flight SQL because there is no way to ship local data to the remote endpoint.
+
+**Mixed Foreign-Local Pushdown**
+
+For `duckdb_fdw` servers, queries that reference both foreign tables and local UQA tables can still benefit from pushdown -- as long as each local table has fewer than 100,000 rows. Local tables are materialized as DuckDB temporary tables (via Arrow) before the query executes.
+
+The process:
+
+1. Foreign tables are registered as DuckDB views pointing to their sources.
+2. Local tables are exported as Arrow tables and loaded into DuckDB as `CREATE TEMP TABLE ... AS SELECT * FROM arrow_table`.
+3. The full AST is deparsed and executed on DuckDB.
+4. Temporary tables and views are cleaned up after execution.
+
+```sql
+-- 'orders' and 'products' are foreign (Parquet), 'customer_notes' is local
+-- The local table is shipped to DuckDB as a temp table
+SELECT o.customer, p.name AS product, o.quantity, n.note
+FROM orders o
+INNER JOIN products p ON o.product_id = p.product_id
+INNER JOIN customer_notes n ON o.customer = n.customer
+ORDER BY o.order_id
+LIMIT 5;
+```
+
+If any local table exceeds 100,000 rows, mixed pushdown is skipped and UQA falls back to the standard operator pipeline (per-table scans with predicate pushdown only).
+
+**Cleanup**
+
+```sql
+DROP FOREIGN TABLE orders;
+DROP FOREIGN TABLE products;
+DROP SERVER warehouse;
+```
+
 ### 6.4 QueryBuilder Fluent API
 
 The fluent API provides a programmatic alternative to SQL.
@@ -1821,7 +1972,7 @@ Example scripts are provided in the `examples/` directory:
 | `analysis.py` | Text analyzers via SQL: create, list, drop, persistence |
 | `export.py` | Arrow/Parquet export from SQL queries, type preservation, JOIN export |
 | `spatial.py` | Geospatial: POINT, R*Tree, spatial_within, ST_Distance, ST_DWithin, fusion |
-| `fdw.py` | Foreign Data Wrappers, DuckDB (Parquet/CSV/JSON), JOINs, Hive partitioning |
+| `fdw.py` | Foreign Data Wrappers, DuckDB (Parquet/CSV/JSON), JOINs, Hive partitioning, full query pushdown, mixed foreign-local pushdown |
 | `scoring_advanced.py` | Sparse threshold, multi-field match, attention/learned fusion, staged retrieval |
 | `calibration.py` | ECE, Brier score, reliability diagram, parameter learning |
 | `temporal_graph.py` | Temporal traversal, message passing, graph embeddings |

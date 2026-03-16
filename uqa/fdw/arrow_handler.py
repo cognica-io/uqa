@@ -97,6 +97,7 @@ class ArrowFlightSQLFDWHandler(FDWHandler):
         foreign_table: ForeignTable,
         columns: list[str] | None = None,
         predicates: list[FDWPredicate] | None = None,
+        limit: int | None = None,
     ) -> pa.Table:
         import pyarrow.flight as flight
 
@@ -118,6 +119,9 @@ class ArrowFlightSQLFDWHandler(FDWHandler):
         if predicates and " WHERE " not in query.upper():
             where_sql = self._build_where_clause(predicates)
             query = f"{query} WHERE {where_sql}"
+
+        if limit is not None and " LIMIT " not in query.upper():
+            query = f"{query} LIMIT {int(limit)}"
 
         descriptor = flight.FlightDescriptor.for_command(query.encode("utf-8"))
         info = self._client.get_flight_info(descriptor)

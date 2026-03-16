@@ -166,15 +166,129 @@ DROP SEQUENCE [IF EXISTS] seq_name;
 
 ### Foreign Data Wrappers
 
-```sql
-CREATE FOREIGN SERVER name TYPE 'postgres' VERSION '1.0'
-    OPTIONS (host 'localhost', dbname 'mydb', user 'user', password 'pass');
+Foreign Data Wrappers (FDW) let you query external data sources -- Parquet files, CSV files, S3 buckets, attached DuckDB databases, or remote Arrow Flight SQL servers -- as if they were regular tables.
 
-CREATE FOREIGN TABLE name (col_name type, ...) SERVER server_name;
+**DDL Syntax:**
+
+```sql
+-- Create a server backed by DuckDB (in-process analytics engine)
+CREATE SERVER name FOREIGN DATA WRAPPER duckdb_fdw;
+
+-- Create a server backed by Arrow Flight SQL (remote query engine)
+CREATE SERVER name FOREIGN DATA WRAPPER arrow_fdw
+    OPTIONS (host 'hostname', port '8815');
+
+-- Create a foreign table pointing to a Parquet file
+CREATE FOREIGN TABLE name (col_name type, ...)
+    SERVER server_name OPTIONS (source '/path/to/file.parquet');
+
+-- Create a foreign table pointing to a CSV file
+CREATE FOREIGN TABLE name (col_name type, ...)
+    SERVER server_name OPTIONS (source '/path/to/file.csv');
+
+-- Explicit DuckDB reader expression (e.g., Hive-partitioned directory)
+CREATE FOREIGN TABLE name (col_name type, ...)
+    SERVER server_name
+    OPTIONS (source '/data/events/**/*.parquet',
+             hive_partitioning 'true');
 
 DROP FOREIGN SERVER [IF EXISTS] name;
 DROP FOREIGN TABLE [IF EXISTS] name;
 ```
+
+Foreign tables are read-only. INSERT, UPDATE, and DELETE are rejected.
+
+**Full Query Pushdown (v0.19.0):**
+
+When every table referenced in a SELECT lives on the same DuckDB server, UQA pushes the entire query -- including JOINs, GROUP BY, ORDER BY, LIMIT, window functions, and subqueries -- down to DuckDB for execution. No rows are materialized in Python; DuckDB processes the data natively, making large-scale analytics fast even on datasets with tens of millions of rows.
+
+The pushdown path works as follows:
+
+1. UQA walks the AST to collect all table references (FROM, JOINs, subqueries).
+2. If all tables resolve to foreign tables on the same DuckDB server, each foreign table is registered as a DuckDB view backed by its source (e.g., `read_parquet(...)` or `read_csv_auto(...)`).
+3. The original SQL is deparsed from the AST and executed directly by DuckDB.
+4. The Arrow result is converted back to a USQL result set.
+
+```sql
+-- Setup: Parquet file with 41M NYC taxi rows
+CREATE SERVER analytics FOREIGN DATA WRAPPER duckdb_fdw;
+CREATE FOREIGN TABLE nyc_taxi (
+    pickup_zone TEXT,
+    dropoff_zone TEXT,
+    fare DOUBLE PRECISION,
+    trip_distance DOUBLE PRECISION,
+    passenger_count INTEGER
+) SERVER analytics OPTIONS (source '/data/nyc_taxi_2023.parquet');
+
+-- This entire query executes inside DuckDB -- no row-by-row Python overhead
+SELECT pickup_zone,
+       COUNT(*) AS num_trips,
+       ROUND(AVG(fare), 2) AS avg_fare,
+       ROUND(AVG(trip_distance), 2) AS avg_distance
+FROM nyc_taxi
+WHERE passenger_count >= 1
+GROUP BY pickup_zone
+ORDER BY num_trips DESC
+LIMIT 10;
+```
+
+**Mixed Foreign-Local JOINs:**
+
+When a query joins foreign tables with local UQA tables on the same DuckDB server, UQA ships the local table data to DuckDB as a temporary table and executes the full query in DuckDB. This avoids row-by-row Python hash joins and lets DuckDB handle the heavy lifting. Local tables up to 100,000 rows are eligible for shipping.
+
+```sql
+-- Local table with curated metadata
+CREATE TABLE zone_metadata (
+    zone_name TEXT PRIMARY KEY,
+    borough TEXT NOT NULL,
+    is_airport BOOLEAN DEFAULT FALSE
+);
+INSERT INTO zone_metadata (zone_name, borough, is_airport) VALUES
+    ('JFK Airport', 'Queens', TRUE),
+    ('LaGuardia Airport', 'Queens', TRUE),
+    ('Times Sq/Theatre District', 'Manhattan', FALSE);
+
+-- Mixed join: local zone_metadata is shipped to DuckDB, then the entire
+-- query -- including the JOIN, GROUP BY, and ORDER BY -- runs in DuckDB
+SELECT z.borough,
+       z.is_airport,
+       COUNT(*) AS num_trips,
+       ROUND(AVG(t.fare), 2) AS avg_fare
+FROM nyc_taxi t
+INNER JOIN zone_metadata z ON t.pickup_zone = z.zone_name
+GROUP BY z.borough, z.is_airport
+ORDER BY num_trips DESC;
+```
+
+**Multiple Foreign Tables on the Same Server:**
+
+JOINs between two or more foreign tables on the same server are also pushed down entirely to DuckDB:
+
+```sql
+CREATE FOREIGN TABLE orders (
+    order_id INTEGER, product_id INTEGER,
+    customer TEXT, quantity INTEGER
+) SERVER analytics OPTIONS (source '/data/orders.parquet');
+
+CREATE FOREIGN TABLE products (
+    product_id INTEGER, name TEXT,
+    category TEXT, price DOUBLE PRECISION
+) SERVER analytics OPTIONS (source '/data/products.parquet');
+
+-- Pushed down to DuckDB as a single query
+SELECT o.customer,
+       COUNT(*) AS num_orders,
+       SUM(p.price * o.quantity) AS total_spent
+FROM orders o
+INNER JOIN products p ON o.product_id = p.product_id
+GROUP BY o.customer
+ORDER BY total_spent DESC
+LIMIT 10;
+```
+
+**Predicate Pushdown for Single-Table Scans:**
+
+Even when full query pushdown does not apply (e.g., the query mixes search operators like `text_match()` with foreign tables), UQA extracts pushable WHERE predicates and forwards them to the FDW handler. Comparison operators (`=`, `<`, `>`, `<=`, `>=`, `!=`), `LIKE`, `ILIKE`, `BETWEEN`, `IN`, and `IS NULL` / `IS NOT NULL` are pushed down. Non-pushable predicates (function calls, cross-table references) are evaluated after the scan.
 
 ---
 

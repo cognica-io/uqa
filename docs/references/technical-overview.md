@@ -731,7 +731,7 @@ The cost-based optimizer in `uqa/planner/` applies:
 - Fusion signal reordering by cost
 - R*Tree spatial index scan for POINT column range queries
 - B-tree index scan substitution
-- FDW predicate pushdown (comparison, IN, LIKE, ILIKE, BETWEEN)
+- FDW predicate pushdown (comparison, IN, LIKE, ILIKE, BETWEEN) and full query pushdown for same-server foreign tables (see Section 6.6)
 - **EXISTS subquery decorrelation** — correlated `EXISTS` subqueries with equijoin predicates are decorrelated into semi-join `FilterOperator(outer_col, InSet(values))`, executing the inner query once instead of once per outer row (116x speedup on the EXISTS benchmark)
 - Edge property filter pushdown into graph pattern constraints (e.g., `"a_b.since" > 2020` pushed into `EdgePattern.constraints`)
 - Join-pattern fusion: merge intersected `PatternMatchOperator` children with shared vertex variables into single pattern
@@ -741,6 +741,70 @@ The cost-based optimizer in `uqa/planner/` applies:
 - Random-walk graph sampling for cardinality estimation on graphs with 10000+ vertices
 
 Cardinality estimation uses equi-depth histograms and Most Common Values (MCV), with specialized estimators for text, vector, graph, and fusion operators.
+
+### 6.6 Foreign Data Wrappers and Query Pushdown
+
+UQA implements the PostgreSQL Foreign Data Wrapper (FDW) pattern to federate queries across external data sources. Two built-in handlers ship with the system:
+
+| Handler | Backend | Transport | Use Cases |
+|---------|---------|-----------|-----------|
+| `duckdb_fdw` | DuckDB (in-process) | Direct library call | Parquet, CSV, S3, attached databases |
+| `arrow_fdw` | Arrow Flight SQL | gRPC | Dremio, DataFusion, remote OLAP engines |
+
+Foreign tables are declared via standard SQL DDL:
+
+```sql
+CREATE SERVER warehouse FOREIGN DATA WRAPPER duckdb_fdw;
+CREATE FOREIGN TABLE events (
+    id INTEGER,
+    ts TIMESTAMP,
+    payload TEXT
+) SERVER warehouse OPTIONS (source 's3://bucket/events/*.parquet');
+```
+
+#### 6.6.1 Predicate Pushdown
+
+For single-table scans, the compiler extracts pushable predicates from the WHERE clause and forwards them to the FDW handler. Supported predicate types: comparison (`=`, `<`, `>`, `<=`, `>=`, `!=`), `IN`, `LIKE`, `ILIKE`, and `BETWEEN`. Predicates that cannot be pushed down are retained as post-scan filters in the physical execution layer. The extraction is handled by `_extract_pushdown_predicates()` in `uqa/sql/compiler.py`, which splits the WHERE AST into pushable and remaining parts.
+
+#### 6.6.2 Full Query Pushdown (v0.19.0)
+
+When a SELECT statement references only foreign tables (and optionally small local tables) that all reside on the same FDW server, the compiler pushes the **entire query** -- including JOINs, aggregations, window functions, subqueries, ORDER BY, and LIMIT -- to the remote engine. This eliminates PostingEntry materialization in Python entirely.
+
+The pushdown pipeline in `_try_foreign_full_pushdown()` proceeds as follows:
+
+1. **AST table collection.** `_collect_ast_table_refs()` walks the full pglast AST (FROM, JOINs, subqueries, CTEs) to extract every `RangeVar` table reference.
+2. **Server affinity check.** Each referenced table is classified as foreign or local. All foreign tables must belong to the same server. If tables span multiple servers or include unknown references (CTEs, views), the pushdown is abandoned.
+3. **Source registration.** For DuckDB, each foreign table is registered as a DuckDB view pointing to its source expression (`read_parquet(...)`, etc.). For mixed queries, local tables are materialized as DuckDB temp tables via `_ship_local_table_to_duckdb()`.
+4. **AST deparsing.** The original pglast AST is converted back to a SQL string using `pglast.stream.RawStream`. This preserves the full query semantics -- all clauses, expressions, and syntax -- without manual SQL string construction.
+5. **Remote execution.** The deparsed SQL is executed on the target engine (DuckDB connection or Flight SQL endpoint), and the resulting Arrow table is converted to `SQLResult` via `_arrow_to_sql_result()`.
+6. **Cleanup.** Temporary views and tables created for pushdown are dropped in a `finally` block regardless of success or failure.
+
+**Decision logic by handler type:**
+
+| Scenario | `duckdb_fdw` | `arrow_fdw` |
+|----------|-------------|-------------|
+| All tables foreign, same server | Full pushdown | Full pushdown |
+| Mixed foreign + local tables | Full pushdown (local shipped to DuckDB) | Falls back to UQA pipeline |
+| Multiple servers | Falls back to UQA pipeline | Falls back to UQA pipeline |
+| EXPLAIN query | Falls back to UQA pipeline (plan tree needed) | Falls back to UQA pipeline |
+
+#### 6.6.3 Mixed Foreign-Local Query Optimization
+
+DuckDB's in-process architecture enables a unique optimization: when a query joins foreign tables with local UQA tables, the local tables can be shipped into DuckDB as temporary tables rather than pulling all foreign data into Python. This is beneficial when the local table is small and the foreign data is large.
+
+The `_ship_local_table_to_duckdb()` method reads all rows from the local table's document store, constructs a PyArrow table, and registers it as a DuckDB temp table. A safety threshold of 100,000 rows (`_MAX_LOCAL_ROWS`) prevents shipping large local tables. If any local table exceeds this limit, the entire pushdown is abandoned and the query falls back to the standard UQA operator pipeline.
+
+POINT columns receive special handling: since DuckDB lacks UQA's POINT type, each POINT column is expanded into two DOUBLE columns (`col_lon`, `col_lat`).
+
+#### 6.6.4 Arrow Flight SQL Pushdown
+
+For `arrow_fdw` servers, full query pushdown is limited to pure-foreign queries (no local table mixing). The deparsed SQL undergoes table name substitution -- each foreign table name is replaced with its source expression (a remote table name or a subquery from the `query` option). The rewritten SQL is sent to the Flight SQL server via `get_flight_info()` / `do_get()`, and the returned Arrow record batches are concatenated into the final result.
+
+#### 6.6.5 Automatic Fallback
+
+Every pushdown attempt is wrapped in exception handling. If any step fails -- source registration, SQL deparsing, remote execution, or result conversion -- the method returns `None`, and the compiler falls back to the standard UQA operator pipeline with per-predicate pushdown. This design ensures that unsupported SQL constructs, network failures, or DuckDB/Flight SQL incompatibilities never cause query failures. The fallback path treats foreign tables as `_ForeignTableScanOperator` nodes with individual predicate pushdown, which is always correct albeit slower.
+
+The pushdown check runs as step 1 in `_compile_select()`, before FROM resolution or WHERE processing. EXPLAIN queries skip pushdown entirely so that the UQA plan tree is available for inspection.
 
 ---
 

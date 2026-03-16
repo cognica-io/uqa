@@ -34,6 +34,7 @@ class FDWHandler(ABC):
         foreign_table: ForeignTable,
         columns: list[str] | None = None,
         predicates: list[FDWPredicate] | None = None,
+        limit: int | None = None,
     ) -> pa.Table:
         """Scan the foreign table and return an Arrow table.
 
@@ -47,6 +48,7 @@ class FDWHandler(ABC):
                 SQL WHERE clauses) so the data source can prune data
                 before transmission -- critical for Hive partition
                 pruning and remote query efficiency.
+            limit: Optional row limit pushed down to the data source.
 
         Returns:
             A ``pyarrow.Table`` containing the requested data.

@@ -135,6 +135,7 @@ class DuckDBFDWHandler(FDWHandler):
         foreign_table: ForeignTable,
         columns: list[str] | None = None,
         predicates: list[FDWPredicate] | None = None,
+        limit: int | None = None,
     ) -> pa.Table:
         source = foreign_table.options.get("source")
         if source is None:
@@ -156,6 +157,9 @@ class DuckDBFDWHandler(FDWHandler):
         if predicates:
             where_sql, params = self._build_where_clause(predicates)
             sql = f"{sql} WHERE {where_sql}"
+
+        if limit is not None:
+            sql = f"{sql} LIMIT {int(limit)}"
 
         return self._conn.execute(sql, params).to_arrow_table()
 

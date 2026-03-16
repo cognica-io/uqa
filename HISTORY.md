@@ -1,5 +1,27 @@
 # History
 
+## 0.19.0 (2026-03-16)
+
+Full query pushdown for Foreign Data Wrappers. Queries over foreign tables are now delegated entirely to the data source (DuckDB or Arrow Flight SQL) instead of materializing rows in Python. Mixed foreign-local queries ship small local tables to DuckDB for in-process execution. All 2318 tests, 30 examples, and 295 benchmarks pass.
+
+### FDW Full Query Pushdown
+
+- **DuckDB full pushdown**: When every table in a SELECT references the same DuckDB server, the AST is deparsed back to SQL via `pglast.stream.RawStream` and executed directly on DuckDB. Covers SELECT, WHERE, JOIN, GROUP BY, HAVING, ORDER BY, LIMIT, DISTINCT, window functions, subqueries, and CTEs.
+- **Arrow Flight SQL full pushdown**: Same-server pure-foreign queries deparse the AST to SQL, substitute table names with source expressions, and send the rewritten SQL to the Flight SQL endpoint. JOINs, aggregates, and window functions are handled natively by the remote server.
+- **Mixed foreign-local pushdown**: When a query JOINs foreign tables with local UQA tables (e.g., a 41M-row Parquet fact table with a 263-row dimension table), local tables are shipped to DuckDB as temp tables via PyArrow, and the full query executes in DuckDB. Local tables larger than 100K rows fall through to the UQA pipeline.
+- **AST table reference walker**: `_collect_ast_table_refs()` recursively walks the full pglast AST (FROM, JOINs, subqueries, CTEs) to classify every referenced table as foreign or local.
+- **EXPLAIN bypass**: EXPLAIN queries skip the pushdown path to produce UQA plan trees.
+- **Automatic fallback**: If DuckDB cannot execute the pushed query (e.g., UQA-specific functions like `spatial_within`), the pushdown returns `None` and the standard UQA operator pipeline takes over.
+
+### FDW Handler Extensions
+
+- **`limit` parameter**: `FDWHandler.scan()`, `DuckDBFDWHandler.scan()`, and `ArrowFlightSQLFDWHandler.scan()` accept an optional `limit` for row-count pushdown.
+- **Batch Arrow-to-PostingList conversion**: `_ForeignTableScanOperator.execute()` uses `to_pylist()` per column instead of row-by-row `as_py()` calls, significantly reducing Python overhead for the fallback path.
+
+### Infrastructure
+
+- **`data/download_nyc_taxi.sh`**: Download script for NYC TLC Yellow Taxi trip data (Parquet). Supports yellow/green/fhv/fhvhv types, configurable year and month range, idempotent downloads with HTTP status checking.
+
 ## 0.18.1 (2026-03-15)
 
 - **PostingList.difference()**: Reverted to set-based lookup. The two-pointer merge caused a 5-7x regression in difference benchmarks (34K -> 4K iter/sec at size=1000) because CPython's C-level `set.__contains__` outperforms a Python-level while loop. The `__new__` bypass is retained.

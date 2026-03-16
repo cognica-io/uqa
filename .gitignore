@@ -9,5 +9,6 @@ build/
 .pytest_cache/
 .claude/
 .playwright-mcp/
+data/
 docs/design/
 docs/papers/*.md

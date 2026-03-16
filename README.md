@@ -196,6 +196,14 @@ CREATE FOREIGN TABLE sales (
 SELECT name, SUM(amount) FROM sales
 WHERE year IN (2024, 2025) AND month > 6
 GROUP BY name ORDER BY SUM(amount) DESC;
+
+-- Full query pushdown: entire query delegated to DuckDB
+-- (JOINs, window functions, subqueries all execute in DuckDB)
+SELECT pickup_zone, COUNT(*) AS trips,
+       AVG(total_amount) AS avg_total
+FROM taxi_trips t
+JOIN taxi_zones z ON t.pu_location_id = z.location_id
+GROUP BY pickup_zone ORDER BY trips DESC LIMIT 10;
 ```
 
 ## Architecture
@@ -250,7 +258,7 @@ uqa/
                   subgraph index, incremental matching, temporal filter/traverse/pattern,
                   delta/versioned store, message passing, embeddings
     cypher/       openCypher lexer, parser, AST, posting-list-based compiler
-  fdw/            Foreign Data Wrappers: DuckDB (Parquet/CSV/JSON), Arrow Flight SQL, Hive partitioning
+  fdw/            Foreign Data Wrappers: DuckDB (Parquet/CSV/JSON), Arrow Flight SQL, Hive partitioning, full query pushdown
   joins/          Hash, sort-merge, index, graph, cross-paradigm, similarity joins
   execution/      Volcano iterator engine: Apache Arrow columnar batches, vectorized operators, disk spilling
   planner/        Cost model, cardinality estimator, optimizer, DPccp join enumerator, parallel executor
@@ -269,7 +277,7 @@ benchmarks/       295 pytest-benchmark tests across 14 files (posting list, stor
 | Category | Syntax |
 |----------|--------|
 | DDL | `CREATE TABLE [IF NOT EXISTS]`, `CREATE TEMPORARY TABLE`, `DROP TABLE [IF EXISTS]`, `CREATE TABLE AS SELECT`, `ALTER TABLE` (ADD/DROP/RENAME COLUMN, SET/DROP DEFAULT, SET/DROP NOT NULL, ALTER TYPE USING), `TRUNCATE TABLE`, `CREATE INDEX`, `DROP INDEX`, `CREATE SEQUENCE`/`NEXTVAL`/`CURRVAL`/`SETVAL`, `ALTER SEQUENCE`, `TABLE name` |
-| FDW | `CREATE SERVER ... FOREIGN DATA WRAPPER`, `CREATE FOREIGN TABLE ... SERVER ... OPTIONS (...)`, `DROP SERVER`, `DROP FOREIGN TABLE`, Hive partitioning (`hive_partitioning` option), predicate pushdown (`=`, `!=`, `<`, `>`, `IN`, `LIKE`, `ILIKE`, `BETWEEN`), DuckDB FDW (Parquet/CSV/JSON), Arrow Flight SQL FDW |
+| FDW | `CREATE SERVER ... FOREIGN DATA WRAPPER`, `CREATE FOREIGN TABLE ... SERVER ... OPTIONS (...)`, `DROP SERVER`, `DROP FOREIGN TABLE`, Hive partitioning (`hive_partitioning` option), predicate pushdown (`=`, `!=`, `<`, `>`, `IN`, `LIKE`, `ILIKE`, `BETWEEN`), full query pushdown (JOINs, aggregates, window functions, subqueries), mixed foreign-local query optimization (local table shipping), DuckDB FDW (Parquet/CSV/JSON), Arrow Flight SQL FDW |
 | Constraints | `PRIMARY KEY`, `NOT NULL`, `DEFAULT`, `UNIQUE`, `CHECK`, `FOREIGN KEY` (with insert/update/delete validation) |
 | DML | `INSERT INTO ... VALUES`, `INSERT INTO ... SELECT`, `INSERT ... ON CONFLICT DO NOTHING/UPDATE`, `INSERT ... RETURNING`, `UPDATE ... SET ... WHERE [RETURNING]`, `UPDATE ... FROM` (join), `DELETE FROM ... WHERE [RETURNING]`, `DELETE ... USING` (join) |
 | DQL | `SELECT [DISTINCT] ... FROM ... WHERE ... GROUP BY ... HAVING ... ORDER BY [NULLS FIRST/LAST] ... LIMIT ... OFFSET`, `FETCH FIRST n ROWS ONLY`, standalone `VALUES` |
@@ -405,6 +413,8 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 - R*Tree spatial index scan for POINT column range queries
 - B-tree index scan substitution (replace full scans when profitable)
 - FDW predicate pushdown (comparison, IN, LIKE, ILIKE, BETWEEN pushed to DuckDB/Arrow Flight SQL for Hive partition pruning)
+- FDW full query pushdown (same-server queries delegated entirely to DuckDB/Arrow Flight SQL via AST deparsing)
+- FDW mixed foreign-local optimization (small local tables shipped to DuckDB for in-process JOIN execution)
 - Cross-paradigm cardinality estimation for text, vector, graph, fusion, temporal, and GNN operators
 - Edge property filter pushdown into graph pattern constraints
 - Join-pattern fusion (merge intersected pattern matches with shared variables)

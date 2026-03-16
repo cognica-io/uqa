@@ -1452,7 +1452,315 @@ class ForeignKeyDef:
 
 ---
 
-## 14. Complete Example
+## 14. Foreign Data Wrappers
+
+Foreign Data Wrappers (FDW) let UQA query external data sources -- Parquet files, CSV files, S3 objects, DuckDB databases, and Arrow Flight SQL services -- as if they were ordinary SQL tables.
+
+```python
+from uqa.fdw.foreign_table import ForeignServer, ForeignTable, FDWPredicate
+from uqa.fdw.handler import FDWHandler
+```
+
+### ForeignServer
+
+```python
+@dataclass(frozen=True, slots=True)
+class ForeignServer:
+    name: str
+    fdw_type: str              # "duckdb_fdw" or "arrow_fdw"
+    options: dict[str, str]    # Connection parameters
+```
+
+Create a server with SQL:
+
+```sql
+-- DuckDB in-process (Parquet, CSV, S3, attached databases)
+CREATE SERVER warehouse FOREIGN DATA WRAPPER duckdb_fdw
+    OPTIONS (database ':memory:');
+
+-- With S3 credentials
+CREATE SERVER s3_lake FOREIGN DATA WRAPPER duckdb_fdw
+    OPTIONS (
+        database ':memory:',
+        s3_region 'us-east-1',
+        s3_access_key_id 'AKIA...',
+        s3_secret_access_key '...'
+    );
+
+-- Arrow Flight SQL (Dremio, DataFusion, etc.)
+CREATE SERVER analytics FOREIGN DATA WRAPPER arrow_fdw
+    OPTIONS (host 'dremio.example.com', port '8815', tls 'true',
+             username 'user', password 'secret');
+```
+
+| Server Option | FDW Type | Description |
+|---|---|---|
+| `database` | `duckdb_fdw` | Path to DuckDB file. `":memory:"` for in-process. |
+| `extensions` | `duckdb_fdw` | Comma-separated DuckDB extensions to load. |
+| `s3_region` | `duckdb_fdw` | AWS S3 region. |
+| `s3_access_key_id` | `duckdb_fdw` | AWS access key. |
+| `s3_secret_access_key` | `duckdb_fdw` | AWS secret key. |
+| `host` | `arrow_fdw` | Flight SQL server hostname. |
+| `port` | `arrow_fdw` | Flight SQL server port (default `8815`). |
+| `tls` | `arrow_fdw` | `"true"` to enable TLS. |
+| `username` | `arrow_fdw` | Authentication username. |
+| `password` | `arrow_fdw` | Authentication password. |
+
+### ForeignTable
+
+```python
+@dataclass(slots=True)
+class ForeignTable:
+    name: str
+    server_name: str
+    columns: OrderedDict[str, ColumnDef]
+    options: dict[str, str]
+```
+
+Create a foreign table with SQL:
+
+```sql
+-- Parquet file
+CREATE FOREIGN TABLE events (
+    event_id INTEGER,
+    user_id  INTEGER,
+    ts       TIMESTAMP,
+    payload  TEXT
+) SERVER warehouse OPTIONS (source '/data/events.parquet');
+
+-- CSV file
+CREATE FOREIGN TABLE logs (
+    ts      TEXT,
+    level   TEXT,
+    message TEXT
+) SERVER warehouse OPTIONS (source '/data/logs.csv');
+
+-- S3 path
+CREATE FOREIGN TABLE clicks (
+    click_id INTEGER,
+    url      TEXT,
+    ts       TIMESTAMP
+) SERVER s3_lake OPTIONS (source 's3://bucket/clicks/*.parquet');
+
+-- Hive-partitioned directory
+CREATE FOREIGN TABLE partitioned_events (
+    event_id INTEGER,
+    user_id  INTEGER,
+    ts       TIMESTAMP,
+    year     INTEGER,
+    month    INTEGER
+) SERVER warehouse
+  OPTIONS (source '/data/events/', hive_partitioning 'true');
+
+-- Arrow Flight SQL remote table
+CREATE FOREIGN TABLE remote_sales (
+    sale_id INTEGER,
+    amount  DOUBLE PRECISION
+) SERVER analytics OPTIONS (source 'public.sales');
+
+-- Arrow Flight SQL with custom query
+CREATE FOREIGN TABLE recent_sales (
+    sale_id INTEGER,
+    amount  DOUBLE PRECISION
+) SERVER analytics OPTIONS (query 'SELECT * FROM sales WHERE year = 2026');
+```
+
+| Table Option | Description |
+|---|---|
+| `source` | DuckDB expression (`read_parquet(...)`, file path, attached table) or remote table name for Flight SQL. Bare file paths are auto-wrapped in the appropriate `read_*()` function. |
+| `query` | (Arrow Flight SQL only) Full SQL query sent to the remote server. Takes precedence over `source`. |
+| `hive_partitioning` | `"true"` to enable Hive-style `key=value` partition discovery. |
+
+### FDWPredicate
+
+```python
+@dataclass(frozen=True, slots=True)
+class FDWPredicate:
+    column: str
+    operator: str    # =, !=, <>, <, <=, >, >=, IN, LIKE, NOT LIKE, ILIKE, NOT ILIKE
+    value: Any       # Scalar or tuple (for IN)
+```
+
+FDW predicates are extracted automatically from WHERE clauses and pushed down to handlers for server-side filtering (e.g. Hive partition pruning).
+
+### FDWHandler
+
+```python
+class FDWHandler(ABC):
+    @abstractmethod
+    def scan(
+        self,
+        foreign_table: ForeignTable,
+        columns: list[str] | None = None,
+        predicates: list[FDWPredicate] | None = None,
+        limit: int | None = None,
+    ) -> pa.Table: ...
+
+    @abstractmethod
+    def close(self) -> None: ...
+```
+
+Built-in handlers:
+
+| Handler | FDW Type | Description |
+|---|---|---|
+| `DuckDBFDWHandler` | `duckdb_fdw` | In-process DuckDB. Parquet, CSV, JSON, S3, attached DBs. |
+| `ArrowFlightSQLFDWHandler` | `arrow_fdw` | Remote Arrow Flight SQL client (Dremio, DataFusion, etc.). |
+
+### Full Query Pushdown (v0.19.0)
+
+Starting with v0.19.0, UQA automatically delegates entire SQL queries to the foreign data source when possible, rather than scanning raw rows into the UQA pipeline. This eliminates Python-side materialization and lets the external engine handle joins, aggregation, window functions, subqueries, and sorting natively.
+
+**How it works.** Before building a UQA operator tree, the compiler inspects every table referenced in the SELECT statement (FROM, JOINs, subqueries, CTEs). If all tables resolve to foreign tables on a single server, the original SQL is deparsed from the AST and sent directly to that server. The result comes back as a PyArrow table and is converted to an `SQLResult` -- the UQA operator pipeline is never constructed.
+
+```
+SELECT with only foreign tables
+        |
+        v
+  _try_foreign_full_pushdown()
+        |
+        +-- all tables on same duckdb_fdw server? --> execute on DuckDB
+        |
+        +-- all tables on same arrow_fdw server?   --> execute via Flight SQL
+        |
+        +-- otherwise                              --> fall through to UQA pipeline
+```
+
+**Pure foreign queries** -- when every table in the query belongs to the same foreign server -- are pushed down with no restrictions:
+
+```python
+engine = Engine()
+
+# Set up DuckDB FDW with two Parquet files
+engine.sql("CREATE SERVER wh FOREIGN DATA WRAPPER duckdb_fdw")
+engine.sql("""
+    CREATE FOREIGN TABLE orders (
+        order_id INTEGER, product_id INTEGER,
+        customer TEXT, quantity INTEGER
+    ) SERVER wh OPTIONS (source '/data/orders.parquet')
+""")
+engine.sql("""
+    CREATE FOREIGN TABLE products (
+        id INTEGER, name TEXT, price DOUBLE PRECISION
+    ) SERVER wh OPTIONS (source '/data/products.parquet')
+""")
+
+# This entire query is pushed to DuckDB -- including the JOIN,
+# GROUP BY, HAVING, and ORDER BY:
+result = engine.sql("""
+    SELECT p.name, SUM(o.quantity) AS total_qty
+    FROM orders o
+    INNER JOIN products p ON o.product_id = p.id
+    GROUP BY p.name
+    HAVING SUM(o.quantity) > 10
+    ORDER BY total_qty DESC
+""")
+```
+
+Window functions, CTEs, scalar subqueries, DISTINCT, LIMIT/OFFSET, and all other standard SQL clauses are also pushed down:
+
+```python
+result = engine.sql("""
+    WITH ranked AS (
+        SELECT name, quantity,
+               ROW_NUMBER() OVER (ORDER BY quantity DESC) AS rn
+        FROM orders o JOIN products p ON o.product_id = p.id
+    )
+    SELECT name, quantity FROM ranked WHERE rn <= 5
+""")
+```
+
+### Mixed Foreign-Local Queries
+
+When a query joins foreign tables with local UQA tables (e.g. a small dimension table), the local tables are shipped to DuckDB as temporary tables, and the entire query is still executed by DuckDB:
+
+```python
+# Local dimension table
+engine.sql("CREATE TABLE regions (region_id INTEGER PRIMARY KEY, name TEXT)")
+engine.sql("""
+    INSERT INTO regions (region_id, name)
+    VALUES (1, 'North America'), (2, 'Europe'), (3, 'Asia')
+""")
+
+# Foreign fact table on Parquet
+engine.sql("""
+    CREATE FOREIGN TABLE sales (
+        sale_id INTEGER, region_id INTEGER,
+        amount DOUBLE PRECISION
+    ) SERVER wh OPTIONS (source '/data/sales.parquet')
+""")
+
+# The local 'regions' table is materialized into DuckDB as a temp table,
+# and the full join is executed by DuckDB:
+result = engine.sql("""
+    SELECT r.name AS region, SUM(s.amount) AS revenue
+    FROM sales s
+    INNER JOIN regions r ON s.region_id = r.region_id
+    GROUP BY r.name
+    ORDER BY revenue DESC
+""")
+```
+
+**Constraints for mixed queries:**
+
+- All foreign tables must belong to the same `duckdb_fdw` server. Mixed-server queries are not pushed down.
+- Arrow Flight SQL (`arrow_fdw`) does not support mixed queries -- all tables must be foreign.
+- Local tables are shipped only when their row count does not exceed 100,000 rows. Larger local tables cause the query to fall through to the UQA pipeline.
+- POINT columns in local tables are expanded into two DOUBLE columns (`col_lon`, `col_lat`) when shipped to DuckDB.
+
+### Automatic Fallback
+
+If full query pushdown cannot be applied, or if DuckDB raises an error during execution (e.g. the query uses a UQA-specific function that DuckDB does not recognize), the compiler silently falls back to the standard UQA operator pipeline. Individual foreign table scans still benefit from predicate pushdown at the scan level.
+
+The fallback triggers in any of these situations:
+
+| Condition | Behavior |
+|---|---|
+| Tables span multiple foreign servers | UQA pipeline with per-table FDW scans |
+| Query references CTEs or views that do not resolve to known tables | UQA pipeline |
+| Local table exceeds 100,000 rows (mixed query) | UQA pipeline |
+| Arrow Flight SQL with local tables | UQA pipeline |
+| DuckDB execution error (e.g. `spatial_within()`, `text_match()`) | UQA pipeline |
+| EXPLAIN mode | UQA pipeline (plan tree required) |
+
+```python
+# This query uses a UQA-specific function. Full pushdown is attempted
+# but DuckDB does not know spatial_within(), so the query automatically
+# falls back to the UQA pipeline:
+result = engine.sql("""
+    SELECT s.sale_id, s.amount
+    FROM sales s
+    JOIN regions r ON s.region_id = r.region_id
+    WHERE spatial_within(s.location, 'POLYGON(...)')
+""")
+```
+
+Even when full pushdown is not possible, the `_ForeignTableScanOperator` still pushes simple `column op constant` predicates from the WHERE clause to the FDW handler, enabling server-side filtering (e.g. Hive partition pruning):
+
+```python
+# Full pushdown fails because of text_match(), but the year >= 2025
+# predicate is still pushed to DuckDB at the scan level:
+result = engine.sql("""
+    SELECT * FROM partitioned_events
+    WHERE year >= 2025 AND text_match(payload, 'error')
+""")
+```
+
+### Drop Statements
+
+```sql
+DROP FOREIGN TABLE events;
+DROP FOREIGN TABLE IF EXISTS events;
+
+DROP SERVER warehouse;
+DROP SERVER IF EXISTS warehouse;
+```
+
+Dropping a server that still has dependent foreign tables raises an error. Drop the foreign tables first.
+
+---
+
+## 15. Complete Example
 
 ```python
 from uqa.engine import Engine

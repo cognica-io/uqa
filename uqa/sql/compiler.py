@@ -3217,6 +3217,280 @@ class SQLCompiler:
                     self._engine._tables.pop(name, None)
             self._expanded_views.clear()
 
+    # -- Foreign table full query pushdown ---------------------------------
+
+    def _try_foreign_full_pushdown(
+        self,
+        stmt: Any,
+    ) -> SQLResult | None:
+        """Push a full SELECT to the FDW data source when possible.
+
+        Collects all table references from the entire statement AST
+        (FROM, JOINs, subqueries).  If every table is a foreign table
+        on the same DuckDB server, the query is executed entirely by
+        DuckDB -- no PostingEntry materialization in Python.
+
+        The approach:
+
+        1. Walk the AST to find every ``RangeVar`` table reference.
+        2. Verify all resolve to foreign tables on a single DuckDB server.
+        3. Register each foreign table as a DuckDB view pointing to its
+           source (``read_parquet(...)``, etc.).
+        4. Deparse the AST back to SQL via ``pglast.stream.RawStream``.
+        5. Execute on DuckDB and convert the Arrow result to ``SQLResult``.
+
+        Returns ``None`` to fall through to the UQA operator pipeline
+        when the query references local tables, mixed servers, or
+        non-DuckDB handlers.
+        """
+        # Collect all table names referenced in the statement
+        table_names = self._collect_ast_table_refs(stmt)
+        if not table_names:
+            return None
+
+        # Classify each table as foreign or local
+        server_name: str | None = None
+        ft_map: dict[str, Any] = {}  # table_name -> ForeignTable
+        local_map: dict[str, Table] = {}  # table_name -> Table
+        for name in table_names:
+            ft = self._engine._foreign_tables.get(name)
+            if ft is not None:
+                if not ft.options.get("source"):
+                    return None  # No source -- let normal path raise
+                if server_name is None:
+                    server_name = ft.server_name
+                elif ft.server_name != server_name:
+                    return None  # Different servers
+                ft_map[name] = ft
+                continue
+            local_tbl = self._engine._tables.get(name)
+            if local_tbl is not None:
+                local_map[name] = local_tbl
+                continue
+            # CTE, view, or unknown -- fall through
+            return None
+
+        # Must have at least one foreign table
+        if not ft_map or server_name is None:
+            return None
+
+        server = self._engine._foreign_servers[server_name]
+        if server.fdw_type not in ("duckdb_fdw", "arrow_fdw"):
+            return None
+
+        # Arrow Flight SQL: only pure foreign queries (no local tables)
+        if server.fdw_type == "arrow_fdw" and local_map:
+            return None
+
+        # For mixed queries, local tables must be small enough to ship
+        _MAX_LOCAL_ROWS = 100_000
+        for tbl in local_map.values():
+            if len(tbl.document_store.doc_ids) > _MAX_LOCAL_ROWS:
+                return None
+
+        # Get or create the DuckDB handler
+        from uqa.fdw.duckdb_handler import DuckDBFDWHandler
+
+        handler = self._engine._fdw_handlers.get(server_name)
+        if handler is None:
+            handler = DuckDBFDWHandler(server)
+            self._engine._fdw_handlers[server_name] = handler
+
+        if server.fdw_type == "duckdb_fdw":
+            return self._pushdown_via_duckdb(stmt, handler, ft_map, local_map)
+        # arrow_fdw: pure foreign only (local_map is empty here)
+        return self._pushdown_via_flight_sql(stmt, handler, ft_map)
+
+    def _pushdown_via_duckdb(
+        self,
+        stmt: Any,
+        handler: Any,
+        ft_map: dict[str, Any],
+        local_map: dict[str, Table],
+    ) -> SQLResult | None:
+        """Execute full pushdown via DuckDB in-process connection.
+
+        Registers foreign tables as DuckDB views and local tables as
+        DuckDB temp tables, then deparses the AST to SQL and executes
+        on DuckDB.
+        """
+        from uqa.fdw.duckdb_handler import DuckDBFDWHandler
+
+        created_views: list[str] = []
+        created_temps: list[str] = []
+        try:
+            for name, ft in ft_map.items():
+                source = ft.options["source"]
+                hive = ft.options.get("hive_partitioning", "").lower() == "true"
+                source_sql = DuckDBFDWHandler._normalize_source(
+                    source, hive_partitioning=hive
+                )
+                handler._conn.execute(
+                    f'CREATE OR REPLACE VIEW "{name}" AS SELECT * FROM {source_sql}'
+                )
+                created_views.append(name)
+
+            for name, tbl in local_map.items():
+                self._ship_local_table_to_duckdb(handler._conn, name, tbl)
+                created_temps.append(name)
+
+            from pglast.stream import RawStream
+
+            sql = RawStream()(stmt)
+            arrow_table = handler._conn.execute(sql).to_arrow_table()
+            return self._arrow_to_sql_result(arrow_table)
+        except Exception:
+            return None
+        finally:
+            for name in created_views:
+                handler._conn.execute(f'DROP VIEW IF EXISTS "{name}"')
+            for name in created_temps:
+                handler._conn.execute(f'DROP TABLE IF EXISTS "{name}"')
+
+    def _pushdown_via_flight_sql(
+        self,
+        stmt: Any,
+        handler: Any,
+        ft_map: dict[str, Any],
+    ) -> SQLResult | None:
+        """Execute full pushdown via Arrow Flight SQL.
+
+        Deparses the AST to SQL, replaces table names with their
+        source expressions (remote table names or queries), then
+        sends the rewritten SQL to the Flight SQL server.
+        """
+        import pyarrow.flight as flight
+        from pglast.stream import RawStream
+
+        sql = RawStream()(stmt)
+
+        # Replace table names with source expressions
+        for name, ft in ft_map.items():
+            source = ft.options.get("query") or ft.options.get("source")
+            if source is None:
+                return None
+            # Wrap source in a subquery if it looks like a query
+            if " " in source:
+                replacement = f'({source}) AS "{name}"'
+            else:
+                replacement = source
+            # Replace the table name with the source
+            sql = sql.replace(f'"{name}"', replacement)
+            sql = sql.replace(f" {name} ", f" {replacement} ")
+            sql = sql.replace(f" {name}\n", f" {replacement}\n")
+
+        try:
+            descriptor = flight.FlightDescriptor.for_command(sql.encode("utf-8"))
+            info = handler._client.get_flight_info(descriptor)
+            tables = []
+            for endpoint in info.endpoints:
+                reader = handler._client.do_get(endpoint.ticket)
+                tables.append(reader.read_all())
+            if not tables:
+                return SQLResult([], [])
+            import pyarrow as pa
+
+            arrow_table = pa.concat_tables(tables)
+            return self._arrow_to_sql_result(arrow_table)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _arrow_to_sql_result(arrow_table: Any) -> SQLResult:
+        """Convert a PyArrow table to an SQLResult."""
+        col_names = arrow_table.column_names
+        col_data = {col: arrow_table.column(col).to_pylist() for col in col_names}
+        num_rows = arrow_table.num_rows
+        rows: list[dict[str, Any]] = [
+            {col: col_data[col][i] for col in col_names} for i in range(num_rows)
+        ]
+        return SQLResult(col_names, rows)
+
+    @staticmethod
+    def _ship_local_table_to_duckdb(
+        conn: Any,
+        name: str,
+        table: Table,
+    ) -> None:
+        """Materialize a UQA local table into a DuckDB temp table.
+
+        Reads all rows from the table's document store and inserts
+        them into a DuckDB temporary table with matching columns.
+        POINT columns are stored as two DOUBLE columns (``col_lon``,
+        ``col_lat``) since DuckDB does not have UQA's POINT type.
+        """
+        import pyarrow as pa
+
+        col_defs = list(table.columns.values())
+        doc_store = table.document_store
+
+        # Build column arrays
+        arrow_cols: dict[str, list] = {}
+        expanded_point_cols: list[str] = []
+        for col in col_defs:
+            if col.type_name == "point":
+                arrow_cols[f"{col.name}_lon"] = []
+                arrow_cols[f"{col.name}_lat"] = []
+                expanded_point_cols.append(col.name)
+            else:
+                arrow_cols[col.name] = []
+
+        for doc_id in sorted(doc_store.doc_ids):
+            doc = doc_store.get(doc_id)
+            if doc is None:
+                continue
+            for col in col_defs:
+                val = doc.get(col.name)
+                if col.name in expanded_point_cols:
+                    if isinstance(val, (list, tuple)) and len(val) == 2:
+                        arrow_cols[f"{col.name}_lon"].append(val[0])
+                        arrow_cols[f"{col.name}_lat"].append(val[1])
+                    else:
+                        arrow_cols[f"{col.name}_lon"].append(None)
+                        arrow_cols[f"{col.name}_lat"].append(None)
+                else:
+                    arrow_cols[col.name].append(val)
+
+        conn.execute(f'DROP TABLE IF EXISTS "{name}"')
+        conn.register("_uqa_ship", pa.table(arrow_cols))
+        conn.execute(f'CREATE TEMP TABLE "{name}" AS SELECT * FROM _uqa_ship')
+        conn.unregister("_uqa_ship")
+
+    @staticmethod
+    def _collect_ast_table_refs(node: Any) -> set[str]:
+        """Recursively collect all table names from an AST node.
+
+        Walks the entire statement tree -- FROM, JOINs, subqueries,
+        CTEs -- and returns the set of ``RangeVar.relname`` values.
+        Virtual schemas (``information_schema``, ``pg_catalog``) are
+        excluded.
+        """
+        from pglast.ast import Node as PgAstNode
+
+        refs: set[str] = set()
+        SQLCompiler._walk_ast_for_tables(node, refs, PgAstNode)
+        return refs
+
+    @staticmethod
+    def _walk_ast_for_tables(node: Any, refs: set[str], ast_base: type) -> None:
+        """Depth-first walk of pglast AST nodes to find RangeVar refs."""
+        if node is None:
+            return
+        if isinstance(node, RangeVar):
+            if node.schemaname not in ("information_schema", "pg_catalog"):
+                refs.add(node.relname)
+            return
+        if isinstance(node, (list, tuple)):
+            for item in node:
+                SQLCompiler._walk_ast_for_tables(item, refs, ast_base)
+            return
+        if not isinstance(node, ast_base):
+            return
+        for attr in node.__slots__:
+            child = getattr(node, attr, None)
+            if child is not None:
+                SQLCompiler._walk_ast_for_tables(child, refs, ast_base)
+
     def _extract_pushdown_predicates(
         self,
         where_node: Any,
@@ -3552,20 +3826,29 @@ class SQLCompiler:
         if stmt.op is not None and stmt.op != SetOperation.SETOP_NONE:
             return self._compile_set_operation(stmt)
 
-        # 1. Predicate pushdown into views/derived tables.
+        # 1. Foreign table full pushdown: if every table referenced in the
+        #    query lives on the same DuckDB server, push the entire SQL
+        #    to DuckDB -- including JOINs, window functions, subqueries.
+        #    Skip for EXPLAIN (needs UQA plan tree).
+        if not explain:
+            result = self._try_foreign_full_pushdown(stmt)
+            if result is not None:
+                return result
+
+        # 2. Predicate pushdown into views/derived tables.
         #    If FROM is a single view or derived table, push safe WHERE
         #    predicates into the subquery before materialization.
         stmt = self._try_predicate_pushdown(stmt)
 
-        # 2. Resolve FROM clause -> (table | None, source_op | None)
+        # 3. Resolve FROM clause -> (table | None, source_op | None)
         table, source_op = self._resolve_from(
             stmt.fromClause, where_clause=stmt.whereClause
         )
 
-        # 3. Build execution context from resolved table
+        # 4. Build execution context from resolved table
         ctx = self._context_for_table(table)
 
-        # 4. Check if FROM is a graph source (traverse/rpq) or join.
+        # 5. Check if FROM is a graph source (traverse/rpq) or join.
         #    Graph/join-sourced queries defer relational WHERE to the
         #    physical layer because their entries are not single-table
         #    doc_ids from the document store.
@@ -3574,11 +3857,11 @@ class SQLCompiler:
         foreign_source = isinstance(source_op, _ForeignTableScanOperator)
         deferred_where = None
 
-        # 5. Constant folding: evaluate compile-time constant expressions
+        # 6. Constant folding: evaluate compile-time constant expressions
         if stmt.whereClause is not None:
             stmt = self._fold_stmt_where(stmt)
 
-        # 6. WHERE clause
+        # 7. WHERE clause
         if stmt.whereClause is not None:
             if foreign_source:
                 # Extract pushable predicates for the FDW handler and
@@ -3607,7 +3890,7 @@ class SQLCompiler:
                     where_op = self._chain_on_source(where_op, source_op)
                 source_op = where_op
 
-        # 7. Optimize and execute operator tree
+        # 8. Optimize and execute operator tree
         if source_op is not None:
             source_op = self._optimize(source_op, ctx, table)
             if explain:
@@ -3634,7 +3917,7 @@ class SQLCompiler:
                 scan_limit = self._extract_int_value(stmt.limitCount) + scan_offset
             pl = self._scan_all(ctx, limit=scan_limit)
 
-        # 8. Execute relational operations via physical operators
+        # 9. Execute relational operations via physical operators
         return self._execute_relational(
             stmt,
             pl,
@@ -7885,6 +8168,10 @@ class _ForeignTableScanOperator:
     When :attr:`pushdown_predicates` is set, the predicates are forwarded
     to the handler's ``scan()`` so the data source can filter rows
     server-side (e.g. Hive partition pruning).
+
+    Full query pushdown (column projection, LIMIT, ORDER BY, etc.) is
+    handled by :meth:`SQLCompiler._try_foreign_full_pushdown` before
+    this operator is reached.
     """
 
     def __init__(
@@ -7922,18 +8209,24 @@ class _ForeignTableScanOperator:
         handler = self._get_handler()
         arrow_table = handler.scan(
             self._foreign_table,
+            columns=None,
             predicates=self.pushdown_predicates,
+            limit=None,
         )
 
         col_names = list(self._foreign_table.columns.keys())
         alias = self._alias
 
+        # Batch conversion: to_pydict() is much faster than row-by-row as_py()
+        col_data: dict[str, list] = {}
+        for col in col_names:
+            col_data[col] = arrow_table.column(col).to_pylist()
+
+        num_rows = arrow_table.num_rows
         entries: list[PostingEntry] = []
-        for i in range(arrow_table.num_rows):
+        for i in range(num_rows):
             doc_id = i + 1
-            fields: dict[str, Any] = {}
-            for col in col_names:
-                fields[col] = arrow_table.column(col)[i].as_py()
+            fields: dict[str, Any] = {col: col_data[col][i] for col in col_names}
             if alias:
                 qualified = {f"{alias}.{k}": v for k, v in fields.items()}
                 fields = {**qualified, **fields}
