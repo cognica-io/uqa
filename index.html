@@ -158,9 +158,10 @@ graph TD
         ThreadPoolExecutor. Configurable worker count.</p>
     </div>
     <div class="card">
-      <h3>Graph Centrality</h3>
-      <p>PageRank, HITS, and betweenness centrality with SQL functions for
-        both WHERE-clause scoring and FROM-clause table sources. Named graph support.</p>
+      <h3>Named Graphs</h3>
+      <p>Isolated graph namespaces via <code>create_graph()</code> /
+        <code>drop_graph()</code> with SQLite persistence. PageRank, HITS,
+        betweenness centrality, and path indexes operate per named graph.</p>
     </div>
   </div>
 </div>
@@ -341,13 +342,36 @@ graph TD
 )
 <span class="kw">SELECT</span> name, depth <span class="kw">FROM</span> org_tree <span class="kw">ORDER BY</span> depth;</code></pre>
 
-  <h3>Graph Query (openCypher)</h3>
-<pre><code><span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">cypher</span>(<span class="st">'social'</span>, <span class="st">$$
+  <h3>Graph Query (openCypher / Apache AGE)</h3>
+<pre><code><span class="cm">&mdash; Create a named graph (persisted in SQLite)</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">create_graph</span>(<span class="st">'social'</span>);
+
+<span class="cm">&mdash; Populate the graph with Cypher CREATE</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">cypher</span>(<span class="st">'social'</span>, <span class="st">$$
+    CREATE (a:Person {name: 'Alice', age: 30})
+    CREATE (b:Person {name: 'Bob', age: 28})
+    CREATE (a)-[:KNOWS]->(b)
+$$</span>) <span class="kw">AS</span> (v agtype);
+
+<span class="cm">&mdash; Query the named graph</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">cypher</span>(<span class="st">'social'</span>, <span class="st">$$
     MATCH (p:Person)-[:KNOWS]->(friend:Person)
     WHERE p.age > 25
     RETURN p.name, friend.name, p.age
     ORDER BY p.name
-$$</span>) <span class="kw">AS</span> (name agtype, friend agtype, age agtype);</code></pre>
+$$</span>) <span class="kw">AS</span> (name agtype, friend agtype, age agtype);
+
+<span class="cm">&mdash; Drop the graph and all its data</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">drop_graph</span>(<span class="st">'social'</span>);</code></pre>
+
+  <p>
+    Named graphs provide isolated graph namespaces with full SQLite persistence.
+    Each graph stores vertices and edges in dedicated tables
+    (<code>_graph_vertices_*</code>, <code>_graph_edges_*</code>), surviving
+    engine restarts. Graph centrality functions (<code>pagerank</code>,
+    <code>hits</code>, <code>betweenness</code>) and path indexes operate on
+    named graphs via the <code>'graph:name'</code> syntax.
+  </p>
 
   <h3>Full-Text Search (@@ Operator)</h3>
 <pre><code><span class="cm">&mdash; Query string mini-language: boolean, phrase, field targeting</span>
