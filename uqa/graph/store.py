@@ -310,21 +310,23 @@ class GraphStore:
 
     # --- Graph-scoped adjacency accessors (for operators) ---
 
+    _EMPTY_SET: set[int] = set()
+
     def out_edge_ids(self, vertex_id: int, *, graph: str) -> set[int]:
         """Return outgoing edge IDs for vertex in a specific graph."""
-        return set(self._require_graph(graph).adj_out.get(vertex_id, set()))
+        return self._require_graph(graph).adj_out.get(vertex_id, self._EMPTY_SET)
 
     def in_edge_ids(self, vertex_id: int, *, graph: str) -> set[int]:
         """Return incoming edge IDs for vertex in a specific graph."""
-        return set(self._require_graph(graph).adj_in.get(vertex_id, set()))
+        return self._require_graph(graph).adj_in.get(vertex_id, self._EMPTY_SET)
 
     def edge_ids_by_label(self, label: str, *, graph: str) -> set[int]:
         """Return edge IDs with a given label in a specific graph."""
-        return set(self._require_graph(graph).label_index.get(label, set()))
+        return self._require_graph(graph).label_index.get(label, self._EMPTY_SET)
 
     def vertex_ids_in_graph(self, graph: str) -> set[int]:
         """Return all vertex IDs in a specific graph."""
-        return set(self._require_graph(graph).vertex_ids)
+        return self._require_graph(graph).vertex_ids
 
     # --- Statistics (per-graph) ---
 
