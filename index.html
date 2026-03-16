@@ -109,7 +109,7 @@ graph TD
     PAR --> DS["Document Store &mdash; SQLite"]
     PAR --> II["Inverted Index &mdash; SQLite + Analyzer"]
     PAR --> VI["Vector Index &mdash; IVF"]
-    PAR --> GS["Graph Store &mdash; SQLite"]
+    PAR --> GS["Graph Store &mdash; Named Graphs + SQLite"]
 
     subgraph Scoring
         BM25[BM25]
@@ -159,9 +159,10 @@ graph TD
     </div>
     <div class="card">
       <h3>Named Graphs</h3>
-      <p>Isolated graph namespaces via <code>create_graph()</code> /
-        <code>drop_graph()</code> with SQLite persistence. PageRank, HITS,
-        betweenness centrality, and path indexes operate per named graph.</p>
+      <p>Per-graph partitioned adjacency via <code>_GraphPartition</code>.
+        Vertices/edges shared globally; adjacency indexes per-graph.
+        Graph algebra (union, intersect, difference), property indexes,
+        and all SQL functions use direct graph names.</p>
     </div>
   </div>
 </div>
@@ -307,6 +308,12 @@ graph TD
     <li><strong>CTE inlining:</strong> for single-reference non-recursive CTEs</li>
     <li><strong>Predicate pushdown:</strong> into views and derived tables</li>
     <li><strong>Implicit cross join reordering:</strong> via DPccp when equijoin predicates exist in WHERE</li>
+    <li><strong>Filter pushdown into traverse:</strong> vertex property filters absorbed into BFS pruning predicates</li>
+    <li><strong>Graph-aware fusion reordering:</strong> graph operators get cost discount when graph statistics available</li>
+    <li><strong>Named graph statistics:</strong> per-graph degree distribution, label degree, vertex label counts</li>
+    <li><strong>Information-theoretic cardinality bounds:</strong> column entropy floors intersection estimates</li>
+    <li><strong>Negation-aware pattern cost:</strong> negated edge patterns add scan overhead to cost model</li>
+    <li><strong>RPQ expression simplification:</strong> algebraic simplification and NFA-to-DFA conversion for small automata</li>
   </ul>
 </div>
 </section>
@@ -372,7 +379,7 @@ $$</span>) <span class="kw">AS</span> (name agtype, friend agtype, age agtype);
     (<code>_graph_vertices_*</code>, <code>_graph_edges_*</code>), surviving
     engine restarts. Graph centrality functions (<code>pagerank</code>,
     <code>hits</code>, <code>betweenness</code>) and path indexes operate on
-    named graphs via the <code>'graph:name'</code> syntax.
+    named graphs using direct graph names (e.g., <code>traverse(1, 'knows', 2, 'social')</code>).
   </p>
 
   <h3>Full-Text Search (@@ Operator)</h3>
@@ -481,7 +488,7 @@ $$</span>) <span class="kw">AS</span> (name agtype, friend agtype, age agtype);
     pruning and reducing data transfer.
   </p>
 
-  <h3>Full Query Pushdown <span style="font-size:0.8em; font-weight:normal;">(v0.19.0)</span></h3>
+  <h3>Full Query Pushdown</h3>
   <p>
     When all tables in a query live on the same DuckDB server, the entire SQL
     &mdash; including JOINs, GROUP BY, ORDER BY, window functions, subqueries,
@@ -500,7 +507,7 @@ $$</span>) <span class="kw">AS</span> (name agtype, friend agtype, age agtype);
 <div class="container">
   <h2>Benchmarks</h2>
   <p>
-    295 pytest-benchmark tests across 14 subsystems track performance across commits.
+    309 pytest-benchmark tests across 15 subsystems track performance across commits.
     The CI pipeline detects regressions with a 150% threshold and blocks PRs
     that exceed it.
   </p>
@@ -545,6 +552,11 @@ $$</span>) <span class="kw">AS</span> (name agtype, friend agtype, age agtype);
       <h3>Graph Centrality</h3>
       <p>PageRank, HITS, betweenness, bounded RPQ, weighted paths,
         subgraph index, incremental matching, and progressive fusion.</p>
+    </div>
+    <div class="card">
+      <h3>Named Graphs</h3>
+      <p>Graph lifecycle, vertex/edge insertion, scoped traversal,
+        pattern matching, RPQ, graph algebra, and property indexes.</p>
     </div>
     <div class="card">
       <h3>End-to-End SQL</h3>

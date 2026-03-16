@@ -434,7 +434,7 @@ $$</span>) <span class="kw">AS</span> (city agtype, cnt agtype);</code></pre>
 <span class="kw">SELECT</span> _doc_id, title, _score <span class="kw">FROM</span> <span class="fn">betweenness</span>() <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
 
 <span class="cm">-- Centrality on named graph</span>
-<span class="kw">SELECT</span> _doc_id, _score <span class="kw">FROM</span> <span class="fn">pagerank</span>(<span class="st">'graph:citations'</span>);
+<span class="kw">SELECT</span> _doc_id, _score <span class="kw">FROM</span> <span class="fn">pagerank</span>(0.85, <span class="st">'citations'</span>);
 
 <span class="cm">-- Centrality as WHERE signal + relational filter</span>
 <span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
@@ -714,14 +714,14 @@ result = (
       <h3>SQL Examples</h3>
       <p>
         <a href="https://github.com/cognica-io/uqa/tree/main/examples/sql">examples/sql/</a><br>
-        basics, functions, graph, graph_centrality, fusion, fusion_gating, joins_and_subqueries, analytics, analysis, export, fdw
+        basics, functions, graph, graph_centrality, <a href="https://github.com/cognica-io/uqa/blob/main/examples/sql/named_graphs.py">named_graphs</a>, fusion, fusion_gating, joins_and_subqueries, analytics, analysis, export, fdw
       </p>
     </div>
     <div class="card">
       <h3>Fluent API Examples</h3>
       <p>
         <a href="https://github.com/cognica-io/uqa/tree/main/examples/fluent">examples/fluent/</a><br>
-        text_search, vector_and_hybrid, graph, graph_centrality, hierarchical, multi_paradigm, analysis, export
+        text_search, vector_and_hybrid, graph, graph_centrality, <a href="https://github.com/cognica-io/uqa/blob/main/examples/fluent/named_graphs.py">named_graphs</a>, hierarchical, multi_paradigm, analysis, export
       </p>
     </div>
   </div>
@@ -734,6 +734,7 @@ python examples/quickstart.py
 python examples/sql/basics.py
 python examples/sql/functions.py
 python examples/sql/graph.py
+python examples/sql/named_graphs.py
 python examples/sql/fusion.py
 python examples/sql/joins_and_subqueries.py
 python examples/sql/analytics.py
@@ -744,6 +745,7 @@ python examples/sql/fdw.py
 python examples/fluent/text_search.py
 python examples/fluent/vector_and_hybrid.py
 python examples/fluent/graph.py
+python examples/fluent/named_graphs.py
 python examples/fluent/hierarchical.py
 python examples/fluent/multi_paradigm.py
 python examples/fluent/analysis.py

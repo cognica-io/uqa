@@ -278,7 +278,11 @@ graph LR
     The extended structure $(\mathcal{L}_G,\ \cup_G,\ \cap_G,\ \overline{\cdot}_G,\ \emptyset_G,\ \mathcal{G})$
     forms a Boolean algebra isomorphic to the original. Graph operations thus
     integrate seamlessly with relational, text, and vector operations without
-    requiring a separate query engine.
+    requiring a separate query engine. Named graphs extend the isomorphism to
+    per-graph partitioned adjacency: each named graph defines its own graph
+    posting list space $\mathcal{L}_G^{(g)}$, and the isomorphism
+    $\Phi^{(g)}: \mathcal{L}_G^{(g)} \rightarrow \mathcal{L}$ restricts to
+    the partition's edge set while preserving all Boolean algebra properties.
   </p>
 
   <h3 id="graph-ops">Graph-Specific Operations</h3>

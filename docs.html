@@ -549,6 +549,26 @@ $$</span>) <span class="kw">AS</span> (name agtype);
 <span class="cm">-- Bounded RPQ: paths of 2-3 hops</span>
 <span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">rpq</span>(<span class="st">'knows{2,3}'</span>, 1);</code></pre>
 
+  <h3>Named Graph API</h3>
+  <p>Named graphs use direct graph names &mdash; no prefix syntax required.</p>
+<pre><code><span class="cm">-- Create and drop named graphs</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">create_graph</span>(<span class="st">'social'</span>);
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">drop_graph</span>(<span class="st">'social'</span>);
+
+<span class="cm">-- Traversal on a named graph (direct name, no prefix)</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">traverse</span>(1, <span class="st">'knows'</span>, 2, <span class="st">'social'</span>);
+
+<span class="cm">-- RPQ on a named graph</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">rpq</span>(<span class="st">'knows/knows'</span>, 1, <span class="st">'social'</span>);
+
+<span class="cm">-- PageRank on a named graph</span>
+<span class="kw">SELECT</span> _doc_id, _score <span class="kw">FROM</span> <span class="fn">pagerank</span>(0.85, <span class="st">'social'</span>) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Graph algebra (Python API)</span>
+<span class="cm">-- engine.graph_store.union_graphs('g1', 'g2', 'target')</span>
+<span class="cm">-- engine.graph_store.intersect_graphs('g1', 'g2', 'target')</span>
+<span class="cm">-- engine.graph_store.difference_graphs('g1', 'g2', 'target')</span></code></pre>
+
   <h3 id="graph-centrality">Centrality</h3>
 <pre><code><span class="cm">-- Graph centrality (FROM clause)</span>
 <span class="kw">SELECT</span> _doc_id, title, _score <span class="kw">FROM</span> <span class="fn">pagerank</span>() <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
@@ -556,7 +576,7 @@ $$</span>) <span class="kw">AS</span> (name agtype);
 <span class="kw">SELECT</span> _doc_id, title, _score <span class="kw">FROM</span> <span class="fn">betweenness</span>() <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
 
 <span class="cm">-- Centrality on named graph</span>
-<span class="kw">SELECT</span> _doc_id, _score <span class="kw">FROM</span> <span class="fn">pagerank</span>(<span class="st">'graph:social'</span>) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+<span class="kw">SELECT</span> _doc_id, _score <span class="kw">FROM</span> <span class="fn">pagerank</span>(0.85, <span class="st">'social'</span>) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
 
 <span class="cm">-- Centrality as WHERE signal</span>
 <span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers <span class="kw">WHERE</span> <span class="fn">pagerank</span>() <span class="kw">AND</span> year >= 2020;
@@ -718,7 +738,7 @@ $$</span>) <span class="kw">AS</span> (name agtype);
 <span class="kw">FROM</span> sales s <span class="kw">JOIN</span> employees e <span class="kw">ON</span> s.rep_id = e.id
 <span class="kw">ORDER BY</span> s.amount <span class="kw">DESC LIMIT</span> 10;</code></pre>
 
-  <h3 id="fdw-pushdown">Full Query Pushdown <span style="font-size:0.8em; font-weight:normal;">(v0.19.0)</span></h3>
+  <h3 id="fdw-pushdown">Full Query Pushdown</h3>
   <p>When all tables in a query are foreign tables on the same DuckDB server,
     the entire query is pushed to DuckDB &mdash; no Python row materialization.
     JOINs, aggregates, window functions, subqueries, and CTEs all execute natively.</p>
