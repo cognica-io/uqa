@@ -27,4 +27,4 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run tests
-        run: python -m pytest --tb=short -q
+        run: python -m pytest uqa/tests/ --tb=short -q

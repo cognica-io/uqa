@@ -74,9 +74,8 @@ benchmark = [
 usql = "uqa.cli:main"
 
 [tool.pytest.ini_options]
-testpaths = ["uqa/tests", "benchmarks"]
+testpaths = ["uqa/tests"]
 pythonpath = ["."]
-python_files = ["test_*.py", "bench_*.py"]
 markers = ["benchmark: performance benchmark tests"]
 
 [tool.ruff]
