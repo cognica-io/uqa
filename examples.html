@@ -224,6 +224,42 @@ result = (
 )
 <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
 
+  <span class="example-tag tag-sql">SQL</span>
+  <h3>Bayesian KNN + Named Fusion Options</h3>
+<pre><code><span class="cm">-- Bayesian vector calibration with auto-routing (Paper 5)</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">bayesian_knn_match</span>(embedding, <span class="st">$1</span>, 10, method <span class="cm">=&gt;</span> <span class="st">'auto'</span>)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Attention fusion with normalization (top-performing pipeline)</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_attention</span>(
+    <span class="fn">text_match</span>(title, <span class="st">'attention transformer'</span>),
+    <span class="fn">bayesian_knn_match</span>(embedding, <span class="st">$1</span>, 10),
+    normalized <span class="cm">=&gt;</span> <span class="kw">true</span>
+)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Multi-head attention: 4 independent heads averaged in log-odds space</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_multihead</span>(
+    <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
+    <span class="fn">bayesian_knn_match</span>(embedding, <span class="st">$1</span>, 10),
+    n_heads <span class="cm">=&gt;</span> 4,
+    normalized <span class="cm">=&gt;</span> <span class="kw">true</span>
+)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Gated fusion with Swish activation and beta control</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
+    <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
+    <span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 10),
+    gating <span class="cm">=&gt;</span> <span class="st">'swish'</span>,
+    gating_beta <span class="cm">=&gt;</span> 2.0
+)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
   <span class="example-tag tag-python">Python</span>
 <pre><code><span class="cm"># Fluent API: multi-signal fusion</span>
 result = (
@@ -455,7 +491,8 @@ $$</span>) <span class="kw">AS</span> (city agtype, cnt agtype);</code></pre>
 <span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
 <span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
     <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
-    <span class="fn">pagerank</span>(), <span class="st">'relu'</span>
+    <span class="fn">pagerank</span>(),
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
 ) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
 
 <span class="cm">-- Progressive fusion: cascading WAND</span>

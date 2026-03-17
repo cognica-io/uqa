@@ -54,9 +54,9 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
   <h2>Core Theory</h2>
 
   <p>
-    UQA is built on four interconnected theoretical papers that establish a mathematical
+    UQA is built on five interconnected theoretical papers that establish a mathematical
     foundation spanning database theory, information retrieval, probabilistic inference,
-    and neural computation.
+    neural computation, and vector search calibration.
   </p>
 
   <div class="grid">
@@ -79,6 +79,11 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
       <h3>Neural Emergence</h3>
       <p>Neural network structure emerges analytically from multi-signal Bayesian inference.
         Activation functions are derived as answers to probabilistic questions.</p>
+    </div>
+    <div class="card">
+      <h3>Vector Calibration</h3>
+      <p>Index-aware Bayesian calibration transforms vector similarity scores into
+        relevance probabilities via likelihood ratio estimation with IVF density priors.</p>
     </div>
   </div>
 
@@ -115,11 +120,14 @@ graph TD
         BM25[BM25]
         BBFS[Bayesian BM25]
         VS[Vector Scorer]
+        VC[Vector Calibration]
     end
 
     subgraph Fusion
         LO[Log-Odds]
         PB[Probabilistic Boolean]
+        ATT[Attention]
+        MH[Multi-Head]
     end
 
     Operators --> Scoring
@@ -232,11 +240,14 @@ graph TD
       <tr><th>Function</th><th>Description</th></tr>
     </thead>
     <tbody>
-      <tr><td><code>fuse_log_odds(s1, s2, ...)</code></td><td>Log-odds conjunction &mdash; calibrated multi-signal fusion</td></tr>
+      <tr><td><code>bayesian_knn_match(f, v, k, method =&gt; 'auto')</code></td><td>KNN + likelihood ratio calibration (Paper 5)</td></tr>
+      <tr><td><code>fuse_log_odds(s1, s2, ..., gating =&gt; 'swish')</code></td><td>Log-odds conjunction with optional gating and gating_beta</td></tr>
       <tr><td><code>fuse_prob_and(s1, s2, ...)</code></td><td>$P = \prod P_i$</td></tr>
       <tr><td><code>fuse_prob_or(s1, s2, ...)</code></td><td>$P = 1 - \prod(1 - P_i)$</td></tr>
       <tr><td><code>fuse_prob_not(signal)</code></td><td>$P = 1 - P_{signal}$</td></tr>
-      <tr><td><code>fuse_log_odds(s1, s2, 'relu')</code></td><td>Log-odds with ReLU/Swish gating</td></tr>
+      <tr><td><code>fuse_attention(s1, s2, ..., normalized =&gt; true)</code></td><td>Attention-weighted fusion with logit normalization</td></tr>
+      <tr><td><code>fuse_multihead(s1, s2, ..., n_heads =&gt; 4)</code></td><td>Multi-head attention fusion (Remark 8.6)</td></tr>
+      <tr><td><code>fuse_learned(s1, s2, ..., alpha =&gt; 0.7)</code></td><td>Learned per-signal weights via Hebbian gradient</td></tr>
       <tr><td><code>pagerank() / hits() / betweenness()</code></td><td>Graph centrality as FROM or WHERE signal</td></tr>
       <tr><td><code>progressive_fusion(s1, s2, k, ...)</code></td><td>Cascading multi-stage WAND pruning</td></tr>
       <tr><td><code>weighted_rpq('expr', start, 'prop')</code></td><td>RPQ with cumulative edge weight tracking</td></tr>
@@ -329,11 +340,12 @@ graph TD
 
   <h3>Multi-Signal Fusion</h3>
 <pre><code><span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
-<span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
+<span class="kw">WHERE</span> <span class="fn">fuse_attention</span>(
     <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
-    <span class="fn">knn_match</span>(embedding, <span class="st">ARRAY[0.1, 0.2, ...]</span>, 5),
-    <span class="fn">traverse_match</span>(1, <span class="st">'cited_by'</span>, 2)
-) <span class="kw">AND</span> year >= 2020
+    <span class="fn">bayesian_knn_match</span>(embedding, <span class="st">$1</span>, 10, method <span class="cm">=&gt;</span> <span class="st">'auto'</span>),
+    <span class="fn">traverse_match</span>(1, <span class="st">'cited_by'</span>, 2),
+    normalized <span class="cm">=&gt;</span> <span class="kw">true</span>
+) <span class="kw">AND</span> year &gt;= 2020
 <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
 
   <h3>Window Functions</h3>
@@ -426,7 +438,7 @@ $$</span>) <span class="kw">AS</span> (name agtype, friend agtype, age agtype);
 <span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
     <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
     <span class="fn">pagerank</span>(),
-    <span class="st">'relu'</span>
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
 ) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
 
   <h3>Foreign Data Wrapper</h3>

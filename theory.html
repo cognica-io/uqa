@@ -20,8 +20,9 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
 <!-- ====== Hero ====== -->
 <header class="hero hero-compact">
   <h1><span>UQA</span> Theoretical Foundations</h1>
-  <p class="tagline">Four papers establish the mathematical theory behind the unified query algebra &mdash;
-    from posting-list Boolean algebra to the analytical emergence of neural network structure.</p>
+  <p class="tagline">Five papers establish the mathematical theory behind the unified query algebra &mdash;
+    from posting-list Boolean algebra to the analytical emergence of neural network structure
+    and index-aware vector calibration.</p>
 </header>
 
 <!-- ====== Nav ====== -->
@@ -65,6 +66,11 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
     <li class="toc-h3"><a href="#activations">Activation Functions</a></li>
     <li class="toc-h3"><a href="#attention">Attention Mechanism</a></li>
     <li class="toc-h3"><a href="#depth">Depth and Inference</a></li>
+    <li><a href="#paper5">V. Vector Calibration</a></li>
+    <li class="toc-h3"><a href="#concentration">Concentration Problem</a></li>
+    <li class="toc-h3"><a href="#likelihood-ratio">Likelihood Ratio</a></li>
+    <li class="toc-h3"><a href="#importance-weights">Importance Weights</a></li>
+    <li class="toc-h3"><a href="#ivf-density">IVF Density Prior</a></li>
     <li><a href="#connections">Connections</a></li>
   </ul>
 </aside>
@@ -76,10 +82,10 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
 <section id="overview">
   <h2>Overview</h2>
   <p>
-    UQA is built on four interconnected theoretical papers that establish a mathematical
+    UQA is built on five interconnected theoretical papers that establish a mathematical
     foundation spanning database theory, information retrieval, probabilistic inference,
-    and neural computation. Each paper extends the previous one, forming a chain of
-    derivations from first principles.
+    neural computation, and vector search calibration. Each paper extends the previous
+    one, forming a chain of derivations from first principles.
   </p>
 
   <pre class="mermaid">
@@ -88,6 +94,8 @@ graph LR
     P1 --> P3["Paper III<br/>Bayesian BM25<br/>(Jan 2026)"]
     P3 --> P4["Paper IV<br/>Neural Emergence<br/>(Feb 2026)"]
     P2 --> P4
+    P3 --> P5["Paper V<br/>Vector Calibration<br/>(Mar 2026)"]
+    P4 --> P5
   </pre>
 
   <div class="grid">
@@ -110,6 +118,11 @@ graph LR
       <h3>IV. Neural Emergence</h3>
       <p>Neural network structure emerges analytically from multi-signal Bayesian
         inference. Activation functions as probabilistic answers.</p>
+    </div>
+    <div class="card">
+      <h3>V. Vector Calibration</h3>
+      <p>Index-aware Bayesian calibration of vector similarity scores via likelihood
+        ratio estimation with IVF density priors and distance gap detection.</p>
     </div>
   </div>
 </section>
@@ -441,7 +454,7 @@ graph LR
   <h2>IV. From Bayesian Inference to Neural Computation</h2>
   <p class="paper-meta">
     Jaepil Jeong, Cognica, Inc. &mdash; February 2026
-    &middot; <a href="https://github.com/cognica-io/uqa/blob/main/docs/papers/4.%20From%20Bayesian%20Inference%20to%20Neural%20Computation.pdf">PDF</a>
+    &middot; <a href="https://github.com/cognica-io/uqa/blob/main/docs/papers/4.%20From%20Bayesian%20Inference%20to%20Neural%20Computation%20-%20The%20Analytical%20Emergence%20of%20Neural%20Network%20Structure%20from%20Probabilistic%20Relevance%20Estimation.pdf">PDF</a>
   </p>
 
   <p>
@@ -669,11 +682,87 @@ graph LR
   </div>
 </section>
 
+<!-- ============ Paper V ============ -->
+<section id="paper5">
+  <h2>V. Index-Aware Bayesian Calibration of Vector Similarity Scores</h2>
+  <p class="paper-meta">
+    Jaepil Jeong, Cognica, Inc. &mdash; March 2026
+    &middot; <a href="https://github.com/cognica-io/uqa/blob/main/docs/papers/5.%20Index-Aware%20Bayesian%20Calibration%20of%20Vector%20Similarity%20Scores%20-%20A%20Likelihood%20Ratio%20Framework%20for%20Principled%20Hybrid%20Search%20Fusion.pdf">PDF</a>
+  </p>
+
+  <p>
+    The fifth paper addresses a critical gap in hybrid search: raw cosine similarity
+    scores lack probabilistic semantics, preventing principled fusion with calibrated
+    BM25 probabilities from Paper III. The paper derives a likelihood ratio framework
+    that transforms vector distances into calibrated relevance probabilities using
+    index-aware background distributions.
+  </p>
+
+  <h3 id="concentration">The Concentration-of-Measure Problem</h3>
+  <p>
+    In high-dimensional embedding spaces, distances between a query and random
+    corpus vectors concentrate around a mean $\mu_G$ with vanishing variance
+    (Theorem 3.4.1). A global background distribution trained on random queries
+    concentrates far from the real query's top-K distances, driving the
+    likelihood ratio $f_R(d) / f_G(d)$ to infinity for all retrieved documents.
+    This makes the calibrated probabilities meaninglessly close to 1.0.
+  </p>
+
+  <h3 id="likelihood-ratio">Likelihood Ratio Calibration (Theorem 3.1.1)</h3>
+  <p>
+    The calibration uses the log density ratio between the relevant-document
+    distribution $f_R$ and the background distribution $f_G$:
+  </p>
+  <div class="math-block">
+    $$P(R = 1 \mid d) = \sigma\!\left(\log \frac{f_R(d)}{f_G(d)} + \text{logit}(b_r)\right)$$
+  </div>
+  <p>
+    where $b_r$ is the base rate prior. The local distribution $f_R$ is estimated
+    via weighted KDE (Section 4.3) or two-component GMM-EM (Algorithm 5.3.1),
+    with external importance weights breaking the circularity of estimating $f_R$
+    from the same distances being calibrated.
+  </p>
+
+  <h3 id="importance-weights">Importance Weight Strategies</h3>
+  <p>
+    Four strategies provide importance weights for $f_R$ estimation, forming a
+    graceful degradation hierarchy (Remark 4.6.4):
+  </p>
+  <ul>
+    <li><strong>Cross-modal BM25</strong> (Section 4.3): Bayesian BM25 probabilities
+      from a companion text field serve as importance weights. The strongest strategy
+      when text content is available.</li>
+    <li><strong>IVF density prior</strong> (Strategy 4.6.2): Documents in sparse IVF
+      cells receive higher weights because vector proximity is more discriminative
+      there &mdash; analogous to IDF in text retrieval.</li>
+    <li><strong>Distance gap detection</strong> (Strategy 4.6.1): A gap in the sorted
+      distance spectrum partitions top-K results into relevant and background clusters.</li>
+    <li><strong>Uniform</strong>: Equal weights when no external signal is available.</li>
+  </ul>
+
+  <h3 id="ivf-density">IVF-Aware Background Distribution</h3>
+  <p>
+    The key insight resolving the concentration problem: use the distances to
+    <em>all vectors in the probed IVF cells</em> as the background distribution $f_G$.
+    These distances are already computed during top-K selection and normally discarded.
+    Since the vast majority of documents in probed cells are non-relevant, their
+    distance distribution tightly estimates the null hypothesis &mdash; "this document
+    was retrieved by geometric proximity, not by relevance" (Theorem 6.2.2).
+  </p>
+  <p>
+    The background is modeled as a parametric Gaussian $f_G \sim \mathcal{N}(\mu_G, \sigma_G^2)$,
+    eliminating the need to store raw distance samples. Auto-routing in the
+    <code>VectorProbabilityTransform</code> selects KDE vs GMM based on gap
+    detection and sample size, with weight sharpening for flat BM25 distributions
+    and distance-density fallback when no external signal is available.
+  </p>
+</section>
+
 <!-- ============ Connections ============ -->
 <section id="connections">
   <h2>Connections Across Papers</h2>
   <p>
-    The four papers form a coherent theoretical arc. Here are the key connections
+    The five papers form a coherent theoretical arc. Here are the key connections
     between them.
   </p>
 
@@ -718,6 +807,17 @@ graph LR
   <p>
     At zero coverage, $p_{\text{default}} = 0.5$ (absence of evidence, not evidence of absence).
     At full coverage, $p_{\text{default}} = 0.01$ (a missing document is genuinely penalized).
+  </p>
+
+  <h3>Vector Calibration Completes the Fusion Pipeline</h3>
+  <p>
+    Paper V addresses the last uncalibrated signal in hybrid search: vector similarity.
+    While Paper III calibrates BM25 scores and Paper IV derives the fusion algebra,
+    raw cosine similarities still lack probabilistic semantics. Paper V's likelihood
+    ratio framework transforms vector distances into calibrated probabilities that
+    participate in the log-odds fusion of Paper IV on equal footing with BM25 signals.
+    The IVF density prior (analogous to IDF) and distance gap detection provide the
+    importance weights needed to break the circularity of unsupervised density estimation.
   </p>
 
   <h3>Robertson's Completed Circle</h3>

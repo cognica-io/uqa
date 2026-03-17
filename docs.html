@@ -48,6 +48,7 @@
     <li class="toc-h3"><a href="#graph-centrality">Centrality</a></li>
     <li><a href="#fusion">Fusion</a></li>
     <li class="toc-h3"><a href="#fusion-gating">Gating</a></li>
+    <li class="toc-h3"><a href="#fusion-attention">Attention</a></li>
     <li><a href="#geospatial">Geospatial</a></li>
     <li><a href="#temporal-graph">Temporal Graph</a></li>
     <li><a href="#fdw">Foreign Data Wrappers</a></li>
@@ -461,6 +462,22 @@ engine.close()</code></pre>
 <span class="cm">-- Drop and recreate index (vectors remain in document store)</span>
 <span class="kw">DROP INDEX</span> idx_emb;
 <span class="kw">CREATE INDEX</span> idx_emb <span class="kw">ON</span> papers <span class="kw">USING</span> hnsw (embedding);</code></pre>
+
+  <h3>Bayesian KNN (Paper 5 Calibration)</h3>
+<pre><code><span class="cm">-- Likelihood ratio calibration with auto-routing</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">bayesian_knn_match</span>(embedding, <span class="st">$1</span>, 10)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- With named options: GMM estimation + BM25 cross-modal weights</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">bayesian_knn_match</span>(embedding, <span class="st">$1</span>, 10,
+    method <span class="cm">=&gt;</span> <span class="st">'gmm'</span>,
+    weight_source <span class="cm">=&gt;</span> <span class="st">'bayesian_bm25'</span>,
+    bm25_query <span class="cm">=&gt;</span> <span class="st">'quantum computing'</span>,
+    bm25_field <span class="cm">=&gt;</span> <span class="st">'title'</span>
+)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
 </section>
 
 <!-- ============ Text Search ============ -->
@@ -613,12 +630,21 @@ $$</span>) <span class="kw">AS</span> (name agtype);
 <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
 
   <h3 id="fusion-gating">Gating</h3>
-<pre><code><span class="cm">-- Log-odds with ReLU gating</span>
+<pre><code><span class="cm">-- Log-odds with ReLU gating (named argument syntax)</span>
 <span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
 <span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
     <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
     <span class="fn">pagerank</span>(),
-    <span class="st">'relu'</span>
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Swish gating with beta control</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
+    <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
+    <span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 10),
+    gating <span class="cm">=&gt;</span> <span class="st">'swish'</span>,
+    gating_beta <span class="cm">=&gt;</span> 2.0
 ) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
 
 <span class="cm">-- Progressive fusion: cascading WAND</span>
@@ -634,6 +660,40 @@ $$</span>) <span class="kw">AS</span> (name agtype);
     <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
     <span class="fn">knn_match</span>(embedding, <span class="kw">ARRAY</span>[...], 5)
 );</code></pre>
+
+  <h3 id="fusion-attention">Attention &amp; Learned Fusion</h3>
+<pre><code><span class="cm">-- Attention-weighted fusion (zero-shot)</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_attention</span>(
+    <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
+    <span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 10)
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Attention + per-signal logit normalization (Bayesian-Attn-Norm)</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_attention</span>(
+    <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
+    <span class="fn">bayesian_knn_match</span>(embedding, <span class="st">$1</span>, 10),
+    normalized <span class="cm">=&gt;</span> <span class="kw">true</span>,
+    alpha <span class="cm">=&gt;</span> 0.5
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Multi-head attention (averages log-odds across 4 heads)</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_multihead</span>(
+    <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
+    <span class="fn">bayesian_knn_match</span>(embedding, <span class="st">$1</span>, 10),
+    n_heads <span class="cm">=&gt;</span> 4,
+    normalized <span class="cm">=&gt;</span> <span class="kw">true</span>
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Learned per-signal weights</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_learned</span>(
+    <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
+    <span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 10),
+    alpha <span class="cm">=&gt;</span> 0.7
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
 </section>
 
 <!-- ============ Geospatial ============ -->
