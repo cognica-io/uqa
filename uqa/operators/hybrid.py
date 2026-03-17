@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -109,11 +109,13 @@ class LogOddsFusionOperator(Operator):
         alpha: float = 0.5,
         top_k: int | None = None,
         gating: str | None = None,
+        gating_beta: float | None = None,
     ) -> None:
         self.signals = signals
         self.alpha = alpha
         self.top_k = top_k
         self.gating = gating
+        self.gating_beta = gating_beta
 
     def execute(self, context: ExecutionContext) -> PostingList:
         from bayesian_bm25 import log_odds_conjunction
@@ -181,9 +183,13 @@ class LogOddsFusionOperator(Operator):
             if num_signals == 1:
                 fused = float(row[0])
             else:
-                fused = float(
-                    log_odds_conjunction(row, alpha=alpha, gating=self.gating or "none")
-                )
+                kwargs: dict[str, Any] = {
+                    "alpha": alpha,
+                    "gating": self.gating or "none",
+                }
+                if self.gating_beta is not None:
+                    kwargs["gating_beta"] = self.gating_beta
+                fused = float(log_odds_conjunction(row, **kwargs))
             entries.append(PostingEntry(doc_id, Payload(score=fused)))
 
         return PostingList.from_sorted(entries)

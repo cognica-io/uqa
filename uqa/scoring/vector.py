@@ -12,9 +12,8 @@ import numpy as np
 from bayesian_bm25 import cosine_to_probability
 
 if TYPE_CHECKING:
+    from bayesian_bm25.vector_probability import VectorProbabilityTransform
     from numpy.typing import NDArray
-
-    from uqa.scoring.vector_calibrator import VectorCalibrator
 
 
 class VectorScorer:
@@ -45,7 +44,7 @@ class VectorScorer:
     @staticmethod
     def calibrated_probabilities(
         similarities: NDArray,
-        calibrator: VectorCalibrator,
+        calibrator: VectorProbabilityTransform,
         weights: NDArray | None = None,
     ) -> NDArray:
         """Likelihood ratio calibration (Theorem 3.1.1, Paper 5).
@@ -54,7 +53,7 @@ class VectorScorer:
         ----------
         similarities : ndarray
             Cosine similarities in [-1, 1] for the top-K results.
-        calibrator : VectorCalibrator
+        calibrator : VectorProbabilityTransform
             Pre-configured calibrator with background distribution.
         weights : ndarray or None
             External relevance weights.  If ``None``, uniform weights.
@@ -65,4 +64,7 @@ class VectorScorer:
             Calibrated probabilities in (0, 1).
         """
         distances = 1.0 - np.asarray(similarities, dtype=np.float64)
-        return calibrator.calibrate(distances, weights)
+        return np.asarray(
+            calibrator.calibrate(distances, weights=weights),
+            dtype=np.float64,
+        )

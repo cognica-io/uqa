@@ -17,20 +17,21 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
     from uqa.core.types import IndexStats
-    from uqa.fusion.attention import AttentionFusion
+    from uqa.fusion.attention import AttentionFusion, MultiHeadAttentionFusion
 
 
 class AttentionFusionOperator(Operator):
     """Attention-weighted multi-signal fusion operator (Section 8, Paper 4).
 
     Same pattern as LogOddsFusionOperator but uses attention-weighted
-    fusion based on query features.
+    fusion based on query features.  Works with both single-head
+    ``AttentionFusion`` and multi-head ``MultiHeadAttentionFusion``.
     """
 
     def __init__(
         self,
         signals: list[Operator],
-        attention: AttentionFusion,
+        attention: AttentionFusion | MultiHeadAttentionFusion,
         query_features: NDArray,
     ) -> None:
         self.signals = signals

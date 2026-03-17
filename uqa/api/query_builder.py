@@ -108,7 +108,7 @@ class QueryBuilder:
         op = KNNOperator(query, k, field)
         return self._chain(op)
 
-    def knn_calibrated(
+    def bayesian_knn(
         self,
         query: NDArray,
         k: int,

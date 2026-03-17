@@ -55,34 +55,45 @@ vector threshold merge, intersect reordering) before execution via
 PlanExecutor with timing stats.
 
 Extended functions (WHERE clause):
-  text_match(field, 'query')         -- full-text search with BM25 scoring
-  bayesian_match(field, 'query')     -- Bayesian BM25 calibrated probability
+  text_match(field, 'query')                    -- full-text search with BM25
+  bayesian_match(field, 'query')                -- Bayesian BM25 probability
   bayesian_match_with_prior(field, 'query', prior_field, prior_mode)
-                                     -- Bayesian BM25 with external prior
-  knn_match(field, vector, k)        -- KNN vector search (auto-calibrated
-                                        when IVF background stats available)
-  knn_calibrated_match(field, vector, k)
-                                     -- KNN with likelihood ratio calibration
-                                        (Paper 5, Theorem 3.1.1)
-  traverse_match(start, 'label', k)  -- graph reachability as a scored signal
-  path_filter('path', value)         -- hierarchical path filter (equality)
-  path_filter('path', 'op', value)   -- hierarchical path filter with operator
+                                                -- Bayesian BM25 + ext. prior
+  knn_match(field, vector, k)                   -- KNN (auto-calibrated when
+                                                   IVF bg stats available)
+  bayesian_knn_match(field, vector, k[, opts])  -- KNN + likelihood ratio
+                                                   calibration (Paper 5)
+                                                   opts: method, weight_source,
+                                                   bm25_query, bm25_field,
+                                                   base_rate, bandwidth_scale,
+                                                   density_gamma
+  traverse_match(start, 'label', k)             -- graph reachability signal
+  path_filter('path', value)                    -- hierarchical path filter
+  path_filter('path', 'op', value)              -- path filter with operator
   vector_exclude(field, pos, neg, k, threshold) -- vector exclusion
-  multi_field_match(field1, field2, ..., 'query' [, w1, w2, ...])
-                                     -- multi-field Bayesian BM25 search
+  multi_field_match(f1, f2, ..., 'q' [, w1, w2, ...])
+                                                -- multi-field Bayesian BM25
 
   Vector arguments accept ARRAY literals or $N parameter references:
     knn_match(embedding, ARRAY[0.1, 0.2, ...], 5)
     knn_match(embedding, $1, 5)  -- with params=[query_vec]
 
 Fusion meta-functions (WHERE clause):
-  fuse_log_odds(sig1, sig2, ...[, alpha]) -- log-odds conjunction (Paper 4)
-  fuse_prob_and(sig1, sig2, ...)          -- probabilistic AND
-  fuse_prob_or(sig1, sig2, ...)           -- probabilistic OR
-  fuse_prob_not(signal)                   -- probabilistic NOT (complement)
-  fuse_attention(sig1, sig2, ...)         -- attention-weighted fusion (Paper 4 S8)
-  fuse_learned(sig1, sig2, ...)           -- learned-weight fusion (Paper 4 S8)
-  sparse_threshold(signal, threshold)     -- ReLU thresholding (Paper 4 S6.5)
+  fuse_log_odds(sig1, sig2, ...[, opts])        -- log-odds conjunction
+                                                   opts: alpha, gating,
+                                                   gating_beta
+  fuse_prob_and(sig1, sig2, ...)                -- probabilistic AND
+  fuse_prob_or(sig1, sig2, ...)                 -- probabilistic OR
+  fuse_prob_not(signal)                         -- probabilistic NOT
+  fuse_attention(sig1, sig2, ...[, opts])       -- attention fusion (S8)
+                                                   opts: normalized, alpha,
+                                                   base_rate
+  fuse_multihead(sig1, sig2, ...[, opts])       -- multi-head attention (8.6)
+                                                   opts: n_heads, normalized,
+                                                   alpha
+  fuse_learned(sig1, sig2, ...[, opts])         -- learned-weight fusion (S8)
+                                                   opts: alpha
+  sparse_threshold(signal, threshold)           -- ReLU thresholding (S6.5)
 
 SELECT scalar functions:
   path_agg('path', 'func')          -- per-row nested array aggregation
@@ -128,6 +139,7 @@ from pglast.ast import (
     IndexStmt,
     InsertStmt,
     JoinExpr,
+    NamedArgExpr,
     NullTest,
     ParamRef,
     PrepareStmt,
@@ -2745,7 +2757,7 @@ class SQLCompiler:
                     "bayesian_match",
                     "bayesian_match_with_prior",
                     "knn_match",
-                    "knn_calibrated_match",
+                    "bayesian_knn_match",
                     "traverse_match",
                     "spatial_within",
                 ):
@@ -6722,7 +6734,7 @@ class SQLCompiler:
             return self._make_bayesian_with_prior_op(args, ctx)
         if name == "knn_match":
             return self._make_knn_op(args)
-        if name == "knn_calibrated_match":
+        if name == "bayesian_knn_match":
             return self._make_calibrated_knn_op(args, ctx, force_calibrated=True)
         if name == "traverse_match":
             return self._make_traverse_match_op(args)
@@ -6744,6 +6756,8 @@ class SQLCompiler:
             return self._make_prob_not_op(args, ctx)
         if name == "fuse_attention":
             return self._make_attention_fusion_op(args, ctx)
+        if name == "fuse_multihead":
+            return self._make_multihead_fusion_op(args, ctx)
         if name == "fuse_learned":
             return self._make_learned_fusion_op(args, ctx)
         if name == "sparse_threshold":
@@ -7103,7 +7117,7 @@ class SQLCompiler:
         - bayesian_match -> Bayesian BM25 (already calibrated)
         - knn_match -> likelihood ratio calibration when IVF background
           stats are available, otherwise linear rescaling (Paper 3)
-        - knn_calibrated_match -> always likelihood ratio (Paper 5)
+        - bayesian_knn_match -> always likelihood ratio (Paper 5)
         - traverse_match -> graph reachability score 0.9 (already calibrated)
         """
         name = node.funcname[-1].sval.lower()
@@ -7119,7 +7133,7 @@ class SQLCompiler:
             return self._make_text_search_op(field_name, query, ctx, bayesian=True)
         if name == "knn_match":
             return self._make_calibrated_knn_op(args, ctx)
-        if name == "knn_calibrated_match":
+        if name == "bayesian_knn_match":
             return self._make_calibrated_knn_op(args, ctx, force_calibrated=True)
         if name == "traverse_match":
             return self._make_traverse_match_op(args)
@@ -7138,7 +7152,7 @@ class SQLCompiler:
         raise ValueError(
             f"Unknown signal function for fusion: {name}. "
             f"Use text_match, bayesian_match, knn_match, "
-            f"knn_calibrated_match, traverse_match, "
+            f"bayesian_knn_match, traverse_match, "
             f"spatial_within, pagerank, hits, betweenness, or weighted_rpq."
         )
 
@@ -7154,14 +7168,36 @@ class SQLCompiler:
         When IVF background statistics are available (or *force_calibrated*
         is set), uses likelihood ratio calibration (Theorem 3.1.1, Paper 5).
         Otherwise falls back to linear rescaling P = (1 + cos) / 2.
-        """
-        if len(args) != 3:
-            raise ValueError(
-                "knn_match() requires 3 arguments: knn_match(field, vector, k)"
+
+        Accepts named arguments for calibration options::
+
+            bayesian_knn_match(embedding, $1, 10,
+                method => 'gmm',
+                weight_source => 'bayesian_bm25',
+                bm25_query => 'quantum computing',
+                bm25_field => 'title',
+                base_rate => 0.3,
+                bandwidth_scale => 2.0,
+                density_gamma => 1.5
             )
-        field_name = self._extract_column_name(args[0])
-        query_vector = self._extract_vector_arg(args[1])
-        k = self._extract_int_value(args[2])
+        """
+        # Separate positional args from named options.
+        positional: list[Any] = []
+        options: dict[str, Any] = {}
+        for arg in args:
+            if isinstance(arg, NamedArgExpr):
+                options[arg.name] = self._extract_const_value(arg.arg)
+            else:
+                positional.append(arg)
+
+        if len(positional) != 3:
+            raise ValueError(
+                "knn_match() requires 3 positional arguments: "
+                "knn_match(field, vector, k)"
+            )
+        field_name = self._extract_column_name(positional[0])
+        query_vector = self._extract_vector_arg(positional[1])
+        k = self._extract_int_value(positional[2])
 
         # Check whether the IVF index has background stats for Paper 5
         # calibration.  If so, use CalibratedVectorOperator; otherwise
@@ -7173,10 +7209,38 @@ class SQLCompiler:
             and vec_idx.background_stats is not None  # type: ignore[union-attr]
         )
 
-        if has_bg or force_calibrated:
+        if has_bg or force_calibrated or options:
             from uqa.operators.calibrated_vector import CalibratedVectorOperator
 
-            return CalibratedVectorOperator(query_vector, k, field=field_name)
+            _VALID_KNN_OPTIONS = {
+                "method",
+                "weight_source",
+                "bm25_query",
+                "bm25_field",
+                "base_rate",
+                "bandwidth_scale",
+                "density_gamma",
+            }
+            unknown = set(options) - _VALID_KNN_OPTIONS
+            if unknown:
+                raise ValueError(
+                    f"Unknown option(s) for bayesian_knn_match: "
+                    f"{', '.join(sorted(unknown))}. "
+                    f"Valid options: {', '.join(sorted(_VALID_KNN_OPTIONS))}"
+                )
+
+            return CalibratedVectorOperator(
+                query_vector,
+                k,
+                field=field_name,
+                estimation_method=str(options.get("method", "kde")),
+                base_rate=float(options.get("base_rate", 0.5)),
+                weight_source=str(options.get("weight_source", "density_prior")),
+                bm25_query=options.get("bm25_query"),
+                bm25_field=options.get("bm25_field"),
+                density_gamma=float(options.get("density_gamma", 1.0)),
+                bandwidth_scale=float(options.get("bandwidth_scale", 1.0)),
+            )
         return _CalibratedKNNOperator(query_vector, k, field=field_name)
 
     def _make_prob_not_op(self, args: tuple, ctx: ExecutionContext) -> Any:
@@ -7213,13 +7277,16 @@ class SQLCompiler:
     def _make_fusion_op(self, args: tuple, ctx: ExecutionContext, *, mode: str) -> Any:
         """Build a fusion operator from nested function calls.
 
-        fuse_log_odds(signal1, signal2, ...[, alpha])
+        fuse_log_odds(signal1, signal2, ...[, alpha[, 'gating']])
+        fuse_log_odds(signal1, signal2, ...,
+            alpha => 0.5, gating => 'swish', gating_beta => 2.0)
         fuse_prob_and(signal1, signal2, ...)
         fuse_prob_or(signal1, signal2, ...)
 
         Each signal argument must be a FuncCall (text_match, bayesian_match,
         knn_match, traverse_match). For fuse_log_odds, the last argument may
-        be a numeric literal specifying the confidence alpha.
+        be a numeric literal specifying the confidence alpha, or named
+        arguments for alpha, gating, and gating_beta.
 
         Signal scores are calibrated to probabilities in (0, 1):
         - text_match is compiled as bayesian_match (Bayesian BM25)
@@ -7231,10 +7298,24 @@ class SQLCompiler:
         signals: list[Any] = []
         alpha = 0.5
         gating: str | None = None
+        gating_beta: float | None = None
 
         for arg in args:
             if isinstance(arg, FuncCall):
                 signals.append(self._compile_calibrated_signal(arg, ctx))
+            elif isinstance(arg, NamedArgExpr) and mode == "log_odds":
+                val = self._extract_const_value(arg.arg)
+                if arg.name == "alpha":
+                    alpha = float(val)
+                elif arg.name == "gating":
+                    gating = str(val)
+                elif arg.name == "gating_beta":
+                    gating_beta = float(val)
+                else:
+                    raise ValueError(
+                        f"Unknown option for fuse_log_odds: {arg.name}. "
+                        f"Valid options: alpha, gating, gating_beta"
+                    )
             elif isinstance(arg, A_Const) and mode == "log_odds":
                 val = self._extract_const_value(arg)
                 if isinstance(val, str):
@@ -7251,7 +7332,12 @@ class SQLCompiler:
             raise ValueError("Fusion requires at least 2 signal functions")
 
         if mode == "log_odds":
-            return LogOddsFusionOperator(signals, alpha=alpha, gating=gating)
+            return LogOddsFusionOperator(
+                signals,
+                alpha=alpha,
+                gating=gating,
+                gating_beta=gating_beta,
+            )
         if mode == "prob_and":
             return ProbBoolFusionOperator(signals, mode="and")
         return ProbBoolFusionOperator(signals, mode="or")
@@ -7407,29 +7493,135 @@ class SQLCompiler:
         return ProgressiveFusionOperator(stages=stages, alpha=alpha, gating=gating)
 
     def _make_attention_fusion_op(self, args: tuple, ctx: ExecutionContext) -> Any:
-        """fuse_attention(signal1, signal2, ...)"""
+        """fuse_attention(signal1, signal2, ...[, named options])
+
+        Named options:
+            normalized => true   -- per-signal logit normalization (Attn-Norm)
+            alpha => 0.5        -- confidence scaling
+            base_rate => 0.01   -- additive bias in log-odds space
+        """
         from uqa.fusion.attention import AttentionFusion
-        from uqa.fusion.query_features import QueryFeatureExtractor
         from uqa.operators.attention import AttentionFusionOperator
 
         signals: list[Any] = []
+        options: dict[str, Any] = {}
         for arg in args:
             if isinstance(arg, FuncCall):
                 signals.append(self._compile_calibrated_signal(arg, ctx))
+            elif isinstance(arg, NamedArgExpr):
+                options[arg.name] = self._extract_const_value(arg.arg)
 
         if len(signals) < 2:
             raise ValueError("fuse_attention requires at least 2 signals")
 
-        n_signals = len(signals)
-        attention = AttentionFusion(n_signals=n_signals, n_query_features=6)
+        _VALID = {"normalized", "alpha", "base_rate"}
+        unknown = set(options) - _VALID
+        if unknown:
+            raise ValueError(
+                f"Unknown option(s) for fuse_attention: "
+                f"{', '.join(sorted(unknown))}. "
+                f"Valid options: {', '.join(sorted(_VALID))}"
+            )
 
-        # Extract query features from the first text signal
+        n_signals = len(signals)
+        attention = AttentionFusion(
+            n_signals=n_signals,
+            n_query_features=6,
+            alpha=float(options.get("alpha", 0.5)),
+            normalize=bool(options.get("normalized", False)),
+            base_rate=options.get("base_rate"),
+        )
+
+        query_features = self._extract_query_features(args, ctx)
+        return AttentionFusionOperator(signals, attention, query_features)
+
+    def _make_multihead_fusion_op(self, args: tuple, ctx: ExecutionContext) -> Any:
+        """fuse_multihead(signal1, signal2, ...[, named options])
+
+        Named options:
+            n_heads => 4        -- number of attention heads
+            normalize => true   -- per-signal logit normalization
+            alpha => 0.5        -- confidence scaling
+        """
+        from uqa.fusion.attention import MultiHeadAttentionFusion
+        from uqa.operators.attention import AttentionFusionOperator
+
+        signals: list[Any] = []
+        options: dict[str, Any] = {}
+        for arg in args:
+            if isinstance(arg, FuncCall):
+                signals.append(self._compile_calibrated_signal(arg, ctx))
+            elif isinstance(arg, NamedArgExpr):
+                options[arg.name] = self._extract_const_value(arg.arg)
+
+        if len(signals) < 2:
+            raise ValueError("fuse_multihead requires at least 2 signals")
+
+        _VALID = {"n_heads", "normalized", "alpha"}
+        unknown = set(options) - _VALID
+        if unknown:
+            raise ValueError(
+                f"Unknown option(s) for fuse_multihead: "
+                f"{', '.join(sorted(unknown))}. "
+                f"Valid options: {', '.join(sorted(_VALID))}"
+            )
+
+        n_signals = len(signals)
+        fusion = MultiHeadAttentionFusion(
+            n_signals=n_signals,
+            n_heads=int(options.get("n_heads", 4)),
+            n_query_features=6,
+            alpha=float(options.get("alpha", 0.5)),
+            normalize=bool(options.get("normalized", False)),
+        )
+
+        query_features = self._extract_query_features(args, ctx)
+        return AttentionFusionOperator(signals, fusion, query_features)
+
+    def _make_learned_fusion_op(self, args: tuple, ctx: ExecutionContext) -> Any:
+        """fuse_learned(signal1, signal2, ...[, named options])
+
+        Named options:
+            alpha => 0.5        -- confidence scaling
+        """
+        from uqa.fusion.learned import LearnedFusion
+        from uqa.operators.learned_fusion import LearnedFusionOperator
+
+        signals: list[Any] = []
+        options: dict[str, Any] = {}
+        for arg in args:
+            if isinstance(arg, FuncCall):
+                signals.append(self._compile_calibrated_signal(arg, ctx))
+            elif isinstance(arg, NamedArgExpr):
+                options[arg.name] = self._extract_const_value(arg.arg)
+
+        if len(signals) < 2:
+            raise ValueError("fuse_learned requires at least 2 signals")
+
+        _VALID = {"alpha"}
+        unknown = set(options) - _VALID
+        if unknown:
+            raise ValueError(
+                f"Unknown option(s) for fuse_learned: "
+                f"{', '.join(sorted(unknown))}. "
+                f"Valid options: {', '.join(sorted(_VALID))}"
+            )
+
+        learned = LearnedFusion(
+            n_signals=len(signals),
+            alpha=float(options.get("alpha", 0.5)),
+        )
+        return LearnedFusionOperator(signals, learned)
+
+    def _extract_query_features(self, args: tuple, ctx: ExecutionContext) -> Any:
+        """Extract query features from the first text signal in args."""
         import numpy as np
+
+        from uqa.fusion.query_features import QueryFeatureExtractor
 
         query_features = np.zeros(6, dtype=np.float64)
         if ctx.inverted_index is not None:
             extractor = QueryFeatureExtractor(ctx.inverted_index)
-            # Try to extract terms from the first text signal
             for arg in args:
                 if isinstance(arg, FuncCall):
                     fn_name = arg.funcname[-1].sval.lower()
@@ -7443,24 +7635,7 @@ class SQLCompiler:
                         terms = analyzer.analyze(query_str)
                         query_features = extractor.extract(terms)
                         break
-
-        return AttentionFusionOperator(signals, attention, query_features)
-
-    def _make_learned_fusion_op(self, args: tuple, ctx: ExecutionContext) -> Any:
-        """fuse_learned(signal1, signal2, ...)"""
-        from uqa.fusion.learned import LearnedFusion
-        from uqa.operators.learned_fusion import LearnedFusionOperator
-
-        signals: list[Any] = []
-        for arg in args:
-            if isinstance(arg, FuncCall):
-                signals.append(self._compile_calibrated_signal(arg, ctx))
-
-        if len(signals) < 2:
-            raise ValueError("fuse_learned requires at least 2 signals")
-
-        learned = LearnedFusion(n_signals=len(signals))
-        return LearnedFusionOperator(signals, learned)
+        return query_features
 
     # -- Aggregation ---------------------------------------------------
 

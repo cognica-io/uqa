@@ -4,312 +4,26 @@
 # Copyright (c) 2023-2026 Cognica, Inc.
 #
 
-"""Tests for Paper 5: Index-Aware Bayesian Calibration of Vector Scores."""
+"""Tests for Paper 5: Index-Aware Bayesian Calibration of Vector Scores.
+
+Unit tests for deleted self-implemented modules (BackgroundDistribution,
+WeightedKDE, DistanceGMM, VectorCalibrator, VectorFallbackEstimator) have
+been removed -- those classes are replaced by bayesian_bm25's
+VectorProbabilityTransform which has its own test suite.
+
+Remaining tests verify:
+    - IVF index statistics integration
+    - CalibratedVectorOperator end-to-end behaviour
+    - SQL integration (bayesian_knn_match, fuse_log_odds)
+    - Calibration quality (likelihood ratio vs naive)
+    - BM25 cross-modal weights (Section 4.3)
+"""
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 import pytest
-
-from uqa.scoring.background_distribution import BackgroundDistribution
-from uqa.scoring.distance_gmm import DistanceGMM
-from uqa.scoring.vector_calibrator import VectorCalibrator
-from uqa.scoring.vector_fallback import VectorFallbackEstimator
-from uqa.scoring.weighted_kde import WeightedKDE
-
-# ------------------------------------------------------------------
-# BackgroundDistribution
-# ------------------------------------------------------------------
-
-
-def _make_bg(
-    mu: float = 0.5, sigma: float = 0.1, n: int = 1000
-) -> BackgroundDistribution:
-    """Helper: create a BackgroundDistribution from synthetic samples."""
-    rng = np.random.RandomState(42)
-    return BackgroundDistribution(samples=rng.normal(mu, sigma, size=n))
-
-
-class TestBackgroundDistribution:
-    def test_kde_pdf_positive(self):
-        bg = _make_bg(0.5, 0.1)
-        assert bg.pdf(0.5) > 0
-        assert bg.pdf(0.0) > 0
-
-    def test_pdf_peak_at_mean(self):
-        bg = _make_bg(0.5, 0.1)
-        assert bg.pdf(0.5) > bg.pdf(0.3)
-        assert bg.pdf(0.5) > bg.pdf(0.7)
-
-    def test_log_pdf_consistent(self):
-        bg = _make_bg(0.5, 0.1)
-        for d in [0.1, 0.3, 0.5, 0.7, 0.9]:
-            assert abs(bg.log_pdf(d) - math.log(bg.pdf(d))) < 1e-10
-
-    def test_batch_matches_scalar(self):
-        bg = _make_bg(0.4, 0.15)
-        distances = np.array([0.1, 0.3, 0.5, 0.7])
-        batch = bg.pdf_batch(distances)
-        for i, d in enumerate(distances):
-            assert abs(batch[i] - bg.pdf(d)) < 1e-10
-
-    def test_serialisation_roundtrip(self):
-        bg = _make_bg(0.42, 0.13)
-        restored = BackgroundDistribution.from_dict(bg.to_dict())
-        assert abs(restored.mu - bg.mu) < 1e-10
-        assert abs(restored.sigma - bg.sigma) < 1e-10
-
-    def test_from_distance_sample(self):
-        rng = np.random.RandomState(42)
-        sample = rng.normal(0.5, 0.1, size=1000)
-        bg = BackgroundDistribution.from_distance_sample(sample)
-        assert abs(bg.mu - 0.5) < 0.02
-        assert abs(bg.sigma - 0.1) < 0.02
-
-
-# ------------------------------------------------------------------
-# WeightedKDE
-# ------------------------------------------------------------------
-
-
-class TestWeightedKDE:
-    def test_uniform_weights_basic(self):
-        distances = np.array([0.1, 0.2, 0.3, 0.4, 0.5])
-        weights = np.ones(5)
-        kde = WeightedKDE(distances, weights)
-        # PDF should be positive in the data range.
-        assert kde.pdf(0.3) > 0
-
-    def test_weighted_shifts_peak(self):
-        distances = np.array([0.1, 0.2, 0.3, 0.8, 0.9])
-        # Weight only the close documents.
-        weights_close = np.array([1.0, 1.0, 1.0, 0.0, 0.0])
-        kde_close = WeightedKDE(distances, weights_close)
-        # Weight only the far documents.
-        weights_far = np.array([0.0, 0.0, 0.0, 1.0, 1.0])
-        kde_far = WeightedKDE(distances, weights_far)
-        # Close-weighted KDE should peak near 0.2.
-        assert kde_close.pdf(0.2) > kde_far.pdf(0.2)
-        # Far-weighted KDE should peak near 0.85.
-        assert kde_far.pdf(0.85) > kde_close.pdf(0.85)
-
-    def test_bandwidth_positive(self):
-        distances = np.array([0.1, 0.2, 0.3])
-        weights = np.ones(3)
-        kde = WeightedKDE(distances, weights)
-        assert kde.bandwidth > 0
-
-    def test_batch_matches_scalar(self):
-        distances = np.array([0.2, 0.4, 0.6, 0.8])
-        weights = np.array([1.0, 0.8, 0.5, 0.2])
-        kde = WeightedKDE(distances, weights)
-        query_points = np.array([0.1, 0.3, 0.5, 0.7, 0.9])
-        batch = kde.pdf_batch(query_points)
-        for i, d in enumerate(query_points):
-            assert abs(batch[i] - kde.pdf(d)) < 1e-10
-
-    def test_zero_weights_excluded(self):
-        distances = np.array([0.1, 0.5, 0.9])
-        weights = np.array([1.0, 0.0, 0.0])
-        kde = WeightedKDE(distances, weights)
-        # Only d=0.1 contributes; PDF should peak there.
-        assert kde.pdf(0.1) > kde.pdf(0.9)
-
-    def test_custom_bandwidth(self):
-        distances = np.array([0.1, 0.2, 0.3])
-        weights = np.ones(3)
-        kde = WeightedKDE(distances, weights, bandwidth=0.05)
-        assert kde.bandwidth == 0.05
-
-
-# ------------------------------------------------------------------
-# DistanceGMM
-# ------------------------------------------------------------------
-
-
-class TestDistanceGMM:
-    def test_two_component_separation(self):
-        rng = np.random.RandomState(42)
-        relevant = rng.normal(0.1, 0.02, size=30)
-        background = rng.normal(0.5, 0.1, size=70)
-        distances = np.concatenate([relevant, background])
-        weights = np.concatenate([np.ones(30), np.zeros(70)])
-
-        gmm = DistanceGMM(distances, weights, background_mu=0.5, background_sigma=0.1)
-        # Relevant component should be near 0.1.
-        assert abs(gmm.mu_r - 0.1) < 0.05
-        assert gmm.sigma_r < 0.1
-
-    def test_relevant_pdf_positive(self):
-        distances = np.array([0.1, 0.2, 0.3, 0.5, 0.7])
-        weights = np.array([1.0, 0.8, 0.5, 0.1, 0.0])
-        gmm = DistanceGMM(distances, weights, background_mu=0.5, background_sigma=0.15)
-        assert gmm.relevant_pdf(0.15) > 0
-
-    def test_mixing_coefficient_in_unit_interval(self):
-        distances = np.linspace(0.05, 0.95, 50)
-        weights = np.concatenate([np.ones(20), np.zeros(30)])
-        gmm = DistanceGMM(distances, weights, background_mu=0.5, background_sigma=0.2)
-        assert 0.0 < gmm.mixing_coefficient < 1.0
-
-    def test_log_pdf_consistent(self):
-        distances = np.array([0.1, 0.2, 0.6, 0.8])
-        weights = np.array([1.0, 0.9, 0.1, 0.0])
-        gmm = DistanceGMM(distances, weights, background_mu=0.5, background_sigma=0.15)
-        for d in [0.1, 0.3, 0.5]:
-            pdf = gmm.relevant_pdf(d)
-            log_pdf = gmm.relevant_log_pdf(d)
-            assert abs(log_pdf - math.log(max(pdf, 1e-300))) < 1e-8
-
-    def test_empty_distances(self):
-        gmm = DistanceGMM(
-            np.array([]),
-            np.array([]),
-            background_mu=0.5,
-            background_sigma=0.1,
-        )
-        # Should not raise; returns default parameters.
-        assert gmm.relevant_pdf(0.3) > 0
-
-
-# ------------------------------------------------------------------
-# VectorFallbackEstimator
-# ------------------------------------------------------------------
-
-
-class TestVectorFallbackEstimator:
-    def test_distance_gap_binary(self):
-        # Clear gap between 0.3 and 0.7.
-        distances = np.array([0.1, 0.15, 0.2, 0.25, 0.3, 0.7, 0.8, 0.9])
-        weights = VectorFallbackEstimator.distance_gap_weights(distances)
-        assert len(weights) == len(distances)
-        # First 5 should be 1, rest 0.
-        np.testing.assert_array_equal(weights[:5], 1.0)
-        np.testing.assert_array_equal(weights[5:], 0.0)
-
-    def test_distance_gap_single(self):
-        weights = VectorFallbackEstimator.distance_gap_weights(np.array([0.3]))
-        assert len(weights) == 1
-        assert weights[0] == 1.0
-
-    def test_index_density_sparse_higher(self):
-        cell_pops = {0: 10, 1: 100, 2: 1000}
-        centroid_ids = np.array([0, 1, 2])
-        weights = VectorFallbackEstimator.index_density_weights(
-            cell_populations=cell_pops,
-            centroid_ids=centroid_ids,
-            total_vectors=1110,
-            num_cells=3,
-            gamma=1.0,
-        )
-        # Sparse cell (10) should get higher weight than dense (1000).
-        assert weights[0] > weights[2]
-
-    def test_index_density_all_equal(self):
-        cell_pops = {0: 100, 1: 100, 2: 100}
-        centroid_ids = np.array([0, 1, 2])
-        weights = VectorFallbackEstimator.index_density_weights(
-            cell_populations=cell_pops,
-            centroid_ids=centroid_ids,
-            total_vectors=300,
-            num_cells=3,
-        )
-        # All cells equal -> all weights equal (should be 0.5).
-        assert abs(weights[0] - 0.5) < 1e-10
-        assert abs(weights[1] - 0.5) < 1e-10
-
-    def test_cross_model_weights_range(self):
-        sims = np.array([-1.0, -0.5, 0.0, 0.5, 1.0])
-        weights = VectorFallbackEstimator.cross_model_weights(sims)
-        np.testing.assert_array_less(-1e-10, weights)
-        np.testing.assert_array_less(weights, 1.0 + 1e-10)
-        # -1 -> 0, 0 -> 0.5, 1 -> 1
-        assert abs(weights[0] - 0.0) < 1e-10
-        assert abs(weights[2] - 0.5) < 1e-10
-        assert abs(weights[4] - 1.0) < 1e-10
-
-
-# ------------------------------------------------------------------
-# VectorCalibrator
-# ------------------------------------------------------------------
-
-
-class TestVectorCalibrator:
-    @pytest.fixture()
-    def background(self):
-        return _make_bg(0.5, 0.15)
-
-    def test_returns_probabilities(self, background):
-        cal = VectorCalibrator(background)
-        distances = np.array([0.05, 0.1, 0.3, 0.5, 0.7, 0.9])
-        weights = np.array([1.0, 0.9, 0.7, 0.3, 0.1, 0.0])
-        probs = cal.calibrate(distances, weights)
-        assert all(0 < p < 1 for p in probs)
-
-    def test_monotonicity(self, background):
-        """Closer distance should yield higher probability."""
-        cal = VectorCalibrator(background)
-        distances = np.array([0.05, 0.1, 0.2, 0.3, 0.4])
-        weights = np.ones(5)
-        probs = cal.calibrate(distances, weights)
-        # Monotonically decreasing with distance.
-        for i in range(len(probs) - 1):
-            assert probs[i] >= probs[i + 1] - 1e-10
-
-    def test_kde_vs_gmm_both_work(self, background):
-        distances = np.array([0.05, 0.1, 0.2, 0.5, 0.8])
-        weights = np.array([1.0, 0.8, 0.5, 0.1, 0.0])
-        cal_kde = VectorCalibrator(background, estimation_method="kde")
-        cal_gmm = VectorCalibrator(background, estimation_method="gmm")
-        probs_kde = cal_kde.calibrate(distances, weights)
-        probs_gmm = cal_gmm.calibrate(distances, weights)
-        assert all(0 < p < 1 for p in probs_kde)
-        assert all(0 < p < 1 for p in probs_gmm)
-
-    def test_uniform_weights_fallback(self, background):
-        cal = VectorCalibrator(background)
-        distances = np.array([0.1, 0.3, 0.5])
-        probs = cal.calibrate(distances, weights=None)
-        assert all(0 < p < 1 for p in probs)
-
-    def test_empty_distances(self, background):
-        cal = VectorCalibrator(background)
-        probs = cal.calibrate(np.array([]))
-        assert len(probs) == 0
-
-    def test_serialisation_roundtrip(self, background):
-        cal = VectorCalibrator(background, estimation_method="gmm", base_rate=0.3)
-        restored = VectorCalibrator.from_dict(cal.to_dict())
-        assert restored.estimation_method == "gmm"
-        assert restored.base_rate == 0.3
-        assert restored.background.mu == background.mu
-
-    def test_invalid_method_raises(self, background):
-        with pytest.raises(ValueError):
-            VectorCalibrator(background, estimation_method="invalid")
-
-    def test_high_evidence_near_one(self, background):
-        """Very close distance with strong weighting -> high probability."""
-        cal = VectorCalibrator(background, base_rate=0.5)
-        distances = np.array([0.01, 0.02, 0.03, 0.5, 0.6, 0.7, 0.8, 0.9])
-        weights = np.array([1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-        probs = cal.calibrate(distances, weights)
-        # First three should have high probability.
-        assert probs[0] > 0.5
-
-    def test_base_rate_effect(self, background):
-        distances = np.array([0.3, 0.4, 0.5])
-        weights = np.ones(3)
-        cal_low = VectorCalibrator(background, base_rate=0.1)
-        cal_high = VectorCalibrator(background, base_rate=0.9)
-        probs_low = cal_low.calibrate(distances, weights)
-        probs_high = cal_high.calibrate(distances, weights)
-        # Higher base rate should yield higher probabilities.
-        for pl, ph in zip(probs_low, probs_high):
-            assert ph > pl
-
+from bayesian_bm25.vector_probability import VectorProbabilityTransform
 
 # ------------------------------------------------------------------
 # IVF Index statistics integration
@@ -531,8 +245,8 @@ class TestSQLIntegration:
         for row in result:
             assert 0.0 < row["_score"] < 1.0
 
-    def test_knn_calibrated_match_sql_function(self, engine):
-        """knn_calibrated_match explicitly uses Paper 5 calibration."""
+    def test_bayesian_knn_match_sql_function(self, engine):
+        """bayesian_knn_match explicitly uses Paper 5 calibration."""
         rng = np.random.RandomState(99)
         qv = rng.randn(8).astype(np.float32)
 
@@ -541,7 +255,7 @@ class TestSQLIntegration:
             SELECT title, _score FROM docs
             WHERE fuse_log_odds(
                 text_match(title, 'doc'),
-                knn_calibrated_match(embedding, $1, 10)
+                bayesian_knn_match(embedding, $1, 10)
             )
             ORDER BY _score DESC
             LIMIT 5
@@ -552,16 +266,122 @@ class TestSQLIntegration:
         for row in result:
             assert 0.0 < row["_score"] < 1.0
 
-    def test_knn_calibrated_standalone(self, engine):
-        """knn_calibrated_match works outside fusion too."""
+    def test_bayesian_knn_standalone(self, engine):
+        """bayesian_knn_match works outside fusion too."""
         rng = np.random.RandomState(99)
         qv = rng.randn(8).astype(np.float32)
 
         result = engine.sql(
             """
             SELECT title, _score FROM docs
-            WHERE knn_calibrated_match(embedding, $1, 5)
+            WHERE bayesian_knn_match(embedding, $1, 5)
             ORDER BY _score DESC
+        """,
+            params=[qv],
+        )
+        assert len(result) > 0
+        for row in result:
+            assert 0.0 < row["_score"] < 1.0
+
+    def test_bayesian_knn_with_named_options(self, engine):
+        """bayesian_knn_match accepts named arguments for calibration options."""
+        rng = np.random.RandomState(99)
+        qv = rng.randn(8).astype(np.float32)
+
+        result = engine.sql(
+            """
+            SELECT title, _score FROM docs
+            WHERE bayesian_knn_match(
+                embedding, $1, 10,
+                method => 'gmm',
+                weight_source => 'distance_gap',
+                base_rate => 0.3
+            )
+            ORDER BY _score DESC
+        """,
+            params=[qv],
+        )
+        assert len(result) > 0
+        for row in result:
+            assert 0.0 < row["_score"] < 1.0
+
+    def test_bayesian_knn_auto_method(self, engine):
+        """bayesian_knn_match with method => 'auto' uses VPT auto-routing."""
+        rng = np.random.RandomState(99)
+        qv = rng.randn(8).astype(np.float32)
+
+        result = engine.sql(
+            """
+            SELECT title, _score FROM docs
+            WHERE bayesian_knn_match(
+                embedding, $1, 10,
+                method => 'auto',
+                weight_source => 'uniform'
+            )
+            ORDER BY _score DESC
+        """,
+            params=[qv],
+        )
+        assert len(result) > 0
+        for row in result:
+            assert 0.0 < row["_score"] < 1.0
+
+    def test_bayesian_knn_invalid_option_raises(self, engine):
+        """Unknown named option raises ValueError."""
+        rng = np.random.RandomState(99)
+        qv = rng.randn(8).astype(np.float32)
+
+        with pytest.raises(ValueError, match="Unknown option"):
+            engine.sql(
+                """
+                SELECT title, _score FROM docs
+                WHERE bayesian_knn_match(
+                    embedding, $1, 5,
+                    invalid_option => 'foo'
+                )
+            """,
+                params=[qv],
+            )
+
+    def test_fuse_log_odds_named_options(self, engine):
+        """fuse_log_odds accepts named args for alpha, gating, gating_beta."""
+        rng = np.random.RandomState(99)
+        qv = rng.randn(8).astype(np.float32)
+
+        result = engine.sql(
+            """
+            SELECT title, _score FROM docs
+            WHERE fuse_log_odds(
+                text_match(title, 'doc'),
+                bayesian_knn_match(embedding, $1, 10),
+                alpha => 0.7,
+                gating => 'swish',
+                gating_beta => 2.0
+            )
+            ORDER BY _score DESC
+            LIMIT 5
+        """,
+            params=[qv],
+        )
+        assert len(result) > 0
+        for row in result:
+            assert 0.0 < row["_score"] < 1.0
+
+    def test_fuse_log_odds_gating_gelu(self, engine):
+        """fuse_log_odds with GELU gating."""
+        rng = np.random.RandomState(99)
+        qv = rng.randn(8).astype(np.float32)
+
+        result = engine.sql(
+            """
+            SELECT title, _score FROM docs
+            WHERE fuse_log_odds(
+                text_match(title, 'doc'),
+                knn_match(embedding, $1, 10),
+                gating => 'gelu'
+            )
+            ORDER BY _score DESC
+            LIMIT 5
         """,
             params=[qv],
         )
@@ -577,13 +397,13 @@ class TestSQLIntegration:
         assert mu > 0
         assert sigma > 0
 
-    def test_query_builder_knn_calibrated(self, engine):
-        """QueryBuilder.knn_calibrated produces calibrated results."""
+    def test_query_builder_bayesian_knn(self, engine):
+        """QueryBuilder.bayesian_knn produces calibrated results."""
         rng = np.random.RandomState(99)
         qv = rng.randn(8).astype(np.float32)
 
         results = (
-            engine.query("docs").knn_calibrated(qv, k=5, field="embedding").execute()
+            engine.query("docs").bayesian_knn(qv, k=5, field="embedding").execute()
         )
         assert len(results) > 0
         for entry in results:
@@ -603,10 +423,6 @@ class TestCalibrationQuality:
     Uses a synthetic corpus where ground-truth relevance is known:
     relevant documents are embedded near the query, non-relevant
     documents are placed far away.
-
-    Important: the test uses distance gap detection (Strategy 4.6.1)
-    as importance weights to break the circularity of estimating f_R
-    from the same distances being calibrated (Problem 4.1.1).
     """
 
     @pytest.fixture()
@@ -670,7 +486,7 @@ class TestCalibrationQuality:
     def _evaluate(
         idx, query, label_map, k, estimation_method="kde", weight_source="distance_gap"
     ):
-        """Retrieve top-K, calibrate, and return (naive_probs, cal_probs, labels)."""
+        """Retrieve top-K, calibrate, and return metrics dict."""
         from uqa.scoring.calibration import CalibrationMetrics
 
         results = idx.search_knn(query, k)
@@ -683,33 +499,39 @@ class TestCalibrationQuality:
         # Naive: P = (1 + cos) / 2.
         naive_probs = [(1.0 + s) / 2.0 for s in similarities]
 
-        # Calibrated via likelihood ratio.
+        # Build VPT from IVF background stats.
         bg_stats = idx.background_stats
         assert bg_stats is not None
-        background = BackgroundDistribution.from_ivf_stats(*bg_stats)
+        mu_g, sigma_g = bg_stats
+        vpt = VectorProbabilityTransform(mu_g, sigma_g)
 
-        # Importance weights to break circularity (Section 4.6).
+        # Route method based on weight_source.
         if weight_source == "distance_gap":
-            sorted_idx = np.argsort(distances)
-            sorted_dists = distances[sorted_idx]
-            sorted_w = VectorFallbackEstimator.distance_gap_weights(sorted_dists)
-            weights = np.empty(len(distances), dtype=np.float64)
-            weights[sorted_idx] = sorted_w
+            method = "auto"
+            calibrated = vpt.calibrate(distances, method=method)
         elif weight_source == "density_prior":
+            from bayesian_bm25.vector_probability import ivf_density_prior
+
             centroid_ids = np.array(
                 [e.payload.fields.get("_centroid_id", -1) for e in entries],
                 dtype=np.int64,
             )
             cell_pops = idx.cell_populations()
-            weights = VectorFallbackEstimator.index_density_weights(
-                cell_pops, centroid_ids, idx.total_vectors, idx.nlist
+            avg_pop = idx.total_vectors / max(idx.nlist, 1)
+            prior = np.array(
+                [
+                    float(ivf_density_prior(cell_pops.get(int(cid), 1), avg_pop))
+                    for cid in centroid_ids
+                ],
+                dtype=np.float64,
+            )
+            calibrated = vpt.calibrate(
+                distances, method=estimation_method, density_prior=prior
             )
         else:
-            weights = np.ones(len(distances), dtype=np.float64)
+            calibrated = vpt.calibrate(distances, method=estimation_method)
 
-        calibrator = VectorCalibrator(background, estimation_method=estimation_method)
-        calibrated = calibrator.calibrate(distances, weights)
-        cal_probs = [float(p) for p in calibrated]
+        cal_probs = [float(p) for p in np.asarray(calibrated, dtype=np.float64)]
 
         ece_naive = CalibrationMetrics.ece(naive_probs, result_labels)
         ece_cal = CalibrationMetrics.ece(cal_probs, result_labels)
@@ -794,17 +616,16 @@ class TestCalibrationQuality:
         results = idx.search_knn(query, 100)
         entries = list(results)
 
-        bg = BackgroundDistribution.from_ivf_stats(*idx.background_stats)
-        calibrator = VectorCalibrator(bg)
+        bg_stats = idx.background_stats
+        assert bg_stats is not None
+        vpt = VectorProbabilityTransform(*bg_stats)
         sims = np.array([e.payload.score for e in entries], dtype=np.float64)
+        distances = 1.0 - sims
 
-        sorted_idx = np.argsort(1.0 - sims)
-        sorted_dists = (1.0 - sims)[sorted_idx]
-        sorted_w = VectorFallbackEstimator.distance_gap_weights(sorted_dists)
-        weights = np.empty(len(sims), dtype=np.float64)
-        weights[sorted_idx] = sorted_w
-
-        calibrated = calibrator.calibrate(1.0 - sims, weights)
+        calibrated = np.asarray(
+            vpt.calibrate(distances, method="auto"),
+            dtype=np.float64,
+        )
 
         # Top-10 calibrated docs should be mostly relevant.
         order = np.argsort(-calibrated)
@@ -951,7 +772,7 @@ class TestBM25CrossModalWeights:
 
         results = (
             engine.query("papers")
-            .knn_calibrated(
+            .bayesian_knn(
                 query_vec,
                 k=80,
                 field="embedding",
@@ -991,7 +812,7 @@ class TestBM25CrossModalWeights:
 
         results = (
             engine.query("papers")
-            .knn_calibrated(
+            .bayesian_knn(
                 query_vec,
                 k=80,
                 field="embedding",
@@ -1029,7 +850,7 @@ class TestBM25CrossModalWeights:
 
         bm25_entries = list(
             engine.query("papers")
-            .knn_calibrated(
+            .bayesian_knn(
                 query_vec,
                 k=k,
                 field="embedding",
@@ -1090,7 +911,7 @@ class TestBM25CrossModalWeights:
             else:
                 entries = list(
                     engine.query("papers")
-                    .knn_calibrated(
+                    .bayesian_knn(
                         query_vec,
                         k=k,
                         field="embedding",

@@ -765,7 +765,7 @@ class TestFusionLogOdds:
         for row in result:
             assert 0.0 < row["_score"] < 1.0
 
-    def test_knn_calibrated_in_fusion(self, hybrid_engine: Engine) -> None:
+    def test_bayesian_knn_in_fusion(self, hybrid_engine: Engine) -> None:
         """knn_match inside fusion applies P = (1 + cosine_sim) / 2."""
         rng = np.random.RandomState(42)
         qv = rng.randn(8).astype(np.float32)

@@ -258,6 +258,72 @@ class TestAttentionFusionSQL:
         for row in result:
             assert 0.0 < row["_score"] < 1.0
 
+    def test_fuse_attention_normalize_sql(self, engine: Engine) -> None:
+        """fuse_attention with normalize => true (Bayesian-Attn-Norm)."""
+        result = engine.sql(
+            "SELECT title, _score FROM docs WHERE fuse_attention("
+            "  bayesian_match(title, 'machine'),"
+            "  bayesian_match(body, 'neural'),"
+            "  normalized => true,"
+            "  alpha => 0.5"
+            ") ORDER BY _score DESC"
+        )
+        assert len(result) > 0
+        for row in result:
+            assert 0.0 < row["_score"] < 1.0
+
+    def test_fuse_attention_with_base_rate(self, engine: Engine) -> None:
+        """fuse_attention with base_rate option."""
+        result = engine.sql(
+            "SELECT title, _score FROM docs WHERE fuse_attention("
+            "  bayesian_match(title, 'machine'),"
+            "  bayesian_match(body, 'neural'),"
+            "  base_rate => 0.01"
+            ") ORDER BY _score DESC"
+        )
+        assert len(result) > 0
+        for row in result:
+            assert 0.0 < row["_score"] < 1.0
+
+    def test_fuse_multihead_sql(self, engine: Engine) -> None:
+        """fuse_multihead with 4 heads and normalize."""
+        result = engine.sql(
+            "SELECT title, _score FROM docs WHERE fuse_multihead("
+            "  bayesian_match(title, 'machine'),"
+            "  bayesian_match(body, 'neural'),"
+            "  n_heads => 4,"
+            "  normalized => true"
+            ") ORDER BY _score DESC"
+        )
+        assert len(result) > 0
+        for row in result:
+            assert 0.0 < row["_score"] < 1.0
+
+    def test_fuse_multihead_default_heads(self, engine: Engine) -> None:
+        """fuse_multihead with defaults."""
+        result = engine.sql(
+            "SELECT title, _score FROM docs WHERE fuse_multihead("
+            "  bayesian_match(title, 'machine'),"
+            "  bayesian_match(body, 'neural')"
+            ") ORDER BY _score DESC"
+        )
+        assert len(result) > 0
+        for row in result:
+            assert 0.0 < row["_score"] < 1.0
+
+    def test_fuse_learned_with_alpha(self, engine: Engine) -> None:
+        """fuse_learned with alpha option."""
+        result = engine.sql(
+            "SELECT title, _score FROM docs WHERE fuse_learned("
+            "  bayesian_match(title, 'machine'),"
+            "  bayesian_match(body, 'neural'),"
+            "  alpha => 0.7"
+            ") ORDER BY _score DESC"
+        )
+        assert len(result) > 0
+        for row in result:
+            assert 0.0 < row["_score"] < 1.0
+
     def test_fuse_learned_sql(self, engine: Engine) -> None:
         result = engine.sql(
             "SELECT title, _score FROM docs WHERE fuse_learned("
