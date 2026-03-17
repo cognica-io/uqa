@@ -305,9 +305,9 @@ class TestAutoTrain:
         assert idx._centroids is not None
         assert len(idx._centroids) == 4
 
-        # Verify centroids are persisted in SQLite
+        # Verify centroids are persisted in SQLite (exclude sentinel rows)
         row = catalog.conn.execute(
-            'SELECT COUNT(*) FROM "_ivf_centroids_test_emb"'
+            'SELECT COUNT(*) FROM "_ivf_centroids_test_emb" WHERE centroid_id >= 0'
         ).fetchone()
         assert row[0] == 4
         catalog.close()

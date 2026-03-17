@@ -58,7 +58,7 @@ class ParallelExecutor:
     def shutdown(self) -> None:
         """Shut down the persistent thread pool."""
         if self._pool is not None:
-            self._pool.shutdown(wait=False)
+            self._pool.shutdown(wait=True)
             self._pool = None
 
     def execute_branches(

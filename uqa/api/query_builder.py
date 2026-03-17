@@ -108,6 +108,63 @@ class QueryBuilder:
         op = KNNOperator(query, k, field)
         return self._chain(op)
 
+    def knn_calibrated(
+        self,
+        query: NDArray,
+        k: int,
+        field: str = "embedding",
+        *,
+        estimation_method: str = "kde",
+        base_rate: float = 0.5,
+        weight_source: str = "density_prior",
+        bm25_query: str | None = None,
+        bm25_field: str | None = None,
+        density_gamma: float = 1.0,
+        bandwidth_scale: float = 1.0,
+    ) -> QueryBuilder:
+        """KNN with likelihood ratio calibration (Paper 5, Theorem 3.1.1).
+
+        Parameters
+        ----------
+        query : ndarray
+            Query embedding vector.
+        k : int
+            Number of nearest neighbours.
+        field : str
+            Vector field name.
+        estimation_method : str
+            ``"kde"`` or ``"gmm"`` for local density estimation.
+        base_rate : float
+            Prior probability of relevance.
+        weight_source : str
+            ``"bayesian_bm25"`` (cross-modal, Section 4.3),
+            ``"density_prior"``, ``"distance_gap"``, or ``"uniform"``.
+        bm25_query : str or None
+            Query text for BM25 cross-modal weights.
+        bm25_field : str or None
+            Text field for BM25 scoring.
+        density_gamma : float
+            Sensitivity for the IVF density prior.
+        bandwidth_scale : float
+            Multiplier for Silverman bandwidth (Remark 4.4.2).
+            Values < 1.0 sharpen the KDE; values > 1.0 smooth it.
+        """
+        from uqa.operators.calibrated_vector import CalibratedVectorOperator
+
+        op = CalibratedVectorOperator(
+            query_vector=query,
+            k=k,
+            field=field,
+            estimation_method=estimation_method,
+            base_rate=base_rate,
+            weight_source=weight_source,
+            bm25_query=bm25_query,
+            bm25_field=bm25_field,
+            density_gamma=density_gamma,
+            bandwidth_scale=bandwidth_scale,
+        )
+        return self._chain(op)
+
     # -- Boolean algebra --
 
     def and_(self, other: QueryBuilder) -> QueryBuilder:

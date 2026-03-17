@@ -16,12 +16,27 @@ from bayesian_bm25 import (
 
 
 class CalibrationMetrics:
-    """Calibration diagnostics for Bayesian BM25 scoring (Section 11.3, Paper 3).
+    """Calibration diagnostics (Section 11.3 Paper 3; Section 8.3 Paper 5).
 
     Wraps bayesian_bm25 calibration functions into a unified API for
     evaluating how well predicted relevance probabilities match actual
     relevance rates.
     """
+
+    @staticmethod
+    def log_loss(probabilities: list[float], labels: list[int]) -> float:
+        """Negative log-likelihood (log loss).
+
+        Strictly proper scoring rule that penalises the probabilistic
+        model directly.  Lower is better.
+
+        L = -(1/N) * sum[ y_i * log(p_i) + (1 - y_i) * log(1 - p_i) ]
+        """
+        probs = np.clip(np.array(probabilities, dtype=np.float64), 1e-15, 1.0 - 1e-15)
+        lbls = np.array(labels, dtype=np.float64)
+        return float(
+            -np.mean(lbls * np.log(probs) + (1.0 - lbls) * np.log(1.0 - probs))
+        )
 
     @staticmethod
     def ece(probabilities: list[float], labels: list[int], n_bins: int = 10) -> float:

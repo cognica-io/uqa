@@ -59,7 +59,11 @@ Extended functions (WHERE clause):
   bayesian_match(field, 'query')     -- Bayesian BM25 calibrated probability
   bayesian_match_with_prior(field, 'query', prior_field, prior_mode)
                                      -- Bayesian BM25 with external prior
-  knn_match(field, vector, k)        -- KNN vector search
+  knn_match(field, vector, k)        -- KNN vector search (auto-calibrated
+                                        when IVF background stats available)
+  knn_calibrated_match(field, vector, k)
+                                     -- KNN with likelihood ratio calibration
+                                        (Paper 5, Theorem 3.1.1)
   traverse_match(start, 'label', k)  -- graph reachability as a scored signal
   path_filter('path', value)         -- hierarchical path filter (equality)
   path_filter('path', 'op', value)   -- hierarchical path filter with operator
@@ -2741,6 +2745,7 @@ class SQLCompiler:
                     "bayesian_match",
                     "bayesian_match_with_prior",
                     "knn_match",
+                    "knn_calibrated_match",
                     "traverse_match",
                     "spatial_within",
                 ):
@@ -6717,6 +6722,8 @@ class SQLCompiler:
             return self._make_bayesian_with_prior_op(args, ctx)
         if name == "knn_match":
             return self._make_knn_op(args)
+        if name == "knn_calibrated_match":
+            return self._make_calibrated_knn_op(args, ctx, force_calibrated=True)
         if name == "traverse_match":
             return self._make_traverse_match_op(args)
         if name == "temporal_traverse":
@@ -7094,7 +7101,9 @@ class SQLCompiler:
 
         - text_match -> Bayesian BM25 (not raw BM25)
         - bayesian_match -> Bayesian BM25 (already calibrated)
-        - knn_match -> cosine similarity mapped via P = (1 + sim) / 2
+        - knn_match -> likelihood ratio calibration when IVF background
+          stats are available, otherwise linear rescaling (Paper 3)
+        - knn_calibrated_match -> always likelihood ratio (Paper 5)
         - traverse_match -> graph reachability score 0.9 (already calibrated)
         """
         name = node.funcname[-1].sval.lower()
@@ -7109,7 +7118,9 @@ class SQLCompiler:
             query = self._extract_string_value(args[1])
             return self._make_text_search_op(field_name, query, ctx, bayesian=True)
         if name == "knn_match":
-            return self._make_calibrated_knn_op(args)
+            return self._make_calibrated_knn_op(args, ctx)
+        if name == "knn_calibrated_match":
+            return self._make_calibrated_knn_op(args, ctx, force_calibrated=True)
         if name == "traverse_match":
             return self._make_traverse_match_op(args)
         if name == "spatial_within":
@@ -7126,15 +7137,23 @@ class SQLCompiler:
             return self._make_message_passing_op(args)
         raise ValueError(
             f"Unknown signal function for fusion: {name}. "
-            f"Use text_match, bayesian_match, knn_match, traverse_match, "
+            f"Use text_match, bayesian_match, knn_match, "
+            f"knn_calibrated_match, traverse_match, "
             f"spatial_within, pagerank, hits, betweenness, or weighted_rpq."
         )
 
-    def _make_calibrated_knn_op(self, args: tuple) -> Any:
-        """KNN search with scores calibrated to probabilities via
-        P_vector = (1 + cosine_similarity) / 2 (Definition 7.1.2, Paper 3).
+    def _make_calibrated_knn_op(
+        self,
+        args: tuple,
+        ctx: ExecutionContext,
+        *,
+        force_calibrated: bool = False,
+    ) -> Any:
+        """KNN search with calibrated probability scores.
 
-        knn_match(field, vector, k) -- same signature as _make_knn_op.
+        When IVF background statistics are available (or *force_calibrated*
+        is set), uses likelihood ratio calibration (Theorem 3.1.1, Paper 5).
+        Otherwise falls back to linear rescaling P = (1 + cos) / 2.
         """
         if len(args) != 3:
             raise ValueError(
@@ -7143,6 +7162,21 @@ class SQLCompiler:
         field_name = self._extract_column_name(args[0])
         query_vector = self._extract_vector_arg(args[1])
         k = self._extract_int_value(args[2])
+
+        # Check whether the IVF index has background stats for Paper 5
+        # calibration.  If so, use CalibratedVectorOperator; otherwise
+        # fall back to the linear rescaling operator.
+        vec_idx = ctx.vector_indexes.get(field_name)
+        has_bg = (
+            vec_idx is not None
+            and hasattr(vec_idx, "background_stats")
+            and vec_idx.background_stats is not None  # type: ignore[union-attr]
+        )
+
+        if has_bg or force_calibrated:
+            from uqa.operators.calibrated_vector import CalibratedVectorOperator
+
+            return CalibratedVectorOperator(query_vector, k, field=field_name)
         return _CalibratedKNNOperator(query_vector, k, field=field_name)
 
     def _make_prob_not_op(self, args: tuple, ctx: ExecutionContext) -> Any:
@@ -8060,10 +8094,17 @@ class SQLCompiler:
             return node.fields[-1].sval
         raise ValueError(f"Expected string constant, got {type(node).__name__}")
 
-    @staticmethod
-    def _extract_int_value(node: Any) -> int:
+    def _extract_int_value(self, node: Any) -> int:
         if isinstance(node, A_Const) and isinstance(node.val, PgInteger):
             return node.val.ival
+        if isinstance(node, ParamRef):
+            idx = node.number - 1
+            if idx < 0 or idx >= len(self._params):
+                raise ValueError(f"No value supplied for parameter ${node.number}")
+            val = self._params[idx]
+            if isinstance(val, float) and val == int(val):
+                return int(val)
+            return int(val)
         raise ValueError(f"Expected integer constant, got {type(node).__name__}")
 
     def _extract_vector_arg(self, node: Any) -> Any:

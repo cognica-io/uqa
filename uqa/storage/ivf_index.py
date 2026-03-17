@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from uqa.storage.managed_connection import SQLiteConnection
 
 _UNTRAINED_CENTROID_ID = -1
+_BACKGROUND_STATS_ID = -2
 
 
 class _State(enum.Enum):
@@ -79,6 +80,8 @@ class IVFIndex(VectorIndex):
         self._state = _State.UNTRAINED
         self._total_vectors = 0
         self._deletes_since_train = 0
+        self._background_mu: float | None = None
+        self._background_sigma: float | None = None
 
         self._load_state()
 
@@ -86,6 +89,37 @@ class IVFIndex(VectorIndex):
     def train_threshold(self) -> int:
         """Minimum vector count before training triggers."""
         return max(2 * self._nlist, 256)
+
+    @property
+    def nlist(self) -> int:
+        """Number of IVF cells (centroids)."""
+        return self._nlist
+
+    @property
+    def total_vectors(self) -> int:
+        """Number of live vectors in the index."""
+        return self._total_vectors
+
+    @property
+    def background_stats(self) -> tuple[float, float] | None:
+        """Background distance distribution parameters (mu_G, sigma_G).
+
+        Computed at train time from random query top-K distances
+        (Definition 4.5.1).  Returns None if the index has not been
+        trained or if no statistics are available.
+        """
+        if self._background_mu is not None and self._background_sigma is not None:
+            return (self._background_mu, self._background_sigma)
+        return None
+
+    @property
+    def background_samples(self) -> NDArray | None:
+        """Raw distance samples underlying the background distribution.
+
+        These are top-K distances from random queries, used to build
+        a KDE for f_G (Definition 4.5.1).
+        """
+        return self._background_samples
 
     # ------------------------------------------------------------------
     # SQLite DDL
@@ -118,7 +152,7 @@ class IVFIndex(VectorIndex):
     # ------------------------------------------------------------------
 
     def _load_state(self) -> None:
-        """Restore centroids and counts from SQLite."""
+        """Restore centroids, background stats, and counts from SQLite."""
         # Count total live vectors.
         row = self._conn.execute(
             f'SELECT COUNT(*) FROM "{self._lists_table}"'
@@ -133,11 +167,24 @@ class IVFIndex(VectorIndex):
         if rows:
             n = len(rows)
             self._centroids = np.empty((n, self.dimensions), dtype=np.float32)
-            for i, (_cid, blob) in enumerate(rows):
+            for i, (_, blob) in enumerate(rows):
                 self._centroids[i] = np.frombuffer(blob, dtype=np.float32)
             self._state = _State.TRAINED
         else:
             self._state = _State.UNTRAINED
+
+        # Load background distance distribution stats and samples.
+        self._background_samples: np.ndarray | None = None
+        bg_row = self._conn.execute(
+            f'SELECT centroid FROM "{self._centroids_table}" WHERE centroid_id = ?',
+            (_BACKGROUND_STATS_ID,),
+        ).fetchone()
+        if bg_row is not None:
+            blob = np.frombuffer(bg_row[0], dtype=np.float64)
+            self._background_mu = float(blob[0])
+            self._background_sigma = float(blob[1])
+            if len(blob) > 2:
+                self._background_samples = blob[2:].copy()
 
     # ------------------------------------------------------------------
     # VectorIndex interface
@@ -203,6 +250,9 @@ class IVFIndex(VectorIndex):
         self._state = _State.UNTRAINED
         self._total_vectors = 0
         self._deletes_since_train = 0
+        self._background_mu = None
+        self._background_sigma = None
+        self._background_samples = None
 
     def search_knn(self, query: NDArray, k: int) -> PostingList:
         if self._total_vectors == 0:
@@ -318,6 +368,45 @@ class IVFIndex(VectorIndex):
     # IVF search (TRAINED state)
     # ------------------------------------------------------------------
 
+    def probed_distances(self, query: NDArray) -> NDArray:
+        """Return cosine distances to ALL vectors in the probed cells.
+
+        This is the background distance distribution f_G for a specific
+        query (Section 6.2b) -- the distances that the IVF search
+        already computes but normally discards beyond the top-K.
+        """
+        q = np.asarray(query, dtype=np.float32)
+        norm = np.linalg.norm(q)
+        if norm > 0:
+            q = q / norm
+
+        if self._state != _State.TRAINED or self._centroids is None:
+            # Brute-force: scan all vectors.
+            rows = self._conn.execute(
+                f'SELECT embedding FROM "{self._lists_table}"'
+            ).fetchall()
+            if not rows:
+                return np.empty(0, dtype=np.float32)
+            data = np.empty((len(rows), self.dimensions), dtype=np.float32)
+            for i, (blob,) in enumerate(rows):
+                data[i] = np.frombuffer(blob, dtype=np.float32)
+            return 1.0 - (data @ q)
+
+        centroid_ids = self._nearest_centroids(q, self._nprobe)
+        centroid_ids_with_untrained = [*centroid_ids, _UNTRAINED_CENTROID_ID]
+        placeholders = ",".join("?" * len(centroid_ids_with_untrained))
+        rows = self._conn.execute(
+            f'SELECT embedding FROM "{self._lists_table}" '
+            f"WHERE centroid_id IN ({placeholders})",
+            tuple(centroid_ids_with_untrained),
+        ).fetchall()
+        if not rows:
+            return np.empty(0, dtype=np.float32)
+        data = np.empty((len(rows), self.dimensions), dtype=np.float32)
+        for i, (blob,) in enumerate(rows):
+            data[i] = np.frombuffer(blob, dtype=np.float32)
+        return 1.0 - (data @ q)
+
     def _ivf_knn(self, q: NDArray, k: int) -> PostingList:
         centroid_ids = self._nearest_centroids(q, self._nprobe)
 
@@ -327,7 +416,7 @@ class IVFIndex(VectorIndex):
 
         placeholders = ",".join("?" * len(centroid_ids_with_untrained))
         rows = self._conn.execute(
-            f'SELECT doc_id, embedding FROM "{self._lists_table}" '
+            f'SELECT centroid_id, doc_id, embedding FROM "{self._lists_table}" '
             f"WHERE centroid_id IN ({placeholders})",
             tuple(centroid_ids_with_untrained),
         ).fetchall()
@@ -336,9 +425,10 @@ class IVFIndex(VectorIndex):
             return PostingList()
 
         n = len(rows)
-        doc_ids = [r[0] for r in rows]
+        cell_ids = [r[0] for r in rows]
+        doc_ids = [r[1] for r in rows]
         data = np.empty((n, self.dimensions), dtype=np.float32)
-        for i, (_did, blob) in enumerate(rows):
+        for i, (_, _, blob) in enumerate(rows):
             data[i] = np.frombuffer(blob, dtype=np.float32)
 
         sims = data @ q
@@ -350,7 +440,14 @@ class IVFIndex(VectorIndex):
             top_indices = top_indices[np.argsort(sims[top_indices])[::-1]]
 
         entries = [
-            PostingEntry(doc_ids[i], Payload(score=float(sims[i]))) for i in top_indices
+            PostingEntry(
+                doc_ids[i],
+                Payload(
+                    score=float(sims[i]),
+                    fields={"_centroid_id": cell_ids[i]},
+                ),
+            )
+            for i in top_indices
         ]
         return PostingList(entries)
 
@@ -360,7 +457,7 @@ class IVFIndex(VectorIndex):
 
         placeholders = ",".join("?" * len(centroid_ids_with_untrained))
         rows = self._conn.execute(
-            f'SELECT doc_id, embedding FROM "{self._lists_table}" '
+            f'SELECT centroid_id, doc_id, embedding FROM "{self._lists_table}" '
             f"WHERE centroid_id IN ({placeholders})",
             tuple(centroid_ids_with_untrained),
         ).fetchall()
@@ -369,15 +466,22 @@ class IVFIndex(VectorIndex):
             return PostingList()
 
         n = len(rows)
-        doc_ids = [r[0] for r in rows]
+        cell_ids = [r[0] for r in rows]
+        doc_ids = [r[1] for r in rows]
         data = np.empty((n, self.dimensions), dtype=np.float32)
-        for i, (_did, blob) in enumerate(rows):
+        for i, (_, _, blob) in enumerate(rows):
             data[i] = np.frombuffer(blob, dtype=np.float32)
 
         sims = data @ q
         mask = sims >= threshold
         entries = [
-            PostingEntry(doc_ids[i], Payload(score=float(sims[i])))
+            PostingEntry(
+                doc_ids[i],
+                Payload(
+                    score=float(sims[i]),
+                    fields={"_centroid_id": cell_ids[i]},
+                ),
+            )
             for i in np.where(mask)[0]
         ]
         return PostingList(entries)
@@ -385,6 +489,18 @@ class IVFIndex(VectorIndex):
     # ------------------------------------------------------------------
     # k-means training
     # ------------------------------------------------------------------
+
+    def cell_populations(self) -> dict[int, int]:
+        """Return the number of vectors in each IVF cell.
+
+        Returns a mapping from centroid_id to population count.
+        Only includes cells with centroid_id >= 0 (trained cells).
+        """
+        rows = self._conn.execute(
+            f'SELECT centroid_id, COUNT(*) FROM "{self._lists_table}" '
+            f"WHERE centroid_id >= 0 GROUP BY centroid_id"
+        ).fetchall()
+        return dict(rows)
 
     def _train(self) -> None:
         """Run k-means on all vectors and reassign posting lists."""
@@ -397,7 +513,7 @@ class IVFIndex(VectorIndex):
         n = len(rows)
         doc_ids = [r[0] for r in rows]
         data = np.empty((n, self.dimensions), dtype=np.float32)
-        for i, (_did, blob) in enumerate(rows):
+        for i, (_, blob) in enumerate(rows):
             data[i] = np.frombuffer(blob, dtype=np.float32)
 
         actual_nlist = min(self._nlist, n)
@@ -422,6 +538,55 @@ class IVFIndex(VectorIndex):
         self._conn.executemany(
             f'UPDATE "{self._lists_table}" SET centroid_id = ? WHERE doc_id = ?',
             [(int(best[j]), doc_id) for j, doc_id in enumerate(doc_ids)],
+        )
+
+        # Estimate background distance distribution f_G from random
+        # query top-K distances (Definition 4.5.1).  We simulate random
+        # queries, find their nearest neighbours in the corpus, and
+        # collect the resulting distances.  This captures "what top-K
+        # distances look like for a typical query" -- the correct
+        # domain for the likelihood ratio denominator.
+        data_seed = int(np.abs(data[:8].sum() * 1e6)) % (2**31)
+        bg_rng = np.random.RandomState(data_seed)
+        n_random_queries = 100
+        k_per_query = min(50, n)
+        random_queries = bg_rng.randn(n_random_queries, self.dimensions).astype(
+            np.float32
+        )
+        norms = np.linalg.norm(random_queries, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-30)
+        random_queries /= norms
+
+        # Compute similarities for each random query and take the
+        # top-k distances.
+        all_bg_dists: list[float] = []
+        for rq in random_queries:
+            sims_rq = data @ rq  # (n,)
+            if k_per_query >= n:
+                top_sims = sims_rq
+            else:
+                top_idx = np.argpartition(sims_rq, -k_per_query)[-k_per_query:]
+                top_sims = sims_rq[top_idx]
+            all_bg_dists.extend((1.0 - top_sims).tolist())
+
+        bg_samples = np.array(all_bg_dists, dtype=np.float64)
+        self._background_mu = float(np.mean(bg_samples))
+        self._background_sigma = max(float(np.std(bg_samples)), 1e-10)
+        self._background_samples = bg_samples
+
+        # Persist: mu, sigma, and the raw samples for KDE evaluation.
+        bg_blob = np.concatenate(
+            [
+                np.array(
+                    [self._background_mu, self._background_sigma], dtype=np.float64
+                ),
+                bg_samples,
+            ]
+        ).tobytes()
+        self._conn.execute(
+            f'INSERT OR REPLACE INTO "{self._centroids_table}" '
+            f"(centroid_id, centroid) VALUES (?, ?)",
+            (_BACKGROUND_STATS_ID, bg_blob),
         )
 
         self._conn.commit()

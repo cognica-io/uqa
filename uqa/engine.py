@@ -712,6 +712,24 @@ class Engine:
         probabilities = [score_map.get(did, 0.0) for did in doc_ids]
         return CalibrationMetrics.report(probabilities, labels)
 
+    # -- Vector calibration (Paper 5) ----------------------------------
+
+    def vector_background_stats(
+        self, table: str, field: str
+    ) -> tuple[float, float] | None:
+        """Return the IVF background distribution (mu_G, sigma_G).
+
+        Returns ``None`` if the IVF index for the given table/field has
+        not been trained or no background statistics are available.
+        """
+        tbl = self._tables.get(table)
+        if tbl is None:
+            return None
+        vec_idx = tbl.vector_indexes.get(field)
+        if vec_idx is not None and hasattr(vec_idx, "background_stats"):
+            return vec_idx.background_stats  # type: ignore[return-value]
+        return None
+
     # -- Transaction interface -----------------------------------------
 
     def begin(self) -> Transaction:
@@ -768,6 +786,11 @@ class Engine:
         for table_name in list(self._temp_tables):
             self._tables.pop(table_name, None)
         self._temp_tables.clear()
+
+        # Shut down the parallel executor thread pool before closing
+        # the catalog connection to avoid SQLite access from orphaned
+        # threads.
+        self._parallel_executor.shutdown()
 
         if self._catalog is not None:
             self._catalog.close()
