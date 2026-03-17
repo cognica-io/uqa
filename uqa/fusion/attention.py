@@ -139,8 +139,8 @@ class MultiHeadAttentionFusion:
         """Fuse signals using multi-head attention."""
         probs = np.array(probabilities).reshape(1, -1)
         features = np.array(query_features).reshape(1, -1)
-        result = self._mh(probs, features, use_averaged=False)
-        return float(result[0])
+        result = np.asarray(self._mh(probs, features, use_averaged=False))
+        return float(result.flat[0])
 
     def fit(
         self,
