@@ -2,7 +2,13 @@
 
 ## 0.20.0 (2026-03-18)
 
-Named graphs as primary abstraction, index-aware Bayesian calibration of vector similarity scores (Paper 5), performance regression fixes, and 20 paper-to-code improvements across all five papers. Named graphs replace the flat global graph store with per-graph partitioned adjacency indexes. Graph operators, indexes, and SQL functions are graph-scoped.
+Named graphs as primary abstraction, index-aware Bayesian calibration of vector similarity scores (Paper 5), performance regression fixes, and 20 paper-to-code improvements across all five papers. Named graphs replace the flat global graph store with per-graph partitioned adjacency indexes. Graph operators, indexes, and SQL functions are graph-scoped. Three new showcase examples demonstrate cross-paradigm unification, Bayesian calibration, and neural network emergence.
+
+### Showcase Examples
+
+- **`examples/showcase/knowledge_discovery.py`**: Progressive four-paradigm unification with 15 landmark ML papers. Demonstrates SQL filtering, FTS (text_match/bayesian_match), vector KNN, graph (PageRank/RPQ), Cypher pattern matching, three-signal log-odds fusion with relational filter, and EXPLAIN plans showing unified posting list operators.
+- **`examples/showcase/calibration_matters.py`**: Side-by-side comparison of naive score addition vs Bayesian fusion. Shows signal dominance (BM25 >> cosine similarity), four fusion strategies (naive/log_odds/prob_and/prob_or), CalibrationMetrics (ECE, Brier, reliability diagram), and online parameter learning.
+- **`examples/showcase/bayesian_neural.py`**: Step-by-step demonstration that Bayesian multi-signal fusion IS a feedforward neural network (Paper 4). Traces raw scores through sigmoid calibration, logit transform, linear aggregation, and sigmoid output. Compares gating functions (none/ReLU/Swish), fuse_attention as Logarithmic Opinion Pooling, and staged_retrieval as multi-layer depth.
 
 ### Vector Calibration (Paper 5)
 
