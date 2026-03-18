@@ -1061,9 +1061,13 @@ SELECT _doc_id, title, _score FROM betweenness() ORDER BY _score DESC;
 -- PageRank as WHERE signal (combined with relational filter)
 SELECT title, year, _score FROM papers WHERE pagerank() AND year >= 2020 ORDER BY _score DESC;
 
--- Centrality as fusion signal
+-- PageRank with named graph in WHERE signal
+SELECT title, _score FROM papers WHERE pagerank('social') ORDER BY _score DESC;
+SELECT title, _score FROM papers WHERE pagerank(0.90, 50, 1e-5, 'social') ORDER BY _score DESC;
+
+-- Centrality as fusion signal (with optional named graph)
 SELECT title, _score FROM papers
-WHERE fuse_log_odds(text_match(title, 'attention'), pagerank()) ORDER BY _score DESC;
+WHERE fuse_log_odds(text_match(title, 'attention'), pagerank('social')) ORDER BY _score DESC;
 ```
 
 ### Weighted Path Query

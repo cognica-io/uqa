@@ -7371,44 +7371,80 @@ class SQLCompiler:
 
         return MultiStageOperator(stages)
 
+    def _split_centrality_args(self, args: tuple) -> tuple[list, str]:
+        """Split centrality signal args into numeric args and graph name.
+
+        Returns (numeric_args, graph_name) where graph_name falls back to
+        ``_current_graph_name`` when no string argument is provided.
+        """
+        numeric: list = []
+        graph_name = self._current_graph_name
+        for a in args:
+            try:
+                val = self._extract_const_value(a)
+                if isinstance(val, str):
+                    graph_name = val
+                    continue
+            except (ValueError, TypeError, AttributeError):
+                pass
+            numeric.append(a)
+        return numeric, graph_name
+
     def _make_pagerank_op(self, args: tuple) -> Any:
-        """pagerank([damping[, max_iterations[, tolerance]]])
+        """pagerank([damping[, max_iterations[, tolerance]]][, 'graph'])
 
         Graph centrality scoring via power iteration.
         """
         from uqa.graph.centrality import PageRankOperator
 
-        damping = float(self._extract_const_value(args[0])) if len(args) > 0 else 0.85
-        max_iter = self._extract_int_value(args[1]) if len(args) > 1 else 100
-        tol = float(self._extract_const_value(args[2])) if len(args) > 2 else 1e-6
+        numeric_args, graph_name = self._split_centrality_args(args)
+        damping = (
+            float(self._extract_const_value(numeric_args[0]))
+            if len(numeric_args) > 0
+            else 0.85
+        )
+        max_iter = (
+            self._extract_int_value(numeric_args[1]) if len(numeric_args) > 1 else 100
+        )
+        tol = (
+            float(self._extract_const_value(numeric_args[2]))
+            if len(numeric_args) > 2
+            else 1e-6
+        )
         return PageRankOperator(
             damping=damping,
             max_iterations=max_iter,
             tolerance=tol,
-            graph=self._current_graph_name,
+            graph=graph_name,
         )
 
     def _make_hits_op(self, args: tuple) -> Any:
-        """hits([max_iterations[, tolerance]])
+        """hits([max_iterations[, tolerance]][, 'graph'])
 
         HITS hub/authority scoring.
         """
         from uqa.graph.centrality import HITSOperator
 
-        max_iter = self._extract_int_value(args[0]) if len(args) > 0 else 100
-        tol = float(self._extract_const_value(args[1])) if len(args) > 1 else 1e-6
-        return HITSOperator(
-            max_iterations=max_iter, tolerance=tol, graph=self._current_graph_name
+        numeric_args, graph_name = self._split_centrality_args(args)
+        max_iter = (
+            self._extract_int_value(numeric_args[0]) if len(numeric_args) > 0 else 100
         )
+        tol = (
+            float(self._extract_const_value(numeric_args[1]))
+            if len(numeric_args) > 1
+            else 1e-6
+        )
+        return HITSOperator(max_iterations=max_iter, tolerance=tol, graph=graph_name)
 
-    def _make_betweenness_op(self, _args: tuple) -> Any:
-        """betweenness()
+    def _make_betweenness_op(self, args: tuple) -> Any:
+        """betweenness(['graph'])
 
         Betweenness centrality via Brandes algorithm.
         """
         from uqa.graph.centrality import BetweennessCentralityOperator
 
-        return BetweennessCentralityOperator(graph=self._current_graph_name)
+        _, graph_name = self._split_centrality_args(args)
+        return BetweennessCentralityOperator(graph=graph_name)
 
     def _make_weighted_rpq_op(self, args: tuple) -> Any:
         """weighted_rpq('path_expr', start, 'weight_prop'[, 'agg_fn'[, threshold]])

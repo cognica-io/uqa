@@ -1,5 +1,16 @@
 # History
 
+## 0.20.1 (2026-03-18)
+
+Named graph support for centrality signal functions in WHERE clause and fusion contexts.
+
+### Named Graph Support in Signal Context
+
+- **`pagerank([damping[, iter[, tol]]][, 'graph'])`**: Accepts an optional graph name in WHERE clause and fusion signal contexts. Previously only the FROM-clause variant accepted a graph name; signal functions implicitly used the current table's graph.
+- **`hits([iter[, tol]][, 'graph'])`**: Same named graph support in signal context.
+- **`betweenness(['graph'])`**: Same named graph support in signal context.
+- **`_split_centrality_args()`**: Shared helper that separates numeric arguments from the string graph name argument. Falls back to `_current_graph_name` when no string argument is provided.
+
 ## 0.20.0 (2026-03-18)
 
 Named graphs as primary abstraction, index-aware Bayesian calibration of vector similarity scores (Paper 5), performance regression fixes, and 20 paper-to-code improvements across all five papers. Named graphs replace the flat global graph store with per-graph partitioned adjacency indexes. Graph operators, indexes, and SQL functions are graph-scoped. Three new showcase examples demonstrate cross-paradigm unification, Bayesian calibration, and neural network emergence.

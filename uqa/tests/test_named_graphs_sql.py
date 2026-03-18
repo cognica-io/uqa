@@ -947,6 +947,59 @@ class TestDirectGraphName:
         ids = {row["_doc_id"] for row in result.rows}
         assert 2 in ids
 
+    def test_pagerank_signal_named_graph(self) -> None:
+        """pagerank() in WHERE clause should accept a named graph argument."""
+        engine = Engine()
+        engine.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, name TEXT)")
+        engine.sql("INSERT INTO docs (name) VALUES ('A'), ('B'), ('C')")
+        for i in range(1, 4):
+            engine.sql(f"SELECT * FROM graph_add_vertex({i}, 'node', 'docs')")
+        engine.sql("SELECT * FROM graph_add_edge(1, 1, 2, 'link', 'docs')")
+        engine.sql("SELECT * FROM graph_add_edge(2, 2, 3, 'link', 'docs')")
+        engine.sql("SELECT * FROM graph_add_edge(3, 3, 1, 'link', 'docs')")
+        result = engine.sql("SELECT name, _score FROM docs WHERE pagerank('docs')")
+        assert len(result.rows) == 3
+        for row in result.rows:
+            assert 0.0 <= row["_score"] <= 1.0
+
+    def test_pagerank_signal_named_graph_with_params(self) -> None:
+        """pagerank(damping, max_iter, tol, 'graph') in WHERE clause."""
+        engine = Engine()
+        engine.sql("CREATE TABLE docs2 (id SERIAL PRIMARY KEY, name TEXT)")
+        engine.sql("INSERT INTO docs2 (name) VALUES ('X'), ('Y'), ('Z')")
+        for i in range(1, 4):
+            engine.sql(f"SELECT * FROM graph_add_vertex({i}, 'node', 'docs2')")
+        engine.sql("SELECT * FROM graph_add_edge(1, 1, 2, 'link', 'docs2')")
+        engine.sql("SELECT * FROM graph_add_edge(2, 2, 3, 'link', 'docs2')")
+        result = engine.sql(
+            "SELECT name, _score FROM docs2 WHERE pagerank(0.90, 50, 1e-5, 'docs2')"
+        )
+        assert len(result.rows) > 0
+
+    def test_hits_signal_named_graph(self) -> None:
+        """hits() in WHERE clause should accept a named graph argument."""
+        engine = Engine()
+        engine.sql("CREATE TABLE hdocs (id SERIAL PRIMARY KEY, name TEXT)")
+        engine.sql("INSERT INTO hdocs (name) VALUES ('A'), ('B'), ('C')")
+        for i in range(1, 4):
+            engine.sql(f"SELECT * FROM graph_add_vertex({i}, 'node', 'hdocs')")
+        engine.sql("SELECT * FROM graph_add_edge(1, 1, 2, 'link', 'hdocs')")
+        engine.sql("SELECT * FROM graph_add_edge(2, 2, 3, 'link', 'hdocs')")
+        result = engine.sql("SELECT name, _score FROM hdocs WHERE hits('hdocs')")
+        assert len(result.rows) > 0
+
+    def test_betweenness_signal_named_graph(self) -> None:
+        """betweenness() in WHERE clause should accept a named graph argument."""
+        engine = Engine()
+        engine.sql("CREATE TABLE bdocs (id SERIAL PRIMARY KEY, name TEXT)")
+        engine.sql("INSERT INTO bdocs (name) VALUES ('A'), ('B'), ('C')")
+        for i in range(1, 4):
+            engine.sql(f"SELECT * FROM graph_add_vertex({i}, 'node', 'bdocs')")
+        engine.sql("SELECT * FROM graph_add_edge(1, 1, 2, 'link', 'bdocs')")
+        engine.sql("SELECT * FROM graph_add_edge(2, 2, 3, 'link', 'bdocs')")
+        result = engine.sql("SELECT name, _score FROM bdocs WHERE betweenness('bdocs')")
+        assert len(result.rows) > 0
+
     def test_nonexistent_graph_without_prefix_fails(self) -> None:
         """Error for names that are neither table nor named graph."""
         engine = Engine()

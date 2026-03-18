@@ -270,7 +270,7 @@ uqa/
                   information-theoretic bounds, graph cost model
   sql/            SQL compiler (pglast), expression evaluator, FTS query parser, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          2597 tests across 78 test files
+  tests/          2639 tests across 79 test files
 benchmarks/       309 pytest-benchmark tests across 15 files (posting list, storage, compiler,
                   execution, planner, scoring, graph, graph centrality, end-to-end SQL,
                   calibration, multi-field, external prior, advanced scoring, advanced graph,
@@ -325,9 +325,9 @@ benchmarks/       309 pytest-benchmark tests across 15 files (posting list, stor
 | `message_passing(k, agg, property)` | GNN k-layer neighbor aggregation |
 | `graph_embedding(dims, k)` | Structural graph embeddings |
 | `vector_exclude(f, pos, neg, k, theta)` | Vector exclusion: positive minus negative similarity |
-| `pagerank([damping[, iter[, tol]]])` | PageRank centrality scoring |
-| `hits([iter[, tol]])` | HITS hub/authority scoring |
-| `betweenness()` | Betweenness centrality (Brandes) |
+| `pagerank([damping[, iter[, tol]]][, 'graph'])` | PageRank centrality scoring |
+| `hits([iter[, tol]][, 'graph'])` | HITS hub/authority scoring |
+| `betweenness(['graph'])` | Betweenness centrality (Brandes) |
 | `weighted_rpq('expr', start, 'prop'[, 'agg'[, threshold]])` | Weighted RPQ with aggregate predicates |
 
 ### Fusion Meta-Functions
