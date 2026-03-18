@@ -130,6 +130,7 @@ class GraphStore:
         self._edge_membership: dict[int, set[str]] = defaultdict(set)
         self._next_vertex_id: int = 1
         self._next_edge_id: int = 1
+        self._cached_partition: tuple[str, _GraphPartition] | None = None
 
     # --- Graph lifecycle ---
 
@@ -137,8 +138,10 @@ class GraphStore:
         if name in self._graphs:
             raise ValueError(f"Graph '{name}' already exists")
         self._graphs[name] = _GraphPartition()
+        self._cached_partition = None
 
     def drop_graph(self, name: str) -> None:
+        self._cached_partition = None
         partition = self._graphs.pop(name, None)
         if partition is None:
             raise ValueError(f"Graph '{name}' does not exist")
@@ -168,8 +171,8 @@ class GraphStore:
 
     def union_graphs(self, g1: str, g2: str, target: str) -> None:
         """Create target graph as union of g1 and g2."""
-        p1 = self._require_graph(g1)
-        p2 = self._require_graph(g2)
+        p1 = self._get_partition(g1)
+        p2 = self._get_partition(g2)
         self._ensure_graph(target)
         tp = self._graphs[target]
         for vid in p1.vertex_ids | p2.vertex_ids:
@@ -185,8 +188,8 @@ class GraphStore:
 
     def intersect_graphs(self, g1: str, g2: str, target: str) -> None:
         """Create target graph as intersection of g1 and g2."""
-        p1 = self._require_graph(g1)
-        p2 = self._require_graph(g2)
+        p1 = self._get_partition(g1)
+        p2 = self._get_partition(g2)
         self._ensure_graph(target)
         tp = self._graphs[target]
         for vid in p1.vertex_ids & p2.vertex_ids:
@@ -202,8 +205,8 @@ class GraphStore:
 
     def difference_graphs(self, g1: str, g2: str, target: str) -> None:
         """Create target graph as g1 - g2."""
-        p1 = self._require_graph(g1)
-        p2 = self._require_graph(g2)
+        p1 = self._get_partition(g1)
+        p2 = self._get_partition(g2)
         self._ensure_graph(target)
         tp = self._graphs[target]
         for vid in p1.vertex_ids - p2.vertex_ids:
@@ -219,7 +222,7 @@ class GraphStore:
 
     def copy_graph(self, source: str, target: str) -> None:
         """Copy source graph to target graph."""
-        sp = self._require_graph(source)
+        sp = self._get_partition(source)
         self._ensure_graph(target)
         tp = self._graphs[target]
         for vid in sp.vertex_ids:
@@ -238,10 +241,16 @@ class GraphStore:
     def add_vertex(self, vertex: Vertex, *, graph: str) -> None:
         vid = vertex.vertex_id
         self._vertices[vid] = vertex
-        partition = self._graphs.get(graph)
-        if partition is None:
-            partition = _GraphPartition()
-            self._graphs[graph] = partition
+        # Fast path: use cached partition for repeated inserts to same graph.
+        cached = self._cached_partition
+        if cached is not None and cached[0] is graph:
+            partition = cached[1]
+        else:
+            partition = self._graphs.get(graph)
+            if partition is None:
+                partition = _GraphPartition()
+                self._graphs[graph] = partition
+            self._cached_partition = (graph, partition)
         partition.vertex_ids.add(vid)
         partition.vertex_label_index[vertex.label].add(vid)
         self._vertex_membership[vid].add(graph)
@@ -251,10 +260,15 @@ class GraphStore:
     def add_edge(self, edge: Edge, *, graph: str) -> None:
         eid = edge.edge_id
         self._edges[eid] = edge
-        partition = self._graphs.get(graph)
-        if partition is None:
-            partition = _GraphPartition()
-            self._graphs[graph] = partition
+        cached = self._cached_partition
+        if cached is not None and cached[0] is graph:
+            partition = cached[1]
+        else:
+            partition = self._graphs.get(graph)
+            if partition is None:
+                partition = _GraphPartition()
+                self._graphs[graph] = partition
+            self._cached_partition = (graph, partition)
         partition.edge_ids.add(eid)
         partition.adj_out[edge.source_id].add(eid)
         partition.adj_in[edge.target_id].add(eid)
@@ -264,7 +278,7 @@ class GraphStore:
             self._next_edge_id = eid + 1
 
     def remove_vertex(self, vertex_id: int, *, graph: str) -> None:
-        partition = self._require_graph(graph)
+        partition = self._get_partition(graph)
         if vertex_id not in partition.vertex_ids:
             return
         partition.remove_vertex(vertex_id, self._edges)
@@ -276,7 +290,7 @@ class GraphStore:
                 self._vertex_membership.pop(vertex_id, None)
 
     def remove_edge(self, edge_id: int, *, graph: str) -> None:
-        partition = self._require_graph(graph)
+        partition = self._get_partition(graph)
         edge = self._edges.get(edge_id)
         if edge is None or edge_id not in partition.edge_ids:
             return
@@ -298,9 +312,14 @@ class GraphStore:
         *,
         graph: str,
     ) -> list[int]:
-        partition = self._graphs.get(graph)
-        if partition is None:
-            raise ValueError(f"Graph '{graph}' does not exist")
+        cached = self._cached_partition
+        if cached is not None and cached[0] is graph:
+            partition = cached[1]
+        else:
+            partition = self._graphs.get(graph)
+            if partition is None:
+                raise ValueError(f"Graph '{graph}' does not exist")
+            self._cached_partition = (graph, partition)
         if direction == "out":
             edge_ids = partition.adj_out.get(vertex_id, _EMPTY_SET)
         else:
@@ -315,10 +334,10 @@ class GraphStore:
         return result
 
     def vertices_by_label(self, label: str, *, graph: str) -> list[Vertex]:
-        return self._require_graph(graph).vertices_by_label(label, self._vertices)
+        return self._get_partition(graph).vertices_by_label(label, self._vertices)
 
     def vertices_in_graph(self, graph: str) -> list[Vertex]:
-        partition = self._require_graph(graph)
+        partition = self._get_partition(graph)
         return [
             self._vertices[vid]
             for vid in sorted(partition.vertex_ids)
@@ -326,7 +345,7 @@ class GraphStore:
         ]
 
     def edges_in_graph(self, graph: str) -> list[Edge]:
-        partition = self._require_graph(graph)
+        partition = self._get_partition(graph)
         return [
             self._edges[eid] for eid in sorted(partition.edge_ids) if eid in self._edges
         ]
@@ -338,37 +357,36 @@ class GraphStore:
 
     def out_edge_ids(self, vertex_id: int, *, graph: str) -> set[int]:
         """Return outgoing edge IDs for vertex in a specific graph."""
-        partition = self._graphs.get(graph)
-        if partition is None:
-            raise ValueError(f"Graph '{graph}' does not exist")
-        return partition.adj_out.get(vertex_id, _EMPTY_SET)
+        return self._get_partition(graph).adj_out.get(vertex_id, _EMPTY_SET)
 
     def in_edge_ids(self, vertex_id: int, *, graph: str) -> set[int]:
         """Return incoming edge IDs for vertex in a specific graph."""
-        partition = self._graphs.get(graph)
-        if partition is None:
-            raise ValueError(f"Graph '{graph}' does not exist")
-        return partition.adj_in.get(vertex_id, _EMPTY_SET)
+        return self._get_partition(graph).adj_in.get(vertex_id, _EMPTY_SET)
 
     def edge_ids_by_label(self, label: str, *, graph: str) -> set[int]:
         """Return edge IDs with a given label in a specific graph."""
-        partition = self._graphs.get(graph)
-        if partition is None:
-            raise ValueError(f"Graph '{graph}' does not exist")
-        return partition.label_index.get(label, _EMPTY_SET)
+        return self._get_partition(graph).label_index.get(label, _EMPTY_SET)
 
     def vertex_ids_in_graph(self, graph: str) -> set[int]:
         """Return all vertex IDs in a specific graph."""
+        return self._get_partition(graph).vertex_ids
+
+    def _get_partition(self, graph: str) -> _GraphPartition:
+        """Return the partition for *graph*, using the 1-entry cache."""
+        cached = self._cached_partition
+        if cached is not None and cached[0] is graph:
+            return cached[1]
         partition = self._graphs.get(graph)
         if partition is None:
             raise ValueError(f"Graph '{graph}' does not exist")
-        return partition.vertex_ids
+        self._cached_partition = (graph, partition)
+        return partition
 
     # --- Statistics (per-graph) ---
 
     def degree_distribution(self, graph: str) -> dict[int, int]:
         """Out-degree distribution for vertices in graph."""
-        partition = self._require_graph(graph)
+        partition = self._get_partition(graph)
         dist: dict[int, int] = defaultdict(int)
         for vid in partition.vertex_ids:
             degree = len(partition.adj_out.get(vid, set()))
@@ -377,7 +395,7 @@ class GraphStore:
 
     def label_degree(self, label: str, graph: str) -> float:
         """Average out-degree for edges with given label in graph."""
-        partition = self._require_graph(graph)
+        partition = self._get_partition(graph)
         eids = partition.label_index.get(label, set())
         if not eids:
             return 0.0
@@ -392,7 +410,7 @@ class GraphStore:
 
     def vertex_label_counts(self, graph: str) -> dict[str, int]:
         """Count of vertices per vertex label in graph."""
-        partition = self._require_graph(graph)
+        partition = self._get_partition(graph)
         return {
             label: len(vids & partition.vertex_ids)
             for label, vids in partition.vertex_label_index.items()
@@ -443,13 +461,6 @@ class GraphStore:
         """Create graph if it does not exist."""
         if name not in self._graphs:
             self._graphs[name] = _GraphPartition()
-
-    def _require_graph(self, name: str) -> _GraphPartition:
-        """Return partition, raising if graph does not exist."""
-        p = self._graphs.get(name)
-        if p is None:
-            raise ValueError(f"Graph '{name}' does not exist")
-        return p
 
     def partition(self, graph: str) -> _GraphPartition:
         """Return the internal partition for direct adjacency access.

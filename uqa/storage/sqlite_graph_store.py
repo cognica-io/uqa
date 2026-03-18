@@ -330,6 +330,6 @@ class SQLiteGraphStore(GraphStore):
 
     def edges_by_label(self, label: str, *, graph: str) -> list[Edge]:
         """Return all edges with the given label in the specified graph."""
-        partition = self._require_graph(graph)
+        partition = self._get_partition(graph)
         eids = partition.label_index.get(label, set())
         return [self._edges[eid] for eid in eids if eid in self._edges]

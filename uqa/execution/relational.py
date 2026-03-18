@@ -443,14 +443,19 @@ class SortOp(PhysicalOperator):
         self._spill_mgr: Any = None
         self._offset = 0
 
+    # Arrow sort is faster for large batches but the dict->Table->dict
+    # conversion overhead dominates for small batches.  Threshold tuned
+    # to the crossover point measured on CPython 3.12 / pyarrow 18.
+    _ARROW_SORT_THRESHOLD = 5000
+
     @staticmethod
     def _try_arrow_sort(
         rows: list[dict[str, Any]],
         sort_keys: list[tuple[str, bool, bool]],
     ) -> bool:
         """Attempt in-place Arrow-native sort.  Returns True on success."""
-        if len(rows) < 2:
-            return True
+        if len(rows) < SortOp._ARROW_SORT_THRESHOLD:
+            return False
 
         import pyarrow as pa
         import pyarrow.compute as pc

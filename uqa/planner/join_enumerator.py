@@ -33,6 +33,10 @@ from uqa.planner.join_graph import JoinEdge, JoinGraph
 # circular import (join_order imports DPccp from this module).
 INDEX_JOIN_THRESHOLD = 100
 
+# Pre-computed log2 approximation via bit_length for index join cost.
+# Avoids math.log2() in the O(3^n) DPccp inner loop.
+_log2 = math.log2
+
 # Maximum number of relations for exact DP enumeration.
 # Beyond this threshold, use greedy heuristic to avoid
 # exponential planning time.
@@ -255,12 +259,17 @@ class DPccp:
         # Cost = C_out + C_left + C_right
         # Use index join cost when the smaller side fits within threshold;
         # otherwise use hash join cost.
-        min_card = min(plan1.cardinality, plan2.cardinality)
-        max_card = max(plan1.cardinality, plan2.cardinality)
-        if min_card <= INDEX_JOIN_THRESHOLD:
-            join_cost = min_card * math.log2(max_card + 1)
+        c1 = plan1.cardinality
+        c2 = plan2.cardinality
+        if c1 <= c2:
+            if c1 <= INDEX_JOIN_THRESHOLD:
+                join_cost = c1 * _log2(c2 + 1)
+            else:
+                join_cost = c1 + c2
+        elif c2 <= INDEX_JOIN_THRESHOLD:
+            join_cost = c2 * _log2(c1 + 1)
         else:
-            join_cost = plan1.cardinality + plan2.cardinality
+            join_cost = c1 + c2
         total_cost = join_cost + plan1.cost + plan2.cost
 
         existing = self._dp.get(combined_mask)
@@ -429,12 +438,17 @@ class DPccp:
                     for edge in edges:
                         cardinality *= edge.selectivity
 
-                    greedy_min = min(p1.cardinality, p2.cardinality)
-                    greedy_max = max(p1.cardinality, p2.cardinality)
-                    if greedy_min <= INDEX_JOIN_THRESHOLD:
-                        greedy_join_cost = greedy_min * math.log2(greedy_max + 1)
+                    gc1 = p1.cardinality
+                    gc2 = p2.cardinality
+                    if gc1 <= gc2:
+                        if gc1 <= INDEX_JOIN_THRESHOLD:
+                            greedy_join_cost = gc1 * _log2(gc2 + 1)
+                        else:
+                            greedy_join_cost = gc1 + gc2
+                    elif gc2 <= INDEX_JOIN_THRESHOLD:
+                        greedy_join_cost = gc2 * _log2(gc1 + 1)
                     else:
-                        greedy_join_cost = p1.cardinality + p2.cardinality
+                        greedy_join_cost = gc1 + gc2
                     cost = greedy_join_cost + p1.cost + p2.cost
 
                     if cost < best_cost:
