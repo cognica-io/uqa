@@ -56,7 +56,7 @@ from uqa.analysis import (
     standard_analyzer,
     whitespace_analyzer,
 )
-from uqa.storage.inverted_index import InvertedIndex
+from uqa.storage.inverted_index import MemoryInvertedIndex as InvertedIndex
 from uqa.storage.sqlite_inverted_index import SQLiteInvertedIndex
 
 # ======================================================================
@@ -883,7 +883,7 @@ class TestDualAnalyzer:
     def test_inverted_index_default_phase(self):
         """set_field_analyzer with phase='both' sets both dicts."""
         from uqa.analysis.analyzer import standard_analyzer
-        from uqa.storage.inverted_index import InvertedIndex
+        from uqa.storage.inverted_index import MemoryInvertedIndex as InvertedIndex
 
         idx = InvertedIndex()
         analyzer = standard_analyzer()
@@ -896,7 +896,7 @@ class TestDualAnalyzer:
         from uqa.analysis.analyzer import Analyzer
         from uqa.analysis.token_filter import LowerCaseFilter, SynonymFilter
         from uqa.analysis.tokenizer import WhitespaceTokenizer
-        from uqa.storage.inverted_index import InvertedIndex
+        from uqa.storage.inverted_index import MemoryInvertedIndex as InvertedIndex
 
         idx_analyzer = Analyzer(WhitespaceTokenizer(), [LowerCaseFilter()])
         search_analyzer = Analyzer(
@@ -913,7 +913,7 @@ class TestDualAnalyzer:
     def test_search_falls_back_to_index(self):
         """When no search analyzer is set, fall back to index analyzer."""
         from uqa.analysis.analyzer import standard_analyzer
-        from uqa.storage.inverted_index import InvertedIndex
+        from uqa.storage.inverted_index import MemoryInvertedIndex as InvertedIndex
 
         idx = InvertedIndex()
         analyzer = standard_analyzer()
@@ -922,7 +922,7 @@ class TestDualAnalyzer:
 
     def test_search_falls_back_to_default(self):
         """When neither search nor index analyzer is set, use default."""
-        from uqa.storage.inverted_index import InvertedIndex
+        from uqa.storage.inverted_index import MemoryInvertedIndex as InvertedIndex
 
         idx = InvertedIndex()
         default = idx.analyzer
@@ -930,7 +930,7 @@ class TestDualAnalyzer:
 
     def test_invalid_phase(self):
         from uqa.analysis.analyzer import standard_analyzer
-        from uqa.storage.inverted_index import InvertedIndex
+        from uqa.storage.inverted_index import MemoryInvertedIndex as InvertedIndex
 
         idx = InvertedIndex()
         with pytest.raises(ValueError, match="phase must be"):
@@ -961,7 +961,7 @@ class TestDualAnalyzer:
     def test_backward_compat_no_phase(self):
         """Calling set_field_analyzer without phase sets both (backward compat)."""
         from uqa.analysis.analyzer import standard_analyzer
-        from uqa.storage.inverted_index import InvertedIndex
+        from uqa.storage.inverted_index import MemoryInvertedIndex as InvertedIndex
 
         idx = InvertedIndex()
         analyzer = standard_analyzer()
@@ -980,7 +980,7 @@ class TestTermOperatorSynonymUnion:
         from uqa.analysis.tokenizer import WhitespaceTokenizer
         from uqa.operators.base import ExecutionContext
         from uqa.operators.primitive import TermOperator
-        from uqa.storage.inverted_index import InvertedIndex
+        from uqa.storage.inverted_index import MemoryInvertedIndex as InvertedIndex
 
         idx = InvertedIndex()
         idx_analyzer = Analyzer(WhitespaceTokenizer(), [LowerCaseFilter()])
@@ -1010,7 +1010,7 @@ class TestTermOperatorSynonymUnion:
         """Single token (no expansion) still works correctly."""
         from uqa.operators.base import ExecutionContext
         from uqa.operators.primitive import TermOperator
-        from uqa.storage.inverted_index import InvertedIndex
+        from uqa.storage.inverted_index import MemoryInvertedIndex as InvertedIndex
 
         idx = InvertedIndex()
         idx.add_document(1, {"body": "used car for sale"})

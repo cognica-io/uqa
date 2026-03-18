@@ -15,7 +15,7 @@ from uqa.core.posting_list import PostingList
 from uqa.core.types import Edge, Payload, PostingEntry, Vertex
 from uqa.graph.operators import PatternMatchOperator, TraverseOperator
 from uqa.graph.posting_list import GraphPayload, GraphPostingList
-from uqa.graph.store import GraphStore
+from uqa.graph.store import GraphStore, MemoryGraphStore
 
 if TYPE_CHECKING:
     from uqa.graph.pattern import GraphPattern
@@ -39,7 +39,7 @@ class ToGraphOperator:
         self.edge_field = edge_field
 
     def execute(self, ctx: object) -> GraphStore:
-        graph = GraphStore()
+        graph = MemoryGraphStore()
         graph.create_graph("default")
         documents: list[dict[str, Any]]
         if hasattr(self.source, "execute"):
@@ -324,7 +324,7 @@ class TextToGraphOperator:
                             pair = (min(t1, t2), max(t1, t2))
                             cooccurrences[pair] += 1
 
-        graph = GraphStore()
+        graph = MemoryGraphStore()
         graph.create_graph("default")
         token_to_id: dict[str, int] = {}
         for vid, token in enumerate(sorted(token_set), start=1):

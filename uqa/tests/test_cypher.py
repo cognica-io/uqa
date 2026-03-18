@@ -41,7 +41,7 @@ from uqa.graph.cypher.compiler import CypherCompiler
 from uqa.graph.cypher.lexer import Token, TokenType, is_keyword, tokenize
 from uqa.graph.cypher.parser import parse_cypher
 from uqa.graph.posting_list import GraphPostingList
-from uqa.graph.store import GraphStore
+from uqa.graph.store import MemoryGraphStore as GraphStore
 
 # -- Fixtures --------------------------------------------------------------
 

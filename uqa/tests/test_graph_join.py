@@ -10,7 +10,7 @@ from uqa.core.posting_list import PostingList
 from uqa.core.types import Payload, PostingEntry
 from uqa.graph.join import CrossParadigmGraphJoinOperator, GraphGraphJoinOperator
 from uqa.graph.posting_list import GraphPayload, GraphPostingList
-from uqa.graph.store import GraphStore
+from uqa.graph.store import MemoryGraphStore as GraphStore
 from uqa.operators.base import ExecutionContext
 
 # -- Helpers --

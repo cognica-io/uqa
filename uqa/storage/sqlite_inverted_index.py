@@ -26,14 +26,14 @@ from typing import TYPE_CHECKING, Any
 
 from uqa.core.posting_list import PostingList
 from uqa.core.types import Payload, PostingEntry
-from uqa.storage.inverted_index import IndexedTerms
+from uqa.storage.abc.inverted_index import IndexedTerms, InvertedIndex
 
 if TYPE_CHECKING:
     from uqa.core.types import DocId, FieldName, IndexStats
     from uqa.storage.managed_connection import SQLiteConnection
 
 
-class SQLiteInvertedIndex:
+class SQLiteInvertedIndex(InvertedIndex):
     """Term-to-posting-list mapping backed by SQLite.
 
     Public API is identical to ``InvertedIndex`` so that this class can

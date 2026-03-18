@@ -333,8 +333,8 @@ class TestCrossParadigmExplain:
     @pytest.fixture
     def ctx(self):
         """Minimal execution context."""
-        from uqa.storage.document_store import DocumentStore
-        from uqa.storage.inverted_index import InvertedIndex
+        from uqa.storage.document_store import MemoryDocumentStore as DocumentStore
+        from uqa.storage.inverted_index import MemoryInvertedIndex as InvertedIndex
 
         return ExecutionContext(
             document_store=DocumentStore(),

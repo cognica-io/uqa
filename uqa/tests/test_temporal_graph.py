@@ -10,7 +10,7 @@ import pytest
 
 from uqa.core.types import Edge, IndexStats, Vertex
 from uqa.graph.pattern import EdgePattern, GraphPattern, VertexPattern
-from uqa.graph.store import GraphStore
+from uqa.graph.store import MemoryGraphStore as GraphStore
 from uqa.graph.temporal_filter import TemporalFilter
 from uqa.graph.temporal_pattern_match import TemporalPatternMatchOperator
 from uqa.graph.temporal_traverse import TemporalTraverseOperator

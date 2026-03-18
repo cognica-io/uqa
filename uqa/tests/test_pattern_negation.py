@@ -9,7 +9,7 @@ from __future__ import annotations
 from uqa.core.types import Edge, Vertex
 from uqa.graph.operators import PatternMatchOperator
 from uqa.graph.pattern import EdgePattern, GraphPattern, VertexPattern
-from uqa.graph.store import GraphStore
+from uqa.graph.store import MemoryGraphStore as GraphStore
 from uqa.operators.base import ExecutionContext
 
 

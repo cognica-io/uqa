@@ -17,6 +17,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from uqa.core.hierarchical import HierarchicalDocument
+from uqa.storage.abc.document_store import DocumentStore
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -66,7 +67,7 @@ _AFFINITY_MAP: dict[str, str] = {
 }
 
 
-class SQLiteDocumentStore:
+class SQLiteDocumentStore(DocumentStore):
     """SQLite-backed document store with the same public API as DocumentStore.
 
     Parameters

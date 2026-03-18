@@ -6,7 +6,7 @@
 
 """SQLite-backed graph store with per-graph adjacency indexes.
 
-Inherits from :class:`GraphStore` and persists every mutation via
+Inherits from :class:`MemoryGraphStore` and persists every mutation via
 write-through.  Named graphs are tracked in a ``_graph_catalog`` table.
 
 On construction all existing vertices, edges, and graph memberships are
@@ -22,10 +22,10 @@ from uqa.core.types import Edge, Vertex
 
 if TYPE_CHECKING:
     from uqa.storage.managed_connection import SQLiteConnection
-from uqa.graph.store import GraphStore
+from uqa.graph.store import MemoryGraphStore
 
 
-class SQLiteGraphStore(GraphStore):
+class SQLiteGraphStore(MemoryGraphStore):
     """GraphStore backed by SQLite with adjacency indexes.
 
     Parameters

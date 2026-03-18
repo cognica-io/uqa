@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from uqa.fdw.handler import FDWHandler
     from uqa.graph.index import PathIndex
 from uqa.core.types import DocId, Edge, Payload, PostingEntry, Vertex
-from uqa.graph.store import GraphStore
+from uqa.graph.store import GraphStore, MemoryGraphStore
 from uqa.planner.parallel import ParallelExecutor
 from uqa.sql.table import _SQL_TYPE_MAP, ColumnDef, ColumnStats, Table
 from uqa.storage.catalog import Catalog
@@ -47,7 +47,7 @@ class Engine:
         self._prepared: dict[str, Any] = {}  # name -> PrepareStmt AST
         self._sequences: dict[str, dict[str, int]] = {}
         self._temp_tables: set[str] = set()
-        self._graph_store: GraphStore = GraphStore()
+        self._graph_store: GraphStore = MemoryGraphStore()
         self._versioned_graphs: dict[str, Any] = {}
         self._path_indexes: dict[str, PathIndex] = {}
 

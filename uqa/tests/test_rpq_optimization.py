@@ -19,7 +19,7 @@ from uqa.graph.pattern import (
     Label,
 )
 from uqa.graph.rpq_optimizer import _simplify_expr, _subset_construction
-from uqa.graph.store import GraphStore
+from uqa.graph.store import MemoryGraphStore as GraphStore
 from uqa.operators.base import ExecutionContext
 
 # -- Expression simplification tests --

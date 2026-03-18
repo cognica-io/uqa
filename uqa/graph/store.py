@@ -10,8 +10,12 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from uqa.storage.abc.graph_store import GraphStore
+
 if TYPE_CHECKING:
     from uqa.core.types import Edge, Vertex
+
+__all__ = ["GraphStore", "MemoryGraphStore", "_GraphPartition"]
 
 _EMPTY_SET: set[int] = frozenset()  # type: ignore[assignment]
 
@@ -114,8 +118,8 @@ class _GraphPartition:
         ]
 
 
-class GraphStore:
-    """Named-graph-native graph storage. All operations are graph-scoped.
+class MemoryGraphStore(GraphStore):
+    """In-memory named-graph-native graph storage.
 
     Vertices/edges are stored globally (shared across named graphs).
     Adjacency indexes are per-graph -- no global indexes, zero duplication

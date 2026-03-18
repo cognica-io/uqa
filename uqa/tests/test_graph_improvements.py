@@ -24,7 +24,7 @@ from uqa.graph.pattern import (
     VertexPattern,
     parse_rpq,
 )
-from uqa.graph.store import GraphStore
+from uqa.graph.store import MemoryGraphStore as GraphStore
 from uqa.operators.base import ExecutionContext
 from uqa.operators.boolean import IntersectOperator
 from uqa.planner.cardinality import CardinalityEstimator, GraphStats

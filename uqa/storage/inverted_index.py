@@ -7,26 +7,16 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
 from typing import Any
 
 from uqa.core.posting_list import PostingList
 from uqa.core.types import DocId, FieldName, IndexStats, Payload, PostingEntry
+from uqa.storage.abc.inverted_index import IndexedTerms, InvertedIndex
+
+__all__ = ["IndexedTerms", "InvertedIndex", "MemoryInvertedIndex"]
 
 
-@dataclass(frozen=True, slots=True)
-class IndexedTerms:
-    """Metadata returned from indexing a document.
-
-    Used by the persistence layer to store posting entries and per-field
-    token lengths without duplicating tokenization logic.
-    """
-
-    field_lengths: dict[str, int]
-    postings: dict[tuple[str, str], tuple[int, ...]]  # (field, term) -> positions
-
-
-class InvertedIndex:
+class MemoryInvertedIndex(InvertedIndex):
     """Term-to-posting-list mapping with per-term statistics.
 
     The internal ``_index`` maps each (field, term) key to a dict of

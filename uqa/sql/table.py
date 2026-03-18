@@ -19,10 +19,10 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from uqa.graph.store import GraphStore
+from uqa.graph.store import GraphStore, MemoryGraphStore
 from uqa.storage.block_max_index import BlockMaxIndex
-from uqa.storage.document_store import DocumentStore
-from uqa.storage.inverted_index import IndexedTerms, InvertedIndex
+from uqa.storage.document_store import DocumentStore, MemoryDocumentStore
+from uqa.storage.inverted_index import IndexedTerms, InvertedIndex, MemoryInvertedIndex
 from uqa.storage.sqlite_document_store import SQLiteDocumentStore
 from uqa.storage.sqlite_graph_store import SQLiteGraphStore
 from uqa.storage.sqlite_inverted_index import SQLiteInvertedIndex
@@ -183,22 +183,18 @@ class Table:
 
         if conn is not None:
             col_pairs = [(col.name, col.type_name) for col in columns]
-            self.document_store: DocumentStore | SQLiteDocumentStore = (
-                SQLiteDocumentStore(conn, name, col_pairs)
+            self.document_store: DocumentStore = SQLiteDocumentStore(
+                conn, name, col_pairs
             )
-            self.inverted_index: InvertedIndex | SQLiteInvertedIndex = (
-                SQLiteInvertedIndex(conn, name)
-            )
-            self.graph_store: GraphStore | SQLiteGraphStore = SQLiteGraphStore(
-                conn, table_name=name
-            )
+            self.inverted_index: InvertedIndex = SQLiteInvertedIndex(conn, name)
+            self.graph_store: GraphStore = SQLiteGraphStore(conn, table_name=name)
             if not self.graph_store.has_graph(name):
                 self.graph_store.create_graph(name)
             self.block_max_index = BlockMaxIndex()
         else:
-            self.document_store = DocumentStore()
-            self.inverted_index = InvertedIndex()
-            self.graph_store = GraphStore()
+            self.document_store = MemoryDocumentStore()
+            self.inverted_index = MemoryInvertedIndex()
+            self.graph_store = MemoryGraphStore()
             self.graph_store.create_graph(name)
             self.block_max_index = BlockMaxIndex()
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from uqa.core.types import Edge, Vertex
 from uqa.graph.index import EdgePropertyIndex, VertexPropertyIndex
-from uqa.graph.store import GraphStore
+from uqa.graph.store import MemoryGraphStore as GraphStore
 
 
 def _make_store() -> GraphStore:

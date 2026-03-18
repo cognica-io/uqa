@@ -318,11 +318,13 @@ class TestEngineIntegration:
 
     def test_in_memory_engine_uses_plain_store(self):
         from uqa.engine import Engine
-        from uqa.graph.store import GraphStore
+        from uqa.graph.store import MemoryGraphStore
+        from uqa.storage.sqlite_graph_store import SQLiteGraphStore
 
         engine = Engine()
         engine.sql(self._TABLE_DDL)
-        assert type(engine._tables["g"].graph_store) is GraphStore
+        assert isinstance(engine._tables["g"].graph_store, MemoryGraphStore)
+        assert not isinstance(engine._tables["g"].graph_store, SQLiteGraphStore)
 
     def test_graph_survives_engine_close_reopen(self, tmp_path):
         from uqa.engine import Engine

@@ -31,7 +31,7 @@ from uqa.graph.pattern import (
     parse_rpq,
 )
 from uqa.graph.posting_list import GraphPayload, GraphPostingList
-from uqa.graph.store import GraphStore
+from uqa.graph.store import MemoryGraphStore as GraphStore
 
 
 class _ExecutionContext:

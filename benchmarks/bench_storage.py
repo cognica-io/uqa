@@ -19,7 +19,7 @@ import pytest
 
 from benchmarks.data.generators import BenchmarkDataGenerator
 from benchmarks.data.schemas import BENCH_TABLE_COLUMNS
-from uqa.graph.store import GraphStore
+from uqa.graph.store import MemoryGraphStore as GraphStore
 from uqa.storage.ivf_index import IVFIndex
 from uqa.storage.sqlite_document_store import SQLiteDocumentStore
 from uqa.storage.sqlite_inverted_index import SQLiteInvertedIndex

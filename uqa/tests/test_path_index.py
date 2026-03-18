@@ -15,7 +15,7 @@ from uqa.engine import Engine
 from uqa.graph.index import PathIndex
 from uqa.graph.operators import RegularPathQueryOperator
 from uqa.graph.pattern import Alternation, Concat, KleeneStar, Label
-from uqa.graph.store import GraphStore
+from uqa.graph.store import MemoryGraphStore as GraphStore
 from uqa.operators.base import ExecutionContext
 
 _GRAPH_NAME = "test"

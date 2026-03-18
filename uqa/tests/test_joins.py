@@ -11,7 +11,7 @@ import pytest
 
 from uqa.core.posting_list import GeneralizedPostingList, PostingList
 from uqa.core.types import Edge, Payload, PostingEntry, Vertex
-from uqa.graph.store import GraphStore
+from uqa.graph.store import MemoryGraphStore as GraphStore
 from uqa.joins.base import JoinCondition
 from uqa.joins.cross_paradigm import (
     CrossParadigmJoinOperator,

@@ -11,7 +11,7 @@ import pytest
 from uqa.core.types import Edge, Vertex
 from uqa.engine import Engine
 from uqa.graph.delta import GraphDelta
-from uqa.graph.store import GraphStore
+from uqa.graph.store import MemoryGraphStore as GraphStore
 from uqa.graph.versioned_store import VersionedGraphStore
 
 _GRAPH_NAME = "test"

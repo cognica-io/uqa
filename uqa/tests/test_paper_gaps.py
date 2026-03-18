@@ -33,7 +33,7 @@ from uqa.core.types import (
     PostingEntry,
     Vertex,
 )
-from uqa.graph.store import GraphStore
+from uqa.graph.store import MemoryGraphStore as GraphStore
 from uqa.operators.base import ExecutionContext, Operator
 
 # ---------------------------------------------------------------------------
@@ -53,7 +53,7 @@ class _FixedOperator(Operator):
 
 def _make_doc_store_with_fields(docs: list[dict]) -> object:
     """Build a minimal DocumentStore from a list of dicts."""
-    from uqa.storage.document_store import DocumentStore
+    from uqa.storage.document_store import MemoryDocumentStore as DocumentStore
 
     store = DocumentStore()
     for doc in docs:
@@ -148,7 +148,7 @@ class TestFacetVectorOperator:
 
     def test_facet_counts_fields(self) -> None:
         from uqa.operators.hybrid import FacetVectorOperator
-        from uqa.storage.document_store import DocumentStore
+        from uqa.storage.document_store import MemoryDocumentStore as DocumentStore
 
         store = DocumentStore()
         store.put(1, {"category": "A", "title": "doc1"})
@@ -190,7 +190,7 @@ class TestFacetVectorOperator:
 
 class TestPathAggregateOperator:
     def _make_context(self) -> ExecutionContext:
-        from uqa.storage.document_store import DocumentStore
+        from uqa.storage.document_store import MemoryDocumentStore as DocumentStore
 
         store = DocumentStore()
         store.put(
@@ -258,7 +258,7 @@ class TestPathAggregateOperator:
     def test_missing_path(self) -> None:
         from uqa.operators.aggregation import SumMonoid
         from uqa.operators.hierarchical import PathAggregateOperator
-        from uqa.storage.document_store import DocumentStore
+        from uqa.storage.document_store import MemoryDocumentStore as DocumentStore
 
         store = DocumentStore()
         store.put(1, {"title": "no items"})
@@ -301,7 +301,7 @@ class TestPathAggregateOperator:
 
 class TestUnifiedFilterOperator:
     def _make_context(self) -> ExecutionContext:
-        from uqa.storage.document_store import DocumentStore
+        from uqa.storage.document_store import MemoryDocumentStore as DocumentStore
 
         store = DocumentStore()
         store.put(

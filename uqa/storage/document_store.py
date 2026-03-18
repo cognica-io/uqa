@@ -9,12 +9,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from uqa.core.hierarchical import HierarchicalDocument
+from uqa.storage.abc.document_store import DocumentStore
 
 if TYPE_CHECKING:
     from uqa.core.types import DocId, FieldName, PathExpr
 
+__all__ = ["DocumentStore", "MemoryDocumentStore"]
 
-class DocumentStore:
+
+class MemoryDocumentStore(DocumentStore):
     """Storage for full documents (flat and hierarchical)."""
 
     def __init__(self) -> None:

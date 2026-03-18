@@ -18,7 +18,7 @@ from uqa.fusion.query_features import QueryFeatureExtractor
 from uqa.operators.attention import AttentionFusionOperator
 from uqa.operators.base import ExecutionContext, Operator
 from uqa.operators.learned_fusion import LearnedFusionOperator
-from uqa.storage.inverted_index import InvertedIndex
+from uqa.storage.inverted_index import MemoryInvertedIndex as InvertedIndex
 
 # -- Helpers --
 

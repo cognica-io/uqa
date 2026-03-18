@@ -57,8 +57,8 @@ from uqa.operators.primitive import (
     TermOperator,
     VectorSimilarityOperator,
 )
-from uqa.storage.document_store import DocumentStore
-from uqa.storage.inverted_index import InvertedIndex
+from uqa.storage.document_store import MemoryDocumentStore as DocumentStore
+from uqa.storage.inverted_index import MemoryInvertedIndex as InvertedIndex
 from uqa.storage.ivf_index import IVFIndex
 
 if TYPE_CHECKING:

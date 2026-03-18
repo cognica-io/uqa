@@ -54,7 +54,7 @@ from uqa.execution.relational import (
 )
 from uqa.execution.scan import PostingListScanOp, SeqScanOp
 from uqa.sql.table import ColumnDef, Table
-from uqa.storage.document_store import DocumentStore
+from uqa.storage.document_store import MemoryDocumentStore as DocumentStore
 
 if TYPE_CHECKING:
     from uqa.execution.physical import PhysicalOperator

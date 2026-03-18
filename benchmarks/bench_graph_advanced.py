@@ -22,7 +22,7 @@ from uqa.graph.delta import GraphDelta
 from uqa.graph.graph_embedding import GraphEmbeddingOperator
 from uqa.graph.index import PathIndex
 from uqa.graph.message_passing import MessagePassingOperator
-from uqa.graph.store import GraphStore
+from uqa.graph.store import MemoryGraphStore as GraphStore
 from uqa.graph.temporal_filter import TemporalFilter
 from uqa.graph.temporal_traverse import TemporalTraverseOperator
 from uqa.graph.versioned_store import VersionedGraphStore

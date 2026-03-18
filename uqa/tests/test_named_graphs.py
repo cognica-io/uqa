@@ -21,7 +21,7 @@ from uqa.graph.pattern import (
     VertexPattern,
 )
 from uqa.graph.posting_list import GraphPayload
-from uqa.graph.store import GraphStore
+from uqa.graph.store import MemoryGraphStore as GraphStore
 from uqa.operators.base import ExecutionContext
 
 # -- Helpers --
