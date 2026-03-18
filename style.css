@@ -113,6 +113,7 @@ table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; font-size
 th { text-align: left; font-weight: 600; padding: 0.6rem 0.75rem; border-bottom: 2px solid var(--border); }
 td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); }
 tr:last-child td { border-bottom: none; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* --- Grid cards --- */
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.25rem; margin-bottom: 1.5rem; }

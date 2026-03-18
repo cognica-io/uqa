@@ -161,10 +161,10 @@
   <span class="example-tag tag-sql">SQL</span>
 <pre><code><span class="kw">SELECT</span> title, year, field, _score <span class="kw">FROM</span> papers
 <span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
-    <span class="fn">bayesian_match</span>(title, <span class="st">'attention'</span>),   <span class="cm">-- FTS: calibrated P(relevant)</span>
-    <span class="fn">knn_match</span>(embedding, $1, 10),       <span class="cm">-- Vector: semantic similarity</span>
-    <span class="fn">pagerank</span>()                          <span class="cm">-- Graph: citation influence</span>
-) <span class="kw">AND</span> year >= 2019                        <span class="cm">-- SQL: relational filter</span>
+    <span class="fn">bayesian_match</span>(title, <span class="st">'attention'</span>),  <span class="cm">-- FTS: calibrated P(relevant)</span>
+    <span class="fn">knn_match</span>(embedding, $1, 10),        <span class="cm">-- Vector: semantic similarity</span>
+    <span class="fn">pagerank</span>()                           <span class="cm">-- Graph: citation influence</span>
+) <span class="kw">AND</span> year >= 2019                       <span class="cm">-- SQL: relational filter</span>
 <span class="kw">ORDER BY</span> _score <span class="kw">DESC LIMIT</span> 5;</code></pre>
 
   <div class="note">
@@ -235,15 +235,15 @@ DPR                             | BERT                            | attention is
 
   <table>
     <thead>
-      <tr><th>Paper</th><th>BM25</th><th>Cosine</th><th>Bayesian</th><th>Relevant</th></tr>
+      <tr><th>Paper</th><th class="num">BM25</th><th class="num">Cosine</th><th class="num">Bayesian</th><th>Relevant</th></tr>
     </thead>
     <tbody>
-      <tr><td>attention is all you need</td><td>0.75</td><td>0.98</td><td>0.44</td><td>Yes</td></tr>
-      <tr><td>BERT pre-training</td><td>0.84</td><td>0.96</td><td>0.53</td><td>Yes</td></tr>
-      <tr><td>language models few-shot</td><td>0.00</td><td>0.98</td><td>0.00</td><td>No</td></tr>
-      <tr><td>vision transformer</td><td>0.87</td><td>0.01</td><td>0.52</td><td>Yes</td></tr>
-      <tr><td>graph attention networks</td><td>0.75</td><td>0.43</td><td>0.44</td><td>Yes</td></tr>
-      <tr><td>denoising diffusion</td><td>0.00</td><td>-0.10</td><td>0.00</td><td>No</td></tr>
+      <tr><td>attention is all you need</td><td class="num">0.75</td><td class="num">0.98</td><td class="num">0.44</td><td>Yes</td></tr>
+      <tr><td>BERT pre-training</td><td class="num">0.84</td><td class="num">0.96</td><td class="num">0.53</td><td>Yes</td></tr>
+      <tr><td>language models few-shot</td><td class="num">0.00</td><td class="num">0.98</td><td class="num">0.00</td><td>No</td></tr>
+      <tr><td>vision transformer</td><td class="num">0.87</td><td class="num">0.01</td><td class="num">0.52</td><td>Yes</td></tr>
+      <tr><td>graph attention networks</td><td class="num">0.75</td><td class="num">0.43</td><td class="num">0.44</td><td>Yes</td></tr>
+      <tr><td>denoising diffusion</td><td class="num">0.00</td><td class="num">-0.10</td><td class="num">0.00</td><td>No</td></tr>
     </tbody>
   </table>
 
@@ -432,9 +432,9 @@ engine.update_scoring_params(<span class="st">"papers"</span>, <span class="st">
 
 <span class="cm">-- Depth: multi-layer network via iterated marginalization</span>
 <span class="kw">WHERE</span> <span class="fn">staged_retrieval</span>(
-    <span class="fn">text_match</span>(title, <span class="st">'attention'</span>), 6,     <span class="cm">-- Layer 1: broad recall</span>
-    <span class="fn">bayesian_match</span>(abstract, <span class="st">'attention'</span>), 4, <span class="cm">-- Layer 2: re-rank</span>
-    <span class="fn">knn_match</span>(embedding, $1, 3), 2        <span class="cm">-- Layer 3: final fusion</span>
+    <span class="fn">text_match</span>(title, <span class="st">'attention'</span>), 6,         <span class="cm">-- Layer 1: broad recall</span>
+    <span class="fn">bayesian_match</span>(abstract, <span class="st">'attention'</span>), 4,  <span class="cm">-- Layer 2: re-rank</span>
+    <span class="fn">knn_match</span>(embedding, $1, 3), 2             <span class="cm">-- Layer 3: final fusion</span>
 );</code></pre>
 
   <h3 id="bn-architecture">Full Architecture</h3>
@@ -490,21 +490,21 @@ engine.update_scoring_params(<span class="st">"papers"</span>, <span class="st">
     <div class="card">
       <h3>Knowledge Discovery</h3>
       <p>
-        <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/knowledge_discovery.py">examples/showcase/knowledge_discovery.py</a><br>
+        <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/knowledge_discovery.py">knowledge_discovery.py</a><br>
         Four-paradigm unification with citation network, Cypher, and EXPLAIN plans
       </p>
     </div>
     <div class="card">
       <h3>Calibration Matters</h3>
       <p>
-        <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/calibration_matters.py">examples/showcase/calibration_matters.py</a><br>
+        <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/calibration_matters.py">calibration_matters.py</a><br>
         Signal dominance, fusion comparison, ECE/Brier metrics, parameter learning
       </p>
     </div>
     <div class="card">
       <h3>From Bayes to Neurons</h3>
       <p>
-        <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/bayesian_neural.py">examples/showcase/bayesian_neural.py</a><br>
+        <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/bayesian_neural.py">bayesian_neural.py</a><br>
         Neural network derivation, gating functions, attention, staged retrieval
       </p>
     </div>
