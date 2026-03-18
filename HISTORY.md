@@ -1,5 +1,54 @@
 # History
 
+## 0.21.0 (2026-03-18)
+
+Deep fusion as a complete neural network execution framework. Storage backend ABCs for backend-agnostic persistence. Internal data model refactored from scalar logits to multi-channel vectors for full DL pipeline support. All 2746 tests pass.
+
+### Deep Fusion: Multi-Layer Bayesian Fusion Operator
+
+- **`deep_fusion(layer(...), propagate(...), convolve(...), ...)`**: Multi-layer fusion operator that implements deep Bayesian fusion as a multi-layer network with residual connections. Each layer type maps to a neural network architecture: SignalLayer (ResNet), PropagateLayer (GNN), ConvLayer (CNN).
+- **Gating functions**: `gating => 'none'` (identity), `gating => 'relu'` (MAP under sparse prior), `gating => 'swish'` (Bayesian posterior mean). Applied per-layer as nonlinear activations.
+- **`alpha` parameter**: Confidence scaling for multi-signal log-odds conjunction within signal layers.
+- **EXPLAIN**: Tree-formatted plan output showing layer types, signal counts, and parameters.
+- **Parallel execution**: Signal layers execute branches concurrently via `ThreadPoolExecutor` when `parallel_workers` is configured.
+
+### Deep Fusion: Spatial CNN (ConvLayer)
+
+- **`convolve('edge_label', ARRAY[w0, w1, ...][, 'direction'])`**: Weighted multi-hop BFS aggregation over graph neighborhoods. `hop_weights[0]` = self (skip connection), `hop_weights[1]` = 1-hop neighbors (3x3 equivalent on grid), `hop_weights[2]` = 2-hop (5x5 receptive field). Weights normalized to sum to 1. Residual connection on channel 0.
+- **`estimate_conv_weights(table, edge_label, kernel_hops[, embedding_field])`**: MLE weight estimation from spatial autocorrelation. Computes average cosine similarity between patch embeddings at each hop distance. No backpropagation -- uses data statistics directly.
+- **Stacked ConvLayers**: Multiple ConvLayers compose for deeper receptive fields (two 1-hop layers = 5x5 effective field).
+
+### Deep Fusion: Neural Network Layers
+
+- **Channel map data model**: Internal representation refactored from `logit_map: dict[int, float]` (scalar) to `channel_map: dict[int, np.ndarray]` (multi-channel vector). Single-channel (`num_channels=1`) is backward compatible. Existing layers (Signal, Propagate, Conv) operate on channel 0 only; new layers operate on all channels.
+- **`pool('edge_label', 'method', pool_size[, 'direction'])`**: Spatial downsampling via greedy BFS partitioning. Groups `pool_size` neighboring nodes, aggregates channel vectors element-wise (`max` or `avg`), keeps smallest doc_id as representative. Reduces active node count.
+- **`dense(ARRAY[weights], ARRAY[bias], output_channels => N, input_channels => M)`**: Fully connected layer: `out = W @ input + bias`, then gating. Supports channel expansion (1->4) and reduction (4->2). Weight matrix reshaped from flat array to `(output_channels, input_channels)`.
+- **`flatten()`**: Collapses all spatial nodes into a single vector by sorting nodes by doc_id and concatenating channel vectors. Result: 1 node with `S * C` channels.
+- **`softmax()`**: Numerically stable softmax classification head (`exp(x - max(x)) / sum(exp(x - max(x)))`). Output score = max probability; full distribution stored in `Payload.fields["class_probs"]`.
+- **`batch_norm([epsilon => 1e-5])`**: Per-channel normalization across all nodes to zero mean and unit variance. Stabilizes activations for deeper pipelines.
+- **`dropout(p)`**: Inference-mode dropout: scales all values by `(1 - p)`. Prevents over-reliance on any single feature.
+- **Vectorized helpers**: `_sigmoid_vec()` and `_apply_gating_vec()` for element-wise NumPy operations on channel vectors.
+- **Validation rules**: Spatial layers (propagate, convolve, pool) must not appear after flatten. `pool_size >= 2`. `dropout p` must be in `(0, 1)`. First layer must be a SignalLayer.
+
+### Deep Fusion: Planner Integration
+
+- **Cardinality estimation**: PoolLayer divides cardinality by pool_size. FlattenLayer sets cardinality to 1. DenseLayer, SoftmaxLayer, BatchNormLayer, DropoutLayer are pass-through (no change in node count).
+- **Cost estimation**: PoolLayer, ConvLayer, PropagateLayer cost proportional to `total_docs`. DenseLayer cost = `input_channels * output_channels`. FlattenLayer, SoftmaxLayer, BatchNormLayer, DropoutLayer cost proportional to `total_docs`.
+- **EXPLAIN format**: Each new layer type displays its parameters in the plan tree: `pool='label', method='max', size=2`, `dense=M->N`, `flatten`, `softmax`, `batch_norm, eps=1e-05`, `dropout, p=0.5`.
+
+### Deep Fusion: Showcase Examples
+
+- **`examples/showcase/deep_fusion_resnet.py`**: Hierarchical signal layers with residual connections. Single layer, two-layer, three-layer hierarchies, gating comparison, EXPLAIN.
+- **`examples/showcase/deep_fusion_gnn.py`**: Graph propagation layers for message passing. 1-hop, 2-hop, aggregation comparison, mixed layers, direction control.
+- **`examples/showcase/deep_fusion_cnn.py`**: Spatial convolution over grid graphs. Weight estimation, raw vs convolved scores, stacked layers, smoothing visualization.
+- **`examples/showcase/deep_fusion_nn.py`**: Complete neural network pipeline. Pooling, dense layers, flatten-dense-softmax classification, batch normalization and dropout, full CNN pipeline, EXPLAIN plan, SQL syntax summary.
+
+### Storage Backend ABCs
+
+- **`DocumentStore`** ABC: Abstract base class with `put`, `get`, `delete`, `clear`, `doc_ids`, `get_field`, `get_fields_bulk`, `has_value`, `eval_path`, `__len__` methods. `MemoryDocumentStore` and `SQLiteDocumentStore` implement the interface.
+- **`InvertedIndex`** ABC: Abstract base class with `add_document`, `remove_document`, `get_postings`, `doc_freq`, `term_freq`, `doc_count`, `search`, and analyzer management methods. `MemoryInvertedIndex` and `SQLiteInvertedIndex` implement the interface.
+- **Benchmark fix**: Updated benchmark InvertedIndex instantiation for the new ABC hierarchy.
+
 ## 0.20.1 (2026-03-18)
 
 Named graph support for centrality signal functions in WHERE clause and fusion contexts.

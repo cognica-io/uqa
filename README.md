@@ -95,6 +95,18 @@ SELECT title, _score FROM papers
 WHERE multi_field_match(title, abstract, 'attention transformer')
 ORDER BY _score DESC;
 
+-- Deep fusion: multi-layer neural network as SQL
+SELECT id, _score FROM patches
+WHERE deep_fusion(
+    layer(knn_match(embedding, $1, 16)),
+    convolve('spatial', ARRAY[0.6, 0.4]),
+    pool('spatial', 'max', 2),
+    flatten(),
+    dense(ARRAY[...], ARRAY[...], output_channels => 4, input_channels => 8),
+    softmax(),
+    gating => 'relu'
+) ORDER BY _score DESC;
+
 -- Temporal graph traversal (edges valid at timestamp)
 SELECT * FROM temporal_traverse(1, 'knows', 2, 1700000000);
 
@@ -246,10 +258,10 @@ graph TD
 uqa/
   core/           PostingList, types, hierarchical documents, functors
   analysis/       Text analysis pipeline: CharFilter, Tokenizer, TokenFilter, Analyzer, dual index/search analyzers
-  storage/        SQLite-backed stores: documents, inverted index, vectors (IVF), spatial (R*Tree), graph
+  storage/        Backend-agnostic ABCs with SQLite-backed stores: documents, inverted index, vectors (IVF), spatial (R*Tree), graph
   operators/      Operator algebra (boolean, primitive, hybrid, aggregation (count/sum/avg/min/max/quantile),
                   hierarchical (with cost estimation), sparse, multi-field, attention fusion,
-                  learned fusion, multi-stage)
+                  learned fusion, multi-stage, deep fusion (ResNet/GNN/CNN/DenseNet))
   scoring/        BM25, Bayesian BM25, VectorScorer, WAND/BlockMaxWAND, calibration,
                   parameter learning, external prior, multi-field, fusion WAND (via bayesian-bm25),
                   adaptive WAND, bound tightness
@@ -342,6 +354,23 @@ benchmarks/       309 pytest-benchmark tests across 15 files (posting list, stor
 | `fuse_learned(sig1, sig2, ...)` | Learned-weight log-odds fusion |
 | `staged_retrieval(sig1, k1, sig2, k2, ...)` | Multi-stage cascading retrieval pipeline |
 | `progressive_fusion(sig1, sig2, k1, sig3, k2[, alpha][, 'gating'])` | Progressive multi-stage WAND fusion |
+| `deep_fusion(layer(...), propagate(...), convolve(...), ...[, gating])` | Multi-layer Bayesian fusion (ResNet + GNN + CNN) |
+
+### Deep Fusion Layer Functions
+
+Used inside `deep_fusion()` to compose neural network pipelines:
+
+| Function | Description |
+|----------|-------------|
+| `layer(sig1, sig2, ...)` | Signal layer: log-odds conjunction with residual connection (ResNet) |
+| `propagate('label', 'agg'[, 'dir'])` | Graph propagation: spread scores through edges (GNN) |
+| `convolve('label', ARRAY[w...][, 'dir'])` | Spatial convolution: weighted multi-hop BFS aggregation (CNN) |
+| `pool('label', 'method', size[, 'dir'])` | Spatial downsampling via greedy BFS partitioning |
+| `dense(ARRAY[W], ARRAY[b], output_channels => N, input_channels => M)` | Fully connected layer |
+| `flatten()` | Collapse spatial nodes into a single vector |
+| `softmax()` | Classification head (numerically stable) |
+| `batch_norm([epsilon => 1e-5])` | Per-channel normalization across nodes |
+| `dropout(p)` | Inference-mode scaling by (1 - p) |
 
 ### SELECT Spatial Functions
 
@@ -669,6 +698,18 @@ python examples/sql/nyc_taxi.py               # NYC Taxi analytics, remote Parqu
 python examples/sql/fusion_gating.py          # ReLU/Swish gating, alpha+gating, progressive fusion
 python examples/sql/graph_centrality.py       # PageRank, HITS, betweenness, bounded RPQ, weighted RPQ via SQL
 python examples/sql/named_graphs.py           # Named graphs via SQL: traverse, RPQ, Cypher, centrality, algebra
+```
+
+### Showcase (`examples/showcase/`)
+
+```bash
+python examples/showcase/knowledge_discovery.py  # Cross-paradigm unification: SQL + FTS + vector + graph + Cypher
+python examples/showcase/calibration_matters.py  # Bayesian fusion vs naive scoring, calibration metrics
+python examples/showcase/bayesian_neural.py      # Bayesian fusion IS a feedforward neural network (Paper 4)
+python examples/showcase/deep_fusion_resnet.py   # Deep fusion as ResNet: hierarchical signal layers
+python examples/showcase/deep_fusion_gnn.py      # Deep fusion as GNN: graph propagation layers
+python examples/showcase/deep_fusion_cnn.py      # Deep fusion as CNN: spatial convolution over grids
+python examples/showcase/deep_fusion_nn.py       # Full neural network: pool, dense, flatten, softmax, batch_norm, dropout
 ```
 
 ### Interactive Shell
