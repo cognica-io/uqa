@@ -7539,13 +7539,29 @@ class SQLCompiler:
         Named args: alpha, gating
         """
         from uqa.operators.deep_fusion import (
+            BatchNormLayer,
             ConvLayer,
             DeepFusionOperator,
+            DenseLayer,
+            DropoutLayer,
+            FlattenLayer,
+            PoolLayer,
             PropagateLayer,
             SignalLayer,
+            SoftmaxLayer,
         )
 
-        layers: list[SignalLayer | PropagateLayer | ConvLayer] = []
+        layers: list[
+            SignalLayer
+            | PropagateLayer
+            | ConvLayer
+            | PoolLayer
+            | DenseLayer
+            | FlattenLayer
+            | SoftmaxLayer
+            | BatchNormLayer
+            | DropoutLayer
+        ] = []
         alpha = 0.5
         gating = "none"
 
@@ -7631,10 +7647,106 @@ class SQLCompiler:
                             direction=direction,
                         )
                     )
+                elif inner_name == "pool":
+                    if len(inner_args) < 3:
+                        raise ValueError(
+                            "pool() requires at least 3 arguments: "
+                            "pool('edge_label', 'method', pool_size"
+                            "[, 'direction'])"
+                        )
+                    edge_label = self._extract_string_value(inner_args[0])
+                    method = self._extract_string_value(inner_args[1])
+                    if method not in ("max", "avg"):
+                        raise ValueError(
+                            f"pool() method must be 'max' or 'avg', got {method!r}"
+                        )
+                    pool_size = int(self._extract_const_value(inner_args[2]))
+                    direction = "both"
+                    if len(inner_args) >= 4:
+                        direction = self._extract_string_value(inner_args[3])
+                        if direction not in ("both", "out", "in"):
+                            raise ValueError(
+                                f"pool() direction must be "
+                                f"'both', 'out', or 'in', "
+                                f"got {direction!r}"
+                            )
+                    layers.append(
+                        PoolLayer(
+                            edge_label=edge_label,
+                            pool_size=pool_size,
+                            method=method,
+                            direction=direction,
+                        )
+                    )
+
+                elif inner_name == "dense":
+                    # dense(ARRAY[w...], ARRAY[b...],
+                    #       output_channels => N, input_channels => M)
+                    positional: list[object] = []
+                    named: dict[str, int] = {}
+                    for ia in inner_args:
+                        if isinstance(ia, NamedArgExpr):
+                            named[ia.name] = int(self._extract_const_value(ia.arg))
+                        else:
+                            positional.append(ia)
+                    if len(positional) < 2:
+                        raise ValueError(
+                            "dense() requires at least 2 positional "
+                            "arguments: ARRAY[weights], ARRAY[bias]"
+                        )
+                    weights = self._extract_vector_arg(positional[0])
+                    bias_vec = self._extract_vector_arg(positional[1])
+                    out_ch = named.get("output_channels")
+                    in_ch = named.get("input_channels")
+                    if out_ch is None or in_ch is None:
+                        raise ValueError(
+                            "dense() requires output_channels and "
+                            "input_channels named arguments"
+                        )
+                    if len(weights) != out_ch * in_ch:
+                        raise ValueError(
+                            f"dense() weights array length "
+                            f"({len(weights)}) must equal "
+                            f"output_channels * input_channels "
+                            f"({out_ch * in_ch})"
+                        )
+                    if len(bias_vec) != out_ch:
+                        raise ValueError(
+                            f"dense() bias array length "
+                            f"({len(bias_vec)}) must equal "
+                            f"output_channels ({out_ch})"
+                        )
+                    layers.append(
+                        DenseLayer(
+                            weights=tuple(float(w) for w in weights),
+                            bias=tuple(float(b) for b in bias_vec),
+                            output_channels=out_ch,
+                            input_channels=in_ch,
+                        )
+                    )
+
+                elif inner_name == "flatten":
+                    layers.append(FlattenLayer())
+
+                elif inner_name == "softmax":
+                    layers.append(SoftmaxLayer())
+
+                elif inner_name == "batch_norm":
+                    epsilon = 1e-5
+                    for ia in inner_args:
+                        if isinstance(ia, NamedArgExpr) and ia.name == "epsilon":
+                            epsilon = float(self._extract_const_value(ia.arg))
+                    layers.append(BatchNormLayer(epsilon=epsilon))
+
+                elif inner_name == "dropout":
+                    if len(inner_args) < 1:
+                        raise ValueError("dropout() requires 1 argument: dropout(p)")
+                    p = float(self._extract_const_value(inner_args[0]))
+                    layers.append(DropoutLayer(p=p))
+
                 else:
                     raise ValueError(
-                        f"deep_fusion() arguments must be layer() or "
-                        f"propagate() calls, got {inner_name}()"
+                        f"deep_fusion() unknown layer function: {inner_name}()"
                     )
 
             elif isinstance(arg, NamedArgExpr):

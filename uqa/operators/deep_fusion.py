@@ -10,6 +10,8 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from uqa.core.posting_list import PostingList
 from uqa.core.types import Payload, PostingEntry
 from uqa.operators.base import ExecutionContext, Operator
@@ -44,6 +46,27 @@ def _apply_gating(logit: float, gating: str) -> float:
     if gating == "swish":
         return logit * _sigmoid(logit)
     return logit
+
+
+def _sigmoid_vec(x: np.ndarray) -> np.ndarray:
+    """Element-wise numerically stable sigmoid on a numpy array."""
+    return np.where(
+        x >= 0,
+        1.0 / (1.0 + np.exp(-x)),
+        np.exp(x) / (1.0 + np.exp(x)),
+    )
+
+
+def _apply_gating_vec(vec: np.ndarray, gating: str) -> np.ndarray:
+    """Apply gating function element-wise to a numpy array."""
+    if gating == "relu":
+        return np.maximum(0.0, vec)
+    if gating == "swish":
+        return vec * _sigmoid_vec(vec)
+    return vec
+
+
+# -- Layer dataclasses --
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +108,71 @@ class ConvLayer:
     direction: str  # "both" | "out" | "in"
 
 
+@dataclass(frozen=True, slots=True)
+class PoolLayer:
+    """Spatial downsampling via greedy graph partitioning.
+
+    Groups pool_size neighboring nodes via BFS, aggregates their
+    channel vectors element-wise (max or avg), and keeps the
+    smallest doc_id as representative.  Reduces active node count.
+    """
+
+    edge_label: str
+    pool_size: int  # >= 2
+    method: str  # "max" | "avg"
+    direction: str  # "both" | "out" | "in"
+
+
+@dataclass(frozen=True, slots=True)
+class DenseLayer:
+    """Fully connected layer: out = W @ input + bias, then gating."""
+
+    weights: tuple[float, ...]  # flattened (out_ch, in_ch)
+    bias: tuple[float, ...]  # (out_ch,)
+    output_channels: int
+    input_channels: int
+
+
+@dataclass(frozen=True, slots=True)
+class FlattenLayer:
+    """Concatenates all spatial nodes into a single vector."""
+
+
+@dataclass(frozen=True, slots=True)
+class SoftmaxLayer:
+    """Numerically stable softmax classification head."""
+
+
+@dataclass(frozen=True, slots=True)
+class BatchNormLayer:
+    """Per-channel batch normalization across all nodes."""
+
+    epsilon: float = 1e-5
+
+
+@dataclass(frozen=True, slots=True)
+class DropoutLayer:
+    """Inference-mode dropout: scales values by (1 - p)."""
+
+    p: float
+
+
+# Type alias for all layer types
+_Layer = (
+    SignalLayer
+    | PropagateLayer
+    | ConvLayer
+    | PoolLayer
+    | DenseLayer
+    | FlattenLayer
+    | SoftmaxLayer
+    | BatchNormLayer
+    | DropoutLayer
+)
+
+_SPATIAL_LAYERS = (PropagateLayer, ConvLayer, PoolLayer)
+
+
 class DeepFusionOperator(Operator):
     """Multi-layer fusion operator (Paper 4, Section 7).
 
@@ -99,22 +187,44 @@ class DeepFusionOperator(Operator):
 
     This is a ResNet when layers are signal groups, and a GNN when layers
     propagate scores through graph edges.
+
+    Internal data model uses channel_map: dict[int, np.ndarray] where
+    each value has shape (num_channels,).  Single-channel (num_channels=1)
+    is backward compatible with the original scalar logit model.
+    Existing layers (Signal, Propagate, Conv) operate on channel 0 only.
+    New layers (Dense, Flatten, Softmax, BatchNorm, Dropout) operate on
+    all channels.
     """
 
     def __init__(
         self,
-        layers: list[SignalLayer | PropagateLayer | ConvLayer],
+        layers: list[_Layer],
         alpha: float = 0.5,
         gating: str = "none",
         graph_name: str = "",
     ) -> None:
         if not layers:
             raise ValueError("deep_fusion requires at least one layer")
-        if isinstance(layers[0], (PropagateLayer, ConvLayer)):
+        if isinstance(layers[0], _SPATIAL_LAYERS):
             raise ValueError(
                 "deep_fusion: first layer must be a SignalLayer "
                 "(no scores to propagate or convolve)"
             )
+        # Validate layer ordering and parameters
+        flattened = False
+        for layer in layers:
+            if isinstance(layer, _SPATIAL_LAYERS) and flattened:
+                raise ValueError(
+                    "deep_fusion: spatial layers (propagate, convolve, pool) "
+                    "must not appear after flatten()"
+                )
+            if isinstance(layer, FlattenLayer):
+                flattened = True
+            if isinstance(layer, PoolLayer) and layer.pool_size < 2:
+                raise ValueError("deep_fusion: pool() pool_size must be >= 2")
+            if isinstance(layer, DropoutLayer) and not (0 < layer.p < 1):
+                raise ValueError("deep_fusion: dropout() p must be in (0, 1)")
+
         self.layers = layers
         self.alpha = alpha
         self.gating = gating
@@ -123,36 +233,76 @@ class DeepFusionOperator(Operator):
     def execute(self, context: ExecutionContext) -> PostingList:
         from bayesian_bm25 import log_odds_conjunction
 
-        logit_map: dict[int, float] = {}
+        channel_map: dict[int, np.ndarray] = {}
+        num_channels = 1
+        softmax_applied = False
 
         for layer in self.layers:
             if isinstance(layer, SignalLayer):
                 self._execute_signal_layer(
-                    layer, context, logit_map, log_odds_conjunction
+                    layer, context, channel_map, num_channels, log_odds_conjunction
                 )
             elif isinstance(layer, PropagateLayer):
-                self._execute_propagate_layer(layer, context, logit_map)
+                self._execute_propagate_layer(layer, context, channel_map, num_channels)
             elif isinstance(layer, ConvLayer):
-                self._execute_conv_layer(layer, context, logit_map)
+                self._execute_conv_layer(layer, context, channel_map)
+            elif isinstance(layer, PoolLayer):
+                self._execute_pool_layer(layer, context, channel_map)
+            elif isinstance(layer, DenseLayer):
+                self._execute_dense_layer(layer, channel_map)
+                num_channels = layer.output_channels
+            elif isinstance(layer, FlattenLayer):
+                channel_map, num_channels = self._execute_flatten_layer(channel_map)
+            elif isinstance(layer, SoftmaxLayer):
+                self._execute_softmax_layer(channel_map)
+                softmax_applied = True
+            elif isinstance(layer, BatchNormLayer):
+                self._execute_batchnorm_layer(layer, channel_map)
+            elif isinstance(layer, DropoutLayer):
+                self._execute_dropout_layer(layer, channel_map)
 
-        if not logit_map:
+        return self._build_result(channel_map, num_channels, softmax_applied)
+
+    # -- Result builder --
+
+    @staticmethod
+    def _build_result(
+        channel_map: dict[int, np.ndarray],
+        num_channels: int,
+        softmax_applied: bool,
+    ) -> PostingList:
+        if not channel_map:
             return PostingList()
 
         entries: list[PostingEntry] = []
-        for doc_id in sorted(logit_map):
-            score = _sigmoid(logit_map[doc_id])
-            entries.append(PostingEntry(doc_id, Payload(score=score)))
+        for doc_id in sorted(channel_map):
+            vec = channel_map[doc_id]
+            if softmax_applied:
+                score = float(np.max(vec))
+                fields: dict[str, object] = {"class_probs": vec.tolist()}
+                entries.append(
+                    PostingEntry(doc_id, Payload(score=score, fields=fields))
+                )
+            elif num_channels == 1:
+                score = _sigmoid(float(vec[0]))
+                entries.append(PostingEntry(doc_id, Payload(score=score)))
+            else:
+                score = float(_sigmoid_vec(vec).max())
+                entries.append(PostingEntry(doc_id, Payload(score=score)))
 
         return PostingList.from_sorted(entries)
+
+    # -- Existing layer executors (channel 0 only) --
 
     def _execute_signal_layer(
         self,
         layer: SignalLayer,
         context: ExecutionContext,
-        logit_map: dict[int, float],
+        channel_map: dict[int, np.ndarray],
+        num_channels: int,
         log_odds_conjunction: object,
     ) -> None:
-        """Execute a signal layer: run signals, fuse within layer, add residual."""
+        """Execute a signal layer: run signals, fuse within layer, add residual to channel 0."""
         signals = layer.signals
 
         par = context.parallel_executor
@@ -188,7 +338,9 @@ class DeepFusionOperator(Operator):
                 p = smap.get(doc_id, default)
                 layer_logit = _safe_logit(p)
                 layer_logit = _apply_gating(layer_logit, gating)
-                logit_map[doc_id] = logit_map.get(doc_id, 0.0) + layer_logit
+                if doc_id not in channel_map:
+                    channel_map[doc_id] = np.zeros(num_channels)
+                channel_map[doc_id][0] += layer_logit
         else:
             # Multiple signals: log-odds conjunction within layer
             for doc_id in all_doc_ids:
@@ -200,27 +352,30 @@ class DeepFusionOperator(Operator):
                 )
                 layer_logit = _safe_logit(fused_p)
                 layer_logit = _apply_gating(layer_logit, gating)
-                logit_map[doc_id] = logit_map.get(doc_id, 0.0) + layer_logit
+                if doc_id not in channel_map:
+                    channel_map[doc_id] = np.zeros(num_channels)
+                channel_map[doc_id][0] += layer_logit
 
     def _execute_propagate_layer(
         self,
         layer: PropagateLayer,
         context: ExecutionContext,
-        logit_map: dict[int, float],
+        channel_map: dict[int, np.ndarray],
+        num_channels: int,
     ) -> None:
-        """Propagate scores through graph edges."""
+        """Propagate scores through graph edges (channel 0 only)."""
         gs = context.graph_store
         if gs is None:
             raise ValueError(
                 "deep_fusion propagate layer requires a graph_store in ExecutionContext"
             )
 
-        # Convert current logits to probabilities
+        # Convert channel 0 to probabilities
         prob_map: dict[int, float] = {}
-        for doc_id, logit in logit_map.items():
-            prob_map[doc_id] = _sigmoid(logit)
+        for doc_id, vec in channel_map.items():
+            prob_map[doc_id] = _sigmoid(float(vec[0]))
 
-        new_logits: dict[int, float] = {}
+        new_map: dict[int, np.ndarray] = {}
         direction = layer.direction
         edge_label = layer.edge_label
         aggregation = layer.aggregation
@@ -228,7 +383,7 @@ class DeepFusionOperator(Operator):
         gating = self.gating
 
         # Collect all vertices that could be affected
-        all_vertex_ids = set(logit_map.keys())
+        all_vertex_ids = set(channel_map.keys())
 
         # Also discover neighbors of existing docs
         for doc_id in list(all_vertex_ids):
@@ -252,9 +407,9 @@ class DeepFusionOperator(Operator):
                         neighbor_probs.append(prob_map[nb])
 
             if not neighbor_probs:
-                # No neighbors with scores: keep existing logit (residual)
-                if vid in logit_map:
-                    new_logits[vid] = logit_map[vid]
+                # No neighbors with scores: keep existing channels (residual)
+                if vid in channel_map:
+                    new_map[vid] = channel_map[vid].copy()
                 continue
 
             if aggregation == "mean":
@@ -269,20 +424,26 @@ class DeepFusionOperator(Operator):
             propagated_logit = _safe_logit(agg_prob)
             propagated_logit = _apply_gating(propagated_logit, gating)
 
-            # Add to existing logit (residual connection)
-            existing = logit_map.get(vid, 0.0)
-            new_logits[vid] = existing + propagated_logit
+            # Residual connection on channel 0, preserve other channels
+            existing = channel_map.get(vid)
+            if existing is not None:
+                new_vec = existing.copy()
+                new_vec[0] = float(existing[0]) + propagated_logit
+            else:
+                new_vec = np.zeros(num_channels)
+                new_vec[0] = propagated_logit
+            new_map[vid] = new_vec
 
-        logit_map.clear()
-        logit_map.update(new_logits)
+        channel_map.clear()
+        channel_map.update(new_map)
 
     def _execute_conv_layer(
         self,
         layer: ConvLayer,
         context: ExecutionContext,
-        logit_map: dict[int, float],
+        channel_map: dict[int, np.ndarray],
     ) -> None:
-        """Weighted multi-hop convolution over graph neighborhoods."""
+        """Weighted multi-hop convolution over graph neighborhoods (channel 0 only)."""
         gs = context.graph_store
         if gs is None:
             raise ValueError(
@@ -290,8 +451,8 @@ class DeepFusionOperator(Operator):
             )
 
         prob_map: dict[int, float] = {}
-        for doc_id, logit in logit_map.items():
-            prob_map[doc_id] = _sigmoid(logit)
+        for doc_id, vec in channel_map.items():
+            prob_map[doc_id] = _sigmoid(float(vec[0]))
 
         # Normalize hop weights
         total_w = sum(layer.hop_weights)
@@ -299,14 +460,14 @@ class DeepFusionOperator(Operator):
             return
         norm_weights = [w / total_w for w in layer.hop_weights]
 
-        new_logits: dict[int, float] = {}
+        new_map: dict[int, np.ndarray] = {}
         edge_label = layer.edge_label
         direction = layer.direction
         graph_name = self.graph_name
         gating = self.gating
         kernel_hops = len(layer.hop_weights) - 1
 
-        for vid in list(logit_map.keys()):
+        for vid in list(channel_map.keys()):
             weighted_prob = 0.0
 
             # Hop 0: self
@@ -337,18 +498,166 @@ class DeepFusionOperator(Operator):
             conv_logit = _safe_logit(max(_PROB_FLOOR, min(_PROB_CEIL, weighted_prob)))
             conv_logit = _apply_gating(conv_logit, gating)
 
-            # Residual connection
-            new_logits[vid] = logit_map.get(vid, 0.0) + conv_logit
+            # Residual connection on channel 0, preserve other channels
+            new_vec = channel_map[vid].copy()
+            new_vec[0] = float(channel_map[vid][0]) + conv_logit
+            new_map[vid] = new_vec
 
-        logit_map.clear()
-        logit_map.update(new_logits)
+        channel_map.clear()
+        channel_map.update(new_map)
+
+    # -- New layer executors --
+
+    def _execute_pool_layer(
+        self,
+        layer: PoolLayer,
+        context: ExecutionContext,
+        channel_map: dict[int, np.ndarray],
+    ) -> None:
+        """Spatial downsampling via greedy BFS partitioning."""
+        gs = context.graph_store
+        if gs is None:
+            raise ValueError(
+                "deep_fusion pool layer requires a graph_store in ExecutionContext"
+            )
+
+        graph_name = self.graph_name
+        edge_label = layer.edge_label
+        direction = layer.direction
+        pool_size = layer.pool_size
+        method = layer.method
+
+        remaining = set(channel_map.keys())
+        pooled: dict[int, np.ndarray] = {}
+
+        while remaining:
+            # Seed from the smallest unvisited doc_id (deterministic)
+            seed = min(remaining)
+            remaining.discard(seed)
+
+            # BFS to collect pool_size - 1 more neighbors
+            group = [seed]
+            frontier = {seed}
+            visited_bfs = {seed}
+
+            while len(group) < pool_size and frontier:
+                next_frontier: set[int] = set()
+                for fv in frontier:
+                    for nb in _graph_neighbors(
+                        gs, fv, edge_label, direction, graph_name
+                    ):
+                        if nb in remaining and nb not in visited_bfs:
+                            next_frontier.add(nb)
+                            visited_bfs.add(nb)
+                            group.append(nb)
+                            remaining.discard(nb)
+                            if len(group) >= pool_size:
+                                break
+                    if len(group) >= pool_size:
+                        break
+                frontier = next_frontier
+
+            # Aggregate channel vectors element-wise
+            vecs = np.stack([channel_map[g] for g in group])
+            if method == "max":
+                agg = np.max(vecs, axis=0)
+            else:  # "avg"
+                agg = np.mean(vecs, axis=0)
+
+            # Representative: min doc_id in group
+            rep = min(group)
+            pooled[rep] = agg
+
+        channel_map.clear()
+        channel_map.update(pooled)
+
+    def _execute_dense_layer(
+        self,
+        layer: DenseLayer,
+        channel_map: dict[int, np.ndarray],
+    ) -> None:
+        """Fully connected: out = W @ input + bias, then gating."""
+        w_mat = np.array(layer.weights).reshape(
+            layer.output_channels, layer.input_channels
+        )
+        bias = np.array(layer.bias)
+        gating = self.gating
+
+        for doc_id, vec in channel_map.items():
+            out = w_mat @ vec + bias
+            channel_map[doc_id] = _apply_gating_vec(out, gating)
+
+    @staticmethod
+    def _execute_flatten_layer(
+        channel_map: dict[int, np.ndarray],
+    ) -> tuple[dict[int, np.ndarray], int]:
+        """Sort nodes by doc_id, concatenate all channel vectors into one."""
+        if not channel_map:
+            return {}, 0
+
+        sorted_ids = sorted(channel_map.keys())
+        flat_vec = np.concatenate([channel_map[did] for did in sorted_ids])
+        new_num_channels = len(flat_vec)
+
+        # Use the minimum doc_id as the representative
+        rep_id = sorted_ids[0]
+        return {rep_id: flat_vec}, new_num_channels
+
+    @staticmethod
+    def _execute_softmax_layer(
+        channel_map: dict[int, np.ndarray],
+    ) -> None:
+        """Numerically stable softmax per node."""
+        for doc_id, vec in channel_map.items():
+            shifted = vec - np.max(vec)
+            exp_vals = np.exp(shifted)
+            channel_map[doc_id] = exp_vals / np.sum(exp_vals)
+
+    @staticmethod
+    def _execute_batchnorm_layer(
+        layer: BatchNormLayer,
+        channel_map: dict[int, np.ndarray],
+    ) -> None:
+        """Per-channel normalize across all nodes to zero mean / unit variance."""
+        if len(channel_map) < 2:
+            return
+
+        # Stack all vectors: shape (num_nodes, num_channels)
+        doc_ids = sorted(channel_map.keys())
+        stacked = np.stack([channel_map[did] for did in doc_ids])
+
+        mean = stacked.mean(axis=0)
+        var = stacked.var(axis=0)
+        std = np.sqrt(var + layer.epsilon)
+        normalized = (stacked - mean) / std
+
+        for i, did in enumerate(doc_ids):
+            channel_map[did] = normalized[i]
+
+    @staticmethod
+    def _execute_dropout_layer(
+        layer: DropoutLayer,
+        channel_map: dict[int, np.ndarray],
+    ) -> None:
+        """Inference-mode dropout: scale by (1 - p)."""
+        scale = 1.0 - layer.p
+        for doc_id, vec in channel_map.items():
+            channel_map[doc_id] = vec * scale
+
+    # -- Cost estimation --
 
     def cost_estimate(self, stats: IndexStats) -> float:
         total = 0.0
         for layer in self.layers:
             if isinstance(layer, SignalLayer):
                 total += sum(sig.cost_estimate(stats) for sig in layer.signals)
-            elif isinstance(layer, PropagateLayer | ConvLayer):
+            elif isinstance(layer, (PropagateLayer, ConvLayer, PoolLayer)):
+                total += float(stats.total_docs)
+            elif isinstance(layer, DenseLayer):
+                total += float(layer.input_channels * layer.output_channels)
+            elif isinstance(
+                layer, (FlattenLayer, SoftmaxLayer, BatchNormLayer, DropoutLayer)
+            ):
                 total += float(stats.total_docs)
         return total
 
@@ -398,8 +707,6 @@ def estimate_conv_weights(
     embedding_field : str
         Name of the VECTOR column containing patch embeddings.
     """
-    import numpy as np
-
     eng = engine  # type: ignore[assignment]
     table = eng._tables.get(table_name)
     if table is None:

@@ -138,10 +138,16 @@ class PlanExecutor:
             UnionOperator,
         )
         from uqa.operators.deep_fusion import (
+            BatchNormLayer,
             ConvLayer,
             DeepFusionOperator,
+            DenseLayer,
+            DropoutLayer,
+            FlattenLayer,
+            PoolLayer,
             PropagateLayer,
             SignalLayer,
+            SoftmaxLayer,
         )
         from uqa.operators.hybrid import (
             LogOddsFusionOperator,
@@ -277,6 +283,29 @@ class PlanExecutor:
                             f"hops={hops}, "
                             f"weights={list(layer.hop_weights)}):"
                         )
+                    elif isinstance(layer, PoolLayer):
+                        lines.append(
+                            f"{prefix}  Layer {i} "
+                            f"(pool={layer.edge_label!r}, "
+                            f"method={layer.method!r}, "
+                            f"size={layer.pool_size}):"
+                        )
+                    elif isinstance(layer, DenseLayer):
+                        lines.append(
+                            f"{prefix}  Layer {i} "
+                            f"(dense={layer.input_channels}"
+                            f"->{layer.output_channels}):"
+                        )
+                    elif isinstance(layer, FlattenLayer):
+                        lines.append(f"{prefix}  Layer {i} (flatten):")
+                    elif isinstance(layer, SoftmaxLayer):
+                        lines.append(f"{prefix}  Layer {i} (softmax):")
+                    elif isinstance(layer, BatchNormLayer):
+                        lines.append(
+                            f"{prefix}  Layer {i} (batch_norm, eps={layer.epsilon}):"
+                        )
+                    elif isinstance(layer, DropoutLayer):
+                        lines.append(f"{prefix}  Layer {i} (dropout, p={layer.p}):")
             case _:
                 lines.append(f"{prefix}{type(op).__name__}")
 

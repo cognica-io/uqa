@@ -445,6 +445,8 @@ class CardinalityEstimator:
         from uqa.operators.deep_fusion import (
             ConvLayer,
             DeepFusionOperator,
+            FlattenLayer,
+            PoolLayer,
             PropagateLayer,
             SignalLayer,
         )
@@ -472,6 +474,12 @@ class CardinalityEstimator:
                     # convolves scores of existing docs), so cardinality
                     # stays the same.
                     pass
+                elif isinstance(layer, PoolLayer):
+                    card = max(1.0, card / layer.pool_size)
+                elif isinstance(layer, FlattenLayer):
+                    card = 1.0
+                # DenseLayer, SoftmaxLayer, BatchNormLayer, DropoutLayer:
+                # pass-through (no change in node count)
             return max(1.0, card)
 
         return n

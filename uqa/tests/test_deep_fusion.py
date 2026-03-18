@@ -491,7 +491,7 @@ class TestErrorCases:
             """)
 
     def test_invalid_inner_function(self, engine):
-        with pytest.raises(Exception, match=r"layer.*propagate"):
+        with pytest.raises(Exception, match=r"unknown layer function"):
             engine.sql("""
                 SELECT id FROM papers
                 WHERE deep_fusion(
