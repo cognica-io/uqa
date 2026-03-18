@@ -44,7 +44,7 @@ Named graphs as primary abstraction, 20 paper-to-code improvements across all fo
 - **`_GraphPartition`**: Per-named-graph adjacency state (vertex_ids, edge_ids, adj_out, adj_in, label_index, vertex_label_index). Vertices and edges are stored globally; adjacency indexes are per-graph with zero duplication.
 - **`GraphStore` redesign**: All mutations and queries require `graph` keyword parameter. Graph lifecycle (create_graph, drop_graph, has_graph, graph_names). Graph algebra (union_graphs, intersect_graphs, difference_graphs, copy_graph). Per-graph statistics (degree_distribution, label_degree, vertex_label_counts).
 - **`SQLiteGraphStore`**: `_graph_catalog` and `_graph_membership` tables for persistence. Named graphs survive close/reopen.
-- **SQL function syntax**: `traverse(start, 'label', hops, 'graph_name')` -- direct graph name without `graph:` prefix (backward compatible). Same for `rpq()`, `temporal_traverse()`, `pagerank()`, `hits()`, `betweenness()`.
+- **SQL function syntax**: `traverse(start, 'label', hops, 'graph_name')` — direct graph name without `graph:` prefix (backward compatible). Same for `rpq()`, `temporal_traverse()`, `pagerank()`, `hits()`, `betweenness()`.
 - **`_NamedGraphOperatorWrapper` removed**: All graph operators accept `graph` directly.
 - **`GraphPayload.graph_name`**: Graph provenance tracked in posting list payloads.
 
