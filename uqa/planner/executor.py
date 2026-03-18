@@ -46,6 +46,10 @@ class PlanExecutor:
             IntersectOperator,
             UnionOperator,
         )
+        from uqa.operators.deep_fusion import (
+            DeepFusionOperator,
+            SignalLayer,
+        )
         from uqa.operators.hybrid import (
             LogOddsFusionOperator,
             ProbBoolFusionOperator,
@@ -94,6 +98,12 @@ class PlanExecutor:
             for stage_op, _ in op.stages:
                 _, cs = self._execute_with_stats(stage_op)
                 child_stats.append(cs)
+        elif isinstance(op, DeepFusionOperator):
+            for layer in op.layers:
+                if isinstance(layer, SignalLayer):
+                    for sig in layer.signals:
+                        _, cs = self._execute_with_stats(sig)
+                        child_stats.append(cs)
 
         start = time.perf_counter()
         result = op.execute(self.context)
@@ -126,6 +136,11 @@ class PlanExecutor:
             ComplementOperator,
             IntersectOperator,
             UnionOperator,
+        )
+        from uqa.operators.deep_fusion import (
+            DeepFusionOperator,
+            PropagateLayer,
+            SignalLayer,
         )
         from uqa.operators.hybrid import (
             LogOddsFusionOperator,
@@ -236,6 +251,23 @@ class PlanExecutor:
                 for i, (stage_op, cutoff) in enumerate(op.stages):
                     lines.append(f"{prefix}  Stage {i} (cutoff={cutoff}):")
                     self._explain_recursive(stage_op, lines, indent + 2)
+            case DeepFusionOperator(layers=lyrs, alpha=a, gating=g):
+                lines.append(
+                    f"{prefix}DeepFusion(layers={len(lyrs)}, alpha={a}, gating={g!r})"
+                )
+                for i, layer in enumerate(lyrs):
+                    if isinstance(layer, SignalLayer):
+                        lines.append(
+                            f"{prefix}  Layer {i} (signals={len(layer.signals)}):"
+                        )
+                        for sig in layer.signals:
+                            self._explain_recursive(sig, lines, indent + 2)
+                    elif isinstance(layer, PropagateLayer):
+                        lines.append(
+                            f"{prefix}  Layer {i} "
+                            f"(propagate={layer.edge_label!r}, "
+                            f"agg={layer.aggregation!r}):"
+                        )
             case _:
                 lines.append(f"{prefix}{type(op).__name__}")
 

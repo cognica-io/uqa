@@ -441,6 +441,33 @@ class CardinalityEstimator:
             _, last_k = op.stages[-1]
             return float(last_k)
 
+        # Deep fusion: union of signal cardinalities, expanded by propagate
+        from uqa.operators.deep_fusion import (
+            DeepFusionOperator,
+            PropagateLayer,
+            SignalLayer,
+        )
+
+        if isinstance(op, DeepFusionOperator):
+            card = 0.0
+            for layer in op.layers:
+                if isinstance(layer, SignalLayer):
+                    layer_cards = [self.estimate(s, stats) for s in layer.signals]
+                    card = max(card, min(n, sum(layer_cards)))
+                elif isinstance(layer, PropagateLayer):
+                    avg_degree = (
+                        self._graph_stats.avg_out_degree
+                        if self._graph_stats
+                        else GRAPH_AVG_DEGREE_DEFAULT
+                    )
+                    label_sel = (
+                        self._graph_stats.label_selectivity(layer.edge_label)
+                        if self._graph_stats
+                        else 1.0
+                    )
+                    card = min(n, card * avg_degree * label_sel)
+            return max(1.0, card)
+
         return n
 
     def _estimate_traverse(self, op: object, n: float) -> float:

@@ -6780,6 +6780,8 @@ class SQLCompiler:
             return self._make_weighted_rpq_op(args)
         if name == "progressive_fusion":
             return self._make_progressive_fusion_op(args, ctx)
+        if name == "deep_fusion":
+            return self._make_deep_fusion_op(args, ctx)
         # Fall back to expression-based filter for scalar functions
         # used in WHERE (e.g., ST_DWithin, ST_Within).
         return _ExprFilterOperator(node, subquery_executor=self._compile_select)
@@ -7527,6 +7529,108 @@ class SQLCompiler:
             )
 
         return ProgressiveFusionOperator(stages=stages, alpha=alpha, gating=gating)
+
+    def _make_deep_fusion_op(self, args: tuple, ctx: ExecutionContext) -> Any:
+        """deep_fusion(layer(...), propagate(...), ...[, gating => 'relu'])
+
+        Builds a multi-layer deep fusion operator.
+        - layer(signal1, signal2, ...) -> SignalLayer
+        - propagate('edge_label', 'aggregation'[, 'direction']) -> PropagateLayer
+        Named args: alpha, gating
+        """
+        from uqa.operators.deep_fusion import (
+            DeepFusionOperator,
+            PropagateLayer,
+            SignalLayer,
+        )
+
+        layers: list[SignalLayer | PropagateLayer] = []
+        alpha = 0.5
+        gating = "none"
+
+        for arg in args:
+            if isinstance(arg, FuncCall):
+                inner_name = arg.funcname[-1].sval.lower()
+                inner_args = arg.args or ()
+
+                if inner_name == "layer":
+                    signals: list[Any] = []
+                    for inner_arg in inner_args:
+                        if isinstance(inner_arg, FuncCall):
+                            signals.append(
+                                self._compile_calibrated_signal(inner_arg, ctx)
+                            )
+                        else:
+                            raise ValueError(
+                                "layer() arguments must be signal functions "
+                                f"(text_match, knn_match, etc.), "
+                                f"got {type(inner_arg).__name__}"
+                            )
+                    if not signals:
+                        raise ValueError("layer() requires at least one signal")
+                    layers.append(SignalLayer(signals=signals))
+
+                elif inner_name == "propagate":
+                    if len(inner_args) < 2:
+                        raise ValueError(
+                            "propagate() requires at least 2 arguments: "
+                            "propagate('edge_label', 'aggregation'"
+                            "[, 'direction'])"
+                        )
+                    edge_label = self._extract_string_value(inner_args[0])
+                    aggregation = self._extract_string_value(inner_args[1])
+                    if aggregation not in ("mean", "sum", "max"):
+                        raise ValueError(
+                            f"propagate() aggregation must be "
+                            f"'mean', 'sum', or 'max', got {aggregation!r}"
+                        )
+                    direction = "both"
+                    if len(inner_args) >= 3:
+                        direction = self._extract_string_value(inner_args[2])
+                        if direction not in ("both", "out", "in"):
+                            raise ValueError(
+                                f"propagate() direction must be "
+                                f"'both', 'out', or 'in', got {direction!r}"
+                            )
+                    layers.append(
+                        PropagateLayer(
+                            edge_label=edge_label,
+                            aggregation=aggregation,
+                            direction=direction,
+                        )
+                    )
+                else:
+                    raise ValueError(
+                        f"deep_fusion() arguments must be layer() or "
+                        f"propagate() calls, got {inner_name}()"
+                    )
+
+            elif isinstance(arg, NamedArgExpr):
+                val = self._extract_const_value(arg.arg)
+                if arg.name == "alpha":
+                    alpha = float(val)
+                elif arg.name == "gating":
+                    gating = str(val)
+                else:
+                    raise ValueError(
+                        f"Unknown option for deep_fusion: {arg.name}. "
+                        f"Valid options: alpha, gating"
+                    )
+            else:
+                raise ValueError(
+                    f"deep_fusion() arguments must be layer() or "
+                    f"propagate() calls, got {type(arg).__name__}"
+                )
+
+        if not layers:
+            raise ValueError("deep_fusion requires at least one layer")
+
+        return DeepFusionOperator(
+            layers=layers,
+            alpha=alpha,
+            gating=gating,
+            graph_name=self._current_graph_name,
+        )
 
     def _make_attention_fusion_op(self, args: tuple, ctx: ExecutionContext) -> Any:
         """fuse_attention(signal1, signal2, ...[, named options])
