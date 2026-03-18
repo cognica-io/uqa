@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Showcase &mdash; UQA</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body, {delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}]});">
+</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ====== Hero ====== -->
+<header class="hero hero-compact">
+  <h1><span>UQA</span> Showcase</h1>
+  <p class="tagline">
+    Three demonstrations that bring the five theoretical papers to life &mdash;
+    from four-paradigm unification to the neural network hidden inside Bayesian fusion.
+  </p>
+</header>
+
+<!-- ====== Nav ====== -->
+<nav>
+  <ul>
+    <li><a href="index.html">Overview</a></li>
+    <li><a href="docs.html">Docs</a></li>
+    <li><a href="examples.html">Examples</a></li>
+    <li><a href="showcase.html" class="active">Showcase</a></li>
+    <li><a href="theory.html">Theory</a></li>
+    <li><a href="benchmarks-data/">Benchmarks</a></li>
+  </ul>
+</nav>
+
+<div class="page-with-toc">
+
+<!-- ====== TOC ====== -->
+<aside class="toc">
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#knowledge-discovery">Knowledge Discovery</a></li>
+    <li class="toc-h3"><a href="#kd-single">Single-Paradigm Queries</a></li>
+    <li class="toc-h3"><a href="#kd-fusion">Multi-Signal Fusion</a></li>
+    <li class="toc-h3"><a href="#kd-unified">Four-Paradigm Unified</a></li>
+    <li class="toc-h3"><a href="#kd-cypher">Cypher Integration</a></li>
+    <li class="toc-h3"><a href="#kd-explain">Query Plan</a></li>
+    <li><a href="#calibration-matters">Calibration Matters</a></li>
+    <li class="toc-h3"><a href="#cm-scale">The Scale Problem</a></li>
+    <li class="toc-h3"><a href="#cm-fusion">Fusion Comparison</a></li>
+    <li class="toc-h3"><a href="#cm-metrics">Calibration Metrics</a></li>
+    <li><a href="#bayesian-neural">From Bayes to Neurons</a></li>
+    <li class="toc-h3"><a href="#bn-layers">Layer-by-Layer</a></li>
+    <li class="toc-h3"><a href="#bn-gating">Gating Functions</a></li>
+    <li class="toc-h3"><a href="#bn-architecture">Full Architecture</a></li>
+    <li><a href="#source">Source Files</a></li>
+  </ul>
+</aside>
+
+<!-- ====== Content ====== -->
+<div class="content">
+
+<!-- ============ Overview ============ -->
+<section id="overview">
+  <h2>Overview</h2>
+  <p>
+    These three showcase examples demonstrate UQA's most distinctive capabilities.
+    Each example is self-contained and runs with inline data &mdash; no external
+    datasets or downloads required.
+  </p>
+
+  <div class="grid">
+    <div class="card">
+      <h3><a href="#knowledge-discovery">Knowledge Discovery</a></h3>
+      <p>Progressive four-paradigm unification: SQL + FTS + Vector + Graph
+        in a single query with Cypher integration.</p>
+      <p style="font-size: 0.82rem; color: var(--accent); margin-top: 0.5rem;">Papers 1, 2, 3</p>
+    </div>
+    <div class="card">
+      <h3><a href="#calibration-matters">Calibration Matters</a></h3>
+      <p>Why naive score addition fails, and how Bayesian calibration enables
+        principled multi-signal fusion.</p>
+      <p style="font-size: 0.82rem; color: var(--accent); margin-top: 0.5rem;">Papers 3, 5</p>
+    </div>
+    <div class="card">
+      <h3><a href="#bayesian-neural">From Bayes to Neurons</a></h3>
+      <p>Step-by-step derivation showing that Bayesian fusion IS a feedforward
+        neural network.</p>
+      <p style="font-size: 0.82rem; color: var(--accent); margin-top: 0.5rem;">Paper 4</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ Knowledge Discovery ============ -->
+<section id="knowledge-discovery">
+  <h2>Knowledge Discovery Engine</h2>
+  <p class="paper-meta">
+    <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/knowledge_discovery.py">examples/showcase/knowledge_discovery.py</a>
+    &middot; Papers 1&ndash;3
+  </p>
+  <p>
+    UQA's core thesis is that <strong>posting lists</strong> serve as the universal abstraction
+    across all paradigms. This example builds a citation network of 15 landmark ML papers and
+    progressively combines SQL, full-text search, vector similarity, and graph queries &mdash;
+    culminating in a single SQL statement that fuses all four.
+  </p>
+
+  <h3 id="kd-single">Single-Paradigm Queries</h3>
+  <p>Each paradigm operates independently through the same posting list algebra:</p>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">-- Paradigm 1: SQL (relational filtering and aggregation)</span>
+<span class="kw">SELECT</span> field, <span class="fn">COUNT</span>(*) <span class="kw">AS</span> papers, <span class="fn">ROUND</span>(<span class="fn">AVG</span>(citations), 0) <span class="kw">AS</span> avg_cit
+<span class="kw">FROM</span> papers
+<span class="kw">GROUP BY</span> field <span class="kw">ORDER BY</span> avg_cit <span class="kw">DESC</span>;
+
+<span class="cm">-- Paradigm 2: Full-Text Search (Bayesian BM25 calibrated P(relevant))</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">bayesian_match</span>(title, <span class="st">'attention'</span>)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Paradigm 3: Vector Search (cosine similarity nearest neighbors)</span>
+<span class="kw">SELECT</span> title, field, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">knn_match</span>(embedding, $1, 5)
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Paradigm 4: Graph (PageRank on citation network)</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> <span class="fn">pagerank</span>()
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC LIMIT</span> 5;</code></pre>
+
+  <h3 id="kd-fusion">Multi-Signal Fusion</h3>
+  <p>
+    Because every paradigm produces a posting list, they compose freely through
+    <code>fuse_log_odds</code> &mdash; combining signals in calibrated probability space:
+  </p>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">-- Two signals: text + vector</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
+    <span class="fn">bayesian_match</span>(title, <span class="st">'attention'</span>),
+    <span class="fn">knn_match</span>(embedding, $1, 10)
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC LIMIT</span> 5;
+
+<span class="cm">-- Three signals: text + vector + graph centrality</span>
+<span class="kw">SELECT</span> title, field, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
+    <span class="fn">bayesian_match</span>(title, <span class="st">'attention'</span>),
+    <span class="fn">knn_match</span>(embedding, $1, 10),
+    <span class="fn">pagerank</span>()
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC LIMIT</span> 5;</code></pre>
+
+  <h3 id="kd-unified">Four-Paradigm Unification</h3>
+  <p>
+    A single SQL statement that combines <strong>all four paradigms</strong>:
+    Bayesian BM25 (FTS), cosine KNN (vector), PageRank (graph), and a relational
+    filter &mdash; all composed through the posting list algebra.
+  </p>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="kw">SELECT</span> title, year, field, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
+    <span class="fn">bayesian_match</span>(title, <span class="st">'attention'</span>),   <span class="cm">-- FTS: calibrated P(relevant)</span>
+    <span class="fn">knn_match</span>(embedding, $1, 10),       <span class="cm">-- Vector: semantic similarity</span>
+    <span class="fn">pagerank</span>()                          <span class="cm">-- Graph: citation influence</span>
+) <span class="kw">AND</span> year >= 2019                        <span class="cm">-- SQL: relational filter</span>
+<span class="kw">ORDER BY</span> _score <span class="kw">DESC LIMIT</span> 5;</code></pre>
+
+  <div class="note">
+    Under the hood, each paradigm produces a posting list. <code>fuse_log_odds</code>
+    combines the three scoring signals in log-odds space. The relational filter
+    intersects the result via Boolean algebra. All operations compose through the
+    same algebraic structure (Paper 1, Theorem 2.1.2).
+  </div>
+
+  <h3 id="kd-cypher">Cypher Integration</h3>
+  <p>
+    For complex graph patterns beyond what <code>traverse()</code> provides,
+    openCypher queries run inside SQL <code>FROM</code> clauses:
+  </p>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">-- Two-hop citation chains: which papers cite papers that cite the Transformer?</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">cypher</span>(<span class="st">'citations'</span>, <span class="st">$$
+    MATCH (a)-[:cites]->(b)-[:cites]->(c)
+    RETURN a.title AS paper, b.title AS via, c.title AS root
+$$</span>) <span class="kw">AS</span> (paper agtype, via agtype, root agtype);</code></pre>
+
+  <p>Sample output (truncated):</p>
+<pre><code>paper                           | via                             | root
+--------------------------------+---------------------------------+----------------------------------
+BERT                            | attention is all you need       | neural machine translation by...
+LLaMA                           | flash attention fast...          | attention is all you need
+InstructGPT                     | GPT-3                           | attention is all you need
+DPR                             | BERT                            | attention is all you need</code></pre>
+
+  <h3 id="kd-explain">Query Plan</h3>
+  <p>
+    <code>EXPLAIN</code> reveals how the four paradigms merge into a unified operator tree:
+  </p>
+
+<pre><code>FilterOp(field='year')
+  LogOddsFusion(alpha=0.5, signals=3)
+    ScoreOp(scorer=BayesianBM25Scorer, terms=['attent'], field='title')
+      TermOp(term='attention', field='title')
+    _CalibratedKNNOperator
+    PageRankOperator
+  (estimated cost: 166.5)</code></pre>
+
+  <p>
+    Each paradigm contributes a posting list to the operator tree.
+    <code>LogOddsFusion</code> combines them in calibrated probability space.
+    The <code>FilterOp</code> intersects the result via Boolean algebra.
+  </p>
+</section>
+
+<!-- ============ Calibration Matters ============ -->
+<section id="calibration-matters">
+  <h2>Calibration Matters</h2>
+  <p class="paper-meta">
+    <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/calibration_matters.py">examples/showcase/calibration_matters.py</a>
+    &middot; Papers 3, 5
+  </p>
+  <p>
+    BM25 scores are <strong>unbounded</strong> $[0, +\infty)$, while cosine similarity
+    is <strong>bounded</strong> $[-1, 1]$. Naive combination (adding raw scores) lets
+    BM25 dominate the ranking regardless of the vector signal. Bayesian BM25 solves this
+    by calibrating both signals into $P(\text{relevant})$ in $[0, 1]$.
+  </p>
+
+  <h3 id="cm-scale">The Scale Problem</h3>
+
+  <p>Raw scores from the same 10 papers, query <code>"attention transformer"</code>:</p>
+
+  <table>
+    <thead>
+      <tr><th>Paper</th><th>BM25</th><th>Cosine</th><th>Bayesian</th><th>Relevant</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>attention is all you need</td><td>0.75</td><td>0.98</td><td>0.44</td><td>Yes</td></tr>
+      <tr><td>BERT pre-training</td><td>0.84</td><td>0.96</td><td>0.53</td><td>Yes</td></tr>
+      <tr><td>language models few-shot</td><td>0.00</td><td>0.98</td><td>0.00</td><td>No</td></tr>
+      <tr><td>vision transformer</td><td>0.87</td><td>0.01</td><td>0.52</td><td>Yes</td></tr>
+      <tr><td>graph attention networks</td><td>0.75</td><td>0.43</td><td>0.44</td><td>Yes</td></tr>
+      <tr><td>denoising diffusion</td><td>0.00</td><td>-0.10</td><td>0.00</td><td>No</td></tr>
+    </tbody>
+  </table>
+
+  <p>
+    <strong>Problem</strong>: BM25 scores range 0.7&ndash;0.9, cosine ranges -0.1&ndash;1.0.
+    Naive addition: BM25 dominates. A non-relevant paper like "language models few-shot"
+    ranks 5th (cosine = 0.98 but BM25 = 0.0), while the relevant "vision transformer"
+    drops to 7th (BM25 = 0.87 but cosine = 0.01).
+    This is <strong>Theorem 1.2.2</strong> (Paper 3): <em>Signal Dominance in Naive Combination</em>.
+  </p>
+
+  <h3 id="cm-fusion">Fusion Strategy Comparison</h3>
+  <p>Four strategies on the same data:</p>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">-- Bayesian log-odds fusion (principled)</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
+    <span class="fn">bayesian_match</span>(title, <span class="st">'attention transformer'</span>),
+    <span class="fn">knn_match</span>(embedding, $1, 10)
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">-- Probabilistic AND: P(A) * P(B) -- strict intersection</span>
+<span class="kw">WHERE</span> <span class="fn">fuse_prob_and</span>(...);
+
+<span class="cm">-- Probabilistic OR: 1 - (1-P(A))*(1-P(B)) -- broad recall</span>
+<span class="kw">WHERE</span> <span class="fn">fuse_prob_or</span>(...);</code></pre>
+
+  <table>
+    <thead>
+      <tr><th>Strategy</th><th>Description</th><th>Use Case</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>fuse_log_odds</code></td><td>Bayesian conjunction in log-odds space</td><td>Highest precision</td></tr>
+      <tr><td><code>fuse_prob_and</code></td><td>$P = \prod P_i$ (independence assumed)</td><td>Strict intersection</td></tr>
+      <tr><td><code>fuse_prob_or</code></td><td>$P = 1 - \prod(1 - P_i)$</td><td>Broad recall</td></tr>
+      <tr><td>Naive sum</td><td>$\text{score} = s_{\text{BM25}} + s_{\text{cosine}}$</td><td>Not recommended</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="cm-metrics">Calibration Metrics</h3>
+  <p>
+    The example computes ECE (Expected Calibration Error) and Brier score with ground-truth
+    relevance labels, and generates reliability diagrams showing predicted vs actual
+    relevance rates per probability bin:
+  </p>
+
+  <span class="example-tag tag-python">Python</span>
+<pre><code><span class="kw">from</span> uqa.scoring.calibration <span class="kw">import</span> CalibrationMetrics
+
+ece = CalibrationMetrics.ece(predictions, labels, n_bins=5)
+brier = CalibrationMetrics.brier(predictions, labels)
+diagram = CalibrationMetrics.reliability_diagram(predictions, labels, n_bins=5)
+
+<span class="cm"># Parameter learning from relevance judgments</span>
+learned = engine.learn_scoring_params(<span class="st">"papers"</span>, <span class="st">"title"</span>, <span class="st">"attention"</span>, labels)
+
+<span class="cm"># Online incremental updates</span>
+engine.update_scoring_params(<span class="st">"papers"</span>, <span class="st">"title"</span>, score=0.85, label=1)</code></pre>
+
+  <p>
+    A perfectly calibrated model has <em>avg_predicted == avg_actual</em> in every bin.
+    <code>learn_scoring_params</code> optimizes the sigmoid parameters $(\alpha, \beta)$
+    from labeled data, and <code>update_scoring_params</code> adjusts them incrementally
+    as new feedback arrives.
+  </p>
+</section>
+
+<!-- ============ From Bayes to Neurons ============ -->
+<section id="bayesian-neural">
+  <h2>From Bayes to Neurons</h2>
+  <p class="paper-meta">
+    <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/bayesian_neural.py">examples/showcase/bayesian_neural.py</a>
+    &middot; Paper 4
+  </p>
+  <p>
+    Paper 4 proves that when you combine multiple calibrated probability signals through
+    Bayesian inference, the end-to-end computation <strong>is</strong> a feedforward neural
+    network. This example traces the computation step by step.
+  </p>
+
+  <h3 id="bn-layers">Layer-by-Layer Derivation</h3>
+
+  <h4>Input Layer: Raw Scores</h4>
+  <p>
+    Two scoring signals with incompatible scales: BM25 in $[0, +\infty)$, cosine in $[-1, 1]$.
+  </p>
+
+  <h4>Layer 1: Sigmoid Calibration</h4>
+  <p>
+    Bayesian BM25 applies $P_i = \sigma(\alpha_i s_i - \beta_i)$.
+    This sigmoid is <em>not</em> a design choice &mdash; it follows necessarily from the
+    Bernoulli exponential family structure of binary relevance. The natural parameter
+    of $\text{Bernoulli}(p)$ is $\text{logit}(p)$, and the inverse link function is
+    the sigmoid (Paper 4, Theorem 6.3.1).
+  </p>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">-- Raw BM25 score (unbounded)</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">text_match</span>(title, <span class="st">'attention'</span>);
+
+<span class="cm">-- Calibrated probability (sigmoid-transformed)</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">bayesian_match</span>(title, <span class="st">'attention'</span>);</code></pre>
+
+  <h4>Hidden Layer: Logit Transform</h4>
+  <p>
+    Each calibrated probability is transformed to log-odds space: $\ell_i = \log(P_i / (1 - P_i))$.
+    Log-odds space is where Bayesian updates are naturally <strong>linear</strong> &mdash;
+    this is the hidden layer's nonlinear activation function.
+  </p>
+
+  <h4>Output Layer: Aggregation + Sigmoid</h4>
+  <p>
+    Log-odds are aggregated linearly with confidence scaling (the $\sqrt{n}$ law):
+  </p>
+  <div class="math-block">
+    $$\text{logit}(P_{\text{fused}}) = \frac{1}{\sqrt{n}} \sum_i \text{logit}(P_i)
+    \qquad\Rightarrow\qquad
+    P_{\text{fused}} = \sigma\!\left(\frac{1}{\sqrt{n}} \sum_i \text{logit}(P_i)\right)$$
+  </div>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">-- This SQL statement IS a neural network</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
+    <span class="fn">bayesian_match</span>(title, <span class="st">'attention'</span>),
+    <span class="fn">knn_match</span>(embedding, $1, 10)
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <p>
+    When both signals share the <em>same</em> sigmoid calibration (homogeneous case),
+    $\text{logit}(\sigma(x)) = x$ (identity), and the network collapses to logistic regression.
+    When calibrations <em>differ</em> (heterogeneous &mdash; the practical case of BM25 + cosine),
+    the logit is a genuine nonlinearity, yielding a <strong>true two-layer network</strong>
+    (Paper 4, Theorem 5.2.1).
+  </p>
+
+  <h3 id="bn-gating">Gating Functions: The Probabilistic Hierarchy</h3>
+  <p>
+    Paper 4 derives three activation functions from three probabilistic questions
+    applied to the same evidence:
+  </p>
+
+  <table>
+    <thead>
+      <tr><th>Activation</th><th>Probabilistic Question</th><th>Derivation</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Sigmoid</strong></td>
+        <td>"How probable is relevance?"</td>
+        <td>$\sigma(x)$ &mdash; the posterior probability itself</td>
+      </tr>
+      <tr>
+        <td><strong>ReLU</strong></td>
+        <td>"How much relevant signal, if any?"</td>
+        <td>$\max(0, x)$ &mdash; MAP estimator under sparse non-negative prior</td>
+      </tr>
+      <tr>
+        <td><strong>Swish</strong></td>
+        <td>"What is the expected relevant amount?"</td>
+        <td>$x \cdot \sigma(x)$ &mdash; posterior mean (Bayesian counterpart of ReLU)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>
+    The MAP-to-Bayes duality in classical statistics manifests as the
+    <strong>ReLU-to-Swish transition</strong> in neural activations.
+  </p>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">-- Standard fusion (no gating)</span>
+<span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(<span class="fn">text_match</span>(...), <span class="fn">traverse_match</span>(...));
+
+<span class="cm">-- ReLU gating: zeroes out negative log-odds (non-evidence)</span>
+<span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(<span class="fn">text_match</span>(...), <span class="fn">traverse_match</span>(...), <span class="st">'relu'</span>);
+
+<span class="cm">-- Swish gating: smooth gating, weak signals leak through</span>
+<span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(<span class="fn">text_match</span>(...), <span class="fn">traverse_match</span>(...), <span class="st">'swish'</span>);
+
+<span class="cm">-- Attention: context-dependent weights (Logarithmic Opinion Pooling)</span>
+<span class="kw">WHERE</span> <span class="fn">fuse_attention</span>(<span class="fn">bayesian_match</span>(...), <span class="fn">bayesian_match</span>(...));
+
+<span class="cm">-- Depth: multi-layer network via iterated marginalization</span>
+<span class="kw">WHERE</span> <span class="fn">staged_retrieval</span>(
+    <span class="fn">text_match</span>(title, <span class="st">'attention'</span>), 6,     <span class="cm">-- Layer 1: broad recall</span>
+    <span class="fn">bayesian_match</span>(abstract, <span class="st">'attention'</span>), 4, <span class="cm">-- Layer 2: re-rank</span>
+    <span class="fn">knn_match</span>(embedding, $1, 3), 2        <span class="cm">-- Layer 3: final fusion</span>
+);</code></pre>
+
+  <h3 id="bn-architecture">Full Architecture</h3>
+  <p>
+    The complete correspondence between Bayesian inference and neural computation:
+  </p>
+
+<pre><code>+---------------------------------------------------------------+
+| INPUT LAYER           raw scores from each paradigm           |
+|   text_match(s1)      knn_match(s2)      pagerank(s3)         |
++---------------------------------------------------------------+
+                                 |
++---------------------------------------------------------------+
+| CALIBRATION           sigmoid: P_i = sigma(a_i*s_i - b_i)     |
+|   (Bernoulli exponential family => sigmoid is inevitable)     |
++---------------------------------------------------------------+
+                                 |
++---------------------------------------------------------------+
+| HIDDEN LAYER          logit: l_i = log(P_i / (1-P_i))         |
+|   Optional gating:                                            |
+|     none  -> l_i              (standard)                      |
+|     ReLU  -> max(0, l_i)      (MAP estimator, sparse prior)   |
+|     Swish -> l_i*sigma(l_i)   (Bayes posterior mean)          |
++---------------------------------------------------------------+
+                                 |
++---------------------------------------------------------------+
+| AGGREGATION           sum(l_i) / n^alpha                      |
+|   Uniform:    fuse_log_odds    (equal weights)                |
+|   Attention:  fuse_attention   (context-dependent weights)    |
+|   Depth:      staged_retrieval (iterated marginalization)     |
++---------------------------------------------------------------+
+                                 |
++---------------------------------------------------------------+
+| OUTPUT LAYER          sigmoid: P_fused = sigma(aggregated)    |
+|   The final P(relevant | all evidence)                        |
++---------------------------------------------------------------+</code></pre>
+
+  <div class="note">
+    <strong>Key insight</strong>: The direction of explanation is reversed. Rather than
+    designing a neural network and analyzing it probabilistically, we begin with
+    probability and <em>arrive at</em> the neural network. Every architectural
+    choice &mdash; sigmoid activation, ReLU gating, attention mechanism, network
+    depth &mdash; is a <strong>consequence</strong> of probabilistic reasoning, not a
+    design decision.
+  </div>
+</section>
+
+<!-- ============ Source Files ============ -->
+<section id="source">
+  <h2>Source Files</h2>
+
+  <div class="grid">
+    <div class="card">
+      <h3>Knowledge Discovery</h3>
+      <p>
+        <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/knowledge_discovery.py">examples/showcase/knowledge_discovery.py</a><br>
+        Four-paradigm unification with citation network, Cypher, and EXPLAIN plans
+      </p>
+    </div>
+    <div class="card">
+      <h3>Calibration Matters</h3>
+      <p>
+        <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/calibration_matters.py">examples/showcase/calibration_matters.py</a><br>
+        Signal dominance, fusion comparison, ECE/Brier metrics, parameter learning
+      </p>
+    </div>
+    <div class="card">
+      <h3>From Bayes to Neurons</h3>
+      <p>
+        <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/bayesian_neural.py">examples/showcase/bayesian_neural.py</a><br>
+        Neural network derivation, gating functions, attention, staged retrieval
+      </p>
+    </div>
+  </div>
+
+  <span class="example-tag tag-shell">Shell</span>
+<pre><code>python examples/showcase/knowledge_discovery.py
+python examples/showcase/calibration_matters.py
+python examples/showcase/bayesian_neural.py</code></pre>
+</section>
+
+</div><!-- .content -->
+</div><!-- .page-with-toc -->
+
+<!-- ====== Footer ====== -->
+<footer>
+  <div class="container">
+    <p>
+      UQA &mdash; Unified Query Algebra
+      &middot; <a href="https://github.com/cognica-io/uqa">GitHub</a>
+      &middot; <a href="https://pypi.org/project/uqa/">PyPI</a>
+      &middot; <a href="https://cognica.io">Cognica</a>
+      &middot; AGPL-3.0
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
