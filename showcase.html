@@ -17,8 +17,8 @@
 <header class="hero hero-compact">
   <h1><span>UQA</span> Showcase</h1>
   <p class="tagline">
-    Three demonstrations that bring the five theoretical papers to life &mdash;
-    from four-paradigm unification to the neural network hidden inside Bayesian fusion.
+    Seven demonstrations that bring the five theoretical papers to life &mdash;
+    from four-paradigm unification to complete neural network pipelines expressed as SQL.
   </p>
 </header>
 
@@ -54,6 +54,11 @@
     <li class="toc-h3"><a href="#bn-layers">Layer-by-Layer</a></li>
     <li class="toc-h3"><a href="#bn-gating">Gating Functions</a></li>
     <li class="toc-h3"><a href="#bn-architecture">Full Architecture</a></li>
+    <li><a href="#deep-fusion">Deep Fusion</a></li>
+    <li class="toc-h3"><a href="#df-resnet">ResNet (Signal Layers)</a></li>
+    <li class="toc-h3"><a href="#df-gnn">GNN (Propagation)</a></li>
+    <li class="toc-h3"><a href="#df-cnn">CNN (Convolution)</a></li>
+    <li class="toc-h3"><a href="#df-nn">Full NN Pipeline</a></li>
     <li><a href="#source">Source Files</a></li>
   </ul>
 </aside>
@@ -65,7 +70,7 @@
 <section id="overview">
   <h2>Overview</h2>
   <p>
-    These three showcase examples demonstrate UQA's most distinctive capabilities.
+    These seven showcase examples demonstrate UQA's most distinctive capabilities.
     Each example is self-contained and runs with inline data &mdash; no external
     datasets or downloads required.
   </p>
@@ -88,6 +93,12 @@
       <p>Step-by-step derivation showing that Bayesian fusion IS a feedforward
         neural network.</p>
       <p style="font-size: 0.82rem; color: var(--accent); margin-top: 0.5rem;">Paper 4</p>
+    </div>
+    <div class="card">
+      <h3><a href="#deep-fusion">Deep Fusion</a></h3>
+      <p>Complete neural network framework as SQL: ResNet, GNN, CNN, pooling,
+        dense layers, softmax classification &mdash; from theory to execution.</p>
+      <p style="font-size: 0.82rem; color: var(--accent); margin-top: 0.5rem;">Paper 4 (applied)</p>
     </div>
   </div>
 </section>
@@ -482,6 +493,128 @@ engine.update_scoring_params(<span class="st">"papers"</span>, <span class="st">
   </div>
 </section>
 
+<!-- ============ Deep Fusion ============ -->
+<section id="deep-fusion">
+  <h2>Deep Fusion: Neural Networks as SQL</h2>
+  <p class="paper-meta">
+    Paper 4 (applied) &middot; 4 showcase examples
+  </p>
+  <p>
+    Paper 4 proved that Bayesian multi-signal fusion IS a neural network.
+    <code>deep_fusion()</code> takes this further &mdash; implementing complete deep learning
+    pipelines (ResNet, GNN, CNN, and full classification heads) as composable SQL layer
+    functions over graph-structured data.
+  </p>
+
+  <h3 id="df-resnet">ResNet: Hierarchical Signal Layers</h3>
+  <p class="paper-meta">
+    <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/deep_fusion_resnet.py">deep_fusion_resnet.py</a>
+  </p>
+  <p>
+    Each <code>layer()</code> adds its fused logits to the running accumulator via a residual
+    connection &mdash; mathematically identical to ResNet skip connections:
+    $x^{(k)} = g(x^{(k-1)} + F(x^{(k-1)}))$.
+  </p>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">&mdash; Three-layer hierarchy: text -> vector -> graph centrality</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">deep_fusion</span>(
+    <span class="fn">layer</span>(<span class="fn">bayesian_match</span>(title, <span class="st">'attention'</span>)),     <span class="cm">&mdash; Layer 0: text prior</span>
+    <span class="fn">layer</span>(<span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 10)),           <span class="cm">&mdash; Layer 1: vector refinement</span>
+    <span class="fn">layer</span>(<span class="fn">pagerank</span>(<span class="st">'papers'</span>)),                      <span class="cm">&mdash; Layer 2: centrality boost</span>
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <h3 id="df-gnn">GNN: Graph Propagation Layers</h3>
+  <p class="paper-meta">
+    <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/deep_fusion_gnn.py">deep_fusion_gnn.py</a>
+  </p>
+  <p>
+    <code>propagate()</code> layers spread scores through graph edges &mdash; one round of
+    GNN message passing with a logit-space residual. Stacking layers enables multi-hop reasoning.
+  </p>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">&mdash; 2-hop message passing through citations</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">deep_fusion</span>(
+    <span class="fn">layer</span>(<span class="fn">bayesian_match</span>(title, <span class="st">'attention'</span>)),     <span class="cm">&mdash; seed scores</span>
+    <span class="fn">propagate</span>(<span class="st">'cites'</span>, <span class="st">'mean'</span>),                     <span class="cm">&mdash; 1-hop spread</span>
+    <span class="fn">propagate</span>(<span class="st">'cites'</span>, <span class="st">'mean'</span>),                     <span class="cm">&mdash; 2-hop spread</span>
+    <span class="fn">layer</span>(<span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 10)),           <span class="cm">&mdash; vector refinement</span>
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <h3 id="df-cnn">CNN: Spatial Convolution</h3>
+  <p class="paper-meta">
+    <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/deep_fusion_cnn.py">deep_fusion_cnn.py</a>
+  </p>
+  <p>
+    <code>convolve()</code> performs weighted multi-hop BFS aggregation over graph neighborhoods.
+    On a 4-connected grid, hop 0 = self, hop 1 = 3x3, hop 2 = 5x5 receptive field.
+    Weights are estimated from spatial autocorrelation (MLE, no backpropagation).
+  </p>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">&mdash; Stacked convolutions with MLE-estimated weights</span>
+<span class="kw">SELECT</span> id, _score <span class="kw">FROM</span> patches
+<span class="kw">WHERE</span> <span class="fn">deep_fusion</span>(
+    <span class="fn">layer</span>(<span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 16)),
+    <span class="fn">convolve</span>(<span class="st">'spatial'</span>, <span class="st">ARRAY[0.6, 0.4]</span>),           <span class="cm">&mdash; 3x3 equivalent</span>
+    <span class="fn">convolve</span>(<span class="st">'spatial'</span>, <span class="st">ARRAY[0.6, 0.4]</span>),           <span class="cm">&mdash; 5x5 effective field</span>
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <h3 id="df-nn">Full Neural Network Pipeline</h3>
+  <p class="paper-meta">
+    <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/deep_fusion_nn.py">deep_fusion_nn.py</a>
+  </p>
+  <p>
+    The complete deep learning pipeline &mdash; from spatial feature extraction through
+    classification &mdash; expressed as a single SQL statement:
+  </p>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">&mdash; Complete CNN: conv -> pool -> flatten -> dense -> softmax</span>
+<span class="kw">SELECT</span> id, _score <span class="kw">FROM</span> patches
+<span class="kw">WHERE</span> <span class="fn">deep_fusion</span>(
+    <span class="fn">layer</span>(<span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 16)),             <span class="cm">&mdash; 16 nodes</span>
+    <span class="fn">convolve</span>(<span class="st">'spatial'</span>, <span class="st">ARRAY[0.6, 0.4]</span>),              <span class="cm">&mdash; spatial features</span>
+    <span class="fn">pool</span>(<span class="st">'spatial'</span>, <span class="st">'max'</span>, 2),                        <span class="cm">&mdash; downsample</span>
+    <span class="fn">batch_norm</span>(),                                      <span class="cm">&mdash; normalize</span>
+    <span class="fn">dropout</span>(0.3),                                      <span class="cm">&mdash; regularize</span>
+    <span class="fn">flatten</span>(),                                         <span class="cm">&mdash; spatial -> 1D</span>
+    <span class="fn">dense</span>(<span class="st">ARRAY[...]</span>, <span class="st">ARRAY[...]</span>,
+          output_channels <span class="cm">=&gt;</span> 4, input_channels <span class="cm">=&gt;</span> 8),  <span class="cm">&mdash; project to classes</span>
+    <span class="fn">softmax</span>(),                                         <span class="cm">&mdash; probabilities</span>
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <p>
+    The EXPLAIN plan reads like a network architecture diagram:
+  </p>
+
+<pre><code>DeepFusion(layers=8, alpha=0.5, gating='relu')
+  Layer 0 (signals=1):
+    _CalibratedKNNOperator
+  Layer 1 (convolve='spatial', hops=1, weights=[0.6, 0.4]):
+  Layer 2 (pool='spatial', method='max', size=2):
+  Layer 3 (batch_norm, eps=1e-05):
+  Layer 4 (dropout, p=0.3):
+  Layer 5 (flatten):
+  Layer 6 (dense=8->4):
+  Layer 7 (softmax):</code></pre>
+
+  <div class="note">
+    <strong>Key insight</strong>: Every standard deep learning component &mdash; convolution,
+    pooling, batch normalization, dense layers, softmax &mdash; operates over graph-structured
+    data through the posting list algebra. The data model uses multi-channel vectors
+    (<code>channel_map: dict[int, np.ndarray]</code>), where single-channel mode is backward
+    compatible with the original scalar Bayesian logit model.
+  </div>
+</section>
+
 <!-- ============ Source Files ============ -->
 <section id="source">
   <h2>Source Files</h2>
@@ -508,12 +641,44 @@ engine.update_scoring_params(<span class="st">"papers"</span>, <span class="st">
         Neural network derivation, gating functions, attention, staged retrieval
       </p>
     </div>
+    <div class="card">
+      <h3>Deep Fusion: ResNet</h3>
+      <p>
+        <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/deep_fusion_resnet.py">deep_fusion_resnet.py</a><br>
+        Hierarchical signal layers with residual connections and gating comparison
+      </p>
+    </div>
+    <div class="card">
+      <h3>Deep Fusion: GNN</h3>
+      <p>
+        <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/deep_fusion_gnn.py">deep_fusion_gnn.py</a><br>
+        Graph propagation, multi-hop reasoning, aggregation and direction control
+      </p>
+    </div>
+    <div class="card">
+      <h3>Deep Fusion: CNN</h3>
+      <p>
+        <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/deep_fusion_cnn.py">deep_fusion_cnn.py</a><br>
+        Spatial convolution, MLE weight estimation, smoothing visualization
+      </p>
+    </div>
+    <div class="card">
+      <h3>Deep Fusion: Full NN</h3>
+      <p>
+        <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/deep_fusion_nn.py">deep_fusion_nn.py</a><br>
+        Pool, dense, flatten, softmax, batch_norm, dropout &mdash; end-to-end CNN pipeline
+      </p>
+    </div>
   </div>
 
   <span class="example-tag tag-shell">Shell</span>
 <pre><code>python examples/showcase/knowledge_discovery.py
 python examples/showcase/calibration_matters.py
-python examples/showcase/bayesian_neural.py</code></pre>
+python examples/showcase/bayesian_neural.py
+python examples/showcase/deep_fusion_resnet.py
+python examples/showcase/deep_fusion_gnn.py
+python examples/showcase/deep_fusion_cnn.py
+python examples/showcase/deep_fusion_nn.py</code></pre>
 </section>
 
 </div><!-- .content -->

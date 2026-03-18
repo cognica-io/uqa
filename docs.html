@@ -50,6 +50,7 @@
     <li><a href="#fusion">Fusion</a></li>
     <li class="toc-h3"><a href="#fusion-gating">Gating</a></li>
     <li class="toc-h3"><a href="#fusion-attention">Attention</a></li>
+    <li class="toc-h3"><a href="#fusion-deep">Deep Fusion</a></li>
     <li><a href="#geospatial">Geospatial</a></li>
     <li><a href="#temporal-graph">Temporal Graph</a></li>
     <li><a href="#fdw">Foreign Data Wrappers</a></li>
@@ -700,6 +701,52 @@ $$</span>) <span class="kw">AS</span> (name agtype);
     <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
     <span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 10),
     alpha <span class="cm">=&gt;</span> 0.7
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <h3 id="fusion-deep">Deep Fusion (Neural Network)</h3>
+  <p>
+    <code>deep_fusion()</code> implements complete neural network pipelines as composable SQL
+    layer functions. Each layer type maps to a standard DL architecture.
+  </p>
+
+<pre><code><span class="cm">&mdash; ResNet: hierarchical signal layers with residual connections</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">deep_fusion</span>(
+    <span class="fn">layer</span>(<span class="fn">bayesian_match</span>(title, <span class="st">'attention'</span>)),
+    <span class="fn">layer</span>(<span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 10)),
+    <span class="fn">layer</span>(<span class="fn">pagerank</span>(<span class="st">'papers'</span>)),
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">&mdash; GNN: propagate scores through graph edges</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">deep_fusion</span>(
+    <span class="fn">layer</span>(<span class="fn">bayesian_match</span>(title, <span class="st">'attention'</span>)),
+    <span class="fn">propagate</span>(<span class="st">'cites'</span>, <span class="st">'mean'</span>),
+    <span class="fn">propagate</span>(<span class="st">'cites'</span>, <span class="st">'mean'</span>)
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">&mdash; CNN: spatial convolution with MLE-estimated weights</span>
+<span class="kw">SELECT</span> id, _score <span class="kw">FROM</span> patches
+<span class="kw">WHERE</span> <span class="fn">deep_fusion</span>(
+    <span class="fn">layer</span>(<span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 16)),
+    <span class="fn">convolve</span>(<span class="st">'spatial'</span>, <span class="st">ARRAY[0.6, 0.4]</span>),
+    <span class="fn">convolve</span>(<span class="st">'spatial'</span>, <span class="st">ARRAY[0.6, 0.4]</span>)
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
+<span class="cm">&mdash; Full NN pipeline: conv -> pool -> flatten -> dense -> softmax</span>
+<span class="kw">SELECT</span> id, _score <span class="kw">FROM</span> patches
+<span class="kw">WHERE</span> <span class="fn">deep_fusion</span>(
+    <span class="fn">layer</span>(<span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 16)),
+    <span class="fn">convolve</span>(<span class="st">'spatial'</span>, <span class="st">ARRAY[0.6, 0.4]</span>),
+    <span class="fn">pool</span>(<span class="st">'spatial'</span>, <span class="st">'max'</span>, 2),
+    <span class="fn">batch_norm</span>(),
+    <span class="fn">dropout</span>(0.3),
+    <span class="fn">flatten</span>(),
+    <span class="fn">dense</span>(<span class="st">ARRAY[...]</span>, <span class="st">ARRAY[...]</span>,
+          output_channels <span class="cm">=&gt;</span> 4, input_channels <span class="cm">=&gt;</span> 8),
+    <span class="fn">softmax</span>(),
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
 ) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
 </section>
 

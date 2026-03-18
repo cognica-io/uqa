@@ -133,7 +133,7 @@ graph TD
         LO[Log-Odds]
         PB[Probabilistic Boolean]
         ATT[Attention]
-        MH[Multi-Head]
+        DF[Deep Fusion]
     end
 
     Operators --> Scoring
@@ -177,6 +177,13 @@ graph TD
         Vertices/edges shared globally; adjacency indexes per-graph.
         Graph algebra (union, intersect, difference), property indexes,
         and all SQL functions use direct graph names.</p>
+    </div>
+    <div class="card">
+      <h3>Deep Fusion</h3>
+      <p>Multi-layer neural network as SQL: ResNet (signal layers),
+        GNN (propagation), CNN (convolution), pooling, dense layers,
+        flatten, softmax, batch normalization, and dropout &mdash;
+        all composed as <code>deep_fusion()</code> layer functions.</p>
     </div>
   </div>
 </div>
@@ -257,6 +264,30 @@ graph TD
       <tr><td><code>pagerank(['graph']) / hits(['graph']) / betweenness(['graph'])</code></td><td>Graph centrality as FROM or WHERE signal (named graph optional)</td></tr>
       <tr><td><code>progressive_fusion(s1, s2, k, ...)</code></td><td>Cascading multi-stage WAND pruning</td></tr>
       <tr><td><code>weighted_rpq('expr', start, 'prop')</code></td><td>RPQ with cumulative edge weight tracking</td></tr>
+      <tr><td><code>deep_fusion(layer(...), convolve(...), pool(...), ...)</code></td><td>Multi-layer neural network: ResNet + GNN + CNN + DenseNet</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Deep Fusion Layer Functions</h3>
+  <p>
+    Used inside <code>deep_fusion()</code> to compose neural network pipelines
+    over graph-structured data. Each layer type maps to a standard DL architecture:
+  </p>
+
+  <table>
+    <thead>
+      <tr><th>Function</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>layer(sig1, sig2, ...)</code></td><td>Signal layer: log-odds conjunction with residual connection (ResNet)</td></tr>
+      <tr><td><code>propagate('label', 'agg'[, 'dir'])</code></td><td>Graph propagation: spread scores through edges (GNN)</td></tr>
+      <tr><td><code>convolve('label', ARRAY[w...][, 'dir'])</code></td><td>Spatial convolution: weighted multi-hop BFS aggregation (CNN)</td></tr>
+      <tr><td><code>pool('label', 'method', size[, 'dir'])</code></td><td>Spatial downsampling via greedy BFS partitioning</td></tr>
+      <tr><td><code>dense(ARRAY[W], ARRAY[b], output_channels =&gt; N, input_channels =&gt; M)</code></td><td>Fully connected layer: <code>out = W @ input + bias</code></td></tr>
+      <tr><td><code>flatten()</code></td><td>Collapse spatial nodes into a single vector</td></tr>
+      <tr><td><code>softmax()</code></td><td>Classification head (numerically stable)</td></tr>
+      <tr><td><code>batch_norm([epsilon =&gt; 1e-5])</code></td><td>Per-channel normalization across nodes</td></tr>
+      <tr><td><code>dropout(p)</code></td><td>Inference-mode scaling by $(1 - p)$</td></tr>
     </tbody>
   </table>
 </div>
@@ -423,6 +454,28 @@ $$</span>) <span class="kw">AS</span> (name agtype, friend agtype, age agtype);
 <span class="kw">FROM</span> restaurants
 <span class="kw">WHERE</span> <span class="fn">spatial_within</span>(location, <span class="fn">POINT</span>(-73.9857, 40.7484), 5000)
 <span class="kw">ORDER BY</span> dist_m;</code></pre>
+
+  <h3>Deep Fusion Neural Network</h3>
+<pre><code><span class="cm">&mdash; Full CNN pipeline expressed as SQL</span>
+<span class="kw">SELECT</span> id, _score <span class="kw">FROM</span> patches
+<span class="kw">WHERE</span> <span class="fn">deep_fusion</span>(
+    <span class="fn">layer</span>(<span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 16)),
+    <span class="fn">convolve</span>(<span class="st">'spatial'</span>, <span class="st">ARRAY[0.6, 0.4]</span>),
+    <span class="fn">pool</span>(<span class="st">'spatial'</span>, <span class="st">'max'</span>, 2),
+    <span class="fn">flatten</span>(),
+    <span class="fn">dense</span>(<span class="st">ARRAY[...]</span>, <span class="st">ARRAY[...]</span>,
+          output_channels <span class="cm">=&gt;</span> 4, input_channels <span class="cm">=&gt;</span> 8),
+    <span class="fn">softmax</span>(),
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <p>
+    Each SQL function call maps to a neural network layer. The query optimizer
+    produces an EXPLAIN plan that reads like a network architecture diagram.
+    Signal layers are ResNet (residual connections), propagate layers are GNN
+    (message passing), convolve layers are CNN (spatial aggregation), and the
+    dense-softmax head is a standard classifier.
+  </p>
 
   <h3>Temporal Graph Traversal</h3>
 <pre><code><span class="cm">&mdash; Edges valid at timestamp</span>
