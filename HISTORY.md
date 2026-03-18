@@ -1,8 +1,25 @@
 # History
 
-## 0.20.0 (2026-03-16)
+## 0.20.0 (2026-03-18)
 
-Named graphs as primary abstraction, 20 paper-to-code improvements across all four papers. Named graphs replace the flat global graph store with per-graph partitioned adjacency indexes. Graph operators, indexes, and SQL functions are graph-scoped. All 2597 tests, 34 examples, and 309 benchmarks pass.
+Named graphs as primary abstraction, index-aware Bayesian calibration of vector similarity scores (Paper 5), performance regression fixes, and 20 paper-to-code improvements across all five papers. Named graphs replace the flat global graph store with per-graph partitioned adjacency indexes. Graph operators, indexes, and SQL functions are graph-scoped.
+
+### Vector Calibration (Paper 5)
+
+- **Likelihood ratio calibration**: Transforms raw cosine similarities into calibrated relevance probabilities via `log(f_R(d) / f_G(d)) + logit(P_base)` (Theorem 3.1.1).
+- **`VectorProbabilityTransform`** integration from bayesian-bm25 package: KDE and GMM-EM estimation of f_R, KDE-based f_G from IVF probed-cell distances.
+- **`CalibratedVectorOperator`**: End-to-end calibrated KNN with four weight sources — Bayesian BM25 cross-modal (Section 4.3), IVF density prior (Strategy 4.6.2), distance gap detection (Strategy 4.6.1), uniform fallback.
+- **IVF index statistics**: `cell_populations()`, `probed_distances()`, `background_stats`, `background_samples`, `_centroid_id` in search results.
+- **SQL**: `bayesian_knn_match(field, vector, k [, named options])` with `method`, `weight_source`, `base_rate` options. `knn_match` inside fusion auto-upgrades when IVF background stats are available.
+- **QueryBuilder**: `.bayesian_knn()` with `weight_source`, `bm25_query`, `bm25_field`, `bandwidth_scale` parameters.
+- **`CalibrationMetrics.log_loss()`**: Negative log-likelihood scoring rule (Section 8.3).
+- **SQL compiler**: `_extract_int_value()` supports `ParamRef` (`$N` parameters).
+
+### Performance Regression Fixes
+
+- **GraphStore partition cache**: Single-entry `_cached_partition` with identity comparison replaces per-call `_graphs.get(graph)` dict lookup. `_require_graph` consolidated into `_get_partition`. Neighbors benchmarks recovered +23% over original baseline.
+- **SortOp Arrow threshold**: `_ARROW_SORT_THRESHOLD = 5000` skips dict-to-Arrow-to-dict roundtrip for small batches where the conversion cost dominates. Sort benchmarks recovered +20% over original baseline.
+- **DPccp join cost**: Module-level `_log2` binding and inline comparisons replace `math.log2()` and `min()`/`max()` calls in the O(3^n) inner loop. DPccp star[5] recovered +37% over original baseline.
 
 ### Configurable Graph Operator Scores
 
