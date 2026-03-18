@@ -477,6 +477,10 @@ $$</span>) <span class="kw">AS</span> (city agtype, cnt agtype);</code></pre>
 <span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
 <span class="kw">WHERE</span> <span class="fn">pagerank</span>() <span class="kw">AND</span> year >= 2020 <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
 
+<span class="cm">-- Named graph in WHERE signal</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">pagerank</span>(<span class="st">'citations'</span>) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
 <span class="cm">-- Bounded RPQ: 2-3 hops</span>
 <span class="kw">SELECT</span> _doc_id, title <span class="kw">FROM</span> <span class="fn">rpq</span>(<span class="st">'cites{2,3}'</span>, 7);
 
@@ -488,11 +492,11 @@ $$</span>) <span class="kw">AS</span> (city agtype, cnt agtype);</code></pre>
 <span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">graph_add_vertex</span>(1, <span class="st">'person'</span>, <span class="st">'employees'</span>);
 <span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">graph_add_edge</span>(1, 1, 2, <span class="st">'knows'</span>, <span class="st">'employees'</span>);
 
-<span class="cm">-- Fusion: text + centrality + gating</span>
+<span class="cm">-- Fusion: text + centrality with named graph + gating</span>
 <span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
 <span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
     <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
-    <span class="fn">pagerank</span>(),
+    <span class="fn">pagerank</span>(<span class="st">'citations'</span>),
     gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
 ) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
 

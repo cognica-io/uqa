@@ -249,7 +249,7 @@ graph TD
       <tr><td><code>fuse_attention(s1, s2, ..., normalized =&gt; true)</code></td><td>Attention-weighted fusion with logit normalization</td></tr>
       <tr><td><code>fuse_multihead(s1, s2, ..., n_heads =&gt; 4)</code></td><td>Multi-head attention fusion (Remark 8.6)</td></tr>
       <tr><td><code>fuse_learned(s1, s2, ..., alpha =&gt; 0.7)</code></td><td>Learned per-signal weights via Hebbian gradient</td></tr>
-      <tr><td><code>pagerank() / hits() / betweenness()</code></td><td>Graph centrality as FROM or WHERE signal</td></tr>
+      <tr><td><code>pagerank(['graph']) / hits(['graph']) / betweenness(['graph'])</code></td><td>Graph centrality as FROM or WHERE signal (named graph optional)</td></tr>
       <tr><td><code>progressive_fusion(s1, s2, k, ...)</code></td><td>Cascading multi-stage WAND pruning</td></tr>
       <tr><td><code>weighted_rpq('expr', start, 'prop')</code></td><td>RPQ with cumulative edge weight tracking</td></tr>
     </tbody>
@@ -435,10 +435,14 @@ $$</span>) <span class="kw">AS</span> (name agtype, friend agtype, age agtype);
 <pre><code><span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> <span class="fn">pagerank</span>()
 <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
 
+<span class="cm">&mdash; Named graph in WHERE signal and fusion</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
+<span class="kw">WHERE</span> <span class="fn">pagerank</span>(<span class="st">'social'</span>) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
 <span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
 <span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
     <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
-    <span class="fn">pagerank</span>(),
+    <span class="fn">pagerank</span>(<span class="st">'social'</span>),
     gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
 ) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
 

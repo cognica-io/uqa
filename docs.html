@@ -599,6 +599,12 @@ $$</span>) <span class="kw">AS</span> (name agtype);
 <span class="cm">-- Centrality as WHERE signal</span>
 <span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers <span class="kw">WHERE</span> <span class="fn">pagerank</span>() <span class="kw">AND</span> year >= 2020;
 
+<span class="cm">-- Named graph in WHERE signal (0.20.1+)</span>
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers <span class="kw">WHERE</span> <span class="fn">pagerank</span>(<span class="st">'social'</span>) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers <span class="kw">WHERE</span> <span class="fn">pagerank</span>(0.90, 50, 1e-5, <span class="st">'social'</span>) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers <span class="kw">WHERE</span> <span class="fn">hits</span>(<span class="st">'social'</span>) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+<span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers <span class="kw">WHERE</span> <span class="fn">betweenness</span>(<span class="st">'social'</span>) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
+
 <span class="cm">-- Weighted path query</span>
 <span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
 <span class="kw">WHERE</span> <span class="fn">weighted_rpq</span>(<span class="st">'cites/cites'</span>, 7, <span class="st">'weight'</span>, <span class="st">'sum'</span>, 6.0);
@@ -635,7 +641,7 @@ $$</span>) <span class="kw">AS</span> (name agtype);
 <span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
 <span class="kw">WHERE</span> <span class="fn">fuse_log_odds</span>(
     <span class="fn">text_match</span>(title, <span class="st">'attention'</span>),
-    <span class="fn">pagerank</span>(),
+    <span class="fn">pagerank</span>(<span class="st">'social'</span>),
     gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
 ) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;
 
