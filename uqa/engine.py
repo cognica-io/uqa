@@ -428,6 +428,28 @@ class Engine:
         """Return the global graph store."""
         return self._graph_store
 
+    # -- Convolution weight estimation ----------------------------------
+
+    def estimate_conv_weights(
+        self,
+        table: str,
+        edge_label: str,
+        kernel_hops: int,
+        embedding_field: str = "embedding",
+    ) -> list[float]:
+        """Estimate ConvLayer hop weights from spatial autocorrelation.
+
+        Computes average cosine similarity between patch embeddings at
+        each hop distance in the table's graph.  Returns normalized
+        weights [w_0, w_1, ..., w_{kernel_hops}] ready for use in
+        ``convolve()`` inside ``deep_fusion()``.
+        """
+        from uqa.operators.deep_fusion import estimate_conv_weights
+
+        return estimate_conv_weights(
+            self, table, edge_label, kernel_hops, embedding_field
+        )
+
     # -- Path index management -----------------------------------------
 
     def build_path_index(

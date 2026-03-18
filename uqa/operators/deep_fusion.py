@@ -62,6 +62,29 @@ class PropagateLayer:
     direction: str  # "both" | "out" | "in"
 
 
+@dataclass(frozen=True, slots=True)
+class ConvLayer:
+    """Weighted multi-hop aggregation over graph neighborhoods (CNN).
+
+    Performs BFS-style neighborhood aggregation where each hop distance
+    has its own weight.  The weighted average of neighbor probabilities
+    at each hop ring is computed, then converted to logit and added as
+    a residual connection.
+
+    hop_weights[0] = self weight (identity / skip connection)
+    hop_weights[1] = 1-hop neighbors (3x3 equivalent on grid)
+    hop_weights[2] = 2-hop neighbors (5x5 receptive field)
+    ...
+
+    Weights are internally normalized to sum to 1 so the convolved
+    value remains a valid probability in (0, 1).
+    """
+
+    edge_label: str
+    hop_weights: tuple[float, ...]  # (w_self, w_1hop, w_2hop, ...)
+    direction: str  # "both" | "out" | "in"
+
+
 class DeepFusionOperator(Operator):
     """Multi-layer fusion operator (Paper 4, Section 7).
 
@@ -80,17 +103,17 @@ class DeepFusionOperator(Operator):
 
     def __init__(
         self,
-        layers: list[SignalLayer | PropagateLayer],
+        layers: list[SignalLayer | PropagateLayer | ConvLayer],
         alpha: float = 0.5,
         gating: str = "none",
         graph_name: str = "",
     ) -> None:
         if not layers:
             raise ValueError("deep_fusion requires at least one layer")
-        if isinstance(layers[0], PropagateLayer):
+        if isinstance(layers[0], (PropagateLayer, ConvLayer)):
             raise ValueError(
                 "deep_fusion: first layer must be a SignalLayer "
-                "(no scores to propagate)"
+                "(no scores to propagate or convolve)"
             )
         self.layers = layers
         self.alpha = alpha
@@ -109,6 +132,8 @@ class DeepFusionOperator(Operator):
                 )
             elif isinstance(layer, PropagateLayer):
                 self._execute_propagate_layer(layer, context, logit_map)
+            elif isinstance(layer, ConvLayer):
+                self._execute_conv_layer(layer, context, logit_map)
 
         if not logit_map:
             return PostingList()
@@ -251,11 +276,199 @@ class DeepFusionOperator(Operator):
         logit_map.clear()
         logit_map.update(new_logits)
 
+    def _execute_conv_layer(
+        self,
+        layer: ConvLayer,
+        context: ExecutionContext,
+        logit_map: dict[int, float],
+    ) -> None:
+        """Weighted multi-hop convolution over graph neighborhoods."""
+        gs = context.graph_store
+        if gs is None:
+            raise ValueError(
+                "deep_fusion convolve layer requires a graph_store in ExecutionContext"
+            )
+
+        prob_map: dict[int, float] = {}
+        for doc_id, logit in logit_map.items():
+            prob_map[doc_id] = _sigmoid(logit)
+
+        # Normalize hop weights
+        total_w = sum(layer.hop_weights)
+        if total_w <= 0:
+            return
+        norm_weights = [w / total_w for w in layer.hop_weights]
+
+        new_logits: dict[int, float] = {}
+        edge_label = layer.edge_label
+        direction = layer.direction
+        graph_name = self.graph_name
+        gating = self.gating
+        kernel_hops = len(layer.hop_weights) - 1
+
+        for vid in list(logit_map.keys()):
+            weighted_prob = 0.0
+
+            # Hop 0: self
+            if vid in prob_map:
+                weighted_prob += norm_weights[0] * prob_map[vid]
+
+            # Hop 1..kernel_hops: BFS rings
+            current_frontier = {vid}
+            visited = {vid}
+            for h in range(1, kernel_hops + 1):
+                next_frontier: set[int] = set()
+                for fv in current_frontier:
+                    for nb in _graph_neighbors(
+                        gs, fv, edge_label, direction, graph_name
+                    ):
+                        if nb not in visited:
+                            next_frontier.add(nb)
+                            visited.add(nb)
+
+                if next_frontier:
+                    hop_probs = [prob_map[nb] for nb in next_frontier if nb in prob_map]
+                    if hop_probs:
+                        hop_mean = sum(hop_probs) / len(hop_probs)
+                        weighted_prob += norm_weights[h] * hop_mean
+
+                current_frontier = next_frontier
+
+            conv_logit = _safe_logit(max(_PROB_FLOOR, min(_PROB_CEIL, weighted_prob)))
+            conv_logit = _apply_gating(conv_logit, gating)
+
+            # Residual connection
+            new_logits[vid] = logit_map.get(vid, 0.0) + conv_logit
+
+        logit_map.clear()
+        logit_map.update(new_logits)
+
     def cost_estimate(self, stats: IndexStats) -> float:
         total = 0.0
         for layer in self.layers:
             if isinstance(layer, SignalLayer):
                 total += sum(sig.cost_estimate(stats) for sig in layer.signals)
-            elif isinstance(layer, PropagateLayer):
+            elif isinstance(layer, PropagateLayer | ConvLayer):
                 total += float(stats.total_docs)
         return total
+
+
+def _graph_neighbors(
+    gs: object,
+    vid: int,
+    edge_label: str,
+    direction: str,
+    graph_name: str,
+) -> list[int]:
+    """Collect neighbors in the specified direction(s)."""
+    result: list[int] = []
+    if direction in ("out", "both"):
+        result.extend(gs.neighbors(vid, edge_label, "out", graph=graph_name))  # type: ignore[union-attr]
+    if direction in ("in", "both"):
+        result.extend(gs.neighbors(vid, edge_label, "in", graph=graph_name))  # type: ignore[union-attr]
+    return result
+
+
+def estimate_conv_weights(
+    engine: object,
+    table_name: str,
+    edge_label: str,
+    kernel_hops: int,
+    embedding_field: str = "embedding",
+) -> list[float]:
+    """Estimate ConvLayer hop weights from spatial autocorrelation (MLE).
+
+    Computes the average cosine similarity between patch embeddings at
+    each hop distance.  High similarity at hop h means spatial coherence
+    is strong at that distance, so w_h should be large.
+
+    Returns normalized weights [w_0, w_1, ..., w_{kernel_hops}] that
+    sum to 1.0.
+
+    Parameters
+    ----------
+    engine : Engine
+        UQA engine with the table and graph loaded.
+    table_name : str
+        Name of the table containing patch data.
+    edge_label : str
+        Edge label for spatial adjacency in the graph.
+    kernel_hops : int
+        Maximum hop distance (1 = 3x3, 2 = 5x5 receptive field).
+    embedding_field : str
+        Name of the VECTOR column containing patch embeddings.
+    """
+    import numpy as np
+
+    eng = engine  # type: ignore[assignment]
+    table = eng._tables.get(table_name)
+    if table is None:
+        raise ValueError(f"Table '{table_name}' does not exist")
+
+    gs = table.graph_store
+    if gs is None:
+        raise ValueError(f"Table '{table_name}' has no graph store")
+
+    graph_name = table_name
+    doc_store = table.document_store
+
+    # Collect all doc_ids and their embeddings
+    embeddings: dict[int, np.ndarray] = {}
+    for doc_id in doc_store.doc_ids:
+        vec = doc_store.get_field(doc_id, embedding_field)
+        if vec is not None:
+            if not isinstance(vec, np.ndarray):
+                vec = np.array(vec, dtype=np.float32)
+            norm = np.linalg.norm(vec)
+            if norm > 0:
+                embeddings[doc_id] = vec / norm
+
+    if len(embeddings) < 2:
+        # Not enough data; return uniform weights
+        w = 1.0 / (kernel_hops + 1)
+        return [w] * (kernel_hops + 1)
+
+    # For each hop distance, compute average cosine similarity
+    hop_similarities: list[list[float]] = [[] for _ in range(kernel_hops + 1)]
+
+    for vid, vec_v in embeddings.items():
+        # Hop 0: self-similarity (always 1.0, but we include it for
+        # completeness; it represents the self-connection weight)
+        hop_similarities[0].append(1.0)
+
+        # BFS to find neighbors at each hop
+        current_frontier = {vid}
+        visited = {vid}
+        for h in range(1, kernel_hops + 1):
+            next_frontier: set[int] = set()
+            for fv in current_frontier:
+                for nb in _graph_neighbors(gs, fv, edge_label, "both", graph_name):
+                    if nb not in visited:
+                        next_frontier.add(nb)
+                        visited.add(nb)
+
+            for nb in next_frontier:
+                if nb in embeddings:
+                    sim = float(np.dot(vec_v, embeddings[nb]))
+                    hop_similarities[h].append(sim)
+
+            current_frontier = next_frontier
+
+    # Compute mean similarity per hop
+    raw_weights: list[float] = []
+    for h in range(kernel_hops + 1):
+        sims = hop_similarities[h]
+        if sims:
+            mean_sim = sum(sims) / len(sims)
+            # Clamp to positive (negative correlation = no useful signal)
+            raw_weights.append(max(0.0, mean_sim))
+        else:
+            raw_weights.append(0.0)
+
+    # Normalize to sum to 1
+    total = sum(raw_weights)
+    if total <= 0:
+        w = 1.0 / (kernel_hops + 1)
+        return [w] * (kernel_hops + 1)
+
+    return [w / total for w in raw_weights]

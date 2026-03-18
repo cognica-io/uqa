@@ -7539,12 +7539,13 @@ class SQLCompiler:
         Named args: alpha, gating
         """
         from uqa.operators.deep_fusion import (
+            ConvLayer,
             DeepFusionOperator,
             PropagateLayer,
             SignalLayer,
         )
 
-        layers: list[SignalLayer | PropagateLayer] = []
+        layers: list[SignalLayer | PropagateLayer | ConvLayer] = []
         alpha = 0.5
         gating = "none"
 
@@ -7569,6 +7570,37 @@ class SQLCompiler:
                     if not signals:
                         raise ValueError("layer() requires at least one signal")
                     layers.append(SignalLayer(signals=signals))
+
+                elif inner_name == "convolve":
+                    if len(inner_args) < 2:
+                        raise ValueError(
+                            "convolve() requires at least 2 arguments: "
+                            "convolve('edge_label', ARRAY[w0, w1, ...]"
+                            "[, 'direction'])"
+                        )
+                    edge_label = self._extract_string_value(inner_args[0])
+                    # Second arg: ARRAY literal for hop weights
+                    hop_weights = self._extract_vector_arg(inner_args[1])
+                    if len(hop_weights) < 1:
+                        raise ValueError(
+                            "convolve() hop_weights array must have at least 1 element"
+                        )
+                    direction = "both"
+                    if len(inner_args) >= 3:
+                        direction = self._extract_string_value(inner_args[2])
+                        if direction not in ("both", "out", "in"):
+                            raise ValueError(
+                                f"convolve() direction must be "
+                                f"'both', 'out', or 'in', "
+                                f"got {direction!r}"
+                            )
+                    layers.append(
+                        ConvLayer(
+                            edge_label=edge_label,
+                            hop_weights=tuple(float(w) for w in hop_weights),
+                            direction=direction,
+                        )
+                    )
 
                 elif inner_name == "propagate":
                     if len(inner_args) < 2:

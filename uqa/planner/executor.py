@@ -138,6 +138,7 @@ class PlanExecutor:
             UnionOperator,
         )
         from uqa.operators.deep_fusion import (
+            ConvLayer,
             DeepFusionOperator,
             PropagateLayer,
             SignalLayer,
@@ -267,6 +268,14 @@ class PlanExecutor:
                             f"{prefix}  Layer {i} "
                             f"(propagate={layer.edge_label!r}, "
                             f"agg={layer.aggregation!r}):"
+                        )
+                    elif isinstance(layer, ConvLayer):
+                        hops = len(layer.hop_weights) - 1
+                        lines.append(
+                            f"{prefix}  Layer {i} "
+                            f"(convolve={layer.edge_label!r}, "
+                            f"hops={hops}, "
+                            f"weights={list(layer.hop_weights)}):"
                         )
             case _:
                 lines.append(f"{prefix}{type(op).__name__}")

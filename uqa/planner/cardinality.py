@@ -443,6 +443,7 @@ class CardinalityEstimator:
 
         # Deep fusion: union of signal cardinalities, expanded by propagate
         from uqa.operators.deep_fusion import (
+            ConvLayer,
             DeepFusionOperator,
             PropagateLayer,
             SignalLayer,
@@ -466,6 +467,11 @@ class CardinalityEstimator:
                         else 1.0
                     )
                     card = min(n, card * avg_degree * label_sel)
+                elif isinstance(layer, ConvLayer):
+                    # ConvLayer does not discover new docs (only
+                    # convolves scores of existing docs), so cardinality
+                    # stays the same.
+                    pass
             return max(1.0, card)
 
         return n
