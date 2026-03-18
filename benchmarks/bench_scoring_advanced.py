@@ -94,9 +94,9 @@ class TestAttentionFusion:
 
     def test_extract_query_features(self, benchmark) -> None:
         from uqa.fusion.query_features import QueryFeatureExtractor
-        from uqa.storage.inverted_index import InvertedIndex
+        from uqa.storage.inverted_index import MemoryInvertedIndex
 
-        idx = InvertedIndex()
+        idx = MemoryInvertedIndex()
         gen = BenchmarkDataGenerator(scale_factor=1, seed=42)
         term_docs = gen.term_documents(num_docs=500, terms_per_doc=50)
         for doc_id, fields in term_docs:
