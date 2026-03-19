@@ -680,6 +680,16 @@ graph LR
     approach: random multi-channel convolution as Bayesian prior, ridge regression as
     posterior, and Product of Experts local learning with shrinkage correction.
   </p>
+  <p>
+    The <code>attention()</code> layer implements Theorem 8.3 with three modes:
+    <strong>content</strong> ($Q = K = V = X$, parameter-free),
+    <strong>random_qk</strong> (random projections as ELM prior), and
+    <strong>learned_v</strong> (supervised search over orthogonal $W_v$ candidates).
+    Each attention head is a parallel PoE aggregator (Remark 8.6).
+    GPU optimization includes adaptive chunk sizing for the attention matrix,
+    precomputed $Q$/$K$ reuse across V candidates, and hybrid ridge solve
+    ($X^T X$ matmul on GPU, <code>linalg.solve</code> on CPU LAPACK).
+  </p>
 </section>
 
 <!-- ============ Connections ============ -->

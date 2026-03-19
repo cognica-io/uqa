@@ -181,8 +181,9 @@ graph TD
     <div class="card">
       <h3>Deep Learning</h3>
       <p>Analytical CNN training via <code>deep_learn()</code> &mdash;
-        no backpropagation. Multi-channel random conv (Kaiming prior)
-        + ridge regression (posterior). PyTorch GPU acceleration
+        no backpropagation. Multi-channel random conv (Kaiming prior),
+        self-attention (context-dependent PoE, Theorem 8.3),
+        and ridge regression (posterior). PyTorch GPU acceleration
         (MPS/CUDA). Inference via <code>deep_predict()</code> or
         <code>deep_fusion(model())</code>.</p>
     </div>
@@ -307,6 +308,19 @@ graph TD
       <tr><td><code>deep_learn('model', label, embedding, 'edge_label', layers..., gating =&gt; 'relu', lambda =&gt; 1.0)</code></td><td>SELECT aggregate: analytical CNN training via ridge regression + random multi-channel conv</td></tr>
       <tr><td><code>deep_predict('model', embedding)</code></td><td>Per-row scalar: inference with trained model, returns class probabilities</td></tr>
       <tr><td><code>build_grid_graph('table', rows, cols, 'label')</code></td><td>FROM-clause: construct 4-connected grid graph for spatial convolution</td></tr>
+    </tbody>
+  </table>
+
+  <p>Layer functions available inside <code>deep_learn()</code> and <code>deep_fusion()</code>:</p>
+  <table>
+    <thead>
+      <tr><th>Layer</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>convolve(n_channels =&gt; N)</code></td><td>Multi-channel spatial convolution (random Kaiming kernels)</td></tr>
+      <tr><td><code>pool('max', 2)</code></td><td>Spatial downsampling (max or avg pooling)</td></tr>
+      <tr><td><code>attention(n_heads =&gt; 4, mode =&gt; 'random_qk')</code></td><td>Self-attention: context-dependent PoE (Section 8). Modes: content, random_qk, learned_v</td></tr>
+      <tr><td><code>flatten()</code>, <code>dense(N)</code>, <code>softmax()</code></td><td>Classification head: flatten spatial features, dense projection, softmax</td></tr>
     </tbody>
   </table>
 </div>
@@ -524,7 +538,9 @@ $$</span>) <span class="kw">AS</span> (name agtype, friend agtype, age agtype);
   <p>
     Training is analytical: random multi-channel convolution kernels (Kaiming-initialized)
     serve as Bayesian prior, ridge regression computes the posterior. No gradient descent,
-    no learning rate, no epochs. MNIST achieves 97.89% test accuracy.
+    no learning rate, no epochs. Self-attention layers inject global context between
+    conv+pool stages via context-dependent PoE (Paper 4, Section 8).
+    MNIST achieves 97.89% test accuracy.
   </p>
 
   <h3>Temporal Graph Traversal</h3>

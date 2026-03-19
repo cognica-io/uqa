@@ -21,8 +21,8 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
 <header class="hero hero-compact">
   <h1><span>UQA</span> Showcase</h1>
   <p class="tagline">
-    Nine demonstrations that bring the four theoretical papers to life &mdash;
-    from four-paradigm unification to analytical deep learning training pipelines expressed as SQL.
+    Ten demonstrations that bring the four theoretical papers to life &mdash;
+    from four-paradigm unification to analytical deep learning training pipelines with self-attention, expressed as SQL.
   </p>
 </header>
 
@@ -66,6 +66,7 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
     <li><a href="#deep-learn">Deep Learning</a></li>
     <li class="toc-h3"><a href="#dl-mnist">MNIST</a></li>
     <li class="toc-h3"><a href="#dl-tiny">Tiny ImageNet</a></li>
+    <li class="toc-h3"><a href="#dl-attention">Self-Attention</a></li>
     <li><a href="#source">Source Files</a></li>
   </ul>
 </aside>
@@ -113,6 +114,13 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
         <code>deep_learn()</code>, <code>deep_predict()</code>, and <code>model()</code>
         with PyTorch GPU acceleration.</p>
       <p style="font-size: 0.82rem; color: var(--accent); margin-top: 0.5rem;">Paper 4 (training)</p>
+    </div>
+    <div class="card">
+      <h3><a href="#dl-attention">Self-Attention</a></h3>
+      <p>Attention as context-dependent Product of Experts (Theorem 8.3). Three training
+        modes: content-based, random Q/K (ELM prior), and learned V projection &mdash; with
+        GPU-optimized adaptive chunking.</p>
+      <p style="font-size: 0.82rem; color: var(--accent); margin-top: 0.5rem;">Paper 4, Section 8</p>
     </div>
   </div>
 </section>
@@ -633,7 +641,7 @@ engine.update_scoring_params(<span class="st">"papers"</span>, <span class="st">
 <section id="deep-learn">
   <h2>Deep Learning: Analytical Training</h2>
   <p class="paper-meta">
-    Paper 4 (training) &middot; 2 showcase examples
+    Paper 4 (training) &middot; 3 showcase examples
   </p>
   <p>
     Paper 4 proves neural networks emerge from Bayesian inference. <code>deep_learn()</code>
@@ -673,20 +681,25 @@ graph TD
 
     subgraph S1["Stage 1"]
         direction LR
-        Conv1["Conv2d &mdash; 16ch, 3 &times; 3 Kaiming"] --> ReLU1["ReLU"] --> Pool1["MaxPool2d 4 &times; 4<br/>&rarr; 16 &times; 16 &times; 16"]
+        Conv1["Conv2d &mdash; 64ch, 3 &times; 3 Kaiming"] --> ReLU1["ReLU"] --> Pool1["MaxPool2d 2 &times; 2<br/>&rarr; 32 &times; 32 &times; 64"]
     end
 
     subgraph S2["Stage 2"]
         direction LR
-        Conv2["Conv2d &mdash; 32ch, 3 &times; 3 Kaiming"] --> ReLU2["ReLU"] --> Pool2["MaxPool2d 4 &times; 4<br/>&rarr; 4 &times; 4 &times; 32"]
+        Conv2["Conv2d &mdash; 128ch, 3 &times; 3 Kaiming"] --> ReLU2["ReLU"] --> Pool2["MaxPool2d 2 &times; 2<br/>&rarr; 16 &times; 16 &times; 128"]
+    end
+
+    subgraph S3["Stage 3"]
+        direction LR
+        Conv3["Conv2d &mdash; 256ch, 3 &times; 3 Kaiming"] --> ReLU3["ReLU"] --> Pool3["MaxPool2d 2 &times; 2<br/>&rarr; 8 &times; 8 &times; 256"]
     end
 
     subgraph Classifier["Classifier"]
         direction LR
-        Flat["Flatten<br/>512-D"] --> Dense["Dense(10) &mdash; Ridge Regression<br/>W = (X'X + &lambda;I)&#8315;&sup1;X'Y"] --> Softmax["Softmax<br/>10 classes"]
+        Flat["Flatten<br/>16384-D"] --> Dense["Dense(50) &mdash; Ridge Regression<br/>W = (X'X + &lambda;I)&#8315;&sup1;X'Y"] --> Softmax["Softmax<br/>50 classes"]
     end
 
-    Input --> S1 --> S2 --> Classifier
+    Input --> S1 --> S2 --> S3 --> Classifier
   </pre>
 
   <h4>Product of Experts (PoE) Training Pipeline</h4>
@@ -694,6 +707,7 @@ graph TD
 graph TD
     Data["Training Data<br/>embeddings + labels"] --> Stage1
     Data --> Stage2
+    Data --> Stage3
     Data --> Final
 
     subgraph Stage1["Stage 1: Conv + Pool"]
@@ -706,12 +720,18 @@ graph TD
         P2 --> E2["Expert Head 2<br/>Ridge Regression"]
     end
 
+    subgraph Stage3["Stage 3: Conv + Pool"]
+        C3["Conv2d<br/>(Kaiming prior)"] --> P3["MaxPool2d"]
+        P3 --> E3["Expert Head 3<br/>Ridge Regression"]
+    end
+
     subgraph Final["Final Head"]
         FH["Ridge Regression<br/>on last features"]
     end
 
     E1 --> PoE["PoE Combination<br/>avg(logits) + &alpha; &middot; log(n)"]
     E2 --> PoE
+    E3 --> PoE
     FH --> PoE
     PoE --> Pred["Prediction<br/>argmax(softmax(logits))"]
   </pre>
@@ -766,25 +786,208 @@ graph TD
     <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/deep_learn_tiny_imagenet.py">deep_learn_tiny_imagenet.py</a>
   </p>
   <p>
-    10-class subset of Tiny ImageNet: 500 train/class, 50 val/class, 64&times;64 RGB.
-    Architecture: conv(16ch) &rarr; pool(4) &rarr; conv(32ch) &rarr; pool(4) &rarr;
-    flatten &rarr; dense(10) &rarr; softmax. Achieves <strong>61.6% test accuracy</strong>
-    on 10-class subset (random baseline: 10%).
+    50-class subset of Tiny ImageNet: 500 train/class (+flip augmentation), 50 val/class, 64&times;64 RGB.
+    Architecture: conv(64ch) &rarr; pool(2) &rarr; conv(128ch) &rarr; pool(2) &rarr;
+    conv(256ch) &rarr; pool(2) &rarr; flatten &rarr; dense(50) &rarr; softmax.
+    3-stage conv+pool: 64 &rarr; 32 &rarr; 16 &rarr; 8 spatial dims, final features 256 &times; 8 &times; 8 = 16,384.
   </p>
 
   <span class="example-tag tag-sql">SQL</span>
 <pre><code><span class="cm">-- RGB input: 3 * 64 * 64 = 12288 dimensions per image</span>
 <span class="kw">SELECT</span> <span class="fn">deep_learn</span>(
     <span class="st">'tiny_cnn'</span>, label, embedding, <span class="st">'spatial'</span>,
+    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 64),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 2),
+    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 128),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 2),
+    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 256),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 2),
+    <span class="fn">flatten</span>(),
+    <span class="fn">dense</span>(output_channels <span class="cm">=&gt;</span> 50),
+    <span class="fn">softmax</span>(),
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>, lambda <span class="cm">=&gt;</span> 500.0
+) <span class="kw">FROM</span> tiny_train;</code></pre>
+</section>
+
+<!-- ============ Self-Attention ============ -->
+  <h3 id="dl-attention">Self-Attention: Context-Dependent PoE</h3>
+  <p class="paper-meta">
+    <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/deep_learn_attention.py">deep_learn_attention.py</a>
+    &middot; Paper 4, Section 8
+  </p>
+  <p>
+    Paper 4, Theorem 8.3 derives the attention mechanism as context-dependent
+    <strong>Logarithmic Opinion Pooling</strong> (Product of Experts).
+    Relaxing the uniform reliability assumption in the derived feedforward network
+    &mdash; allowing weights to depend on query-signal interaction &mdash; yields attention:
+  </p>
+  <div class="math-block">
+    $$P_{\text{Log-OP}} = \sigma\!\left(\sum_{i=1}^{n} w_i(q, s_i) \cdot \text{logit}(P_i)\right)$$
+  </div>
+  <p>
+    The weighted sum in log-odds space is the optimal method for combining uncertain evidence
+    from multiple independent sources &mdash; attention computes a weighted sum <em>because</em>
+    Log-OP in the logit domain is additive. Multi-head attention is an ensemble of parallel
+    PoE aggregators (Remark 8.6).
+  </p>
+
+  <h4>Three Training Modes</h4>
+  <p>
+    <code>attention()</code> supports three modes, all without backpropagation:
+  </p>
+  <table>
+    <thead>
+      <tr><th>Mode</th><th>Q, K</th><th>V</th><th>Learning</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>content</code></td>
+        <td>$Q = K = X$</td>
+        <td>$V = X$</td>
+        <td>No parameters. Attention from feature similarity.</td>
+      </tr>
+      <tr>
+        <td><code>random_qk</code></td>
+        <td>$Q = XW_q$, $K = XW_k$ (random)</td>
+        <td>$V = X$</td>
+        <td>ELM prior: random projections create diverse attention patterns.</td>
+      </tr>
+      <tr>
+        <td><code>learned_v</code></td>
+        <td>$Q = XW_q$, $K = XW_k$ (random)</td>
+        <td>$V = XW_v$ (learned)</td>
+        <td>Supervised search over random orthogonal $W_v$ candidates.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h4>Architecture with Attention</h4>
+  <pre class="mermaid">
+graph TD
+    Input["Input<br/>28 &times; 28 &times; 1 &mdash; 784-D embedding"]
+
+    subgraph S1["Stage 1"]
+        direction LR
+        Conv1["Conv2d &mdash; 8ch, 3 &times; 3 Kaiming"] --> ReLU1["ReLU"] --> Pool1["MaxPool2d 2 &times; 2<br/>&rarr; 14 &times; 14 &times; 8"]
+    end
+
+    subgraph Attn["Attention (Section 8)"]
+        direction LR
+        SA["Self-Attention<br/>4 heads, d_head = 2<br/>Context-Dependent PoE"]
+    end
+
+    subgraph S2["Stage 2"]
+        direction LR
+        Conv2["Conv2d &mdash; 16ch, 3 &times; 3 Kaiming"] --> ReLU2["ReLU"] --> Pool2["MaxPool2d 2 &times; 2<br/>&rarr; 7 &times; 7 &times; 16"]
+    end
+
+    subgraph Classifier["Classifier"]
+        direction LR
+        Flat["Flatten<br/>784-D"] --> Dense["Dense(10) &mdash; Ridge Regression<br/>W = (X'X + &lambda;I)&#8315;&sup1;X'Y"] --> Softmax["Softmax<br/>10 classes"]
+    end
+
+    Input --> S1 --> Attn --> S2 --> Classifier
+  </pre>
+
+  <h4>SQL: Training with Attention</h4>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">-- Train: conv -> pool -> attention -> conv -> pool -> classify</span>
+<span class="kw">SELECT</span> <span class="fn">deep_learn</span>(
+    <span class="st">'attn_model'</span>, label, embedding, <span class="st">'spatial'</span>,
+    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 8),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 2),
+    <span class="fn">attention</span>(n_heads <span class="cm">=&gt;</span> 4, mode <span class="cm">=&gt;</span> <span class="st">'random_qk'</span>),
     <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 16),
-    <span class="fn">pool</span>(<span class="st">'max'</span>, 4),
-    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 32),
-    <span class="fn">pool</span>(<span class="st">'max'</span>, 4),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 2),
     <span class="fn">flatten</span>(),
     <span class="fn">dense</span>(output_channels <span class="cm">=&gt;</span> 10),
     <span class="fn">softmax</span>(),
     gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>, lambda <span class="cm">=&gt;</span> 1.0
-) <span class="kw">FROM</span> tiny_train;</code></pre>
+) <span class="kw">FROM</span> mnist_train;
+
+<span class="cm">-- Inference: model name and vector both via parameters</span>
+<span class="kw">SELECT</span> _score, class_probs <span class="kw">FROM</span> grid_28x28
+<span class="kw">WHERE</span> <span class="fn">deep_fusion</span>(
+    <span class="fn">model</span>($1, $2),
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <h4>GPU Optimization</h4>
+  <p>
+    The attention implementation includes several GPU-specific optimizations for
+    efficient training at scale:
+  </p>
+  <table>
+    <thead>
+      <tr><th>Optimization</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Adaptive chunk size</td>
+        <td>Chunk size adapts to attention matrix memory footprint.
+          MPS lacks flash attention, so the full $(B, H, S, S)$ matrix is materialized.
+          Capped at 512 MB per chunk to prevent GPU memory pressure and throttling.</td>
+      </tr>
+      <tr>
+        <td>Single-upload slicing</td>
+        <td>$X$ uploaded to GPU once; chunks are zero-copy slices (not per-chunk tensor creation).</td>
+      </tr>
+      <tr>
+        <td>Q, K precomputation</td>
+        <td>$Q = XW_q$ and $K = XW_k$ computed once and reused across all 20 V candidates
+          in <code>learned_v</code> mode.</td>
+      </tr>
+      <tr>
+        <td>Hybrid ridge solve</td>
+        <td>$X^T X$ matmul on GPU (large matrix, GPU-efficient).
+          <code>linalg.solve</code> on CPU LAPACK (small $d \times d$ system, CPU-efficient).
+          3.2&times; faster than pure MPS ridge on Apple Silicon.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h4>PoE Training Pipeline with Attention</h4>
+  <pre class="mermaid">
+graph TD
+    Data["Training Data<br/>embeddings + labels"] --> Stage1
+    Data --> Attn
+    Data --> Stage2
+    Data --> Final
+
+    subgraph Stage1["Stage 1: Conv + Pool"]
+        C1["Conv2d<br/>(Kaiming prior)"] --> P1["MaxPool2d"]
+        P1 --> E1["Expert Head 1<br/>Ridge Regression"]
+    end
+
+    subgraph Attn["Attention Layer"]
+        SA["Self-Attention<br/>4 heads (PoE)"] --> E_A["Expert Head 2<br/>Ridge Regression"]
+    end
+
+    subgraph Stage2["Stage 2: Conv + Pool"]
+        C2["Conv2d<br/>(Kaiming prior)"] --> P2["MaxPool2d"]
+        P2 --> E2["Expert Head 3<br/>Ridge Regression"]
+    end
+
+    subgraph Final["Final Head"]
+        FH["Ridge Regression<br/>on last features"]
+    end
+
+    E1 --> PoE["PoE Combination<br/>avg(logits) + &alpha; &middot; log(n)"]
+    E_A --> PoE
+    E2 --> PoE
+    FH --> PoE
+    PoE --> Pred["Prediction<br/>argmax(softmax(logits))"]
+  </pre>
+
+  <div class="note">
+    <strong>Key insight</strong>: Each attention head is a parallel PoE aggregator.
+    The attention weights $w_i(q, s_i)$ are the context-dependent expert reliability
+    coefficients &mdash; determining how strongly each spatial position's evidence is
+    weighted in the product. The compatibility function $f(q, k_i)$ is not determined by
+    the probabilistic framework (Remark 8.5) and remains an architectural choice;
+    <code>scaled_dot_product_attention</code> provides the standard $q^T k / \sqrt{d}$ form.
+  </div>
 </section>
 
 <!-- ============ Source Files ============ -->
@@ -852,7 +1055,14 @@ graph TD
       <h3>Deep Learn: Tiny ImageNet</h3>
       <p>
         <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/deep_learn_tiny_imagenet.py">deep_learn_tiny_imagenet.py</a><br>
-        10-class RGB 64&times;64 image classification, 61.6% test accuracy
+        50-class RGB 64&times;64 image classification with data augmentation
+      </p>
+    </div>
+    <div class="card">
+      <h3>Deep Learn: Attention</h3>
+      <p>
+        <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/deep_learn_attention.py">deep_learn_attention.py</a><br>
+        Self-attention on MNIST: content, random Q/K, learned V &mdash; GPU-optimized
       </p>
     </div>
   </div>
@@ -866,7 +1076,8 @@ python examples/showcase/deep_fusion_gnn.py
 python examples/showcase/deep_fusion_cnn.py
 python examples/showcase/deep_fusion_nn.py
 python examples/showcase/deep_learn_mnist.py
-python examples/showcase/deep_learn_tiny_imagenet.py</code></pre>
+python examples/showcase/deep_learn_tiny_imagenet.py
+python examples/showcase/deep_learn_attention.py</code></pre>
 </section>
 
 </div><!-- .content -->
