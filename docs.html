@@ -51,6 +51,7 @@
     <li class="toc-h3"><a href="#fusion-gating">Gating</a></li>
     <li class="toc-h3"><a href="#fusion-attention">Attention</a></li>
     <li class="toc-h3"><a href="#fusion-deep">Deep Fusion</a></li>
+    <li class="toc-h3"><a href="#deep-learn">Deep Learning</a></li>
     <li><a href="#geospatial">Geospatial</a></li>
     <li><a href="#temporal-graph">Temporal Graph</a></li>
     <li><a href="#fdw">Foreign Data Wrappers</a></li>
@@ -80,7 +81,10 @@ pip install uqa
 pip install -e .
 
 <span class="cm"># With dev dependencies</span>
-pip install -e ".[dev]"</code></pre>
+pip install -e ".[dev]"
+
+<span class="cm"># With GPU acceleration (PyTorch)</span>
+pip install -e ".[gpu]"</code></pre>
 
   <h3>Interactive Shell</h3>
 <pre><code>usql                 <span class="cm"># In-memory database</span>
@@ -748,6 +752,63 @@ $$</span>) <span class="kw">AS</span> (name agtype);
     <span class="fn">softmax</span>(),
     gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
 ) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <h3 id="deep-learn">Deep Learning</h3>
+  <p>
+    Train CNN classifiers analytically via <code>deep_learn()</code> &mdash;
+    no backpropagation. Training uses random multi-channel convolution (Kaiming prior)
+    and closed-form ridge regression (posterior).
+  </p>
+
+  <h4>Training</h4>
+<pre><code><span class="cm">&mdash; Create table and spatial grid graph</span>
+<span class="kw">CREATE TABLE</span> mnist_train (
+    id <span class="kw">SERIAL PRIMARY KEY</span>,
+    label <span class="kw">INTEGER NOT NULL</span>,
+    embedding <span class="kw">VECTOR</span>(784)
+);
+
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">build_grid_graph</span>(<span class="st">'mnist_train'</span>, 28, 28, <span class="st">'spatial'</span>);
+
+<span class="cm">&mdash; Train CNN: conv -> pool -> conv -> pool -> flatten -> dense -> softmax</span>
+<span class="cm">&mdash; No backpropagation: analytical parameter estimation</span>
+<span class="kw">SELECT</span> <span class="fn">deep_learn</span>(
+    <span class="st">'mnist_cnn'</span>, label, embedding, <span class="st">'spatial'</span>,
+    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 32),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 2),
+    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 64),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 2),
+    <span class="fn">flatten</span>(),
+    <span class="fn">dense</span>(output_channels <span class="cm">=&gt;</span> 10),
+    <span class="fn">softmax</span>(),
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>, lambda <span class="cm">=&gt;</span> 1.0
+) <span class="kw">FROM</span> mnist_train;</code></pre>
+
+  <h4>Inference</h4>
+<pre><code><span class="cm">&mdash; Per-row prediction via deep_predict()</span>
+<span class="kw">SELECT</span> <span class="fn">deep_predict</span>(<span class="st">'mnist_cnn'</span>, embedding) <span class="kw">AS</span> prediction
+<span class="kw">FROM</span> mnist_test;
+
+<span class="cm">&mdash; Inference via deep_fusion(model()) with learned weights</span>
+<span class="kw">SELECT</span> id, _score, class_probs <span class="kw">FROM</span> grid_28x28
+<span class="kw">WHERE</span> <span class="fn">deep_fusion</span>(
+    <span class="fn">model</span>(<span class="st">'mnist_cnn'</span>, <span class="st">$1</span>),
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <h4>Model Persistence</h4>
+<pre><code><span class="kw">from</span> uqa.engine <span class="kw">import</span> Engine
+
+engine = Engine(db_path=<span class="st">"research.db"</span>)
+
+<span class="cm"># Save a trained model to the catalog</span>
+engine.save_model(<span class="st">"mnist_cnn"</span>, config)
+
+<span class="cm"># Load a model by name</span>
+config = engine.load_model(<span class="st">"mnist_cnn"</span>)
+
+<span class="cm"># Delete a model from the catalog</span>
+engine.delete_model(<span class="st">"mnist_cnn"</span>)</code></pre>
 </section>
 
 <!-- ============ Geospatial ============ -->

@@ -20,9 +20,8 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
 <!-- ====== Hero ====== -->
 <header class="hero hero-compact">
   <h1><span>UQA</span> Theoretical Foundations</h1>
-  <p class="tagline">Five papers establish the mathematical theory behind the unified query algebra &mdash;
-    from posting-list Boolean algebra to the analytical emergence of neural network structure
-    and index-aware vector calibration.</p>
+  <p class="tagline">Four papers establish the mathematical theory behind the unified query algebra &mdash;
+    from posting-list Boolean algebra to the analytical emergence of neural network structure.</p>
 </header>
 
 <!-- ====== Nav ====== -->
@@ -67,6 +66,7 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
     <li class="toc-h3"><a href="#activations">Activation Functions</a></li>
     <li class="toc-h3"><a href="#attention">Attention Mechanism</a></li>
     <li class="toc-h3"><a href="#depth">Depth and Inference</a></li>
+    <li class="toc-h3"><a href="#paper4-impl">Implementation</a></li>
     <li><a href="#connections">Connections</a></li>
   </ul>
 </aside>
@@ -673,6 +673,13 @@ graph LR
     the logistic sigmoid.
     $$\text{inputs} \xrightarrow{\text{calibrate}} P_i \xrightarrow{\text{logit}} \ell_i \xrightarrow{\text{linear}} \sigma \xrightarrow{} \text{output}$$
   </div>
+
+  <h3 id="paper4-impl">Implementation</h3>
+  <p>
+    The <code>deep_learn()</code> training pipeline implements the analytical training
+    approach: random multi-channel convolution as Bayesian prior, ridge regression as
+    posterior, and Product of Experts local learning with shrinkage correction.
+  </p>
 </section>
 
 <!-- ============ Connections ============ -->

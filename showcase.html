@@ -17,8 +17,8 @@
 <header class="hero hero-compact">
   <h1><span>UQA</span> Showcase</h1>
   <p class="tagline">
-    Seven demonstrations that bring the five theoretical papers to life &mdash;
-    from four-paradigm unification to complete neural network pipelines expressed as SQL.
+    Nine demonstrations that bring the four theoretical papers to life &mdash;
+    from four-paradigm unification to analytical deep learning training pipelines expressed as SQL.
   </p>
 </header>
 
@@ -59,6 +59,9 @@
     <li class="toc-h3"><a href="#df-gnn">GNN (Propagation)</a></li>
     <li class="toc-h3"><a href="#df-cnn">CNN (Convolution)</a></li>
     <li class="toc-h3"><a href="#df-nn">Full NN Pipeline</a></li>
+    <li><a href="#deep-learn">Deep Learning</a></li>
+    <li class="toc-h3"><a href="#dl-mnist">MNIST</a></li>
+    <li class="toc-h3"><a href="#dl-tiny">Tiny ImageNet</a></li>
     <li><a href="#source">Source Files</a></li>
   </ul>
 </aside>
@@ -70,7 +73,7 @@
 <section id="overview">
   <h2>Overview</h2>
   <p>
-    These seven showcase examples demonstrate UQA's most distinctive capabilities.
+    These nine showcase examples demonstrate UQA's most distinctive capabilities.
     Each example is self-contained and runs with inline data &mdash; no external
     datasets or downloads required.
   </p>
@@ -86,7 +89,7 @@
       <h3><a href="#calibration-matters">Calibration Matters</a></h3>
       <p>Why naive score addition fails, and how Bayesian calibration enables
         principled multi-signal fusion.</p>
-      <p style="font-size: 0.82rem; color: var(--accent); margin-top: 0.5rem;">Papers 3, 5</p>
+      <p style="font-size: 0.82rem; color: var(--accent); margin-top: 0.5rem;">Paper 3</p>
     </div>
     <div class="card">
       <h3><a href="#bayesian-neural">From Bayes to Neurons</a></h3>
@@ -99,6 +102,13 @@
       <p>Complete neural network framework as SQL: ResNet, GNN, CNN, pooling,
         dense layers, softmax classification &mdash; from theory to execution.</p>
       <p style="font-size: 0.82rem; color: var(--accent); margin-top: 0.5rem;">Paper 4 (applied)</p>
+    </div>
+    <div class="card">
+      <h3><a href="#deep-learn">Deep Learning</a></h3>
+      <p>Analytical CNN training on MNIST and Tiny ImageNet &mdash; no backpropagation.
+        <code>deep_learn()</code>, <code>deep_predict()</code>, and <code>model()</code>
+        with PyTorch GPU acceleration.</p>
+      <p style="font-size: 0.82rem; color: var(--accent); margin-top: 0.5rem;">Paper 4 (training)</p>
     </div>
   </div>
 </section>
@@ -231,7 +241,7 @@ DPR                             | BERT                            | attention is
   <h2>Calibration Matters</h2>
   <p class="paper-meta">
     <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/calibration_matters.py">examples/showcase/calibration_matters.py</a>
-    &middot; Papers 3, 5
+    &middot; Paper 3
   </p>
   <p>
     BM25 scores are <strong>unbounded</strong> $[0, +\infty)$, while cosine similarity
@@ -615,6 +625,91 @@ engine.update_scoring_params(<span class="st">"papers"</span>, <span class="st">
   </div>
 </section>
 
+<!-- ============ Deep Learning ============ -->
+<section id="deep-learn">
+  <h2>Deep Learning: Analytical Training</h2>
+  <p class="paper-meta">
+    Paper 4 (training) &middot; 2 showcase examples
+  </p>
+  <p>
+    Paper 4 proves neural networks emerge from Bayesian inference. <code>deep_learn()</code>
+    takes this to its logical conclusion &mdash; training CNN classifiers without backpropagation.
+    Multi-channel random convolution kernels (Kaiming-initialized) serve as Bayesian prior;
+    ridge regression computes the posterior. Product of Experts (PoE) local learning trains
+    independent expert heads at each stage, combined via logit averaging with shrinkage correction.
+  </p>
+
+  <h3 id="dl-mnist">MNIST: Handwritten Digit Classification</h3>
+  <p class="paper-meta">
+    <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/deep_learn_mnist.py">deep_learn_mnist.py</a>
+  </p>
+  <p>
+    Full MNIST pipeline: 60,000 training images, 10,000 test images, 28&times;28 grayscale.
+    Architecture: conv(32ch) &rarr; pool(2) &rarr; conv(64ch) &rarr; pool(2) &rarr;
+    flatten &rarr; dense(10) &rarr; softmax. Achieves <strong>97.89% test accuracy</strong>.
+  </p>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">-- Step 1: Build spatial grid graph</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">build_grid_graph</span>(<span class="st">'mnist_train'</span>, 28, 28, <span class="st">'spatial'</span>);
+
+<span class="cm">-- Step 2: Train (analytical, no backpropagation)</span>
+<span class="kw">SELECT</span> <span class="fn">deep_learn</span>(
+    <span class="st">'mnist_cnn'</span>, label, embedding, <span class="st">'spatial'</span>,
+    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 32),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 2),
+    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 64),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 2),
+    <span class="fn">flatten</span>(),
+    <span class="fn">dense</span>(output_channels <span class="cm">=&gt;</span> 10),
+    <span class="fn">softmax</span>(),
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>, lambda <span class="cm">=&gt;</span> 1.0
+) <span class="kw">FROM</span> mnist_train;
+
+<span class="cm">-- Step 3: Inference via deep_predict()</span>
+<span class="kw">SELECT</span> id, <span class="fn">deep_predict</span>(<span class="st">'mnist_cnn'</span>, embedding) <span class="kw">AS</span> pred
+<span class="kw">FROM</span> mnist_test;
+
+<span class="cm">-- Step 3 (alt): Inference via deep_fusion(model())</span>
+<span class="kw">SELECT</span> id, _score, class_probs <span class="kw">FROM</span> grid_28x28
+<span class="kw">WHERE</span> <span class="fn">deep_fusion</span>(
+    <span class="fn">model</span>(<span class="st">'mnist_cnn'</span>, <span class="st">$1</span>),
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <div class="note">
+    <strong>No gradient descent</strong>: ConvLayer uses Kaiming-initialized random kernels
+    (extreme learning machine prior). DenseLayer uses closed-form ridge regression
+    $W = (X^T X + \lambda I)^{-1} X^T Y$. PyTorch Conv2d/MaxPool2d accelerates the
+    forward pass on GPU (MPS/CUDA).
+  </div>
+
+  <h3 id="dl-tiny">Tiny ImageNet: RGB Image Classification</h3>
+  <p class="paper-meta">
+    <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/deep_learn_tiny_imagenet.py">deep_learn_tiny_imagenet.py</a>
+  </p>
+  <p>
+    10-class subset of Tiny ImageNet: 500 train/class, 50 val/class, 64&times;64 RGB.
+    Architecture: conv(16ch) &rarr; pool(4) &rarr; conv(32ch) &rarr; pool(4) &rarr;
+    flatten &rarr; dense(10) &rarr; softmax. Achieves <strong>61.6% test accuracy</strong>
+    on 10-class subset (random baseline: 10%).
+  </p>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">-- RGB input: 3 * 64 * 64 = 12288 dimensions per image</span>
+<span class="kw">SELECT</span> <span class="fn">deep_learn</span>(
+    <span class="st">'tiny_cnn'</span>, label, embedding, <span class="st">'spatial'</span>,
+    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 16),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 4),
+    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 32),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 4),
+    <span class="fn">flatten</span>(),
+    <span class="fn">dense</span>(output_channels <span class="cm">=&gt;</span> 10),
+    <span class="fn">softmax</span>(),
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>, lambda <span class="cm">=&gt;</span> 1.0
+) <span class="kw">FROM</span> tiny_train;</code></pre>
+</section>
+
 <!-- ============ Source Files ============ -->
 <section id="source">
   <h2>Source Files</h2>
@@ -669,6 +764,20 @@ engine.update_scoring_params(<span class="st">"papers"</span>, <span class="st">
         Pool, dense, flatten, softmax, batch_norm, dropout &mdash; end-to-end CNN pipeline
       </p>
     </div>
+    <div class="card">
+      <h3>Deep Learn: MNIST</h3>
+      <p>
+        <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/deep_learn_mnist.py">deep_learn_mnist.py</a><br>
+        Analytical CNN training on 60K MNIST images, 97.89% test accuracy
+      </p>
+    </div>
+    <div class="card">
+      <h3>Deep Learn: Tiny ImageNet</h3>
+      <p>
+        <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/deep_learn_tiny_imagenet.py">deep_learn_tiny_imagenet.py</a><br>
+        10-class RGB 64&times;64 image classification, 61.6% test accuracy
+      </p>
+    </div>
   </div>
 
   <span class="example-tag tag-shell">Shell</span>
@@ -678,7 +787,9 @@ python examples/showcase/bayesian_neural.py
 python examples/showcase/deep_fusion_resnet.py
 python examples/showcase/deep_fusion_gnn.py
 python examples/showcase/deep_fusion_cnn.py
-python examples/showcase/deep_fusion_nn.py</code></pre>
+python examples/showcase/deep_fusion_nn.py
+python examples/showcase/deep_learn_mnist.py
+python examples/showcase/deep_learn_tiny_imagenet.py</code></pre>
 </section>
 
 </div><!-- .content -->

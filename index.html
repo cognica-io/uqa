@@ -55,9 +55,9 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
   <h2>Core Theory</h2>
 
   <p>
-    UQA is built on five interconnected theoretical papers that establish a mathematical
+    UQA is built on four interconnected theoretical papers that establish a mathematical
     foundation spanning database theory, information retrieval, probabilistic inference,
-    neural computation, and vector search calibration.
+    and neural computation.
   </p>
 
   <div class="grid">
@@ -120,7 +120,6 @@ graph TD
         BM25[BM25]
         BBFS[Bayesian BM25]
         VS[Vector Scorer]
-        VC[Vector Calibration]
     end
 
     subgraph Fusion
@@ -178,6 +177,14 @@ graph TD
         GNN (propagation), CNN (convolution), pooling, dense layers,
         flatten, softmax, batch normalization, and dropout &mdash;
         all composed as <code>deep_fusion()</code> layer functions.</p>
+    </div>
+    <div class="card">
+      <h3>Deep Learning</h3>
+      <p>Analytical CNN training via <code>deep_learn()</code> &mdash;
+        no backpropagation. Multi-channel random conv (Kaiming prior)
+        + ridge regression (posterior). PyTorch GPU acceleration
+        (MPS/CUDA). Inference via <code>deep_predict()</code> or
+        <code>deep_fusion(model())</code>.</p>
     </div>
   </div>
 </div>
@@ -247,7 +254,6 @@ graph TD
       <tr><th>Function</th><th>Description</th></tr>
     </thead>
     <tbody>
-      <tr><td><code>bayesian_knn_match(f, v, k, method =&gt; 'auto')</code></td><td>KNN + likelihood ratio calibration (Paper 5)</td></tr>
       <tr><td><code>fuse_log_odds(s1, s2, ..., gating =&gt; 'swish')</code></td><td>Log-odds conjunction with optional gating and gating_beta</td></tr>
       <tr><td><code>fuse_prob_and(s1, s2, ...)</code></td><td>$P = \prod P_i$</td></tr>
       <tr><td><code>fuse_prob_or(s1, s2, ...)</code></td><td>$P = 1 - \prod(1 - P_i)$</td></tr>
@@ -282,6 +288,25 @@ graph TD
       <tr><td><code>softmax()</code></td><td>Classification head (numerically stable)</td></tr>
       <tr><td><code>batch_norm([epsilon =&gt; 1e-5])</code></td><td>Per-channel normalization across nodes</td></tr>
       <tr><td><code>dropout(p)</code></td><td>Inference-mode scaling by $(1 - p)$</td></tr>
+      <tr><td><code>model('name', $1)</code></td><td>Load trained model and create full inference pipeline</td></tr>
+      <tr><td><code>embed(vector, in_channels =&gt; C, grid_h =&gt; H, grid_w =&gt; W)</code></td><td>Inject raw embedding vector into channel map</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Deep Learning Functions</h3>
+  <p>
+    Train CNN classifiers analytically (no backpropagation) and run inference
+    via SQL aggregate and scalar functions:
+  </p>
+
+  <table>
+    <thead>
+      <tr><th>Function</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>deep_learn('model', label, embedding, 'edge_label', layers..., gating =&gt; 'relu', lambda =&gt; 1.0)</code></td><td>SELECT aggregate: analytical CNN training via ridge regression + random multi-channel conv</td></tr>
+      <tr><td><code>deep_predict('model', embedding)</code></td><td>Per-row scalar: inference with trained model, returns class probabilities</td></tr>
+      <tr><td><code>build_grid_graph('table', rows, cols, 'label')</code></td><td>FROM-clause: construct 4-connected grid graph for spatial convolution</td></tr>
     </tbody>
   </table>
 </div>
@@ -469,6 +494,37 @@ $$</span>) <span class="kw">AS</span> (name agtype, friend agtype, age agtype);
     Signal layers are ResNet (residual connections), propagate layers are GNN
     (message passing), convolve layers are CNN (spatial aggregation), and the
     dense-softmax head is a standard classifier.
+  </p>
+
+  <h3>Deep Learning: Training + Inference</h3>
+<pre><code><span class="cm">-- Train a CNN classifier analytically (no backpropagation)</span>
+<span class="kw">SELECT</span> <span class="fn">deep_learn</span>(
+    <span class="st">'mnist_cnn'</span>, label, embedding, <span class="st">'spatial'</span>,
+    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 32),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 2),
+    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 64),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 2),
+    <span class="fn">flatten</span>(),
+    <span class="fn">dense</span>(output_channels <span class="cm">=&gt;</span> 10),
+    <span class="fn">softmax</span>(),
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>, lambda <span class="cm">=&gt;</span> 1.0
+) <span class="kw">FROM</span> mnist_train;
+
+<span class="cm">-- Inference: per-row scalar function</span>
+<span class="kw">SELECT</span> id, <span class="fn">deep_predict</span>(<span class="st">'mnist_cnn'</span>, embedding) <span class="kw">AS</span> pred
+<span class="kw">FROM</span> test_data;
+
+<span class="cm">-- Inference: via deep_fusion pipeline with learned weights</span>
+<span class="kw">SELECT</span> id, _score, class_probs <span class="kw">FROM</span> grid_28x28
+<span class="kw">WHERE</span> <span class="fn">deep_fusion</span>(
+    <span class="fn">model</span>(<span class="st">'mnist_cnn'</span>, <span class="st">$1</span>),
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
+) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
+
+  <p>
+    Training is analytical: random multi-channel convolution kernels (Kaiming-initialized)
+    serve as Bayesian prior, ridge regression computes the posterior. No gradient descent,
+    no learning rate, no epochs. MNIST achieves 97.89% test accuracy.
   </p>
 
   <h3>Temporal Graph Traversal</h3>
