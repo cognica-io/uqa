@@ -55,6 +55,9 @@ class Engine:
         self._foreign_tables: dict[str, ForeignTable] = {}
         self._fdw_handlers: dict[str, FDWHandler] = {}
 
+        # In-memory model storage (for non-persistent engines)
+        self._models: dict[str, dict[str, Any]] = {}
+
         # Persistence and transactions
         self._catalog: Catalog | None = None
         self._index_manager: IndexManager | None = None
@@ -449,6 +452,141 @@ class Engine:
         return estimate_conv_weights(
             self, table, edge_label, kernel_hops, embedding_field
         )
+
+    # -- Model management (deep_learn) ---------------------------------
+
+    def save_model(self, model_name: str, config: dict[str, Any]) -> None:
+        """Persist a trained model configuration."""
+        self._models[model_name] = config
+        if self._catalog is not None:
+            self._catalog.save_model(model_name, config)
+
+    def load_model(self, model_name: str) -> dict[str, Any] | None:
+        """Load a trained model configuration by name."""
+        if model_name in self._models:
+            return self._models[model_name]
+        if self._catalog is not None:
+            config = self._catalog.load_model(model_name)
+            if config is not None:
+                self._models[model_name] = config
+            return config
+        return None
+
+    def delete_model(self, model_name: str) -> None:
+        """Remove a trained model from the catalog."""
+        self._models.pop(model_name, None)
+        if self._catalog is not None:
+            self._catalog.delete_model(model_name)
+
+    def deep_learn(
+        self,
+        # Python API (direct call)
+        model_name: str | None = None,
+        table_name: str | None = None,
+        label_field: str | None = None,
+        embedding_field: str | None = None,
+        edge_label: str | None = None,
+        layer_specs: list[Any] | None = None,
+        gating: str = "none",
+        lam: float = 1.0,
+        # SQL aggregate callback interface
+        rows: list[dict[str, Any]] | None = None,
+        positional_args: list[Any] | None = None,
+        named_args: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Train a deep learning model analytically (no backpropagation).
+
+        Two call modes:
+        - Python API: direct keyword arguments
+        - SQL aggregate: rows + parsed args from _build_engine_agg_callback
+        """
+        from uqa.operators.deep_learn import (
+            ConvSpec,
+            DenseSpec,
+            FlattenSpec,
+            PoolSpec,
+            SoftmaxSpec,
+            train_model,
+        )
+
+        if rows is not None and positional_args is not None:
+            # SQL aggregate mode: parse positional/named args
+            pos = positional_args
+            named = named_args or {}
+            model_name = (
+                str(pos[0]) if len(pos) > 0 else named.get("model_name", "model")
+            )
+            label_field = (
+                str(pos[1]) if len(pos) > 1 else named.get("label_field", "label")
+            )
+            embedding_field = (
+                str(pos[2])
+                if len(pos) > 2
+                else named.get("embedding_field", "embedding")
+            )
+            edge_label = (
+                str(pos[3]) if len(pos) > 3 else named.get("edge_label", "spatial")
+            )
+            gating = str(named.get("gating", "none"))
+            lam = float(named.get("lambda", 1.0))
+
+            # Parse layer specs from nested function dicts
+            layer_specs = []
+            for item in pos[4:]:
+                if isinstance(item, dict):
+                    fn = item.get("_func", "")
+                    p = item.get("_pos", [])
+                    if fn == "convolve":
+                        layer_specs.append(
+                            ConvSpec(
+                                kernel_hops=int(item.get("kernel_hops", 1)),
+                                n_channels=int(item.get("n_channels", 1)),
+                            )
+                        )
+                    elif fn == "pool":
+                        method = str(p[0]) if p else item.get("method", "max")
+                        pool_size = (
+                            int(p[1]) if len(p) > 1 else int(item.get("pool_size", 2))
+                        )
+                        layer_specs.append(
+                            PoolSpec(method=str(method), pool_size=pool_size)
+                        )
+                    elif fn == "flatten":
+                        layer_specs.append(FlattenSpec())
+                    elif fn == "dense":
+                        layer_specs.append(
+                            DenseSpec(
+                                output_channels=int(item.get("output_channels", 10)),
+                            )
+                        )
+                    elif fn == "softmax":
+                        layer_specs.append(SoftmaxSpec())
+
+        return train_model(
+            self,
+            model_name=model_name or "model",
+            table_name=table_name,
+            label_field=label_field or "label",
+            embedding_field=embedding_field or "embedding",
+            edge_label=edge_label or "spatial",
+            layer_specs=layer_specs or [],
+            gating=gating,
+            lam=lam,
+            rows=rows,
+        )
+
+    def deep_predict(
+        self,
+        model_name: str,
+        input_embedding: list[float],
+    ) -> list[tuple[int, float]]:
+        """Run inference using a trained model.
+
+        Returns [(class_index, probability), ...] sorted by probability descending.
+        """
+        from uqa.operators.deep_learn import predict
+
+        return predict(self, model_name, input_embedding)
 
     # -- Path index management -----------------------------------------
 

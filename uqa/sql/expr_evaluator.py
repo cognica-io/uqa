@@ -104,11 +104,13 @@ class ExprEvaluator:
         subquery_executor: Any = None,
         sequences: dict | None = None,
         outer_row: dict[str, Any] | None = None,
+        engine: Any = None,
     ) -> None:
         self._subquery_executor = subquery_executor
         self._sequences = sequences
         self._subquery_cache: dict[int, Any] = {}
         self._outer_row = outer_row
+        self._engine = engine
 
     def evaluate(self, node: Any, row: dict[str, Any]) -> Any:
         """Evaluate *node* against *row* and return the result."""
@@ -593,6 +595,14 @@ class ExprEvaluator:
         if func_name == "path_value":
             return self._eval_path_value(node, row)
         args = [self.evaluate(a, row) for a in (node.args or ())]
+        fn = _SCALAR_FUNCTIONS.get(func_name)
+        if fn is not None:
+            return fn(args)
+        # Engine method fallback: per-row scalar function
+        if self._engine is not None:
+            method = getattr(self._engine, func_name, None)
+            if method is not None and callable(method):
+                return method(*args)
         return _call_scalar_function(func_name, args)
 
     def _agg_column_name(self, func_name: str, node: FuncCall) -> str:

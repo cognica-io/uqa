@@ -276,12 +276,14 @@ class ExprProjectOp(PhysicalOperator):
         subquery_executor: Any = None,
         sequences: dict | None = None,
         outer_row: dict[str, Any] | None = None,
+        engine: Any = None,
     ) -> None:
         self._child = child
         self._targets = targets
         self._subquery_executor = subquery_executor
         self._sequences = sequences
         self._outer_row = outer_row
+        self._engine = engine
 
     def open(self) -> None:
         self._child.open()
@@ -291,6 +293,7 @@ class ExprProjectOp(PhysicalOperator):
             subquery_executor=self._subquery_executor,
             sequences=self._sequences,
             outer_row=self._outer_row,
+            engine=self._engine,
         )
 
     def next(self) -> Batch | None:
@@ -1612,6 +1615,9 @@ def _compute_aggregate(
     extra: Any = None,
 ) -> Any:
     """Compute a single aggregate value over a group of rows."""
+    if callable(extra):
+        return extra(rows)
+
     if func_name == "count":
         if arg_col is None:
             return len(rows)

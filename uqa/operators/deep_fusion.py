@@ -106,6 +106,9 @@ class ConvLayer:
     edge_label: str
     hop_weights: tuple[float, ...]  # (w_self, w_1hop, w_2hop, ...)
     direction: str  # "both" | "out" | "in"
+    # Multi-channel kernel: (out_ch, in_ch, kH, kW) flattened + shape
+    kernel: tuple[float, ...] | None = None
+    kernel_shape: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +160,24 @@ class DropoutLayer:
     p: float
 
 
+@dataclass(frozen=True, slots=True)
+class EmbedLayer:
+    """Initialize channel_map from a raw embedding vector.
+
+    Unpacks a vector into per-node single-channel values:
+    element i -> node (i+1) with channel value = embedding[i].
+
+    This is the classification counterpart to SignalLayer:
+    - SignalLayer: retrieval (scores from knn_match, text_match, etc.)
+    - EmbedLayer: classification (raw values from a learned model input)
+    """
+
+    embedding: tuple[float, ...]
+    grid_h: int = 0
+    grid_w: int = 0
+    in_channels: int = 1
+
+
 # Type alias for all layer types
 _Layer = (
     SignalLayer
@@ -168,6 +189,7 @@ _Layer = (
     | SoftmaxLayer
     | BatchNormLayer
     | DropoutLayer
+    | EmbedLayer
 )
 
 _SPATIAL_LAYERS = (PropagateLayer, ConvLayer, PoolLayer)
@@ -207,8 +229,8 @@ class DeepFusionOperator(Operator):
             raise ValueError("deep_fusion requires at least one layer")
         if isinstance(layers[0], _SPATIAL_LAYERS):
             raise ValueError(
-                "deep_fusion: first layer must be a SignalLayer "
-                "(no scores to propagate or convolve)"
+                "deep_fusion: first layer must be a SignalLayer or "
+                "EmbedLayer (no scores to propagate or convolve)"
             )
         # Validate layer ordering and parameters
         flattened = False
@@ -229,6 +251,20 @@ class DeepFusionOperator(Operator):
         self.alpha = alpha
         self.gating = gating
         self.graph_name = graph_name
+        # EmbedLayer input: conv operates on raw values (graph convolution).
+        # SignalLayer input: conv operates in logit space (Bayesian fusion).
+        self.embed_mode = isinstance(layers[0], EmbedLayer)
+        # Grid acceleration: when EmbedLayer provides grid dimensions,
+        # conv/pool use PyTorch Conv2d/MaxPool2d instead of BFS.
+        if self.embed_mode:
+            el = layers[0]
+            assert isinstance(el, EmbedLayer)
+            if el.grid_h > 0 and el.grid_w > 0:
+                self._grid_shape: tuple[int, int] | None = (el.grid_h, el.grid_w)
+            else:
+                self._grid_shape = None
+        else:
+            self._grid_shape = None
 
     def execute(self, context: ExecutionContext) -> PostingList:
         from bayesian_bm25 import log_odds_conjunction
@@ -237,29 +273,43 @@ class DeepFusionOperator(Operator):
         num_channels = 1
         softmax_applied = False
 
-        for layer in self.layers:
-            if isinstance(layer, SignalLayer):
-                self._execute_signal_layer(
-                    layer, context, channel_map, num_channels, log_odds_conjunction
-                )
-            elif isinstance(layer, PropagateLayer):
-                self._execute_propagate_layer(layer, context, channel_map, num_channels)
-            elif isinstance(layer, ConvLayer):
-                self._execute_conv_layer(layer, context, channel_map)
-            elif isinstance(layer, PoolLayer):
-                self._execute_pool_layer(layer, context, channel_map)
-            elif isinstance(layer, DenseLayer):
-                self._execute_dense_layer(layer, channel_map)
-                num_channels = layer.output_channels
-            elif isinstance(layer, FlattenLayer):
-                channel_map, num_channels = self._execute_flatten_layer(channel_map)
-            elif isinstance(layer, SoftmaxLayer):
-                self._execute_softmax_layer(channel_map)
-                softmax_applied = True
-            elif isinstance(layer, BatchNormLayer):
-                self._execute_batchnorm_layer(layer, channel_map)
-            elif isinstance(layer, DropoutLayer):
-                self._execute_dropout_layer(layer, channel_map)
+        # Grid acceleration: batch conv+pool sequences via backend
+        if self._grid_shape is not None:
+            channel_map, num_channels, softmax_applied = self._execute_grid(
+                channel_map,
+                num_channels,
+                softmax_applied,
+                log_odds_conjunction,
+                context,
+            )
+        else:
+            for layer in self.layers:
+                if isinstance(layer, EmbedLayer):
+                    self._execute_embed_layer(layer, channel_map)
+                elif isinstance(layer, SignalLayer):
+                    self._execute_signal_layer(
+                        layer, context, channel_map, num_channels, log_odds_conjunction
+                    )
+                elif isinstance(layer, PropagateLayer):
+                    self._execute_propagate_layer(
+                        layer, context, channel_map, num_channels
+                    )
+                elif isinstance(layer, ConvLayer):
+                    self._execute_conv_layer(layer, context, channel_map)
+                elif isinstance(layer, PoolLayer):
+                    self._execute_pool_layer(layer, context, channel_map)
+                elif isinstance(layer, DenseLayer):
+                    self._execute_dense_layer(layer, channel_map)
+                    num_channels = layer.output_channels
+                elif isinstance(layer, FlattenLayer):
+                    channel_map, num_channels = self._execute_flatten_layer(channel_map)
+                elif isinstance(layer, SoftmaxLayer):
+                    self._execute_softmax_layer(channel_map)
+                    softmax_applied = True
+                elif isinstance(layer, BatchNormLayer):
+                    self._execute_batchnorm_layer(layer, channel_map)
+                elif isinstance(layer, DropoutLayer):
+                    self._execute_dropout_layer(layer, channel_map)
 
         return self._build_result(channel_map, num_channels, softmax_applied)
 
@@ -443,16 +493,29 @@ class DeepFusionOperator(Operator):
         context: ExecutionContext,
         channel_map: dict[int, np.ndarray],
     ) -> None:
-        """Weighted multi-hop convolution over graph neighborhoods (channel 0 only)."""
+        """Weighted multi-hop convolution over graph neighborhoods (channel 0 only).
+
+        Two modes:
+        - Logit mode (SignalLayer input): sigmoid -> weighted avg -> logit -> residual.
+          This is Bayesian log-odds fusion.
+        - Raw mode (EmbedLayer input): weighted avg of raw values -> gating.
+          This is standard graph convolution preserving full dynamic range.
+        """
         gs = context.graph_store
         if gs is None:
             raise ValueError(
                 "deep_fusion convolve layer requires a graph_store in ExecutionContext"
             )
 
-        prob_map: dict[int, float] = {}
+        embed_mode = self.embed_mode
+
+        # Build value map: raw values or sigmoid-transformed probabilities
+        val_map: dict[int, float] = {}
         for doc_id, vec in channel_map.items():
-            prob_map[doc_id] = _sigmoid(float(vec[0]))
+            if embed_mode:
+                val_map[doc_id] = float(vec[0])
+            else:
+                val_map[doc_id] = _sigmoid(float(vec[0]))
 
         # Normalize hop weights
         total_w = sum(layer.hop_weights)
@@ -468,11 +531,11 @@ class DeepFusionOperator(Operator):
         kernel_hops = len(layer.hop_weights) - 1
 
         for vid in list(channel_map.keys()):
-            weighted_prob = 0.0
+            weighted_val = 0.0
 
             # Hop 0: self
-            if vid in prob_map:
-                weighted_prob += norm_weights[0] * prob_map[vid]
+            if vid in val_map:
+                weighted_val += norm_weights[0] * val_map[vid]
 
             # Hop 1..kernel_hops: BFS rings
             current_frontier = {vid}
@@ -488,19 +551,24 @@ class DeepFusionOperator(Operator):
                             visited.add(nb)
 
                 if next_frontier:
-                    hop_probs = [prob_map[nb] for nb in next_frontier if nb in prob_map]
-                    if hop_probs:
-                        hop_mean = sum(hop_probs) / len(hop_probs)
-                        weighted_prob += norm_weights[h] * hop_mean
+                    hop_vals = [val_map[nb] for nb in next_frontier if nb in val_map]
+                    if hop_vals:
+                        hop_mean = sum(hop_vals) / len(hop_vals)
+                        weighted_val += norm_weights[h] * hop_mean
 
                 current_frontier = next_frontier
 
-            conv_logit = _safe_logit(max(_PROB_FLOOR, min(_PROB_CEIL, weighted_prob)))
-            conv_logit = _apply_gating(conv_logit, gating)
-
-            # Residual connection on channel 0, preserve other channels
             new_vec = channel_map[vid].copy()
-            new_vec[0] = float(channel_map[vid][0]) + conv_logit
+            if embed_mode:
+                # Raw mode: replace with weighted average, then gating
+                new_vec[0] = _apply_gating(weighted_val, gating)
+            else:
+                # Logit mode: convert to logit, add as residual
+                conv_logit = _safe_logit(
+                    max(_PROB_FLOOR, min(_PROB_CEIL, weighted_val))
+                )
+                conv_logit = _apply_gating(conv_logit, gating)
+                new_vec[0] = float(channel_map[vid][0]) + conv_logit
             new_map[vid] = new_vec
 
         channel_map.clear()
@@ -546,13 +614,14 @@ class DeepFusionOperator(Operator):
                     for nb in _graph_neighbors(
                         gs, fv, edge_label, direction, graph_name
                     ):
-                        if nb in remaining and nb not in visited_bfs:
-                            next_frontier.add(nb)
+                        if nb not in visited_bfs:
                             visited_bfs.add(nb)
-                            group.append(nb)
-                            remaining.discard(nb)
-                            if len(group) >= pool_size:
-                                break
+                            next_frontier.add(nb)
+                            if nb in remaining:
+                                group.append(nb)
+                                remaining.discard(nb)
+                                if len(group) >= pool_size:
+                                    break
                     if len(group) >= pool_size:
                         break
                 frontier = next_frontier
@@ -576,16 +645,20 @@ class DeepFusionOperator(Operator):
         layer: DenseLayer,
         channel_map: dict[int, np.ndarray],
     ) -> None:
-        """Fully connected: out = W @ input + bias, then gating."""
+        """Fully connected: out = W @ input + bias, then gating (batch)."""
+        from uqa.operators._backend import batch_dense
+
         w_mat = np.array(layer.weights).reshape(
             layer.output_channels, layer.input_channels
         )
         bias = np.array(layer.bias)
         gating = self.gating
 
-        for doc_id, vec in channel_map.items():
-            out = w_mat @ vec + bias
-            channel_map[doc_id] = _apply_gating_vec(out, gating)
+        doc_ids = sorted(channel_map.keys())
+        X = np.stack([channel_map[did] for did in doc_ids])
+        out = batch_dense(X, w_mat, bias, gating)
+        for i, did in enumerate(doc_ids):
+            channel_map[did] = out[i]
 
     @staticmethod
     def _execute_flatten_layer(
@@ -607,30 +680,29 @@ class DeepFusionOperator(Operator):
     def _execute_softmax_layer(
         channel_map: dict[int, np.ndarray],
     ) -> None:
-        """Numerically stable softmax per node."""
-        for doc_id, vec in channel_map.items():
-            shifted = vec - np.max(vec)
-            exp_vals = np.exp(shifted)
-            channel_map[doc_id] = exp_vals / np.sum(exp_vals)
+        """Numerically stable softmax per node (batch)."""
+        from uqa.operators._backend import batch_softmax
+
+        doc_ids = sorted(channel_map.keys())
+        X = np.stack([channel_map[did] for did in doc_ids])
+        out = batch_softmax(X)
+        for i, did in enumerate(doc_ids):
+            channel_map[did] = out[i]
 
     @staticmethod
     def _execute_batchnorm_layer(
         layer: BatchNormLayer,
         channel_map: dict[int, np.ndarray],
     ) -> None:
-        """Per-channel normalize across all nodes to zero mean / unit variance."""
+        """Per-channel normalize across all nodes (batch)."""
         if len(channel_map) < 2:
             return
 
-        # Stack all vectors: shape (num_nodes, num_channels)
+        from uqa.operators._backend import batch_batchnorm
+
         doc_ids = sorted(channel_map.keys())
         stacked = np.stack([channel_map[did] for did in doc_ids])
-
-        mean = stacked.mean(axis=0)
-        var = stacked.var(axis=0)
-        std = np.sqrt(var + layer.epsilon)
-        normalized = (stacked - mean) / std
-
+        normalized = batch_batchnorm(stacked, layer.epsilon)
         for i, did in enumerate(doc_ids):
             channel_map[did] = normalized[i]
 
@@ -644,6 +716,100 @@ class DeepFusionOperator(Operator):
         for doc_id, vec in channel_map.items():
             channel_map[doc_id] = vec * scale
 
+    @staticmethod
+    def _execute_embed_layer(
+        layer: EmbedLayer,
+        channel_map: dict[int, np.ndarray],
+    ) -> None:
+        """Initialize channel_map from a raw embedding vector.
+
+        Element i of the embedding becomes node (i+1) with a
+        single-channel value.  This is the classification input
+        counterpart to SignalLayer (retrieval input).
+        """
+        for i, val in enumerate(layer.embedding):
+            channel_map[i + 1] = np.array([val], dtype=np.float64)
+
+    def _execute_grid(
+        self,
+        channel_map: dict[int, np.ndarray],
+        num_channels: int,
+        softmax_applied: bool,
+        log_odds_conjunction: object,
+        context: ExecutionContext,
+    ) -> tuple[dict[int, np.ndarray], int, bool]:
+        """Grid-accelerated execution: conv+pool via backend, rest as usual."""
+        from uqa.operators._backend import grid_forward
+
+        assert self._grid_shape is not None
+        grid_h, grid_w = self._grid_shape
+
+        # Collect conv+pool pairs and remaining layers
+        stages: list[tuple[list[float], int, str]] = []
+        remaining_layers: list[_Layer] = []
+        non_embed = [la for la in self.layers if not isinstance(la, EmbedLayer)]
+        i = 0
+        while i < len(non_embed):
+            la = non_embed[i]
+            if isinstance(la, ConvLayer):
+                pool_size = 2
+                pool_method = "max"
+                if i + 1 < len(non_embed) and isinstance(non_embed[i + 1], PoolLayer):
+                    pl = non_embed[i + 1]
+                    assert isinstance(pl, PoolLayer)
+                    pool_size = pl.pool_size
+                    pool_method = pl.method
+                    i += 2
+                else:
+                    i += 1
+                if la.kernel is not None and la.kernel_shape is not None:
+                    k = np.array(la.kernel, dtype=np.float32).reshape(la.kernel_shape)
+                else:
+                    from uqa.operators._backend import hop_weights_to_kernel
+
+                    k = hop_weights_to_kernel(list(la.hop_weights))
+                stages.append((k, pool_size, pool_method))
+            else:
+                remaining_layers.append(la)
+                i += 1
+
+        if stages:
+            # Get embedding directly from EmbedLayer
+            embed_layer = self.layers[0]
+            assert isinstance(embed_layer, EmbedLayer)
+            emb = np.array(embed_layer.embedding, dtype=np.float32)
+
+            features = grid_forward(
+                emb.reshape(1, -1),
+                grid_h,
+                grid_w,
+                stages,
+                self.gating,
+            )
+
+            # Rebuild channel_map from flattened features
+            channel_map.clear()
+            for i in range(features.shape[1]):
+                channel_map[i + 1] = np.array([features[0, i]], dtype=np.float64)
+            num_channels = 1
+
+        # Process remaining layers (flatten, dense, softmax, etc.)
+        for layer in remaining_layers:
+            if isinstance(layer, FlattenLayer):
+                channel_map, num_channels = self._execute_flatten_layer(channel_map)
+            elif isinstance(layer, DenseLayer):
+                self._execute_dense_layer(layer, channel_map)
+                num_channels = layer.output_channels
+            elif isinstance(layer, SoftmaxLayer):
+                self._execute_softmax_layer(channel_map)
+                softmax_applied = True
+            elif isinstance(layer, BatchNormLayer):
+                self._execute_batchnorm_layer(layer, channel_map)
+            elif isinstance(layer, DropoutLayer):
+                self._execute_dropout_layer(layer, channel_map)
+
+        return channel_map, num_channels, softmax_applied
+
     # -- Cost estimation --
 
     def cost_estimate(self, stats: IndexStats) -> float:
@@ -651,6 +817,8 @@ class DeepFusionOperator(Operator):
         for layer in self.layers:
             if isinstance(layer, SignalLayer):
                 total += sum(sig.cost_estimate(stats) for sig in layer.signals)
+            elif isinstance(layer, EmbedLayer):
+                total += float(len(layer.embedding))
             elif isinstance(layer, (PropagateLayer, ConvLayer, PoolLayer)):
                 total += float(stats.total_docs)
             elif isinstance(layer, DenseLayer):

@@ -140,6 +140,10 @@ CREATE TABLE IF NOT EXISTS _path_indexes (
     graph_name       TEXT PRIMARY KEY,
     label_sequences  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS _models (
+    model_name  TEXT PRIMARY KEY,
+    config_json TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS _graph_vertices_label ON _graph_vertices (label);
 CREATE INDEX IF NOT EXISTS _graph_edges_out ON _graph_edges (source_id, label);
 CREATE INDEX IF NOT EXISTS _graph_edges_in ON _graph_edges (target_id, label);
@@ -157,6 +161,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         raw.executescript(self._SCHEMA_SQL)
         self._migrate_column_stats(raw)
         self._migrate_table_field_analyzers(raw)
+        self._migrate_models(raw)
         raw.commit()
         self._conn = ManagedConnection(raw)
         self._in_transaction = False
@@ -196,6 +201,23 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
                 "    phase         TEXT NOT NULL,"
                 "    analyzer_name TEXT NOT NULL,"
                 "    PRIMARY KEY (table_name, field, phase)"
+                ")"
+            )
+
+    @staticmethod
+    def _migrate_models(conn: SQLiteConnection) -> None:
+        """Create _models table if missing (for existing databases)."""
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "_models" not in tables:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS _models ("
+                "    model_name  TEXT PRIMARY KEY,"
+                "    config_json TEXT NOT NULL"
                 ")"
             )
 
@@ -670,6 +692,29 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
             "DELETE FROM _path_indexes WHERE graph_name = ?",
             (graph_name,),
         )
+        self._auto_commit()
+
+    # -- Models (deep_learn) -------------------------------------------
+
+    def save_model(self, model_name: str, config: dict[str, Any]) -> None:
+        """Persist a trained model configuration."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO _models (model_name, config_json) VALUES (?, ?)",
+            (model_name, json.dumps(config)),
+        )
+        self._auto_commit()
+
+    def load_model(self, model_name: str) -> dict[str, Any] | None:
+        """Load a trained model configuration by name."""
+        row = self._conn.execute(
+            "SELECT config_json FROM _models WHERE model_name = ?",
+            (model_name,),
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def delete_model(self, model_name: str) -> None:
+        """Remove a trained model from the catalog."""
+        self._conn.execute("DELETE FROM _models WHERE model_name = ?", (model_name,))
         self._auto_commit()
 
     # -- Analyzers -----------------------------------------------------

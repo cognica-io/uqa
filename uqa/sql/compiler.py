@@ -433,6 +433,7 @@ _AGG_FUNC_NAMES = frozenset(
         "regr_slope",
         "regr_intercept",
         "regr_r2",
+        "deep_learn",
     }
 )
 
@@ -589,7 +590,7 @@ class SQLCompiler:
         if check_exprs:
             from uqa.sql.expr_evaluator import ExprEvaluator
 
-            evaluator = ExprEvaluator()
+            evaluator = ExprEvaluator(engine=self._engine)
             for name, expr in check_exprs:
                 table.check_constraints.append(
                     (name, lambda row, e=expr, ev=evaluator: ev.evaluate(e, row))
@@ -1228,7 +1229,7 @@ class SQLCompiler:
                 if check_expr is not None:
                     from uqa.sql.expr_evaluator import ExprEvaluator
 
-                    ev = ExprEvaluator()
+                    ev = ExprEvaluator(engine=self._engine)
                     table.check_constraints.append(
                         (
                             col_def.name,
@@ -1705,6 +1706,7 @@ class SQLCompiler:
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         evaluator = ExprEvaluator(
+            engine=self._engine,
             subquery_executor=self._compile_select,
             outer_row=getattr(self, "_correlated_outer_row", None),
         )
@@ -1749,6 +1751,7 @@ class SQLCompiler:
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         evaluator = ExprEvaluator(
+            engine=self._engine,
             subquery_executor=self._compile_select,
             outer_row=getattr(self, "_correlated_outer_row", None),
         )
@@ -1827,6 +1830,7 @@ class SQLCompiler:
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         evaluator = ExprEvaluator(
+            engine=self._engine,
             subquery_executor=self._compile_select,
             outer_row=getattr(self, "_correlated_outer_row", None),
         )
@@ -1918,6 +1922,7 @@ class SQLCompiler:
             from_tables.append((ft, fa or ft.name))
 
         evaluator = ExprEvaluator(
+            engine=self._engine,
             subquery_executor=self._compile_select,
             outer_row=getattr(self, "_correlated_outer_row", None),
         )
@@ -2101,6 +2106,7 @@ class SQLCompiler:
             using_tables.append((ut, ua or ut.name))
 
         evaluator = ExprEvaluator(
+            engine=self._engine,
             subquery_executor=self._compile_select,
             outer_row=getattr(self, "_correlated_outer_row", None),
         )
@@ -2492,6 +2498,7 @@ class SQLCompiler:
                     physical,
                     pre_targets,
                     subquery_executor=self._compile_select,
+                    engine=self._engine,
                 )
 
             group_aliases = self._build_group_aliases(group_cols, stmt.targetList)
@@ -2524,6 +2531,7 @@ class SQLCompiler:
                     physical,
                     post_group_targets,
                     subquery_executor=self._compile_select,
+                    engine=self._engine,
                 )
                 expected_cols = [name for name, _ in post_group_targets]
             else:
@@ -2556,6 +2564,7 @@ class SQLCompiler:
                     physical,
                     targets,
                     subquery_executor=self._compile_select,
+                    engine=self._engine,
                 )
                 expected_cols = [name for name, _ in targets]
             else:
@@ -2589,6 +2598,7 @@ class SQLCompiler:
                         star_targets,
                         subquery_executor=self._compile_select,
                         sequences=self._engine._sequences,
+                        engine=self._engine,
                     )
                     expected_cols = [name for name, _ in star_targets]
             elif not is_star:
@@ -2617,6 +2627,7 @@ class SQLCompiler:
                             targets,
                             subquery_executor=self._compile_select,
                             sequences=self._engine._sequences,
+                            engine=self._engine,
                         )
                         expected_cols = [name for name, _ in targets]
                     else:
@@ -2656,6 +2667,7 @@ class SQLCompiler:
                     targets,
                     subquery_executor=self._compile_select,
                     sequences=self._engine._sequences,
+                    engine=self._engine,
                 )
                 expected_cols = [name for name, _ in targets]
             else:
@@ -3840,7 +3852,7 @@ class SQLCompiler:
         if stmt.valuesLists is not None:
             return self._compile_values(stmt)
 
-        # 0. Handle set operations (UNION / INTERSECT / EXCEPT)
+        # 1. Handle set operations (UNION / INTERSECT / EXCEPT)
         if stmt.op is not None and stmt.op != SetOperation.SETOP_NONE:
             return self._compile_set_operation(stmt)
 
@@ -5111,6 +5123,8 @@ class SQLCompiler:
             return self._build_graph_add_vertex(args)
         if name == "graph_add_edge":
             return self._build_graph_add_edge(args)
+        if name == "build_grid_graph":
+            return self._build_grid_graph(args)
         raise ValueError(f"Unknown table function: {name}")
 
     @staticmethod
@@ -5701,6 +5715,59 @@ class SQLCompiler:
         self._expanded_views.append("_graph_add_edge")
         return result_table, None
 
+    def _build_grid_graph(self, args: tuple) -> tuple[Table | None, Any]:
+        """Handle ``SELECT * FROM build_grid_graph('table', rows, cols, 'label')``.
+
+        Builds a 4-connected grid graph (right + down edges) on a
+        table's graph store.  Node IDs are row * cols + col + 1 (1-based).
+        """
+        from uqa.core.types import Edge
+        from uqa.sql.table import ColumnDef as SQLColumnDef
+
+        if len(args) < 4:
+            raise ValueError("build_grid_graph('table', rows, cols, 'label')")
+        table_name = self._extract_string_value(args[0])
+        rows = int(self._extract_const_value(args[1]))
+        cols = int(self._extract_const_value(args[2]))
+        label = self._extract_string_value(args[3])
+
+        edge_id = 1
+        for r in range(rows):
+            for c in range(cols):
+                pid = r * cols + c + 1
+                if c < cols - 1:
+                    self._engine.add_graph_edge(
+                        Edge(edge_id, pid, pid + 1, label), table=table_name
+                    )
+                    edge_id += 1
+                if r < rows - 1:
+                    self._engine.add_graph_edge(
+                        Edge(edge_id, pid, pid + cols, label), table=table_name
+                    )
+                    edge_id += 1
+
+        total_edges = edge_id - 1
+        result_table = Table(
+            "_build_grid_graph",
+            [
+                SQLColumnDef(name="table_name", type_name="text", python_type=str),
+                SQLColumnDef(name="rows", type_name="integer", python_type=int),
+                SQLColumnDef(name="cols", type_name="integer", python_type=int),
+                SQLColumnDef(name="edges", type_name="integer", python_type=int),
+            ],
+        )
+        result_table.insert(
+            {
+                "table_name": table_name,
+                "rows": rows,
+                "cols": cols,
+                "edges": total_edges,
+            }
+        )
+        self._engine._tables["_build_grid_graph"] = result_table
+        self._expanded_views.append("_build_grid_graph")
+        return result_table, None
+
     def _build_cypher_from(
         self, node: RangeFunction, args: tuple
     ) -> tuple[Table | None, Any]:
@@ -5843,7 +5910,7 @@ class SQLCompiler:
         if not args:
             raise ValueError("unnest requires at least 1 argument")
 
-        evaluator = ExprEvaluator()
+        evaluator = ExprEvaluator(engine=self._engine)
         arr = evaluator.evaluate(args[0], {})
         if not isinstance(arr, list):
             arr = [arr]
@@ -5947,7 +6014,7 @@ class SQLCompiler:
         if not args:
             raise ValueError("json_each requires 1 argument")
 
-        evaluator = ExprEvaluator()
+        evaluator = ExprEvaluator(engine=self._engine)
         obj = evaluator.evaluate(args[0], {})
         if isinstance(obj, str):
             import json as json_mod
@@ -5997,7 +6064,7 @@ class SQLCompiler:
         if not args:
             raise ValueError("json_array_elements requires 1 argument")
 
-        evaluator = ExprEvaluator()
+        evaluator = ExprEvaluator(engine=self._engine)
         arr = evaluator.evaluate(args[0], {})
         if isinstance(arr, str):
             import json as json_mod
@@ -7544,6 +7611,7 @@ class SQLCompiler:
             DeepFusionOperator,
             DenseLayer,
             DropoutLayer,
+            EmbedLayer,
             FlattenLayer,
             PoolLayer,
             PropagateLayer,
@@ -7553,6 +7621,7 @@ class SQLCompiler:
 
         layers: list[
             SignalLayer
+            | EmbedLayer
             | PropagateLayer
             | ConvLayer
             | PoolLayer
@@ -7588,35 +7657,61 @@ class SQLCompiler:
                     layers.append(SignalLayer(signals=signals))
 
                 elif inner_name == "convolve":
-                    if len(inner_args) < 2:
+                    # Parse positional and named args
+                    conv_pos: list[object] = []
+                    conv_named: dict[str, object] = {}
+                    for ia in inner_args:
+                        if isinstance(ia, NamedArgExpr):
+                            conv_named[ia.name] = self._extract_const_value(ia.arg)
+                        else:
+                            conv_pos.append(ia)
+                    if not conv_pos:
                         raise ValueError(
-                            "convolve() requires at least 2 arguments: "
-                            "convolve('edge_label', ARRAY[w0, w1, ...]"
-                            "[, 'direction'])"
+                            "convolve() requires edge_label as first argument"
                         )
-                    edge_label = self._extract_string_value(inner_args[0])
-                    # Second arg: ARRAY literal for hop weights
-                    hop_weights = self._extract_vector_arg(inner_args[1])
-                    if len(hop_weights) < 1:
-                        raise ValueError(
-                            "convolve() hop_weights array must have at least 1 element"
-                        )
+                    edge_label = self._extract_string_value(conv_pos[0])
+                    n_channels = int(conv_named.get("n_channels", 0))
                     direction = "both"
-                    if len(inner_args) >= 3:
-                        direction = self._extract_string_value(inner_args[2])
-                        if direction not in ("both", "out", "in"):
-                            raise ValueError(
-                                f"convolve() direction must be "
-                                f"'both', 'out', or 'in', "
-                                f"got {direction!r}"
+
+                    if n_channels > 1:
+                        # Multi-channel: generate random kernels
+                        from uqa.operators.deep_learn import _generate_kernels
+
+                        seed = int(conv_named.get("seed", 42))
+                        # Determine input channels from previous conv layer
+                        prev_out_ch = 1
+                        for prev_la in reversed(layers):
+                            if isinstance(prev_la, ConvLayer):
+                                if prev_la.kernel_shape is not None:
+                                    prev_out_ch = prev_la.kernel_shape[0]
+                                break
+                        kernels = _generate_kernels(n_channels, prev_out_ch, seed)
+                        layers.append(
+                            ConvLayer(
+                                edge_label=edge_label,
+                                hop_weights=(1.0,),
+                                direction=direction,
+                                kernel=tuple(kernels.flatten().tolist()),
+                                kernel_shape=tuple(kernels.shape),
                             )
-                    layers.append(
-                        ConvLayer(
-                            edge_label=edge_label,
-                            hop_weights=tuple(float(w) for w in hop_weights),
-                            direction=direction,
                         )
-                    )
+                    else:
+                        # Single-channel: hop_weights from ARRAY
+                        if len(conv_pos) < 2:
+                            raise ValueError(
+                                "convolve() requires ARRAY[w0, w1, ...] "
+                                "or n_channels => N"
+                            )
+                        hop_weights = self._extract_vector_arg(conv_pos[1])
+                        if len(conv_pos) >= 3:
+                            direction = self._extract_string_value(conv_pos[2])
+                        layers.append(
+                            ConvLayer(
+                                edge_label=edge_label,
+                                hop_weights=tuple(float(w) for w in hop_weights),
+                                direction=direction,
+                            )
+                        )
 
                 elif inner_name == "propagate":
                     if len(inner_args) < 2:
@@ -7743,6 +7838,116 @@ class SQLCompiler:
                         raise ValueError("dropout() requires 1 argument: dropout(p)")
                     p = float(self._extract_const_value(inner_args[0]))
                     layers.append(DropoutLayer(p=p))
+
+                elif inner_name == "embed":
+                    # embed($1) or embed($1, grid_h => 64, grid_w => 64, in_channels => 3)
+                    embed_pos: list[object] = []
+                    embed_named: dict[str, int] = {}
+                    for ia in inner_args:
+                        if isinstance(ia, NamedArgExpr):
+                            embed_named[ia.name] = int(
+                                self._extract_const_value(ia.arg)
+                            )
+                        else:
+                            embed_pos.append(ia)
+                    if not embed_pos:
+                        raise ValueError("embed() requires vector argument")
+                    vec = self._extract_vector_arg(embed_pos[0])
+                    emb_tuple = tuple(float(v) for v in vec)
+                    e_in_ch = embed_named.get("in_channels", 1)
+                    if "grid_h" in embed_named and "grid_w" in embed_named:
+                        e_gh = embed_named["grid_h"]
+                        e_gw = embed_named["grid_w"]
+                    else:
+                        import math as _math
+
+                        _side = int(_math.sqrt(len(emb_tuple) // e_in_ch))
+                        if _side * _side * e_in_ch == len(emb_tuple):
+                            e_gh, e_gw = _side, _side
+                        else:
+                            e_gh, e_gw = 0, 0
+                    layers.append(
+                        EmbedLayer(
+                            embedding=emb_tuple,
+                            grid_h=e_gh,
+                            grid_w=e_gw,
+                            in_channels=e_in_ch,
+                        )
+                    )
+
+                elif inner_name == "model":
+                    # model('name', $1) -- self-contained: embed + full pipeline
+                    if len(inner_args) < 2:
+                        raise ValueError("model('model_name', input_vector)")
+                    model_name = self._extract_string_value(inner_args[0])
+                    input_vec = self._extract_vector_arg(inner_args[1])
+                    config = self._engine.load_model(model_name)
+                    if config is None:
+                        raise ValueError(f"Model '{model_name}' does not exist")
+                    from uqa.operators.deep_learn import TrainedModel
+
+                    model = TrainedModel.from_dict(config)
+                    model_in_ch = getattr(model, "in_channels", 1)
+
+                    # EmbedLayer with model's grid/channel info
+                    layers.append(
+                        EmbedLayer(
+                            embedding=tuple(float(v) for v in input_vec),
+                            grid_h=model.grid_size,
+                            grid_w=model.grid_size,
+                            in_channels=model_in_ch,
+                        )
+                    )
+
+                    # Reconstruct kernels from stored data
+                    model_kernels: list[tuple[tuple[float, ...], tuple[int, ...]]] = []
+                    if model.conv_kernel_data and model.conv_kernel_shapes:
+                        for kd, ks in zip(
+                            model.conv_kernel_data, model.conv_kernel_shapes
+                        ):
+                            model_kernels.append((tuple(kd), tuple(ks)))
+                    else:
+                        from uqa.operators._backend import hop_weights_to_kernel as _h2k
+
+                        for cw in model.conv_weights:
+                            k = _h2k(cw)
+                            model_kernels.append(
+                                (tuple(k.flatten().tolist()), tuple(k.shape))
+                            )
+
+                    # Conv+pool stages
+                    from uqa.operators.deep_learn import _identify_stages
+
+                    model_stages = _identify_stages(model.layer_specs)
+                    for si, (_cd, pd) in enumerate(model_stages):
+                        kdata, kshape = model_kernels[si]
+                        layers.append(
+                            ConvLayer(
+                                edge_label=model.edge_label,
+                                hop_weights=(1.0,),
+                                direction="both",
+                                kernel=kdata,
+                                kernel_shape=kshape,
+                            )
+                        )
+                        layers.append(
+                            PoolLayer(
+                                edge_label=model.edge_label,
+                                pool_size=pd.get("pool_size", 2),
+                                method=pd.get("method", "max"),
+                                direction="both",
+                            )
+                        )
+                    layers.append(FlattenLayer())
+                    layers.append(
+                        DenseLayer(
+                            weights=tuple(model.dense_weights),
+                            bias=tuple(model.dense_bias),
+                            output_channels=model.dense_output_channels,
+                            input_channels=model.dense_input_channels,
+                        )
+                    )
+                    layers.append(SoftmaxLayer())
 
                 else:
                     raise ValueError(
@@ -8016,7 +8221,14 @@ class SQLCompiler:
                 arg_col = self._extract_column_name(func.args[0])
                 extra = self._extract_column_name(func.args[1])
             else:
-                if func.agg_star:
+                # Check if this is an engine-method aggregate (e.g. deep_learn).
+                # If the engine has a method with this name, create a callback
+                # closure that passes all FuncCall args + the rows at eval time.
+                engine_method = getattr(self._engine, func_name, None)
+                if engine_method is not None and callable(engine_method):
+                    extra = self._build_engine_agg_callback(func, engine_method)
+                    arg_col = None
+                elif func.agg_star:
                     arg_col = None
                 elif isinstance(func.args[0], ColumnRef):
                     arg_col = self._extract_column_name(func.args[0])
@@ -8057,6 +8269,53 @@ class SQLCompiler:
                 )
             )
         return specs
+
+    def _build_engine_agg_callback(
+        self, func_call: FuncCall, engine_method: Any
+    ) -> Any:
+        """Build a callback closure for an engine-method aggregate.
+
+        The callback receives the filtered rows from HashAggOp and
+        calls the engine method with parsed arguments.  The result
+        is returned as the aggregate value (a dict for structured output).
+
+        This is the general mechanism for any engine method used as
+        a SELECT-clause aggregate: deep_learn, or any future function.
+        """
+        # Parse all args from the FuncCall at compile time
+        args = func_call.args or ()
+        parsed_positional: list[Any] = []
+        parsed_named: dict[str, Any] = {}
+
+        for arg in args:
+            if isinstance(arg, NamedArgExpr):
+                if isinstance(arg.arg, ColumnRef):
+                    parsed_named[arg.name] = self._extract_column_name(arg.arg)
+                else:
+                    parsed_named[arg.name] = self._extract_const_value(arg.arg)
+            elif isinstance(arg, FuncCall):
+                inner_name = arg.funcname[-1].sval.lower()
+                inner_parsed: dict[str, Any] = {"_func": inner_name}
+                for ia in arg.args or ():
+                    if isinstance(ia, NamedArgExpr):
+                        inner_parsed[ia.name] = self._extract_const_value(ia.arg)
+                    else:
+                        val = self._extract_const_value(ia)
+                        inner_parsed.setdefault("_pos", []).append(val)
+                parsed_positional.append(inner_parsed)
+            elif isinstance(arg, ColumnRef):
+                parsed_positional.append(self._extract_column_name(arg))
+            else:
+                parsed_positional.append(self._extract_const_value(arg))
+
+        def callback(rows: list[dict[str, Any]]) -> Any:
+            return engine_method(
+                rows=rows,
+                positional_args=parsed_positional,
+                named_args=parsed_named,
+            )
+
+        return callback
 
     def _ensure_having_aggs(self, having_node: Any, agg_specs: list[tuple]) -> None:
         """Walk the HAVING AST and add any aggregate calls missing from *agg_specs*.
@@ -8197,7 +8456,7 @@ class SQLCompiler:
             ntile_buckets = 1
 
             if func_name in ("lag", "lead"):
-                evaluator = ExprEvaluator()
+                evaluator = ExprEvaluator(engine=self._engine)
                 if val.args:
                     arg_col = self._extract_column_name(val.args[0])
                     if len(val.args) > 1:
@@ -8205,11 +8464,11 @@ class SQLCompiler:
                     if len(val.args) > 2:
                         default_value = evaluator.evaluate(val.args[2], {})
             elif func_name == "ntile":
-                evaluator = ExprEvaluator()
+                evaluator = ExprEvaluator(engine=self._engine)
                 if val.args:
                     ntile_buckets = int(evaluator.evaluate(val.args[0], {}))
             elif func_name == "nth_value":
-                evaluator = ExprEvaluator()
+                evaluator = ExprEvaluator(engine=self._engine)
                 if val.args:
                     arg_col = self._extract_column_name(val.args[0])
                     if len(val.args) > 1:
@@ -8391,7 +8650,7 @@ class SQLCompiler:
             try:
                 from uqa.sql.expr_evaluator import ExprEvaluator
 
-                evaluator = ExprEvaluator()
+                evaluator = ExprEvaluator(engine=self._engine)
                 folded = A_Expr(
                     kind=node.kind,
                     name=node.name,
@@ -8426,7 +8685,7 @@ class SQLCompiler:
             try:
                 from uqa.sql.expr_evaluator import ExprEvaluator
 
-                evaluator = ExprEvaluator()
+                evaluator = ExprEvaluator(engine=self._engine)
                 folded = BoolExpr(boolop=node.boolop, args=new_args)
                 result = evaluator.evaluate(folded, {})
                 return self._value_to_a_const(result)
@@ -8694,7 +8953,9 @@ class _FilteredScanOperator:
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         pl = self._scan.execute(context)
-        evaluator = ExprEvaluator(subquery_executor=self._subquery_executor)
+        evaluator = ExprEvaluator(
+            engine=None, subquery_executor=self._subquery_executor
+        )
         filtered: list[PostingEntry] = []
         for entry in pl:
             if evaluator.evaluate(self._where_node, entry.payload.fields):
@@ -8823,7 +9084,7 @@ class _ExprJoinOperator:
     def execute(self, context: object) -> Any:
         from uqa.sql.expr_evaluator import ExprEvaluator
 
-        evaluator = ExprEvaluator()
+        evaluator = ExprEvaluator(engine=None)
         left_entries = _get_join_entries(self._left, context)
         right_entries = _get_join_entries(self._right, context)
 
@@ -9243,6 +9504,7 @@ class _ExprFilterOperator:
             else None
         )
         evaluator = ExprEvaluator(
+            engine=None,
             subquery_executor=self._subquery_executor,
             outer_row=outer_row,
         )
