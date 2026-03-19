@@ -517,12 +517,12 @@ engine.update_scoring_params(<span class="st">"papers"</span>, <span class="st">
   </p>
 
   <span class="example-tag tag-sql">SQL</span>
-<pre><code><span class="cm">&mdash; Three-layer hierarchy: text -> vector -> graph centrality</span>
+<pre><code><span class="cm">-- Three-layer hierarchy: text -> vector -> graph centrality</span>
 <span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
 <span class="kw">WHERE</span> <span class="fn">deep_fusion</span>(
-    <span class="fn">layer</span>(<span class="fn">bayesian_match</span>(title, <span class="st">'attention'</span>)),     <span class="cm">&mdash; Layer 0: text prior</span>
-    <span class="fn">layer</span>(<span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 10)),           <span class="cm">&mdash; Layer 1: vector refinement</span>
-    <span class="fn">layer</span>(<span class="fn">pagerank</span>(<span class="st">'papers'</span>)),                      <span class="cm">&mdash; Layer 2: centrality boost</span>
+    <span class="fn">layer</span>(<span class="fn">bayesian_match</span>(title, <span class="st">'attention'</span>)),      <span class="cm">-- Layer 0: text prior</span>
+    <span class="fn">layer</span>(<span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 10)),            <span class="cm">-- Layer 1: vector refinement</span>
+    <span class="fn">layer</span>(<span class="fn">pagerank</span>(<span class="st">'papers'</span>)),                      <span class="cm">-- Layer 2: centrality boost</span>
     gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
 ) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
 
@@ -536,13 +536,13 @@ engine.update_scoring_params(<span class="st">"papers"</span>, <span class="st">
   </p>
 
   <span class="example-tag tag-sql">SQL</span>
-<pre><code><span class="cm">&mdash; 2-hop message passing through citations</span>
+<pre><code><span class="cm">-- 2-hop message passing through citations</span>
 <span class="kw">SELECT</span> title, _score <span class="kw">FROM</span> papers
 <span class="kw">WHERE</span> <span class="fn">deep_fusion</span>(
-    <span class="fn">layer</span>(<span class="fn">bayesian_match</span>(title, <span class="st">'attention'</span>)),     <span class="cm">&mdash; seed scores</span>
-    <span class="fn">propagate</span>(<span class="st">'cites'</span>, <span class="st">'mean'</span>),                     <span class="cm">&mdash; 1-hop spread</span>
-    <span class="fn">propagate</span>(<span class="st">'cites'</span>, <span class="st">'mean'</span>),                     <span class="cm">&mdash; 2-hop spread</span>
-    <span class="fn">layer</span>(<span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 10)),           <span class="cm">&mdash; vector refinement</span>
+    <span class="fn">layer</span>(<span class="fn">bayesian_match</span>(title, <span class="st">'attention'</span>)),      <span class="cm">-- seed scores</span>
+    <span class="fn">propagate</span>(<span class="st">'cites'</span>, <span class="st">'mean'</span>),                     <span class="cm">-- 1-hop spread</span>
+    <span class="fn">propagate</span>(<span class="st">'cites'</span>, <span class="st">'mean'</span>),                     <span class="cm">-- 2-hop spread</span>
+    <span class="fn">layer</span>(<span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 10)),            <span class="cm">-- vector refinement</span>
     gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
 ) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
 
@@ -557,12 +557,12 @@ engine.update_scoring_params(<span class="st">"papers"</span>, <span class="st">
   </p>
 
   <span class="example-tag tag-sql">SQL</span>
-<pre><code><span class="cm">&mdash; Stacked convolutions with MLE-estimated weights</span>
+<pre><code><span class="cm">-- Stacked convolutions with MLE-estimated weights</span>
 <span class="kw">SELECT</span> id, _score <span class="kw">FROM</span> patches
 <span class="kw">WHERE</span> <span class="fn">deep_fusion</span>(
     <span class="fn">layer</span>(<span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 16)),
-    <span class="fn">convolve</span>(<span class="st">'spatial'</span>, <span class="st">ARRAY[0.6, 0.4]</span>),           <span class="cm">&mdash; 3x3 equivalent</span>
-    <span class="fn">convolve</span>(<span class="st">'spatial'</span>, <span class="st">ARRAY[0.6, 0.4]</span>),           <span class="cm">&mdash; 5x5 effective field</span>
+    <span class="fn">convolve</span>(<span class="st">'spatial'</span>, <span class="st">ARRAY[0.6, 0.4]</span>),          <span class="cm">-- 3x3 equivalent</span>
+    <span class="fn">convolve</span>(<span class="st">'spatial'</span>, <span class="st">ARRAY[0.6, 0.4]</span>),          <span class="cm">-- 5x5 effective field</span>
     gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
 ) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
 
@@ -576,18 +576,18 @@ engine.update_scoring_params(<span class="st">"papers"</span>, <span class="st">
   </p>
 
   <span class="example-tag tag-sql">SQL</span>
-<pre><code><span class="cm">&mdash; Complete CNN: conv -> pool -> flatten -> dense -> softmax</span>
+<pre><code><span class="cm">-- Complete CNN: conv -> pool -> flatten -> dense -> softmax</span>
 <span class="kw">SELECT</span> id, _score <span class="kw">FROM</span> patches
 <span class="kw">WHERE</span> <span class="fn">deep_fusion</span>(
-    <span class="fn">layer</span>(<span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 16)),             <span class="cm">&mdash; 16 nodes</span>
-    <span class="fn">convolve</span>(<span class="st">'spatial'</span>, <span class="st">ARRAY[0.6, 0.4]</span>),              <span class="cm">&mdash; spatial features</span>
-    <span class="fn">pool</span>(<span class="st">'spatial'</span>, <span class="st">'max'</span>, 2),                        <span class="cm">&mdash; downsample</span>
-    <span class="fn">batch_norm</span>(),                                      <span class="cm">&mdash; normalize</span>
-    <span class="fn">dropout</span>(0.3),                                      <span class="cm">&mdash; regularize</span>
-    <span class="fn">flatten</span>(),                                         <span class="cm">&mdash; spatial -> 1D</span>
+    <span class="fn">layer</span>(<span class="fn">knn_match</span>(embedding, <span class="st">$1</span>, 16)),                <span class="cm">-- 16 nodes</span>
+    <span class="fn">convolve</span>(<span class="st">'spatial'</span>, <span class="st">ARRAY[0.6, 0.4]</span>),               <span class="cm">-- spatial features</span>
+    <span class="fn">pool</span>(<span class="st">'spatial'</span>, <span class="st">'max'</span>, 2),                          <span class="cm">-- downsample</span>
+    <span class="fn">batch_norm</span>(),                                       <span class="cm">-- normalize</span>
+    <span class="fn">dropout</span>(0.3),                                       <span class="cm">-- regularize</span>
+    <span class="fn">flatten</span>(),                                          <span class="cm">-- spatial -> 1D</span>
     <span class="fn">dense</span>(<span class="st">ARRAY[...]</span>, <span class="st">ARRAY[...]</span>,
-          output_channels <span class="cm">=&gt;</span> 4, input_channels <span class="cm">=&gt;</span> 8),  <span class="cm">&mdash; project to classes</span>
-    <span class="fn">softmax</span>(),                                         <span class="cm">&mdash; probabilities</span>
+          output_channels <span class="cm">=&gt;</span> 4, input_channels <span class="cm">=&gt;</span> 8),   <span class="cm">-- project to classes</span>
+    <span class="fn">softmax</span>(),                                          <span class="cm">-- probabilities</span>
     gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>
 ) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
 
