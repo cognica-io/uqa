@@ -117,9 +117,9 @@ engine.sql("""
 print("\n  Inserting training data ...")
 t0 = time.time()
 for i in range(len(X_train)):
-    arr = "ARRAY[" + ",".join(str(float(v)) for v in X_train[i]) + "]"
     engine.sql(
-        f"INSERT INTO mnist_train (label, embedding) VALUES ({int(y_train[i])}, {arr})"
+        "INSERT INTO mnist_train (label, embedding) VALUES ($1, $2)",
+        params=[int(y_train[i]), X_train[i]],
     )
 insert_time = time.time() - t0
 print(f"  Inserted {len(X_train)} samples in {insert_time:.2f}s")

@@ -133,6 +133,30 @@ class TestInsert:
         with pytest.raises(ValueError, match="NOT NULL"):
             e.sql("INSERT INTO t (id) VALUES (1)")
 
+    def test_insert_parameterized_scalar(self) -> None:
+        e = Engine()
+        e.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, name TEXT, val INTEGER)")
+        e.sql("INSERT INTO t (name, val) VALUES ($1, $2)", params=["alice", 42])
+        r = e.sql("SELECT name, val FROM t")
+        assert r.rows[0]["name"] == "alice"
+        assert r.rows[0]["val"] == 42
+
+    def test_insert_parameterized_vector(self) -> None:
+        import numpy as np
+
+        e = Engine()
+        e.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, embedding VECTOR(3))")
+        vec = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        e.sql("INSERT INTO t (embedding) VALUES ($1)", params=[vec])
+        r = e.sql("SELECT embedding FROM t")
+        assert r.rows[0]["embedding"] == [1.0, 2.0, 3.0]
+
+    def test_insert_parameterized_missing_param(self) -> None:
+        e = Engine()
+        e.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, val INTEGER)")
+        with pytest.raises(ValueError, match="not provided"):
+            e.sql("INSERT INTO t (val) VALUES ($2)", params=[1])
+
 
 # ==================================================================
 # DQL: Basic SELECT

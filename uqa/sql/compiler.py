@@ -7606,6 +7606,7 @@ class SQLCompiler:
         Named args: alpha, gating
         """
         from uqa.operators.deep_fusion import (
+            AttentionLayer,
             BatchNormLayer,
             ConvLayer,
             DeepFusionOperator,
@@ -7844,6 +7845,40 @@ class SQLCompiler:
                         raise ValueError("dropout() requires 1 argument: dropout(p)")
                     p = float(self._extract_const_value(inner_args[0]))
                     layers.append(DropoutLayer(p=p))
+
+                elif inner_name == "attention":
+                    # attention() or attention(n_heads => 4, mode => 'random_qk')
+                    attn_n_heads = 1
+                    attn_mode = "content"
+                    attn_q_weights = None
+                    attn_q_shape = None
+                    attn_k_weights = None
+                    attn_k_shape = None
+                    attn_v_weights = None
+                    attn_v_shape = None
+                    for ia in inner_args:
+                        if isinstance(ia, NamedArgExpr):
+                            if ia.name == "n_heads":
+                                attn_n_heads = int(self._extract_const_value(ia.arg))
+                            elif ia.name == "mode":
+                                attn_mode = str(self._extract_const_value(ia.arg))
+                            else:
+                                raise ValueError(
+                                    f"Unknown attention option: {ia.name}. "
+                                    f"Valid: n_heads, mode"
+                                )
+                    layers.append(
+                        AttentionLayer(
+                            n_heads=attn_n_heads,
+                            mode=attn_mode,
+                            q_weights=attn_q_weights,
+                            q_shape=attn_q_shape,
+                            k_weights=attn_k_weights,
+                            k_shape=attn_k_shape,
+                            v_weights=attn_v_weights,
+                            v_shape=attn_v_shape,
+                        )
+                    )
 
                 elif inner_name == "embed":
                     # embed($1) or embed($1, grid_h => 64, grid_w => 64, in_channels => 3)
@@ -8810,12 +8845,16 @@ class SQLCompiler:
                 return val.boolval
         raise ValueError(f"Expected A_Const, got {type(node).__name__}: {node}")
 
-    @staticmethod
-    def _extract_string_value(node: Any) -> str:
+    def _extract_string_value(self, node: Any) -> str:
         if isinstance(node, A_Const) and isinstance(node.val, PgString):
             return node.val.sval
         if isinstance(node, ColumnRef):
             return node.fields[-1].sval
+        if isinstance(node, ParamRef):
+            idx = node.number - 1
+            if idx < 0 or idx >= len(self._params):
+                raise ValueError(f"No value supplied for parameter ${node.number}")
+            return str(self._params[idx])
         raise ValueError(f"Expected string constant, got {type(node).__name__}")
 
     def _extract_int_value(self, node: Any) -> int:
@@ -8855,8 +8894,17 @@ class SQLCompiler:
         """Extract a value from an INSERT VALUES clause.
 
         Handles A_Const (scalars), A_ArrayExpr (vector/array literals),
-        FuncCall for POINT(x, y), and TypeCast (e.g. '...'::jsonb).
+        FuncCall for POINT(x, y), TypeCast (e.g. '...'::jsonb),
+        and ParamRef ($1, $2, ...) for parameterized inserts.
         """
+        if isinstance(node, ParamRef):
+            idx = node.number - 1
+            if idx < 0 or idx >= len(self._params):
+                raise ValueError(f"Parameter ${node.number} not provided")
+            val = self._params[idx]
+            if hasattr(val, "tolist"):
+                return val.tolist()
+            return val
         if isinstance(node, FuncCall):
             name = node.funcname[-1].sval.lower()
             if name == "point":

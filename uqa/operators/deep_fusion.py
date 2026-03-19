@@ -161,6 +161,30 @@ class DropoutLayer:
 
 
 @dataclass(frozen=True, slots=True)
+class AttentionLayer:
+    """Self-attention: context-dependent PoE (Theorem 8.3, Paper 4).
+
+    Attention weights are the expert reliability coefficients in
+    a Product of Experts.  Each spatial position attends to all others,
+    enabling global context injection between conv+pool stages.
+
+    Modes:
+        "content"    -- Q=K=V=X, pure content-based attention
+        "random_qk"  -- random Q,K projections, V=X
+        "learned_v"  -- random Q,K, learned V projection
+    """
+
+    n_heads: int = 1
+    mode: str = "content"
+    q_weights: tuple[float, ...] | None = None
+    q_shape: tuple[int, ...] | None = None
+    k_weights: tuple[float, ...] | None = None
+    k_shape: tuple[int, ...] | None = None
+    v_weights: tuple[float, ...] | None = None
+    v_shape: tuple[int, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class EmbedLayer:
     """Initialize channel_map from a raw embedding vector.
 
@@ -190,6 +214,7 @@ _Layer = (
     | BatchNormLayer
     | DropoutLayer
     | EmbedLayer
+    | AttentionLayer
 )
 
 _SPATIAL_LAYERS = (PropagateLayer, ConvLayer, PoolLayer)
@@ -310,6 +335,8 @@ class DeepFusionOperator(Operator):
                     self._execute_batchnorm_layer(layer, channel_map)
                 elif isinstance(layer, DropoutLayer):
                     self._execute_dropout_layer(layer, channel_map)
+                elif isinstance(layer, AttentionLayer):
+                    self._execute_attention_layer(layer, channel_map)
 
         return self._build_result(channel_map, num_channels, softmax_applied)
 
@@ -716,6 +743,47 @@ class DeepFusionOperator(Operator):
         for doc_id, vec in channel_map.items():
             channel_map[doc_id] = vec * scale
 
+    def _execute_attention_layer(
+        self,
+        layer: AttentionLayer,
+        channel_map: dict[int, np.ndarray],
+    ) -> None:
+        """Self-attention over all spatial positions (Theorem 8.3)."""
+        from uqa.operators._backend import batch_self_attention
+
+        if not channel_map:
+            return
+
+        doc_ids = sorted(channel_map.keys())
+        X = np.stack([channel_map[did] for did in doc_ids])  # (seq_len, n_ch)
+        seq_len, n_ch = X.shape
+
+        # Reshape to (1, seq_len, d_model) for batch_self_attention
+        X_3d = X.reshape(1, seq_len, n_ch).astype(np.float32)
+
+        W_q: np.ndarray | None = None
+        W_k: np.ndarray | None = None
+        W_v: np.ndarray | None = None
+        if layer.q_weights is not None and layer.q_shape is not None:
+            W_q = np.array(layer.q_weights, dtype=np.float32).reshape(layer.q_shape)
+        if layer.k_weights is not None and layer.k_shape is not None:
+            W_k = np.array(layer.k_weights, dtype=np.float32).reshape(layer.k_shape)
+        if layer.v_weights is not None and layer.v_shape is not None:
+            W_v = np.array(layer.v_weights, dtype=np.float32).reshape(layer.v_shape)
+
+        out_3d = batch_self_attention(
+            X_3d,
+            layer.n_heads,
+            W_q,
+            W_k,
+            W_v,
+            self.gating,
+        )
+        out = out_3d[0]  # (seq_len, n_ch)
+
+        for i, did in enumerate(doc_ids):
+            channel_map[did] = out[i].astype(np.float64)
+
     @staticmethod
     def _execute_embed_layer(
         layer: EmbedLayer,
@@ -739,13 +807,15 @@ class DeepFusionOperator(Operator):
         context: ExecutionContext,
     ) -> tuple[dict[int, np.ndarray], int, bool]:
         """Grid-accelerated execution: conv+pool via backend, rest as usual."""
-        from uqa.operators._backend import grid_forward
+        from uqa.operators._backend import batch_self_attention, grid_forward
 
         assert self._grid_shape is not None
         grid_h, grid_w = self._grid_shape
 
-        # Collect conv+pool pairs and remaining layers
-        stages: list[tuple[np.ndarray, int, str]] = []
+        # Build processing segments: groups of conv+pool stages separated
+        # by attention layers, followed by remaining (flatten, dense, etc.)
+        segments: list[tuple[str, object]] = []
+        current_conv_pool: list[tuple[np.ndarray, int, str]] = []
         remaining_layers: list[_Layer] = []
         non_embed = [la for la in self.layers if not isinstance(la, EmbedLayer)]
         i = 0
@@ -768,30 +838,84 @@ class DeepFusionOperator(Operator):
                     from uqa.operators._backend import hop_weights_to_kernel
 
                     k = hop_weights_to_kernel(list(la.hop_weights))
-                stages.append((k, pool_size, pool_method))
+                current_conv_pool.append((k, pool_size, pool_method))
+            elif isinstance(la, AttentionLayer):
+                if current_conv_pool:
+                    segments.append(("conv_pool", current_conv_pool))
+                    current_conv_pool = []
+                segments.append(("attention", la))
+                i += 1
             else:
+                if current_conv_pool:
+                    segments.append(("conv_pool", current_conv_pool))
+                    current_conv_pool = []
                 remaining_layers.append(la)
                 i += 1
+        if current_conv_pool:
+            segments.append(("conv_pool", current_conv_pool))
 
-        if stages:
-            # Get embedding directly from EmbedLayer
-            embed_layer = self.layers[0]
-            assert isinstance(embed_layer, EmbedLayer)
-            emb = np.array(embed_layer.embedding, dtype=np.float32)
+        # Process segments sequentially
+        embed_layer = self.layers[0]
+        assert isinstance(embed_layer, EmbedLayer)
+        current_flat = np.array(embed_layer.embedding, dtype=np.float32).reshape(1, -1)
+        cur_h, cur_w = grid_h, grid_w
 
-            features = grid_forward(
-                emb.reshape(1, -1),
-                grid_h,
-                grid_w,
-                stages,
-                self.gating,
-            )
+        for seg_type, seg_data in segments:
+            if seg_type == "conv_pool":
+                stages_list: list[tuple[np.ndarray, int, str]] = seg_data  # type: ignore[assignment]
+                current_flat = grid_forward(
+                    current_flat,
+                    cur_h,
+                    cur_w,
+                    stages_list,
+                    self.gating,
+                )
+                for _, ps, _ in stages_list:
+                    cur_h = cur_h // ps
+                    cur_w = cur_w // ps
+            elif seg_type == "attention":
+                attn_layer = seg_data
+                assert isinstance(attn_layer, AttentionLayer)
+                n_ch = current_flat.shape[1] // (cur_h * cur_w)
+                seq_len = cur_h * cur_w
 
-            # Rebuild channel_map from flattened features
-            channel_map.clear()
-            for i in range(features.shape[1]):
-                channel_map[i + 1] = np.array([features[0, i]], dtype=np.float64)
-            num_channels = 1
+                X_3d = (
+                    current_flat.reshape(1, n_ch, seq_len)
+                    .transpose(0, 2, 1)
+                    .astype(np.float32)
+                )
+
+                W_q: np.ndarray | None = None
+                W_k: np.ndarray | None = None
+                W_v: np.ndarray | None = None
+                if attn_layer.q_weights is not None and attn_layer.q_shape is not None:
+                    W_q = np.array(attn_layer.q_weights, dtype=np.float32).reshape(
+                        attn_layer.q_shape
+                    )
+                if attn_layer.k_weights is not None and attn_layer.k_shape is not None:
+                    W_k = np.array(attn_layer.k_weights, dtype=np.float32).reshape(
+                        attn_layer.k_shape
+                    )
+                if attn_layer.v_weights is not None and attn_layer.v_shape is not None:
+                    W_v = np.array(attn_layer.v_weights, dtype=np.float32).reshape(
+                        attn_layer.v_shape
+                    )
+
+                out_3d = batch_self_attention(
+                    X_3d,
+                    attn_layer.n_heads,
+                    W_q,
+                    W_k,
+                    W_v,
+                    self.gating,
+                )
+                current_flat = out_3d.transpose(0, 2, 1).reshape(1, -1)
+
+        # Rebuild channel_map from final features
+        channel_map.clear()
+        for i in range(current_flat.shape[1]):
+            channel_map[i + 1] = np.array([current_flat[0, i]], dtype=np.float64)
+        num_channels = 1
 
         # Process remaining layers (flatten, dense, softmax, etc.)
         for layer in remaining_layers:
@@ -827,6 +951,9 @@ class DeepFusionOperator(Operator):
                 layer, (FlattenLayer, SoftmaxLayer, BatchNormLayer, DropoutLayer)
             ):
                 total += float(stats.total_docs)
+            elif isinstance(layer, AttentionLayer):
+                # O(seq_len^2 * d_model) per position
+                total += float(stats.total_docs) ** 2
         return total
 
 

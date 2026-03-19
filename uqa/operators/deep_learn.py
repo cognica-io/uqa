@@ -85,7 +85,24 @@ class SoftmaxSpec:
     """Softmax classification head."""
 
 
-LayerSpec = ConvSpec | PoolSpec | FlattenSpec | DenseSpec | SoftmaxSpec
+@dataclass(frozen=True, slots=True)
+class AttentionSpec:
+    """Self-attention layer spec (Theorem 8.3, Paper 4).
+
+    Context-dependent PoE: attention weights determine how strongly
+    each spatial position's evidence is weighted in the product.
+
+    mode:
+        "content"    -- Q=K=V=X, pure content-based attention
+        "random_qk"  -- random Q,K projections, V=X (ELM prior)
+        "learned_v"  -- random Q,K, learned V projection (supervised search)
+    """
+
+    n_heads: int = 1
+    mode: str = "content"
+
+
+LayerSpec = ConvSpec | PoolSpec | FlattenSpec | DenseSpec | SoftmaxSpec | AttentionSpec
 
 
 # -- Trained model --------------------------------------------------------
@@ -123,6 +140,8 @@ class TrainedModel:
     conv_kernel_data: list[list[float]] = field(default_factory=list)
     conv_kernel_shapes: list[list[int]] = field(default_factory=list)
     in_channels: int = 1
+    # Self-attention parameters (per attention layer)
+    attention_params: list[dict[str, Any]] = field(default_factory=list)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -141,6 +160,7 @@ class TrainedModel:
     def to_deep_fusion_layers(self) -> list[Any]:
         """Convert to inference-mode deep_fusion layers (final head only)."""
         from uqa.operators.deep_fusion import (
+            AttentionLayer,
             ConvLayer,
             DenseLayer,
             FlattenLayer,
@@ -150,6 +170,7 @@ class TrainedModel:
 
         layers: list[Any] = []
         conv_idx = 0
+        attn_idx = 0
 
         for spec_dict in self.layer_specs:
             t = spec_dict["type"]
@@ -162,6 +183,25 @@ class TrainedModel:
                     )
                 )
                 conv_idx += 1
+            elif t == "attention":
+                ap = (
+                    self.attention_params[attn_idx]
+                    if attn_idx < len(self.attention_params)
+                    else {}
+                )
+                layers.append(
+                    AttentionLayer(
+                        n_heads=ap.get("n_heads", 1),
+                        mode=ap.get("mode", "content"),
+                        q_weights=(tuple(ap["W_q"]) if "W_q" in ap else None),
+                        q_shape=(tuple(ap["W_q_shape"]) if "W_q_shape" in ap else None),
+                        k_weights=(tuple(ap["W_k"]) if "W_k" in ap else None),
+                        k_shape=(tuple(ap["W_k_shape"]) if "W_k_shape" in ap else None),
+                        v_weights=(tuple(ap["W_v"]) if "W_v" in ap else None),
+                        v_shape=(tuple(ap["W_v_shape"]) if "W_v_shape" in ap else None),
+                    )
+                )
+                attn_idx += 1
             elif t == "pool":
                 layers.append(
                     PoolLayer(
@@ -228,6 +268,104 @@ def _identify_stages(
         else:
             i += 1
     return stages
+
+
+_Operation = tuple[str, ...]  # ("stage", conv_d, pool_d) | ("attention", attn_d)
+
+
+def _identify_operations(
+    spec_dicts: list[dict[str, Any]],
+) -> list[tuple[Any, ...]]:
+    """Build ordered list of operations from spec dicts.
+
+    Returns ("stage", conv_d, pool_d) for conv+pool pairs
+    and ("attention", attn_d) for attention layers.
+    """
+    ops: list[tuple[Any, ...]] = []
+    i = 0
+    while i < len(spec_dicts):
+        d = spec_dicts[i]
+        if d["type"] == "conv":
+            conv_d = d
+            if i + 1 < len(spec_dicts) and spec_dicts[i + 1]["type"] == "pool":
+                pool_d = spec_dicts[i + 1]
+                i += 2
+            else:
+                pool_d = {"type": "pool", "method": "max", "pool_size": 2}
+                i += 1
+            ops.append(("stage", conv_d, pool_d))
+        elif d["type"] == "attention":
+            ops.append(("attention", d))
+            i += 1
+        else:
+            i += 1
+    return ops
+
+
+# -- Self-attention training -----------------------------------------------
+
+
+def _train_attention(
+    X_flat: np.ndarray,
+    grid_h: int,
+    grid_w: int,
+    n_channels: int,
+    n_heads: int,
+    mode: str,
+    Y: np.ndarray,
+    lam: float,
+    gating: str = "none",
+    seed: int = 42,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Apply self-attention during training.
+
+    Returns (out_flat, params_dict).
+    """
+    from uqa.operators._backend import (
+        batch_self_attention,
+        generate_qk_projections,
+        search_v_projection,
+    )
+
+    batch = X_flat.shape[0]
+    seq_len = grid_h * grid_w
+    d_model = n_channels
+
+    # (batch, C*H*W) -> (batch, H*W, C) = (batch, seq_len, d_model)
+    X_3d = X_flat.reshape(batch, d_model, seq_len).transpose(0, 2, 1).astype(np.float32)
+
+    params: dict[str, Any] = {"mode": mode, "n_heads": n_heads, "d_model": d_model}
+    W_q: np.ndarray | None = None
+    W_k: np.ndarray | None = None
+
+    if mode in ("random_qk", "learned_v"):
+        W_q, W_k = generate_qk_projections(d_model, seed)
+        params["W_q"] = W_q.flatten().tolist()
+        params["W_q_shape"] = list(W_q.shape)
+        params["W_k"] = W_k.flatten().tolist()
+        params["W_k_shape"] = list(W_k.shape)
+
+    if mode == "learned_v":
+        # GPU-optimized: Q,K computed once, ridge on GPU, no redundant pass
+        W_v, out_flat = search_v_projection(
+            X_3d,
+            n_heads,
+            W_q,
+            W_k,
+            Y,
+            lam,
+            gating,
+            seed=seed,
+        )
+        params["W_v"] = W_v.flatten().tolist()
+        params["W_v_shape"] = list(W_v.shape)
+        return out_flat, params
+
+    out_3d = batch_self_attention(X_3d, n_heads, W_q, W_k, None, gating)
+
+    # (batch, H*W, C) -> (batch, C*H*W)
+    out_flat = out_3d.transpose(0, 2, 1).reshape(batch, -1)
+    return out_flat, params
 
 
 # -- Training --------------------------------------------------------------
@@ -336,13 +474,14 @@ def train_model(
             f"for any supported channel count."
         )
 
-    stages = _identify_stages(spec_dicts)
+    ops = _identify_operations(spec_dicts)
+    stages_only = [(op[1], op[2]) for op in ops if op[0] == "stage"]
 
     # Generate conv kernels per stage
     conv_kernels: list[NDArray[np.float32]] = []
     conv_weights: list[list[float]] = []
     in_ch = in_channels
-    for stage_idx, (conv_d, _pool_d) in enumerate(stages):
+    for stage_idx, (conv_d, _pool_d) in enumerate(stages_only):
         n_ch = conv_d.get("n_channels", 1)
         if n_ch > 1:
             # Multi-channel: random kernels (prior)
@@ -355,59 +494,87 @@ def train_model(
         conv_kernels.append(kernels)
         in_ch = n_ch if n_ch > 1 else 1
 
-    # Per-stage forward + ridge regression
+    # Per-operation forward + ridge regression
     current_flat = embeddings
     cur_h, cur_w = grid_size, grid_size
 
     expert_weights_list: list[list[float]] = []
     expert_biases_list: list[list[float]] = []
     expert_input_channels: list[int] = []
+    attention_params_list: list[dict[str, Any]] = []
 
-    for stage_idx, (conv_d, pool_d) in enumerate(stages):
-        pool_size = pool_d.get("pool_size", 2)
-        pool_method = pool_d.get("method", "max")
-        n_ch = conv_d.get("n_channels", 1)
+    stage_idx = 0
+    attn_idx = 0
+    for op in ops:
+        if op[0] == "stage":
+            conv_d, pool_d = op[1], op[2]
+            pool_size = pool_d.get("pool_size", 2)
+            pool_method = pool_d.get("method", "max")
+            n_ch = conv_d.get("n_channels", 1)
 
-        if n_ch <= 1:
-            # Single-channel: supervised grid search
-            candidates = [[1.0, a] for a in np.arange(-1.0, 1.05, 0.1)]
-            best_acc = -1.0
-            best_hw = [1.0, 0.0]
-            for cand in candidates:
-                k = hop_weights_to_kernel(cand)
-                feats = grid_forward(
-                    current_flat,
-                    cur_h,
-                    cur_w,
-                    [(k, pool_size, pool_method)],
-                    gating,
-                )
-                if feats.shape[1] == 0:
-                    continue
-                W_t, b_t = ridge_solve(feats.astype(np.float64), Y, lam)
-                acc = float(
-                    np.mean(
-                        np.argmax(feats @ W_t.T + b_t, axis=1) == np.argmax(Y, axis=1)
+            if n_ch <= 1:
+                # Single-channel: supervised grid search
+                candidates = [[1.0, a] for a in np.arange(-1.0, 1.05, 0.1)]
+                best_acc = -1.0
+                best_hw = [1.0, 0.0]
+                for cand in candidates:
+                    k = hop_weights_to_kernel(cand)
+                    feats = grid_forward(
+                        current_flat,
+                        cur_h,
+                        cur_w,
+                        [(k, pool_size, pool_method)],
+                        gating,
                     )
-                )
-                if acc > best_acc:
-                    best_acc = acc
-                    best_hw = list(cand)
-            conv_kernels[stage_idx] = hop_weights_to_kernel(best_hw)
-            conv_weights[stage_idx] = best_hw
+                    if feats.shape[1] == 0:
+                        continue
+                    W_t, b_t = ridge_solve(feats.astype(np.float64), Y, lam)
+                    acc = float(
+                        np.mean(
+                            np.argmax(feats @ W_t.T + b_t, axis=1)
+                            == np.argmax(Y, axis=1)
+                        )
+                    )
+                    if acc > best_acc:
+                        best_acc = acc
+                        best_hw = list(cand)
+                conv_kernels[stage_idx] = hop_weights_to_kernel(best_hw)
+                conv_weights[stage_idx] = best_hw
 
-        # Forward through this stage
-        current_flat = grid_forward(
-            current_flat,
-            cur_h,
-            cur_w,
-            [(conv_kernels[stage_idx], pool_size, pool_method)],
-            gating,
-        )
-        cur_h = cur_h // pool_size
-        cur_w = cur_w // pool_size
+            # Forward through this stage
+            current_flat = grid_forward(
+                current_flat,
+                cur_h,
+                cur_w,
+                [(conv_kernels[stage_idx], pool_size, pool_method)],
+                gating,
+            )
+            cur_h = cur_h // pool_size
+            cur_w = cur_w // pool_size
+            stage_idx += 1
 
-        # Train expert head
+        elif op[0] == "attention":
+            attn_d = op[1]
+            n_heads = attn_d.get("n_heads", 1)
+            mode = attn_d.get("mode", "content")
+            n_ch_attn = current_flat.shape[1] // (cur_h * cur_w)
+
+            current_flat, attn_params = _train_attention(
+                current_flat,
+                cur_h,
+                cur_w,
+                n_ch_attn,
+                n_heads,
+                mode,
+                Y,
+                lam,
+                gating,
+                seed=42 + attn_idx,
+            )
+            attention_params_list.append(attn_params)
+            attn_idx += 1
+
+        # Train expert head (for both stage and attention operations)
         X_stage = current_flat.astype(np.float64)
         W_stage, b_stage = ridge_solve(X_stage, Y, lam)
         expert_weights_list.append(W_stage.flatten().tolist())
@@ -420,31 +587,81 @@ def train_model(
     W_final, b_final = ridge_solve(X_final, Y, lam)
 
     # PoE training accuracy
-    shrinkage_alpha = 0.5
+    # Shrinkage from diversity prior: 1 / (2 * sqrt(n_experts))
+    n_ops = len(ops)
+    n_expert_stages = n_ops + 1  # operation experts + final head
+    shrinkage_alpha = 1.0 / (2.0 * math.sqrt(n_expert_stages))
 
-    # Recompute per-stage features for PoE
-    stage_logits_list: list[np.ndarray] = []
+    # Recompute per-operation features for PoE
+    op_logits_list: list[np.ndarray] = []
     tmp = embeddings
     tmp_h, tmp_w = grid_size, grid_size
-    for stage_idx, (_conv_d, pool_d) in enumerate(stages):
-        ps = pool_d.get("pool_size", 2)
-        pm = pool_d.get("method", "max")
-        tmp = grid_forward(
-            tmp, tmp_h, tmp_w, [(conv_kernels[stage_idx], ps, pm)], gating
-        )
-        tmp_h = tmp_h // ps
-        tmp_w = tmp_w // ps
-        eic = expert_input_channels[stage_idx]
-        W_e = np.array(expert_weights_list[stage_idx]).reshape(dense_output, eic)
-        b_e = np.array(expert_biases_list[stage_idx])
-        stage_logits_list.append(tmp.astype(np.float64) @ W_e.T + b_e)
+    tmp_stage_idx = 0
+    tmp_attn_idx = 0
+    for op_idx, op in enumerate(ops):
+        if op[0] == "stage":
+            _conv_d, pool_d = op[1], op[2]
+            ps = pool_d.get("pool_size", 2)
+            pm = pool_d.get("method", "max")
+            tmp = grid_forward(
+                tmp,
+                tmp_h,
+                tmp_w,
+                [(conv_kernels[tmp_stage_idx], ps, pm)],
+                gating,
+            )
+            tmp_h = tmp_h // ps
+            tmp_w = tmp_w // ps
+            tmp_stage_idx += 1
+        elif op[0] == "attention":
+            ap = attention_params_list[tmp_attn_idx]
+            n_ch_tmp = tmp.shape[1] // (tmp_h * tmp_w)
+            batch_n = tmp.shape[0]
+            seq_l = tmp_h * tmp_w
+            tmp_3d = (
+                tmp.reshape(batch_n, n_ch_tmp, seq_l)
+                .transpose(0, 2, 1)
+                .astype(np.float32)
+            )
+            from uqa.operators._backend import batch_self_attention
+
+            W_q_t = (
+                np.array(ap["W_q"], dtype=np.float32).reshape(ap["W_q_shape"])
+                if "W_q" in ap
+                else None
+            )
+            W_k_t = (
+                np.array(ap["W_k"], dtype=np.float32).reshape(ap["W_k_shape"])
+                if "W_k" in ap
+                else None
+            )
+            W_v_t = (
+                np.array(ap["W_v"], dtype=np.float32).reshape(ap["W_v_shape"])
+                if "W_v" in ap
+                else None
+            )
+            out_3d = batch_self_attention(
+                tmp_3d,
+                ap.get("n_heads", 1),
+                W_q_t,
+                W_k_t,
+                W_v_t,
+                gating,
+            )
+            tmp = out_3d.transpose(0, 2, 1).reshape(batch_n, -1)
+            tmp_attn_idx += 1
+
+        eic = expert_input_channels[op_idx]
+        W_e = np.array(expert_weights_list[op_idx]).reshape(dense_output, eic)
+        b_e = np.array(expert_biases_list[op_idx])
+        op_logits_list.append(tmp.astype(np.float64) @ W_e.T + b_e)
 
     logits_final = X_final @ W_final.T + b_final
-    stage_logits_list.append(logits_final)
+    op_logits_list.append(logits_final)
 
     # PoE: average logits + shrinkage
-    n_experts = len(stage_logits_list)
-    avg_logits = np.mean(stage_logits_list, axis=0)
+    n_experts = len(op_logits_list)
+    avg_logits = np.mean(op_logits_list, axis=0)
     avg_logits += shrinkage_alpha * math.log(n_experts)
 
     predicted_classes = np.argmax(avg_logits, axis=1)
@@ -486,6 +703,7 @@ def train_model(
         expert_biases=expert_biases_list,
         expert_input_channels=expert_input_channels,
         shrinkage_alpha=shrinkage_alpha,
+        attention_params=attention_params_list,
     )
 
     engine.save_model(model_name, trained.to_dict())
@@ -517,10 +735,9 @@ def predict(
         raise ValueError(f"Model '{model_name}' does not exist")
 
     model = TrainedModel.from_dict(config)
-    stages = _identify_stages(model.layer_specs)
-    has_experts = bool(model.expert_weights) and len(model.expert_weights) == len(
-        stages
-    )
+    ops = _identify_operations(model.layer_specs)
+    n_ops = len(ops)
+    has_experts = bool(model.expert_weights) and len(model.expert_weights) == n_ops
 
     emb = np.array(input_embedding, dtype=np.float32)
     grid_size = model.grid_size
@@ -545,28 +762,74 @@ def predict(
         current_flat = emb.reshape(1, -1)
         cur_h, cur_w = grid_size, grid_size
 
-        for stage_idx, (_conv_d, pool_d) in enumerate(stages):
-            pool_size = pool_d.get("pool_size", 2)
-            pool_method = pool_d.get("method", "max")
+        stage_idx = 0
+        attn_idx = 0
+        for op_idx, op in enumerate(ops):
+            if op[0] == "stage":
+                _conv_d, pool_d = op[1], op[2]
+                pool_size = pool_d.get("pool_size", 2)
+                pool_method = pool_d.get("method", "max")
 
-            current_flat = grid_forward(
-                current_flat,
-                cur_h,
-                cur_w,
-                [(conv_kernels[stage_idx], pool_size, pool_method)],
-                model.gating,
-            )
-            cur_h = cur_h // pool_size
-            cur_w = cur_w // pool_size
+                current_flat = grid_forward(
+                    current_flat,
+                    cur_h,
+                    cur_w,
+                    [(conv_kernels[stage_idx], pool_size, pool_method)],
+                    model.gating,
+                )
+                cur_h = cur_h // pool_size
+                cur_w = cur_w // pool_size
+                stage_idx += 1
+
+            elif op[0] == "attention":
+                from uqa.operators._backend import batch_self_attention
+
+                n_ch = current_flat.shape[1] // (cur_h * cur_w)
+                seq_len = cur_h * cur_w
+                X_3d = (
+                    current_flat.reshape(1, n_ch, seq_len)
+                    .transpose(0, 2, 1)
+                    .astype(np.float32)
+                )
+                ap = (
+                    model.attention_params[attn_idx]
+                    if attn_idx < len(model.attention_params)
+                    else {}
+                )
+                W_q = (
+                    np.array(ap["W_q"], dtype=np.float32).reshape(ap["W_q_shape"])
+                    if "W_q" in ap
+                    else None
+                )
+                W_k = (
+                    np.array(ap["W_k"], dtype=np.float32).reshape(ap["W_k_shape"])
+                    if "W_k" in ap
+                    else None
+                )
+                W_v = (
+                    np.array(ap["W_v"], dtype=np.float32).reshape(ap["W_v_shape"])
+                    if "W_v" in ap
+                    else None
+                )
+                out_3d = batch_self_attention(
+                    X_3d,
+                    ap.get("n_heads", 1),
+                    W_q,
+                    W_k,
+                    W_v,
+                    model.gating,
+                )
+                current_flat = out_3d.transpose(0, 2, 1).reshape(1, -1)
+                attn_idx += 1
 
             # Expert head logits
             if has_experts:
                 feat = current_flat[0].astype(np.float64)
-                eic = model.expert_input_channels[stage_idx]
-                W_e = np.array(model.expert_weights[stage_idx]).reshape(
+                eic = model.expert_input_channels[op_idx]
+                W_e = np.array(model.expert_weights[op_idx]).reshape(
                     model.dense_output_channels, eic
                 )
-                b_e = np.array(model.expert_biases[stage_idx])
+                b_e = np.array(model.expert_biases[op_idx])
                 all_logits.append(W_e @ feat + b_e)
 
         # Final head
@@ -660,6 +923,14 @@ def _specs_to_dicts(specs: list[LayerSpec]) -> list[dict[str, Any]]:
             )
         elif isinstance(spec, SoftmaxSpec):
             result.append({"type": "softmax"})
+        elif isinstance(spec, AttentionSpec):
+            result.append(
+                {
+                    "type": "attention",
+                    "n_heads": spec.n_heads,
+                    "mode": spec.mode,
+                }
+            )
     return result
 
 
@@ -679,4 +950,11 @@ def _dicts_to_specs(dicts: list[dict[str, Any]]) -> list[LayerSpec]:
             result.append(DenseSpec(output_channels=d.get("output_channels", 10)))
         elif t == "softmax":
             result.append(SoftmaxSpec())
+        elif t == "attention":
+            result.append(
+                AttentionSpec(
+                    n_heads=d.get("n_heads", 1),
+                    mode=d.get("mode", "content"),
+                )
+            )
     return result
