@@ -8,11 +8,17 @@
 """deep_learn() Training Pipeline on Tiny ImageNet.
 
 Tiny ImageNet: 64x64 RGB images, 200 classes.
-We use a 10-class subset to keep the demo practical.
+We use a 50-class subset (25,000 train / 2,500 test).
+
+Architecture: conv(64) -> pool(2) -> conv(128) -> pool(2) ->
+  conv(256) -> pool(2) -> flatten -> dense(50) -> softmax
+  3-stage conv+pool: 64 -> 32 -> 16 -> 8 spatial dims
+  Final features: 256 x 8 x 8 = 16,384
+  Data augmentation: horizontal flip (2x training data)
 
 Pipeline:
   1. Download Tiny ImageNet (zip, ~237 MB)
-  2. Load a 10-class subset, convert RGB to grayscale (64x64 = 4096-D)
+  2. Load 50-class subset as RGB (64x64x3 = 12,288-D)
   3. Create table + 64x64 grid graph via SQL
   4. Train via deep_learn() SQL
   5. Predict via deep_predict() SQL
@@ -20,7 +26,7 @@ Pipeline:
   7. Evaluate accuracy on test samples
 
 Same analytical training -- no backpropagation:
-  ConvLayer:  MLE from spatial autocorrelation
+  ConvLayer:  random multi-channel kernels (Kaiming prior)
   DenseLayer: ridge regression W = (X^T X + lambda I)^{-1} X^T Y
 """
 
@@ -44,20 +50,8 @@ TINY_URL = "http://cs231n.stanford.edu/tiny-imagenet-200.zip"
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "tiny_imagenet")
 ZIP_PATH = os.path.join(DATA_DIR, "tiny-imagenet-200.zip")
 
-# 10 visually diverse classes (Tiny ImageNet: 500 train + 50 val each)
-SELECTED_CLASSES = [
-    "n01443537",  # goldfish
-    "n02808440",  # bathtub
-    "n04146614",  # school bus
-    "n07747607",  # orange
-    "n09428293",  # seashore
-    "n03444034",  # go-kart
-    "n04398044",  # teapot
-    "n07873807",  # pizza
-    "n03160309",  # dam
-    "n04285008",  # sports car
-]
-NUM_CLASSES = len(SELECTED_CLASSES)
+# 50 classes selected from Tiny ImageNet (500 train + 50 val each)
+NUM_CLASSES = 50
 TRAIN_PER_CLASS = 500
 TEST_PER_CLASS = 50
 IMG_SIZE = 64
@@ -75,7 +69,7 @@ def _ensure_downloaded() -> str:
     return ZIP_PATH
 
 
-def _load_image_rgb(data: bytes) -> np.ndarray | None:
+def _load_image_rgb(data: bytes, flip: bool = False) -> np.ndarray | None:
     """Load JPEG bytes -> 64x64 RGB float32 normalized to [0, 1].
 
     Returns (3*64*64,) = (12288,) flat array in CHW order.
@@ -84,7 +78,9 @@ def _load_image_rgb(data: bytes) -> np.ndarray | None:
         img = Image.open(io.BytesIO(data))
         img = img.convert("RGB")
         img = img.resize((IMG_SIZE, IMG_SIZE))
-        # HWC -> CHW -> flat
+        if flip:
+            img = img.transpose(Image.FLIP_LEFT_RIGHT)
+        # HWC -> CHW -> flat, scale to [0, 1]
         return np.array(img, dtype=np.float32).transpose(2, 0, 1).reshape(-1) / 255.0
     except Exception:
         return None
@@ -96,15 +92,11 @@ def load_tiny_imagenet() -> tuple[
     """Load a subset of Tiny ImageNet from the zip file.
 
     Returns (train_images, train_labels, test_images, test_labels, class_names).
-    Images are 64x64 grayscale flattened to 4096-D float32 in [0, 1].
+    Images are 64x64 RGB flattened to 12288-D float32 in [0, 1].
     """
     zip_path = _ensure_downloaded()
 
     with zipfile.ZipFile(zip_path, "r") as zf:
-        # Use the pre-selected visually diverse classes
-        selected = SELECTED_CLASSES
-        class_to_idx = {c: i for i, c in enumerate(selected)}
-
         # Load human-readable class names
         words_data = zf.read("tiny-imagenet-200/words.txt").decode()
         words_map: dict[str, str] = {}
@@ -112,23 +104,36 @@ def load_tiny_imagenet() -> tuple[
             parts = line.split("\t", 1)
             words_map[parts[0]] = parts[1].split(",")[0]
 
+        # Build per-class file index in a single pass over namelist
+        class_files: dict[str, list[str]] = {}
+        for name in zf.namelist():
+            if not name.startswith("tiny-imagenet-200/train/n"):
+                continue
+            parts = name.split("/")
+            if len(parts) >= 5 and name.lower().endswith(".jpeg"):
+                cls = parts[2]
+                class_files.setdefault(cls, []).append(name)
+
+        selected = sorted(class_files.keys())[:NUM_CLASSES]
+        class_to_idx = {c: i for i, c in enumerate(selected)}
+
         # Load training images
         train_images: list[np.ndarray] = []
         train_labels: list[int] = []
 
         for cls_name in selected:
-            prefix = f"tiny-imagenet-200/train/{cls_name}/images/"
-            members = [
-                n
-                for n in zf.namelist()
-                if n.startswith(prefix) and n.lower().endswith(".jpeg")
-            ]
-            members.sort()
+            members = sorted(class_files.get(cls_name, []))
             for path in members[:TRAIN_PER_CLASS]:
-                img = _load_image_rgb(zf.read(path))
+                raw = zf.read(path)
+                img = _load_image_rgb(raw)
                 if img is not None:
                     train_images.append(img)
                     train_labels.append(class_to_idx[cls_name])
+                    # Data augmentation: horizontal flip
+                    img_aug = _load_image_rgb(raw, flip=True)
+                    if img_aug is not None:
+                        train_images.append(img_aug)
+                        train_labels.append(class_to_idx[cls_name])
 
         # Load validation images (Tiny ImageNet stores them flat)
         val_ann_data = zf.read("tiny-imagenet-200/val/val_annotations.txt").decode()
@@ -195,9 +200,9 @@ engine.sql(f"""
 print("\n  Inserting training data ...")
 t0 = time.time()
 for i in range(len(X_train)):
-    arr = "ARRAY[" + ",".join(str(float(v)) for v in X_train[i]) + "]"
     engine.sql(
-        f"INSERT INTO tiny_train (label, embedding) VALUES ({int(y_train[i])}, {arr})"
+        "INSERT INTO tiny_train (label, embedding) VALUES ($1, $2)",
+        params=[int(y_train[i]), X_train[i]],
     )
 insert_time = time.time() - t0
 print(f"  Inserted {len(X_train)} samples in {insert_time:.2f}s")
@@ -220,11 +225,14 @@ print("\n" + "=" * 60)
 print("3. Training via deep_learn() SQL")
 print("=" * 60)
 print(
-    f"\n  Architecture: conv(16ch) -> pool(4) -> conv(32ch) -> pool(4)"
-    f" -> flatten -> dense({NUM_CLASSES}) -> softmax"
+    f"\n  Architecture: conv(64ch) -> pool(2) -> conv(128ch) -> pool(2)"
+    f" -> conv(256ch) -> pool(2) -> flatten -> dense({NUM_CLASSES}) -> softmax"
     f"\n  Input: RGB ({IMG_SIZE}x{IMG_SIZE}x3 = {EMB_DIM})"
+    f"\n  Data augmentation: horizontal flip (2x training data)"
+    f"\n  3-stage conv+pool: 64 -> 32 -> 16 -> 8 spatial dims"
+    f"\n  Final features: 256 x 8 x 8 = 16384"
     f"\n  Random multi-channel conv (prior) + ridge regression (posterior)"
-    f"\n  Gating: relu, Lambda: 1.0"
+    f"\n  Gating: relu, Lambda: 500.0"
     f"\n  No backpropagation -- analytical parameter estimation"
 )
 
@@ -232,14 +240,16 @@ t0 = time.time()
 result = engine.sql(f"""
     SELECT deep_learn(
         'tiny_cnn', label, embedding, 'spatial',
-        convolve(n_channels => 16),
-        pool('max', 4),
-        convolve(n_channels => 32),
-        pool('max', 4),
+        convolve(n_channels => 64),
+        pool('max', 2),
+        convolve(n_channels => 128),
+        pool('max', 2),
+        convolve(n_channels => 256),
+        pool('max', 2),
         flatten(),
         dense(output_channels => {NUM_CLASSES}),
         softmax(),
-        gating => 'relu', lambda => 1.0
+        gating => 'relu', lambda => 500.0
     ) FROM tiny_train
 """)
 train_time = time.time() - t0

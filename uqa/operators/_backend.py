@@ -70,10 +70,14 @@ def ridge_solve(
     Returns (W, bias) where W is (n_classes, n_features).
     """
     if HAS_TORCH and X.shape[0] >= 32:
-        X_t = torch.tensor(X, dtype=torch.float32, device=DEVICE)
-        Y_t = torch.tensor(Y, dtype=torch.float32, device=DEVICE)
+        # MPS does not support tensors with total elements > INT_MAX;
+        # fall back to CPU torch (still faster than numpy for large matrices).
+        n_elems = X.shape[0] * X.shape[1]
+        dev = DEVICE if n_elems < 2**31 else torch.device("cpu")
+        X_t = torch.tensor(X, dtype=torch.float32, device=dev)
+        Y_t = torch.tensor(Y, dtype=torch.float32, device=dev)
         n = X_t.shape[1]
-        XtX = X_t.T @ X_t + lam * torch.eye(n, dtype=torch.float32, device=DEVICE)
+        XtX = X_t.T @ X_t + lam * torch.eye(n, dtype=torch.float32, device=dev)
         XtY = X_t.T @ Y_t
         W_raw = torch.linalg.solve(XtX, XtY)
         bias = torch.mean(Y_t - X_t @ W_raw, dim=0)
@@ -116,26 +120,30 @@ def grid_forward(
         n_in_ch = embeddings.shape[1] // (grid_h * grid_w)
         if n_in_ch < 1:
             n_in_ch = 1
-        x = torch.tensor(
-            embeddings.reshape(-1, n_in_ch, grid_h, grid_w),
-            dtype=torch.float32,
-            device=DEVICE,
-        )
-
-        for kernel_np, pool_size, pool_method in stages:
-            kernel = torch.tensor(kernel_np, dtype=torch.float32, device=DEVICE)
-            x = F.conv2d(x, kernel, padding=1)
-            if gating == "relu":
-                x = F.relu(x)
-            elif gating == "swish":
-                x = x * torch.sigmoid(x)
-            if pool_size > 1:
-                if pool_method == "max":
-                    x = F.max_pool2d(x, pool_size)
-                else:
-                    x = F.avg_pool2d(x, pool_size)
-
-        return x.reshape(x.shape[0], -1).cpu().numpy()
+        n_total = embeddings.shape[0]
+        batch_size = min(n_total, 4096)
+        results = []
+        for start in range(0, n_total, batch_size):
+            end = min(start + batch_size, n_total)
+            x = torch.tensor(
+                embeddings[start:end].reshape(-1, n_in_ch, grid_h, grid_w),
+                dtype=torch.float32,
+                device=DEVICE,
+            )
+            for kernel_np, pool_size, pool_method in stages:
+                kernel = torch.tensor(kernel_np, dtype=torch.float32, device=DEVICE)
+                x = F.conv2d(x, kernel, padding=1)
+                if gating == "relu":
+                    x = F.relu(x)
+                elif gating == "swish":
+                    x = x * torch.sigmoid(x)
+                if pool_size > 1:
+                    if pool_method == "max":
+                        x = F.max_pool2d(x, pool_size)
+                    else:
+                        x = F.avg_pool2d(x, pool_size)
+            results.append(x.reshape(x.shape[0], -1).cpu().numpy())
+        return np.concatenate(results, axis=0)
 
     # numpy fallback (single-channel only)
     batch = embeddings.reshape(-1, grid_h, grid_w).astype(np.float32)

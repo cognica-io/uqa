@@ -118,6 +118,7 @@ class TrainedModel:
     expert_weights: list[list[float]] = field(default_factory=list)
     expert_biases: list[list[float]] = field(default_factory=list)
     expert_input_channels: list[int] = field(default_factory=list)
+    expert_accuracies: list[float] = field(default_factory=list)
     shrinkage_alpha: float = 0.5
     # Multi-channel kernel storage
     conv_kernel_data: list[list[float]] = field(default_factory=list)
@@ -362,6 +363,8 @@ def train_model(
     expert_weights_list: list[list[float]] = []
     expert_biases_list: list[list[float]] = []
     expert_input_channels: list[int] = []
+    expert_accuracies: list[float] = []
+    true_classes = np.array([label_to_idx[lab] for lab in labels_raw])
 
     for stage_idx, (conv_d, pool_d) in enumerate(stages):
         pool_size = pool_d.get("pool_size", 2)
@@ -413,14 +416,23 @@ def train_model(
         expert_weights_list.append(W_stage.flatten().tolist())
         expert_biases_list.append(b_stage.flatten().tolist())
         expert_input_channels.append(X_stage.shape[1])
+        # Per-stage accuracy for weighted PoE
+        stage_pred = np.argmax(X_stage @ W_stage.T + b_stage, axis=1)
+        stage_acc = float(np.mean(stage_pred == true_classes))
+        expert_accuracies.append(stage_acc)
 
     # Final head
     X_final = current_flat.astype(np.float64)
     n_features = X_final.shape[1]
     W_final, b_final = ridge_solve(X_final, Y, lam)
+    final_pred = np.argmax(X_final @ W_final.T + b_final, axis=1)
+    final_acc = float(np.mean(final_pred == true_classes))
+    expert_accuracies.append(final_acc)
 
     # PoE training accuracy
-    shrinkage_alpha = 0.5
+    # Shrinkage from diversity prior: 1 / (2 * sqrt(n_experts))
+    n_expert_stages = len(stages) + 1  # stage experts + final head
+    shrinkage_alpha = 1.0 / (2.0 * math.sqrt(n_expert_stages))
 
     # Recompute per-stage features for PoE
     stage_logits_list: list[np.ndarray] = []
@@ -485,6 +497,7 @@ def train_model(
         expert_weights=expert_weights_list,
         expert_biases=expert_biases_list,
         expert_input_channels=expert_input_channels,
+        expert_accuracies=expert_accuracies,
         shrinkage_alpha=shrinkage_alpha,
     )
 
@@ -577,9 +590,15 @@ def predict(
         b_f = np.array(model.dense_bias)
         all_logits.append(W_f @ feat_final + b_f)
 
-        # PoE: average logits + shrinkage
+        # PoE: accuracy-weighted logit combination
         n_experts = len(all_logits)
-        avg_logits = np.mean(all_logits, axis=0)
+        accs = getattr(model, "expert_accuracies", [])
+        if accs and len(accs) == n_experts:
+            weights = np.array(accs, dtype=np.float64)
+            weights = weights / weights.sum()
+            avg_logits = sum(w * l for w, l in zip(weights, all_logits))
+        else:
+            avg_logits = np.mean(all_logits, axis=0)
         avg_logits += model.shrinkage_alpha * math.log(n_experts)
 
         # Softmax

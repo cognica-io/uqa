@@ -8855,8 +8855,17 @@ class SQLCompiler:
         """Extract a value from an INSERT VALUES clause.
 
         Handles A_Const (scalars), A_ArrayExpr (vector/array literals),
-        FuncCall for POINT(x, y), and TypeCast (e.g. '...'::jsonb).
+        FuncCall for POINT(x, y), TypeCast (e.g. '...'::jsonb),
+        and ParamRef ($1, $2, ...) for parameterized inserts.
         """
+        if isinstance(node, ParamRef):
+            idx = node.number - 1
+            if idx < 0 or idx >= len(self._params):
+                raise ValueError(f"Parameter ${node.number} not provided")
+            val = self._params[idx]
+            if hasattr(val, "tolist"):
+                return val.tolist()
+            return val
         if isinstance(node, FuncCall):
             name = node.funcname[-1].sval.lower()
             if name == "point":
