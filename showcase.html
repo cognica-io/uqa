@@ -9,6 +9,10 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"
   onload="renderMathInElement(document.body, {delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}]});">
 </script>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
+</script>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -638,6 +642,79 @@ engine.update_scoring_params(<span class="st">"papers"</span>, <span class="st">
     ridge regression computes the posterior. Product of Experts (PoE) local learning trains
     independent expert heads at each stage, combined via logit averaging with shrinkage correction.
   </p>
+
+  <h4>MNIST Architecture (28&times;28 Grayscale)</h4>
+  <pre class="mermaid">
+graph TD
+    Input["Input<br/>28 &times; 28 &times; 1 &mdash; 784-D embedding"]
+
+    subgraph S1["Stage 1"]
+        direction LR
+        Conv1["Conv2d &mdash; 32ch, 3 &times; 3 Kaiming"] --> ReLU1["ReLU"] --> Pool1["MaxPool2d 2 &times; 2<br/>&rarr; 14 &times; 14 &times; 32"]
+    end
+
+    subgraph S2["Stage 2"]
+        direction LR
+        Conv2["Conv2d &mdash; 64ch, 3 &times; 3 Kaiming"] --> ReLU2["ReLU"] --> Pool2["MaxPool2d 2 &times; 2<br/>&rarr; 7 &times; 7 &times; 64"]
+    end
+
+    subgraph Classifier["Classifier"]
+        direction LR
+        Flat["Flatten<br/>3136-D"] --> Dense["Dense(10) &mdash; Ridge Regression<br/>W = (X'X + &lambda;I)&#8315;&sup1;X'Y"] --> Softmax["Softmax<br/>10 classes"]
+    end
+
+    Input --> S1 --> S2 --> Classifier
+  </pre>
+
+  <h4>Tiny ImageNet Architecture (64&times;64 RGB)</h4>
+  <pre class="mermaid">
+graph TD
+    Input["Input<br/>64 &times; 64 &times; 3 &mdash; 12288-D embedding"]
+
+    subgraph S1["Stage 1"]
+        direction LR
+        Conv1["Conv2d &mdash; 16ch, 3 &times; 3 Kaiming"] --> ReLU1["ReLU"] --> Pool1["MaxPool2d 4 &times; 4<br/>&rarr; 16 &times; 16 &times; 16"]
+    end
+
+    subgraph S2["Stage 2"]
+        direction LR
+        Conv2["Conv2d &mdash; 32ch, 3 &times; 3 Kaiming"] --> ReLU2["ReLU"] --> Pool2["MaxPool2d 4 &times; 4<br/>&rarr; 4 &times; 4 &times; 32"]
+    end
+
+    subgraph Classifier["Classifier"]
+        direction LR
+        Flat["Flatten<br/>512-D"] --> Dense["Dense(10) &mdash; Ridge Regression<br/>W = (X'X + &lambda;I)&#8315;&sup1;X'Y"] --> Softmax["Softmax<br/>10 classes"]
+    end
+
+    Input --> S1 --> S2 --> Classifier
+  </pre>
+
+  <h4>Product of Experts (PoE) Training Pipeline</h4>
+  <pre class="mermaid">
+graph TD
+    Data["Training Data<br/>embeddings + labels"] --> Stage1
+    Data --> Stage2
+    Data --> Final
+
+    subgraph Stage1["Stage 1: Conv + Pool"]
+        C1["Conv2d<br/>(Kaiming prior)"] --> P1["MaxPool2d"]
+        P1 --> E1["Expert Head 1<br/>Ridge Regression"]
+    end
+
+    subgraph Stage2["Stage 2: Conv + Pool"]
+        C2["Conv2d<br/>(Kaiming prior)"] --> P2["MaxPool2d"]
+        P2 --> E2["Expert Head 2<br/>Ridge Regression"]
+    end
+
+    subgraph Final["Final Head"]
+        FH["Ridge Regression<br/>on last features"]
+    end
+
+    E1 --> PoE["PoE Combination<br/>avg(logits) + &alpha; &middot; log(n)"]
+    E2 --> PoE
+    FH --> PoE
+    PoE --> Pred["Prediction<br/>argmax(softmax(logits))"]
+  </pre>
 
   <h3 id="dl-mnist">MNIST: Handwritten Digit Classification</h3>
   <p class="paper-meta">
