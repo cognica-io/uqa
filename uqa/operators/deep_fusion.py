@@ -745,7 +745,7 @@ class DeepFusionOperator(Operator):
         grid_h, grid_w = self._grid_shape
 
         # Collect conv+pool pairs and remaining layers
-        stages: list[tuple[list[float], int, str]] = []
+        stages: list[tuple[np.ndarray, int, str]] = []
         remaining_layers: list[_Layer] = []
         non_embed = [la for la in self.layers if not isinstance(la, EmbedLayer)]
         i = 0

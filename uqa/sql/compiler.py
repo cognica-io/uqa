@@ -7705,6 +7705,12 @@ class SQLCompiler:
                         hop_weights = self._extract_vector_arg(conv_pos[1])
                         if len(conv_pos) >= 3:
                             direction = self._extract_string_value(conv_pos[2])
+                        if direction not in ("both", "out", "in"):
+                            raise ValueError(
+                                f"convolve() direction must be "
+                                f"'both', 'out', or 'in', "
+                                f"got '{direction}'"
+                            )
                         layers.append(
                             ConvLayer(
                                 edge_label=edge_label,

@@ -30,6 +30,9 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
+
 from uqa.operators._backend import (
     grid_forward,
     hop_weights_to_kernel,
@@ -93,7 +96,7 @@ class TrainedModel:
     """Persisted representation of a trained model."""
 
     model_name: str
-    table_name: str
+    table_name: str | None
     label_field: str
     embedding_field: str
     edge_label: str
@@ -192,7 +195,7 @@ def _generate_kernels(
     n_channels: int,
     in_channels: int,
     seed: int = 42,
-) -> np.ndarray:
+) -> NDArray[np.float32]:
     """Generate random conv kernels (Kaiming initialization).
 
     Returns (n_channels, in_channels, 3, 3) float32 array.
@@ -336,7 +339,7 @@ def train_model(
     stages = _identify_stages(spec_dicts)
 
     # Generate conv kernels per stage
-    conv_kernels: list[np.ndarray] = []
+    conv_kernels: list[NDArray[np.float32]] = []
     conv_weights: list[list[float]] = []
     in_ch = in_channels
     for stage_idx, (conv_d, _pool_d) in enumerate(stages):
@@ -408,7 +411,7 @@ def train_model(
         X_stage = current_flat.astype(np.float64)
         W_stage, b_stage = ridge_solve(X_stage, Y, lam)
         expert_weights_list.append(W_stage.flatten().tolist())
-        expert_biases_list.append(b_stage.tolist())
+        expert_biases_list.append(b_stage.flatten().tolist())
         expert_input_channels.append(X_stage.shape[1])
 
     # Final head
@@ -466,7 +469,7 @@ def train_model(
         conv_kernel_data=conv_kernel_data,
         conv_kernel_shapes=conv_kernel_shapes,
         dense_weights=W_final.flatten().tolist(),
-        dense_bias=b_final.tolist(),
+        dense_bias=b_final.flatten().tolist(),
         dense_input_channels=n_features,
         dense_output_channels=dense_output,
         num_classes=num_classes,
@@ -523,7 +526,7 @@ def predict(
     grid_size = model.grid_size
 
     # Reconstruct conv kernels from stored data
-    conv_kernels: list[np.ndarray] = []
+    conv_kernels: list[NDArray[np.float32]] = []
     if model.conv_kernel_data and model.conv_kernel_shapes:
         for kdata, kshape in zip(model.conv_kernel_data, model.conv_kernel_shapes):
             conv_kernels.append(np.array(kdata, dtype=np.float32).reshape(kshape))
@@ -588,16 +591,17 @@ def predict(
         from uqa.operators.base import ExecutionContext
         from uqa.operators.deep_fusion import DeepFusionOperator, EmbedLayer
 
-        table = engine._tables.get(model.table_name)
+        tbl_name = model.table_name or ""
+        table = engine._tables.get(tbl_name)
         if table is None:
-            raise ValueError(f"Table '{model.table_name}' does not exist")
+            raise ValueError(f"Table '{tbl_name}' does not exist")
 
         embed = EmbedLayer(embedding=tuple(float(v) for v in input_embedding))
         fusion_layers = [embed, *model.to_deep_fusion_layers()]
         op = DeepFusionOperator(
             layers=fusion_layers,
             gating=model.gating,
-            graph_name=model.table_name,
+            graph_name=tbl_name,
         )
         ctx = ExecutionContext(
             document_store=table.document_store,

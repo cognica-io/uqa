@@ -12,11 +12,16 @@ numpy conversion happens only at the final boundary.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
+
 try:
-    import torch
-    import torch.nn.functional as F
+    import torch  # pyright: ignore[reportMissingImports]
+    import torch.nn.functional as F  # pyright: ignore[reportMissingImports]
 
     HAS_TORCH = True
 
@@ -42,7 +47,7 @@ def device_name() -> str:
 # -- Kernel builder --------------------------------------------------------
 
 
-def _build_kernel_np(hop_weights: list[float]) -> np.ndarray:
+def _build_kernel_np(hop_weights: list[float]) -> NDArray[np.float32]:
     total = sum(hop_weights)
     if total <= 0:
         return np.zeros((3, 3), dtype=np.float32)
@@ -59,7 +64,7 @@ def _build_kernel_np(hop_weights: list[float]) -> np.ndarray:
 
 def ridge_solve(
     X: np.ndarray, Y: np.ndarray, lam: float
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
     """Ridge regression: W = (X^T X + lambda I)^{-1} X^T Y.
 
     Returns (W, bias) where W is (n_classes, n_features).
@@ -172,7 +177,7 @@ def grid_forward(
 # -- Conv weight search (stays on GPU) ------------------------------------
 
 
-def hop_weights_to_kernel(hop_weights: list[float]) -> np.ndarray:
+def hop_weights_to_kernel(hop_weights: list[float]) -> NDArray[np.float32]:
     """Convert [w_self, w_neighbor] to (1, 1, 3, 3) kernel array."""
     k = _build_kernel_np(hop_weights)
     return k.reshape(1, 1, 3, 3)
