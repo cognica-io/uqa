@@ -1235,7 +1235,101 @@ WHERE fuse_log_odds(
 
 ---
 
-## 15. Cypher / Graph Integration
+## 15. Deep Learning
+
+USQL exposes analytical deep learning — training and inference without backpropagation — through SQL aggregate and scalar functions. Models are trained via closed-form ridge regression at each layer (Product of Experts local learning), persisted by name, and recalled for inference.
+
+### Training via deep_learn()
+
+`deep_learn()` is a SELECT-clause aggregate function. It consumes every row of the source table in a single pass, trains layer weights analytically, and persists the resulting model under the given name.
+
+**Arguments (positional):**
+
+1. Model name (string literal)
+2. Label column
+3. Embedding column
+4. Edge label (string literal — names the grid graph's edge type)
+5. Layer specs (one or more, in order)
+
+**Layer spec functions:**
+
+| Function | Description |
+|----------|-------------|
+| `convolve(n_channels => N)` | Convolution layer with N output channels |
+| `pool('method', size)` | Pooling layer — method is `'max'` or `'avg'`, size is the pool window |
+| `flatten()` | Flatten spatial dimensions into a single vector |
+| `dense(output_channels => N)` | Fully connected layer with N outputs |
+| `softmax()` | Softmax classification head |
+
+**Named options (after all layer specs):**
+
+| Option | Values | Default | Description |
+|--------|--------|---------|-------------|
+| `gating` | `'none'`, `'relu'`, `'swish'` | `'none'` | Nonlinear gating applied between layers |
+| `lambda` | any positive float | `1.0` | Ridge regression regularization strength |
+
+```sql
+-- Train a CNN classifier analytically (no backpropagation)
+SELECT deep_learn(
+    'mnist_cnn', label, embedding, 'spatial',
+    convolve(n_channels => 32),
+    pool('max', 2),
+    convolve(n_channels => 64),
+    pool('max', 2),
+    flatten(),
+    dense(output_channels => 10),
+    softmax(),
+    gating => 'relu', lambda => 1.0
+) FROM mnist_train;
+```
+
+The model is persisted automatically — subsequent queries can reference it by name for inference.
+
+### Inference via deep_predict()
+
+`deep_predict()` is a per-row scalar function. It loads a trained model by name and returns the predicted class for each input embedding.
+
+```sql
+-- Per-row scalar function
+SELECT id, deep_predict('mnist_cnn', embedding) AS pred FROM test_data;
+```
+
+### Inference via deep_fusion(model())
+
+`deep_fusion()` in the WHERE clause can load a trained model and run the full inference pipeline — convolution, pooling, dense, and softmax — using the learned weights. The `model()` helper binds the model name and the input parameter.
+
+```sql
+-- Full pipeline inference with learned weights
+SELECT id, _score, class_probs FROM grid_28x28
+WHERE deep_fusion(
+    model('mnist_cnn', $1),
+    gating => 'relu'
+) ORDER BY _score DESC;
+```
+
+The result includes `_score` (fused relevance score) and any output columns the model produces.
+
+### Grid Graph Construction
+
+Spatial convolution requires a grid graph that defines the adjacency structure over the embedding nodes. `build_grid_graph()` is a table-returning function that creates a 4-connected grid (right and down edges) on a table's graph store.
+
+**Arguments:**
+
+1. Table name (string literal)
+2. Number of rows (integer)
+3. Number of columns (integer)
+4. Edge label (string literal)
+
+```sql
+-- Build 4-connected grid graph for spatial convolution
+SELECT * FROM build_grid_graph('mnist_train', 28, 28, 'spatial');
+```
+
+Node IDs are `row * cols + col + 1` (1-based). The function returns a single summary row with the table name, grid dimensions, and total edge count.
+
+---
+
+## 16. Cypher / Graph Integration
 
 ### Named Graph Management
 
@@ -1315,7 +1409,7 @@ SELECT * FROM cypher('
 
 ---
 
-## 16. Table-Returning Functions
+## 17. Table-Returning Functions
 
 ### GENERATE_SERIES
 
@@ -1340,7 +1434,7 @@ SELECT * FROM regexp_split_to_table('a,b,c,d', ',') AS t(val);
 
 ---
 
-## 17. Information Schema
+## 18. Information Schema
 
 ### Tables Metadata
 
@@ -1364,7 +1458,7 @@ Columns: `table_catalog`, `table_schema`, `table_name`, `column_name`, `ordinal_
 
 ---
 
-## 18. EXPLAIN
+## 19. EXPLAIN
 
 ```sql
 -- Show query plan
@@ -1379,7 +1473,7 @@ EXPLAIN (ANALYZE true, VERBOSE true) SELECT * FROM t JOIN t2 ON t.id = t2.tid;
 
 ---
 
-## 19. ANALYZE
+## 20. ANALYZE
 
 Collect column statistics for the query optimizer:
 
@@ -1395,7 +1489,7 @@ Statistics collected: distinct count, NULL count, min/max values, equi-depth his
 
 ---
 
-## 20. Transactions
+## 21. Transactions
 
 ```sql
 BEGIN;
@@ -1418,7 +1512,7 @@ COMMIT;
 
 ---
 
-## 21. Prepared Statements
+## 22. Prepared Statements
 
 ```sql
 PREPARE my_query (INTEGER, TEXT) AS
@@ -1431,7 +1525,7 @@ DEALLOCATE my_query;
 
 ---
 
-## 22. Operators Reference
+## 23. Operators Reference
 
 ### Comparison
 

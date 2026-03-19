@@ -581,6 +581,7 @@ filter_clause
 | Statistical | `STDDEV`, `STDDEV_POP`, `STDDEV_SAMP`, `VARIANCE`, `VAR_POP`, `VAR_SAMP` |
 | Correlation | `CORR`, `COVAR_POP`, `COVAR_SAMP` |
 | Regression | `REGR_SLOPE`, `REGR_INTERCEPT`, `REGR_R2`, `REGR_COUNT`, `REGR_AVGX`, `REGR_AVGY`, `REGR_SXX`, `REGR_SYY`, `REGR_SXY` |
+| Deep Learning | `DEEP_LEARN` |
 
 `COUNT(*)` counts all rows. `COUNT(DISTINCT col)` counts distinct non-NULL values.
 
@@ -1131,7 +1132,92 @@ Inside a fusion context, `TEXT_MATCH` is automatically promoted to Bayesian BM25
 
 ---
 
-## 15. Table-Returning Functions (FROM Clause)
+## 15. Deep Learning Functions
+
+These functions provide neural network training, prediction, and graph construction for deep learning over posting-list data.
+
+### 15.1 Training
+
+```ebnf
+deep_learn_call
+    = DEEP_LEARN '(' model_name ',' label_col ',' embedding_col ',' edge_label ','
+                     layer_spec { ',' layer_spec }
+                     { ',' named_option } ')'
+    ;
+
+layer_spec
+    = convolve_spec
+    | pool_spec
+    | flatten_spec
+    | dense_spec
+    | softmax_spec
+    ;
+
+convolve_spec
+    = CONVOLVE '(' [ 'n_channels' '=>' integer ] [ ',' 'seed' '=>' integer ] ')'
+    ;
+
+pool_spec
+    = POOL '(' string_literal ',' integer ')'
+    ;
+
+flatten_spec
+    = FLATTEN '(' ')'
+    ;
+
+dense_spec
+    = DENSE '(' 'output_channels' '=>' integer ')'
+    ;
+
+softmax_spec
+    = SOFTMAX '(' ')'
+    ;
+
+named_option
+    = 'gating' '=>' string_literal
+    | 'lambda' '=>' numeric_literal
+    ;
+```
+
+`DEEP_LEARN` trains a multi-layer neural network model. The `model_name` identifies the trained model for subsequent prediction. `label_col` and `embedding_col` reference the target and feature columns. `edge_label` specifies the graph edge label used for message passing in convolutional layers. Layer specs are composed in order — the first layer receives the input features and the last layer produces the output.
+
+`CONVOLVE` applies a graph convolution with optional channel count and random seed. `POOL` applies a pooling operation (`'mean'` or `'max'`) with a given kernel size. `FLATTEN` reshapes multi-dimensional features into a single vector. `DENSE` applies a fully connected layer with the specified output dimension. `SOFTMAX` normalizes output scores into a probability distribution.
+
+The optional `named_option` arguments control fusion behavior: `gating` selects an activation function (`'relu'` or `'swish'`), and `lambda` sets a regularization coefficient.
+
+### 15.2 Prediction
+
+```ebnf
+deep_predict_call
+    = DEEP_PREDICT '(' model_name ',' expression ')'
+    ;
+```
+
+`DEEP_PREDICT` applies a previously trained model to the given input expression and returns the predicted label or score.
+
+### 15.3 Model Reference
+
+```ebnf
+model_call
+    = MODEL '(' model_name ',' expression ')'
+    ;
+```
+
+`MODEL` retrieves a named model and applies it to an expression. This is the general-purpose inference entry point.
+
+### 15.4 Grid Graph Construction
+
+```ebnf
+build_grid_graph_call
+    = BUILD_GRID_GRAPH '(' table_name ',' integer ',' integer ',' edge_label ')'
+    ;
+```
+
+`BUILD_GRID_GRAPH` constructs a regular grid graph over the specified table with the given number of rows and columns. Each cell becomes a vertex and edges are created between adjacent cells using the specified `edge_label`.
+
+---
+
+## 16. Table-Returning Functions (FROM Clause)
 
 ```ebnf
 generate_series_call
@@ -1201,7 +1287,7 @@ Path expressions support bounded repetition: `'knows{2,4}'` matches paths of 2 t
 
 ---
 
-## 16. Cypher / Graph Integration
+## 17. Cypher / Graph Integration
 
 ```ebnf
 cypher_call
@@ -1230,7 +1316,7 @@ See the USQL Language Reference for the full openCypher clause and pattern synta
 
 ---
 
-## 17. Transactions
+## 18. Transactions
 
 ```ebnf
 transaction_stmt
@@ -1245,7 +1331,7 @@ transaction_stmt
 
 ---
 
-## 18. Prepared Statements
+## 19. Prepared Statements
 
 ```ebnf
 prepare_stmt
@@ -1264,9 +1350,9 @@ deallocate_stmt
 
 ---
 
-## 19. Utility Statements
+## 20. Utility Statements
 
-### 19.1 EXPLAIN
+### 20.1 EXPLAIN
 
 ```ebnf
 explain_stmt
@@ -1281,7 +1367,7 @@ option
     ;
 ```
 
-### 19.2 ANALYZE
+### 20.2 ANALYZE
 
 ```ebnf
 analyze_stmt
@@ -1293,7 +1379,7 @@ Collects per-column statistics: distinct count, NULL count, min/max values, equi
 
 ---
 
-## 20. Information Schema
+## 21. Information Schema
 
 ```ebnf
 information_schema_query
@@ -1310,7 +1396,7 @@ Supported views:
 
 ---
 
-## 21. Hierarchical Functions (SELECT List)
+## 22. Hierarchical Functions (SELECT List)
 
 ```ebnf
 path_value_call = PATH_VALUE '(' path_string ')' ;

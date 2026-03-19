@@ -107,6 +107,29 @@ WHERE deep_fusion(
     gating => 'relu'
 ) ORDER BY _score DESC;
 
+-- Deep learning: train a CNN classifier (no backpropagation)
+SELECT deep_learn(
+    'mnist_cnn', label, embedding, 'spatial',
+    convolve(n_channels => 32),
+    pool('max', 2),
+    convolve(n_channels => 64),
+    pool('max', 2),
+    flatten(),
+    dense(output_channels => 10),
+    softmax(),
+    gating => 'relu', lambda => 1.0
+) FROM mnist_train;
+
+-- Deep learning: inference with trained model
+SELECT id, deep_predict('mnist_cnn', embedding) AS pred FROM test_data;
+
+-- Deep learning: inference via deep_fusion pipeline
+SELECT id, _score, class_probs FROM grid_28x28
+WHERE deep_fusion(
+    model('mnist_cnn', $1),
+    gating => 'relu'
+) ORDER BY _score DESC;
+
 -- Temporal graph traversal (edges valid at timestamp)
 SELECT * FROM temporal_traverse(1, 'knows', 2, 1700000000);
 
@@ -261,7 +284,8 @@ uqa/
   storage/        Backend-agnostic ABCs with SQLite-backed stores: documents, inverted index, vectors (IVF), spatial (R*Tree), graph
   operators/      Operator algebra (boolean, primitive, hybrid, aggregation (count/sum/avg/min/max/quantile),
                   hierarchical (with cost estimation), sparse, multi-field, attention fusion,
-                  learned fusion, multi-stage, deep fusion (ResNet/GNN/CNN/DenseNet))
+                  learned fusion, multi-stage, deep fusion (ResNet/GNN/CNN/DenseNet),
+                  deep learning (training pipeline, PyTorch GPU backend))
   scoring/        BM25, Bayesian BM25, VectorScorer, WAND/BlockMaxWAND, calibration,
                   parameter learning, external prior, multi-field, fusion WAND (via bayesian-bm25),
                   adaptive WAND, bound tightness
@@ -282,7 +306,7 @@ uqa/
                   information-theoretic bounds, graph cost model
   sql/            SQL compiler (pglast), expression evaluator, FTS query parser, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          2639 tests across 79 test files
+  tests/          2764 tests across 83 test files
 benchmarks/       309 pytest-benchmark tests across 15 files (posting list, storage, compiler,
                   execution, planner, scoring, graph, graph centrality, end-to-end SQL,
                   calibration, multi-field, external prior, advanced scoring, advanced graph,
@@ -306,7 +330,7 @@ benchmarks/       309 pytest-benchmark tests across 15 files (posting list, stor
 | CTEs | `WITH name AS (SELECT ...)`, `WITH RECURSIVE` |
 | Views | `CREATE VIEW`, `DROP VIEW` |
 | Window | `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `NTILE`, `LAG`, `LEAD`, `NTH_VALUE`, `PERCENT_RANK`, `CUME_DIST`, aggregates `OVER (PARTITION BY ... ORDER BY ... ROWS/RANGE BETWEEN ...)`, `WINDOW w AS (...)`, `FILTER (WHERE ...)` on window aggregates |
-| Aggregates | `COUNT [DISTINCT]`, `SUM`, `AVG`, `MIN`, `MAX`, `STRING_AGG`, `ARRAY_AGG`, `BOOL_AND`/`EVERY`, `BOOL_OR`, `STDDEV`/`VARIANCE`, `PERCENTILE_CONT/DISC`, `MODE`, `JSON_OBJECT_AGG`, `CORR`, `COVAR_POP/SAMP`, `REGR_*` (10 functions), `FILTER (WHERE ...)`, `ORDER BY` within aggregate |
+| Aggregates | `COUNT [DISTINCT]`, `SUM`, `AVG`, `MIN`, `MAX`, `STRING_AGG`, `ARRAY_AGG`, `BOOL_AND`/`EVERY`, `BOOL_OR`, `STDDEV`/`VARIANCE`, `PERCENTILE_CONT/DISC`, `MODE`, `JSON_OBJECT_AGG`, `CORR`, `COVAR_POP/SAMP`, `REGR_*` (10 functions), `deep_learn(...)`, `FILTER (WHERE ...)`, `ORDER BY` within aggregate |
 | Types | `INTEGER`, `BIGINT`, `SERIAL`, `TEXT`, `VARCHAR`, `REAL`, `FLOAT`, `DOUBLE PRECISION`, `NUMERIC(p,s)`, `BOOLEAN`, `DATE`, `TIME`, `TIMESTAMP`, `TIMESTAMPTZ`, `INTERVAL`, `JSON`/`JSONB`, `UUID`, `BYTEA`, `INTEGER[]` (arrays), `VECTOR(N)`, `POINT` |
 | Date/Time | `EXTRACT`, `DATE_TRUNC`, `DATE_PART`, `NOW()`, `CURRENT_DATE`, `CURRENT_TIMESTAMP`, `CURRENT_TIME`, `CLOCK_TIMESTAMP`, `TIMEOFDAY`, `AGE`, `TO_CHAR`, `TO_DATE`, `TO_TIMESTAMP`, `MAKE_DATE`, `MAKE_TIMESTAMP`, `MAKE_INTERVAL`, `TO_NUMBER`, `OVERLAPS`, `ISFINITE` |
 | JSON | `->`, `->>`, `#>`, `#>>` operators, `@>` / `<@` containment, `?` / `?|` / `?&` key existence, `JSONB_SET`, `JSONB_STRIP_NULLS`, `JSON_BUILD_OBJECT`, `JSON_BUILD_ARRAY`, `JSON_OBJECT_KEYS`, `JSON_EXTRACT_PATH`, `JSON_TYPEOF`, `JSON_AGG`, `::jsonb` cast |
@@ -371,6 +395,16 @@ Used inside `deep_fusion()` to compose neural network pipelines:
 | `softmax()` | Classification head (numerically stable) |
 | `batch_norm([epsilon => 1e-5])` | Per-channel normalization across nodes |
 | `dropout(p)` | Inference-mode scaling by (1 - p) |
+| `model('name', $1)` | Load trained model and create full inference pipeline (embed + conv + pool + dense + softmax) |
+| `embed(vector, in_channels => C, grid_h => H, grid_w => W)` | Inject raw embedding vector into channel map |
+
+### Deep Learning Functions
+
+| Function | Description |
+|----------|-------------|
+| `deep_learn('model', label, embedding, 'edge_label', layers...[, gating][, lambda])` | SELECT aggregate: train a CNN classifier analytically (ridge regression, no backpropagation) |
+| `deep_predict('model', embedding)` | Per-row scalar: inference with trained model, returns class probabilities |
+| `build_grid_graph('table', rows, cols, 'label')` | FROM-clause: construct 4-connected grid graph for spatial convolution |
 
 ### SELECT Spatial Functions
 
@@ -387,6 +421,7 @@ Used inside `deep_fusion()` to compose neural network pipelines:
 |----------|-------------|
 | `path_agg(path, func)` | Per-row nested array aggregation (`sum`, `count`, `avg`, `min`, `max`) |
 | `path_value(path)` | Access nested field value by dot-path |
+| `deep_predict('model', embedding)` | Inference with trained model (class probabilities) |
 
 ### FROM-Clause Table Functions
 
@@ -412,6 +447,7 @@ Used inside `deep_fusion()` to compose neural network pipelines:
 | `drop_analyzer('name')` | Drop a custom text analyzer |
 | `set_table_analyzer('tbl', 'field', 'name'[, 'phase'])` | Assign index/search analyzer to a field |
 | `list_analyzers()` | List all registered analyzers |
+| `build_grid_graph('table', rows, cols, 'label')` | Construct 4-connected grid graph for spatial convolution |
 
 ### Persistence
 
@@ -434,6 +470,7 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 | Foreign Tables | `_foreign_tables` | FDW table definitions (columns, source, options) |
 | Path Indexes | `_path_indexes` | Pre-computed label-sequence RPQ accelerators |
 | Statistics | `_column_stats` | Per-table histograms and MCVs for optimizer |
+| Models | `_models` | Trained deep learning model configurations (JSON) |
 
 ### Query Optimizer
 
@@ -710,6 +747,8 @@ python examples/showcase/deep_fusion_resnet.py   # Deep fusion as ResNet: hierar
 python examples/showcase/deep_fusion_gnn.py      # Deep fusion as GNN: graph propagation layers
 python examples/showcase/deep_fusion_cnn.py      # Deep fusion as CNN: spatial convolution over grids
 python examples/showcase/deep_fusion_nn.py       # Full neural network: pool, dense, flatten, softmax, batch_norm, dropout
+python examples/showcase/deep_learn_mnist.py     # MNIST training pipeline: deep_learn + deep_predict + deep_fusion(model())
+python examples/showcase/deep_learn_tiny_imagenet.py  # Tiny ImageNet RGB: 10-class CNN training on 64x64 images
 ```
 
 ### Interactive Shell
@@ -743,4 +782,3 @@ AGPL-3.0 — see [LICENSE](LICENSE).
 2. [Extending the Unified Mathematical Framework to Support Graph Data Structures](docs/papers/2.%20Extending%20the%20Unified%20Mathematical%20Framework%20to%20Support%20Graph%20Data%20Structures.pdf)
 3. [Bayesian BM25 - A Probabilistic Framework for Hybrid Text and Vector Search](docs/papers/3.%20Bayesian%20BM25%20-%20A%20Probabilistic%20Framework%20for%20Hybrid%20Text%20and%20Vector%20Search.pdf)
 4. [From Bayesian Inference to Neural Computation - The Analytical Emergence of Neural Network Structure from Probabilistic Relevance Estimation](docs/papers/4.%20From%20Bayesian%20Inference%20to%20Neural%20Computation%20-%20The%20Analytical%20Emergence%20of%20Neural%20Network%20Structure%20from%20Probabilistic%20Relevance%20Estimation.pdf)
-5. [Vector Scores as Likelihood Ratios - Index-Derived Bayesian Calibration for Hybrid Search](docs/papers/5.%20Vector%20Scores%20as%20Likelihood%20Ratios%20-%20Index-Derived%20Bayesian%20Calibration%20for%20Hybrid%20Search.pdf)

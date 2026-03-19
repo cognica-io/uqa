@@ -165,6 +165,144 @@ learned = engine.learn_scoring_params(table, field, query, labels, mode="balance
 engine.update_scoring_params(table, field, score, label)
 ```
 
+### Deep Learning
+
+Train and run inference with deep learning models analytically (no backpropagation). Training uses random-weight initialization with Bayesian ridge regression — the random weights act as a prior and ridge regression computes the posterior. Graph structure is exploited via message-passing convolution over spatial grid graphs.
+
+#### Training
+
+```python
+engine.deep_learn(
+    model_name: str,
+    table_name: str,
+    label_field: str,
+    embedding_field: str,
+    edge_label: str,
+    layer_specs: list[LayerSpec],
+    gating: str = "none",
+    lam: float = 1.0,
+) -> dict[str, Any]
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `model_name` | Name under which the trained model is persisted. |
+| `table_name` | Table containing training data. |
+| `label_field` | Column holding class labels. |
+| `embedding_field` | Column holding input vectors (`VECTOR` type). |
+| `edge_label` | Edge label in the graph connecting grid nodes (e.g. `"spatial"`). |
+| `layer_specs` | Ordered list of layer specifications defining the network architecture. |
+| `gating` | Activation gating: `"none"`, `"relu"`, or `"swish"`. |
+| `lam` | Ridge regression regularization strength (lambda). |
+
+The return dict contains `"training_accuracy"` and the full model configuration.
+
+**Layer specifications:**
+
+```python
+from uqa.operators.deep_learn import ConvSpec, PoolSpec, FlattenSpec, DenseSpec, SoftmaxSpec
+```
+
+| Spec | Parameters | Description |
+|------|------------|-------------|
+| `ConvSpec(kernel_hops, n_channels)` | `kernel_hops=1`, `n_channels=1` | Graph convolution layer. `n_channels > 1` creates random multi-channel feature maps (extreme learning machine). |
+| `PoolSpec(method, pool_size)` | `method="max"`, `pool_size=2` | Pooling layer — `"max"` or `"mean"`. |
+| `FlattenSpec()` | (none) | Flatten spatial nodes into a single vector. |
+| `DenseSpec(output_channels)` | `output_channels=10` | Dense (fully connected) layer. |
+| `SoftmaxSpec()` | (none) | Softmax classification head. |
+
+**Example:**
+
+```python
+from uqa.engine import Engine
+from uqa.operators.deep_learn import ConvSpec, PoolSpec, FlattenSpec, DenseSpec, SoftmaxSpec
+
+engine = Engine()
+
+# Create table with labels and embeddings
+engine.sql("""
+    CREATE TABLE images (
+        id SERIAL PRIMARY KEY,
+        label TEXT NOT NULL,
+        embedding VECTOR(784)
+    )
+""")
+# ... insert data ...
+
+# Build grid graph
+engine.sql("SELECT * FROM build_grid_graph('images', 28, 28, 'spatial')")
+
+# Train via Python API
+result = engine.deep_learn(
+    model_name="my_model",
+    table_name="images",
+    label_field="label",
+    embedding_field="embedding",
+    edge_label="spatial",
+    layer_specs=[
+        ConvSpec(n_channels=32),
+        PoolSpec(method="max", pool_size=2),
+        FlattenSpec(),
+        DenseSpec(output_channels=10),
+        SoftmaxSpec(),
+    ],
+    gating="relu",
+    lam=1.0,
+)
+print(result["training_accuracy"])
+```
+
+#### Inference
+
+```python
+engine.deep_predict(
+    model_name: str,
+    input_embedding: list[float],
+) -> list[tuple[int, float]]
+```
+
+Run inference using a trained model. Returns a list of `(class_index, probability)` tuples sorted by probability descending.
+
+```python
+predictions = engine.deep_predict("my_model", input_vector)
+for class_idx, probability in predictions:
+    print(f"  class {class_idx}: {probability:.4f}")
+```
+
+#### SQL Equivalent
+
+The same training operation is available as a SQL aggregate function:
+
+```sql
+SELECT deep_learn(
+    'my_model', label, embedding, 'spatial',
+    convolve(n_channels => 32),
+    pool('max', 2),
+    flatten(),
+    dense(output_channels => 10),
+    softmax(),
+    gating => 'relu', lambda => 1.0
+) FROM images;
+```
+
+#### Model Persistence
+
+Trained models are automatically saved to the catalog. Use `load_model()` and `delete_model()` to manage them:
+
+```python
+engine.save_model(model_name: str, config: dict[str, Any]) -> None
+engine.load_model(model_name: str) -> dict[str, Any] | None
+engine.delete_model(model_name: str) -> None
+```
+
+```python
+# Retrieve a trained model's configuration
+config = engine.load_model("my_model")
+
+# Remove a model from the catalog
+engine.delete_model("my_model")
+```
+
 ### Path Index Management
 
 ```python

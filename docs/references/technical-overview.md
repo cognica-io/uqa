@@ -426,6 +426,113 @@ $$
 
 Each stage introduces new signals, computes a fused score over all accumulated signals using `FusionWANDScorer`, and narrows the candidate set to the top $k_i$ documents. Subsequent stages evaluate new signals only on surviving candidates, making the cost cascade: $\text{cost}_i \propto |C_{i-1}| / N$.
 
+### 4.11 Deep Learning Training Pipeline
+
+Paper 4 establishes that neural networks emerge from Bayesian inference: convolution is neighborhood averaging under a spatial prior, pooling is information-theoretic compression, and the fully connected layer is Bayesian posterior estimation. This insight enables an analytical training pipeline that replaces iterative backpropagation with closed-form parameter estimation.
+
+#### 4.11.1 Analytical Parameter Estimation
+
+The key observation is that each layer type admits either a closed-form solution or requires no parameters at all:
+
+| Layer | Parameters | Estimation Method |
+|-------|-----------|-------------------|
+| `ConvLayer` | Multi-channel 3x3 kernels | Kaiming-initialized random prior (extreme learning machine) |
+| `PoolLayer` | None | Stateless spatial downsampling |
+| `FlattenLayer` | None | Stateless reshaping |
+| `DenseLayer` | Weight matrix $W$, bias $b$ | Ridge regression (Bayesian posterior) |
+| `SoftmaxLayer` | None | Stateless normalization |
+
+**Convolution as Bayesian prior.** For multi-channel convolution ($n_{channels} > 1$), kernels are sampled from a Kaiming-He distribution $\mathcal{N}(0, \sqrt{2/fan_{in}})$ and held fixed. This is precisely the extreme learning machine paradigm (Huang et al., 2006): random projections create a diverse feature basis, and the subsequent linear layer finds the optimal combination. In the Bayesian interpretation, the random kernels constitute the prior over spatial filters; the ridge regression layer computes the posterior.
+
+**Dense layer as Bayesian posterior.** Given feature matrix $X \in \mathbb{R}^{n \times d}$ and one-hot label matrix $Y \in \mathbb{R}^{n \times c}$, the dense layer weights are the ridge regression solution:
+
+$$
+W = (X^T X + \lambda I)^{-1} X^T Y
+$$
+
+where $\lambda$ is the regularization parameter (prior precision in Bayesian linear regression). This is the exact MAP estimate under a Gaussian prior $W \sim \mathcal{N}(0, \lambda^{-1} I)$ with Gaussian likelihood — no gradient descent, no learning rate, no epochs.
+
+**Implementation.** `train_model()` in `uqa/operators/deep_learn.py` implements the full pipeline. `ridge_solve()` in `uqa/operators/_backend.py` computes the closed-form solution, dispatching to PyTorch `torch.linalg.solve()` on GPU when available and falling back to `numpy.linalg.solve()` otherwise.
+
+#### 4.11.2 Product of Experts (PoE) Ensemble
+
+Rather than training a single end-to-end network, the pipeline trains independent expert heads at each conv+pool stage and combines them via the Product of Experts framework (Theorem 8.3).
+
+Each stage $s$ produces a feature representation $X_s$ after convolution and pooling. An expert head $W_s$ is trained via ridge regression on $X_s$, yielding per-stage logits $\ell_s = X_s W_s^T + b_s$. At inference, the experts are combined by logit averaging with a shrinkage correction (Theorem 4.4.1):
+
+$$
+\ell_{final} = \frac{1}{n_{experts}} \sum_{s=1}^{n_{experts}} \ell_s + \alpha \cdot \log(n_{experts})
+$$
+
+where $\alpha$ is the shrinkage parameter (default 0.5). The additive $\alpha \cdot \log(n_{experts})$ term in log-odds space compensates for the over-counting of shared evidence across experts — the same correction that resolves conjunction shrinkage in Section 4.1, now applied to neural network ensemble combination.
+
+The final class probabilities are obtained by applying softmax to $\ell_{final}$.
+
+#### 4.11.3 SQL Interface
+
+The training and inference pipeline is exposed through SQL aggregate and scalar functions:
+
+**Training via aggregate.** `deep_learn()` operates as a SELECT-clause aggregate function, consuming all rows (optionally filtered by WHERE) to produce a trained model:
+
+```sql
+SELECT deep_learn(
+    'model_name', 'images', 'label', 'embedding', 'spatial',
+    conv(1, 8), pool(2), flatten(), dense(10), softmax(),
+    'relu', 1.0
+) FROM images WHERE split = 'train';
+```
+
+The aggregate collects rows, extracts embeddings and labels, runs the analytical training pipeline, and persists the trained model to the catalog.
+
+**Inference via scalar function.** `deep_predict()` operates as a per-row scalar function, applying a trained model to each row's embedding:
+
+```sql
+SELECT id, deep_predict('model_name', embedding) as prediction
+FROM images WHERE split = 'test';
+```
+
+**Inference via deep_fusion.** For integration with the fusion framework, `deep_fusion()` accepts a `model()` reference that loads learned weights from the catalog:
+
+```sql
+SELECT * FROM papers
+WHERE deep_fusion(model('classifier', $1))
+ORDER BY _score DESC;
+```
+
+This reuses the `DeepFusionOperator` infrastructure (Section 4.10) with weights populated from a `TrainedModel` rather than specified inline.
+
+#### 4.11.4 GPU Acceleration
+
+The compute backend in `uqa/operators/_backend.py` provides transparent GPU acceleration with a single upload/download boundary per forward pass.
+
+**Device detection.** At import time, the backend probes for available accelerators in priority order: CUDA (NVIDIA), MPS (Apple Silicon), CPU. All subsequent tensor operations execute on the detected device.
+
+**Single-boundary design.** `grid_forward()` uploads the embedding matrix to GPU once, executes the full conv+pool pipeline as fused `torch.nn.functional.conv2d()` and `max_pool2d()` / `avg_pool2d()` calls, and downloads the flattened feature matrix once. This eliminates per-layer CPU-GPU transfers that dominate latency in naive implementations.
+
+**Fallback.** When PyTorch is unavailable, all operations fall back to equivalent numpy implementations with identical numerical behavior (single-channel only).
+
+| Function | GPU Path | CPU Fallback |
+|----------|----------|-------------|
+| `grid_forward()` | `F.conv2d` + `F.max_pool2d` | Manual padded convolution + reshape pooling |
+| `ridge_solve()` | `torch.linalg.solve` | `numpy.linalg.solve` |
+| `batch_dense()` | `X @ W^T + b` on device | `numpy` matmul |
+| `batch_softmax()` | `F.softmax` | Shifted exp with manual normalization |
+
+#### 4.11.5 Model Catalog
+
+Trained models are persisted to the `_models` table in the SQLite catalog:
+
+```
+_models (
+    model_name   TEXT PRIMARY KEY,
+    config_json  TEXT NOT NULL
+)
+```
+
+The `config_json` column stores a JSON-serialized `TrainedModel` dataclass containing all learned parameters: conv kernel data, dense weights and biases, expert head weights, layer specifications, class labels, grid geometry, and training metadata (accuracy, sample count). `Engine.save_model()` writes through to both the in-memory `_models` dictionary and the SQLite catalog; `Engine.load_model()` reads from memory first, falling back to SQLite on cache miss.
+
+**Theory-to-code mapping.** `train_model()` and `predict()` in `uqa/operators/deep_learn.py` implement the training and inference pipelines respectively. `ridge_solve()` and `grid_forward()` in `uqa/operators/_backend.py` implement the core numerical operations with GPU dispatch.
+
 ---
 
 ## 5. Graph Extension
@@ -907,6 +1014,10 @@ The table below maps each formal definition and theorem from the four papers to 
 | Structural Graph Embeddings (Paper 2 + Paper 4) | `GraphEmbeddingOperator` in `uqa/graph/graph_embedding.py` |
 | Fusion Gating (Section 6.5-6.7) | `gating` parameter in `LogOddsFusion`, `LogOddsFusionOperator`, `FusionWANDScorer` |
 | Progressive Fusion (Section 7) | `ProgressiveFusionOperator` in `uqa/operators/progressive_fusion.py` |
+| Analytical Training / PoE (Theorem 8.3) | `train_model()`, `predict()` in `uqa/operators/deep_learn.py` |
+| Ridge Regression Posterior | `ridge_solve()` in `uqa/operators/_backend.py` |
+| GPU-Accelerated Forward Pass | `grid_forward()` in `uqa/operators/_backend.py` |
+| Model Persistence | `_models` table in `uqa/storage/catalog.py`; `save_model()` / `load_model()` in `uqa/engine.py` |
 | Cross-Paradigm Join Costs (Section 4) | Cost/cardinality models in `uqa/planner/cost_model.py`, `uqa/planner/cardinality.py` |
 | Vector Selectivity (Section 5.3) | `_vector_selectivity()` in `uqa/planner/cardinality.py` |
 

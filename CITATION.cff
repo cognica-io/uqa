@@ -10,7 +10,7 @@ authors:
 repository-code: "https://github.com/cognica-io/uqa"
 license: AGPL-3.0-only
 version: 0.21.0
-date-released: "2026-03-18"
+date-released: "2026-03-19"
 abstract: >-
   A multi-paradigm database engine that unifies relational, text retrieval,
   vector search, graph query, and geospatial paradigms under a single
@@ -83,3 +83,9 @@ keywords:
   - deep-fusion
   - convolutional-neural-network
   - spatial-pooling
+  - deep-learning-training
+  - analytical-parameter-estimation
+  - ridge-regression
+  - extreme-learning-machine
+  - product-of-experts
+  - pytorch-acceleration

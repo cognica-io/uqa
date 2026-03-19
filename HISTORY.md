@@ -2,7 +2,7 @@
 
 ## 0.21.0 (2026-03-18)
 
-Deep fusion as a complete neural network execution framework. Storage backend ABCs for backend-agnostic persistence. Internal data model refactored from scalar logits to multi-channel vectors for full DL pipeline support. All 2746 tests pass.
+Deep fusion as a complete neural network execution framework with analytical training pipeline. `deep_learn()` trains CNN classifiers via ridge regression and random multi-channel convolution — no backpropagation. `deep_predict()` and `deep_fusion(model())` provide inference. PyTorch GPU acceleration for conv/pool/dense operations. Storage backend ABCs for backend-agnostic persistence. Internal data model refactored from scalar logits to multi-channel vectors for full DL pipeline support. All 2764 tests pass.
 
 ### Deep Fusion: Multi-Layer Bayesian Fusion Operator
 
@@ -48,6 +48,46 @@ Deep fusion as a complete neural network execution framework. Storage backend AB
 - **`DocumentStore`** ABC: Abstract base class with `put`, `get`, `delete`, `clear`, `doc_ids`, `get_field`, `get_fields_bulk`, `has_value`, `eval_path`, `__len__` methods. `MemoryDocumentStore` and `SQLiteDocumentStore` implement the interface.
 - **`InvertedIndex`** ABC: Abstract base class with `add_document`, `remove_document`, `get_postings`, `doc_freq`, `term_freq`, `doc_count`, `search`, and analyzer management methods. `MemoryInvertedIndex` and `SQLiteInvertedIndex` implement the interface.
 - **Benchmark fix**: Updated benchmark InvertedIndex instantiation for the new ABC hierarchy.
+
+### Deep Learning Training Pipeline
+
+- **`deep_learn('model', label, embedding, 'edge_label', layers..., gating => 'relu', lambda => 1.0)`**: SELECT-clause aggregate function that trains a CNN classifier analytically. Layer-by-layer parameter estimation: `ConvSpec` generates Kaiming-initialized random multi-channel kernels (extreme learning machine prior), `PoolSpec`/`FlattenSpec` are stateless, `DenseSpec` fits via ridge regression `W = (X^T X + lambda I)^{-1} X^T Y` (Bayesian posterior). No backpropagation. Uses existing `HashAggOp` framework via engine-method aggregate callback — no special-casing in the SQL compiler.
+- **`deep_predict('model', embedding)`**: Per-row scalar function for inference. Reconstructs the trained pipeline and runs a forward pass through conv/pool/flatten/dense/softmax layers. Returns class probabilities sorted by descending confidence.
+- **`deep_fusion(model('name', $1), gating => 'relu')`**: Inference via the deep fusion operator with learned weights. `model('name', $1)` loads a trained model from the catalog and creates the full layer pipeline (EmbedLayer + ConvLayer + PoolLayer + FlattenLayer + DenseLayer + SoftmaxLayer) in a single self-contained call.
+- **`build_grid_graph('table', rows, cols, 'label')`**: FROM-clause function that constructs a 4-connected grid graph (right + down edges) for spatial convolution on image data.
+- **PoE (Product of Experts) local learning**: Per-stage supervised expert heads with logit averaging (Theorem 8.3) and shrinkage correction `alpha * log(n_experts)` in log-odds space (Theorem 4.4.1).
+- **Multi-channel random convolution**: Random Kaiming-initialized kernels as Bayesian prior, ridge regression as posterior. Equivalent to extreme learning machines with spatial structure.
+- **EmbedLayer**: Direct vector injection into the deep fusion pipeline. Supports grayscale (1-channel), RGB (3-channel), and RGBA (4-channel) images via `in_channels` parameter. Auto-detects grid dimensions from embedding dimensionality.
+
+### Deep Learning: PyTorch GPU Acceleration
+
+- **`uqa/operators/_backend.py`**: Backend module with automatic device detection (MPS/CUDA/CPU). Falls back to NumPy when PyTorch is not installed.
+- **`ridge_solve(X, Y, lam)`**: Ridge regression via `torch.linalg.solve` on GPU (float32). NumPy fallback for CPU-only environments.
+- **`grid_forward(embeddings, kernels, pool_sizes, grid_h, grid_w, in_channels, gating)`**: Batch Conv2d + MaxPool2d pipeline. Single GPU upload, single download — no GPU-CPU-GPU roundtrips. 570x speedup over per-node BFS on Apple Silicon MPS.
+- **`batch_dense()`, `batch_softmax()`, `batch_batchnorm()`**: GPU-accelerated tensor operations for dense, softmax, and batch normalization layers.
+
+### Deep Learning: Model Catalog
+
+- **`_models` table**: SQLite-backed model persistence via `(model_name TEXT PK, config_json TEXT NOT NULL)`. Auto-migrated on catalog open.
+- **`Engine.save_model()`, `Engine.load_model()`, `Engine.delete_model()`**: Dual in-memory + catalog persistence. In-memory engines use `_models` dict; persistent engines write through to SQLite.
+- **`TrainedModel` dataclass**: Serializable model configuration with `to_json()` / `from_json()`. Stores conv kernel data, dense weights/bias, class labels, grid size, layer specs, expert weights, and shrinkage parameters.
+- **`TrainedModel.to_deep_fusion_layers()`**: Converts trained model configuration into deep fusion layer objects for inference.
+
+### Deep Learning: SQL Compiler Integration
+
+- **Engine-method aggregates**: General mechanism for SELECT-clause aggregate functions backed by Engine methods. `HashAggOp.extra` accepts a callable callback. `_extract_agg_specs()` detects engine methods via `getattr(engine, func_name)` and creates a closure that receives all rows and positional/named arguments.
+- **Per-row scalar functions**: `ExprEvaluator` falls back to engine method dispatch for unknown scalar functions. `deep_predict('model', embedding)` evaluates per-row on table columns.
+- **`convolve(n_channels => N[, seed => S])`**: Multi-channel random conv spec with optional seed for reproducibility.
+- **`model('name', $1)`**: Self-contained deep fusion layer function. Loads trained model from catalog, creates EmbedLayer with correct `in_channels`/`grid_size`, and builds the full inference pipeline.
+
+### Deep Learning: Showcase Examples
+
+- **`examples/showcase/deep_learn_mnist.py`**: Full MNIST pipeline (60,000 train, 10,000 test). Architecture: conv(32ch) -> pool(2) -> conv(64ch) -> pool(2) -> flatten -> dense(10) -> softmax. Training via `SELECT deep_learn(...) FROM mnist_train`. Inference via both `deep_predict()` and `deep_fusion(model())`. 97.89% test accuracy.
+- **`examples/showcase/deep_learn_tiny_imagenet.py`**: Tiny ImageNet pipeline (10 classes, 500 train/class, 50 val/class, 64x64 RGB). Architecture: conv(16ch) -> pool(4) -> conv(32ch) -> pool(4) -> flatten -> dense(10) -> softmax. 61.6% test accuracy on 10-class subset.
+
+### Deep Learning: Tests
+
+- **18 new tests** in `uqa/tests/test_deep_learn.py`: ridge regression correctness (4), LayerSpec/TrainedModel serialization (3), Python API train+predict (3), SQL aggregate syntax (4), PoE deep_predict/deep_fusion compatibility (2), model catalog persistence (2).
 
 ## 0.20.1 (2026-03-18)
 

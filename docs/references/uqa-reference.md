@@ -214,6 +214,14 @@ Operators are functions that produce posting lists. They are the building blocks
 | MessagePassingOperator | K-layer neighbor feature aggregation with sigmoid calibration |
 | GraphEmbeddingOperator | Structural embeddings from degree, labels, and k-hop connectivity |
 
+**Deep learning operators:**
+
+| Operator | Semantics |
+|----------|-----------|
+| DeepFusionOperator | Multi-layer Bayesian fusion (conv, pool, dense, softmax) over graph neighborhoods |
+| DeepLearnOperator | Analytical CNN training via PoE local learning with supervised conv weight estimation |
+| TrainedModel | Persisted representation of a trained model (weights, specs, expert heads) |
+
 **Graph maintenance:**
 
 | Operator | Semantics |
@@ -1889,7 +1897,149 @@ engine.save_scoring_params("text_signal", {"alpha": 1.0, "beta": 3.5})
 params = engine.load_scoring_params("text_signal")
 ```
 
-### 6.7 Interactive SQL Shell
+### 6.7 Deep Learning Methods
+
+UQA provides analytical deep learning — CNN classifiers trained without backpropagation, using closed-form ridge regression and Product of Experts (PoE) local learning (Paper 4). Training proceeds layer by layer: convolution weights are selected via supervised grid search, and dense layer weights are computed via ridge regression. The result is a `TrainedModel` persisted to the SQLite catalog.
+
+#### Layer Spec Types
+
+Layer specifications define the architecture passed to `deep_learn()`. All spec types are immutable frozen dataclasses imported from `uqa.operators.deep_learn`.
+
+```python
+from uqa.operators.deep_learn import (
+    ConvSpec, PoolSpec, FlattenSpec, DenseSpec, SoftmaxSpec,
+)
+```
+
+| Spec | Parameters | Description |
+|------|------------|-------------|
+| `ConvSpec(kernel_hops=1, n_channels=1)` | `kernel_hops`: convolution neighborhood radius; `n_channels`: number of output channels (>1 uses random multi-channel kernels as an extreme learning machine prior) | Convolution layer |
+| `PoolSpec(method="max", pool_size=2)` | `method`: `"max"` or `"mean"`; `pool_size`: spatial downsampling factor | Pooling layer |
+| `FlattenSpec()` | (none) | Flatten spatial dimensions into a single vector |
+| `DenseSpec(output_channels=10)` | `output_channels`: target dimensionality (typically equal to the number of classes) | Fully connected layer (ridge regression) |
+| `SoftmaxSpec()` | (none) | Softmax classification head |
+
+The union type `LayerSpec = ConvSpec | PoolSpec | FlattenSpec | DenseSpec | SoftmaxSpec` is accepted by `deep_learn()`.
+
+#### `Engine.deep_learn()`
+
+```python
+Engine.deep_learn(
+    model_name: str,
+    table_name: str,
+    label_field: str,
+    embedding_field: str,
+    edge_label: str,
+    layer_specs: list[ConvSpec | PoolSpec | FlattenSpec | DenseSpec | SoftmaxSpec],
+    gating: str = "none",
+    lam: float = 1.0,
+) -> dict
+```
+
+Trains a CNN classifier analytically using PoE local learning with supervised convolution weight estimation. No backpropagation is used — convolution weights are selected by grid search over candidate kernels, and dense layer weights are computed via closed-form ridge regression. Each (conv, pool) stage trains an independent expert head; inference averages expert logits with shrinkage correction (Theorem 4.4.1, Paper 4). The trained model is automatically persisted to the catalog via `save_model()`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `model_name` | str | Name for the trained model (used for persistence and prediction) |
+| `table_name` | str | Table containing training data |
+| `label_field` | str | Document field containing class labels |
+| `embedding_field` | str | Document field containing embedding vectors (must be C*H*W layout) |
+| `edge_label` | str | Edge label for graph-based convolution neighborhoods |
+| `layer_specs` | list[LayerSpec] | Architecture specification (sequence of layer specs) |
+| `gating` | str | Gating mode: `"none"`, `"relu"`, or `"swish"` (default: `"none"`) |
+| `lam` | float | Ridge regression regularization parameter (default: 1.0) |
+
+Returns a dict with keys:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `model_name` | str | Name of the trained model |
+| `training_samples` | int | Number of training samples |
+| `num_classes` | int | Number of distinct classes |
+| `feature_dim` | int | Dimensionality of the final feature vector |
+| `training_accuracy` | float | Accuracy on the training set |
+| `class_labels` | list | Sorted list of unique class labels |
+
+```python
+import numpy as np
+from uqa.engine import Engine
+from uqa.operators.deep_learn import (
+    ConvSpec, PoolSpec, FlattenSpec, DenseSpec, SoftmaxSpec,
+)
+
+engine = Engine()
+engine.sql("CREATE TABLE digits (label INTEGER, embedding VECTOR(784))")
+
+# Insert training data (28x28 images flattened to 784-dim vectors)
+for label, pixels in training_data:
+    engine.sql(
+        "INSERT INTO digits (label, embedding) VALUES ($1, $2)",
+        params=[label, pixels],
+    )
+
+# Train a CNN: Conv -> Pool -> Flatten -> Dense -> Softmax
+result = engine.deep_learn(
+    model_name="digit_classifier",
+    table_name="digits",
+    label_field="label",
+    embedding_field="embedding",
+    edge_label="spatial",
+    layer_specs=[
+        ConvSpec(kernel_hops=1),
+        PoolSpec(method="max", pool_size=2),
+        FlattenSpec(),
+        DenseSpec(output_channels=10),
+        SoftmaxSpec(),
+    ],
+    gating="relu",
+    lam=1.0,
+)
+print(result["training_accuracy"])
+```
+
+#### `Engine.deep_predict()`
+
+```python
+Engine.deep_predict(
+    model_name: str,
+    input_embedding: list[float],
+) -> list[tuple[int, float]]
+```
+
+Runs inference using a trained model. Uses the same grid-accelerated forward pass as training for consistency. Per-stage expert heads produce logits that are averaged (PoE combination) with shrinkage correction, then passed through softmax to produce class probabilities.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `model_name` | str | Name of a previously trained model |
+| `input_embedding` | list[float] | Input feature vector (same dimensionality as training embeddings) |
+
+Returns a list of `(class_index, probability)` tuples sorted by descending probability.
+
+```python
+# Predict class probabilities for a new image
+predictions = engine.deep_predict("digit_classifier", new_image.tolist())
+top_class, top_prob = predictions[0]
+print(f"Predicted class: {top_class}, confidence: {top_prob:.4f}")
+```
+
+#### Model Catalog Methods
+
+```python
+Engine.save_model(model_name: str, config: dict) -> None
+Engine.load_model(model_name: str) -> dict | None
+Engine.delete_model(model_name: str) -> None
+```
+
+Model persistence methods for the SQLite-backed catalog. `save_model()` stores a model configuration dict (called automatically by `deep_learn()`). `load_model()` retrieves a model by name, returning `None` if not found. `delete_model()` removes a model from both the in-memory cache and the catalog.
+
+```python
+# Manual model management
+engine.save_model("my_model", {"weights": [1.0, 2.0], "bias": [0.1]})
+config = engine.load_model("my_model")
+engine.delete_model("my_model")
+```
+
+### 6.8 Interactive SQL Shell
 
 UQA includes an interactive SQL shell with syntax highlighting and autocompletion.
 
@@ -1916,7 +2066,7 @@ Shell commands:
 | `\?` | Show help |
 | `\q` | Quit |
 
-### 6.8 Transactions
+### 6.9 Transactions
 
 UQA supports ACID transactions with savepoints through the SQL interface and the programmatic API.
 
