@@ -181,6 +181,8 @@ engine.deep_learn(
     layer_specs: list[LayerSpec],
     gating: str = "none",
     lam: float = 1.0,
+    l1_ratio: float = 0.0,
+    prune_ratio: float = 0.0,
 ) -> dict[str, Any]
 ```
 
@@ -194,13 +196,17 @@ engine.deep_learn(
 | `layer_specs` | Ordered list of layer specifications defining the network architecture. |
 | `gating` | Activation gating: `"none"`, `"relu"`, or `"swish"`. |
 | `lam` | Ridge regression regularization strength (lambda). |
+| `l1_ratio` | Elastic net L1 ratio (0.0 = pure ridge). Values > 0 enable proximal gradient descent (ISTA), warm-started from the ridge solution. |
+| `prune_ratio` | Magnitude pruning ratio (0.0 = no pruning). Values > 0 zero the smallest weights by absolute magnitude percentile after training. |
 
 The return dict contains `"training_accuracy"` and the full model configuration.
 
 **Layer specifications:**
 
 ```python
-from uqa.operators.deep_learn import ConvSpec, PoolSpec, FlattenSpec, DenseSpec, SoftmaxSpec
+from uqa.operators.deep_learn import (
+    ConvSpec, PoolSpec, FlattenSpec, DenseSpec, SoftmaxSpec, AttentionSpec,
+)
 ```
 
 | Spec | Parameters | Description |
@@ -210,12 +216,15 @@ from uqa.operators.deep_learn import ConvSpec, PoolSpec, FlattenSpec, DenseSpec,
 | `FlattenSpec()` | (none) | Flatten spatial nodes into a single vector. |
 | `DenseSpec(output_channels)` | `output_channels=10` | Dense (fully connected) layer. |
 | `SoftmaxSpec()` | (none) | Softmax classification head. |
+| `AttentionSpec(n_heads, mode)` | `n_heads=1`, `mode="content"` | Self-attention layer (Theorem 8.3, Paper 4). Modes: `"content"` (Q=K=V=X), `"random_qk"` (random Q,K, V=X), `"learned_v"` (random Q,K, supervised V). |
 
 **Example:**
 
 ```python
 from uqa.engine import Engine
-from uqa.operators.deep_learn import ConvSpec, PoolSpec, FlattenSpec, DenseSpec, SoftmaxSpec
+from uqa.operators.deep_learn import (
+    ConvSpec, PoolSpec, FlattenSpec, DenseSpec, SoftmaxSpec, AttentionSpec,
+)
 
 engine = Engine()
 
@@ -250,6 +259,28 @@ result = engine.deep_learn(
     lam=1.0,
 )
 print(result["training_accuracy"])
+
+# Train with self-attention and pruning
+result = engine.deep_learn(
+    model_name="attn_pruned_model",
+    table_name="images",
+    label_field="label",
+    embedding_field="embedding",
+    edge_label="spatial",
+    layer_specs=[
+        ConvSpec(n_channels=32),
+        AttentionSpec(n_heads=4, mode="content"),
+        PoolSpec(method="max", pool_size=2),
+        FlattenSpec(),
+        DenseSpec(output_channels=10),
+        SoftmaxSpec(),
+    ],
+    gating="relu",
+    lam=1.0,
+    l1_ratio=0.3,
+    prune_ratio=0.5,
+)
+print(result["training_accuracy"], result["weight_sparsity"])
 ```
 
 #### Inference
@@ -282,6 +313,19 @@ SELECT deep_learn(
     dense(output_channels => 10),
     softmax(),
     gating => 'relu', lambda => 1.0
+) FROM images;
+
+-- With self-attention and pruning
+SELECT deep_learn(
+    'attn_pruned_model', label, embedding, 'spatial',
+    convolve(n_channels => 32),
+    attention(n_heads => 4, mode => 'content'),
+    pool('max', 2),
+    flatten(),
+    dense(output_channels => 10),
+    softmax(),
+    gating => 'relu', lambda => 1.0,
+    l1_ratio => 0.3, prune_ratio => 0.5
 ) FROM images;
 ```
 

@@ -458,13 +458,13 @@ where $\lambda$ is the regularization parameter (prior precision in Bayesian lin
 
 Rather than training a single end-to-end network, the pipeline trains independent expert heads at each conv+pool stage and combines them via the Product of Experts framework (Theorem 8.3).
 
-Each stage $s$ produces a feature representation $X_s$ after convolution and pooling. An expert head $W_s$ is trained via ridge regression on $X_s$, yielding per-stage logits $\ell_s = X_s W_s^T + b_s$. At inference, the experts are combined by logit averaging with a shrinkage correction (Theorem 4.4.1):
+Each stage $s$ produces a feature representation $X_s$ after convolution and pooling. An expert head $W_s$ is trained via ridge regression on $X_s$, yielding per-stage logits $\ell_s = X_s W_s^T + b_s$. At inference, the experts are combined via **accuracy-weighted** logit averaging with a diversity-prior shrinkage correction:
 
 $$
-\ell_{final} = \frac{1}{n_{experts}} \sum_{s=1}^{n_{experts}} \ell_s + \alpha \cdot \log(n_{experts})
+\ell_{final} = \sum_{s=1}^{n_{experts}} w_s \cdot \ell_s + \alpha \cdot \log(n_{experts})
 $$
 
-where $\alpha$ is the shrinkage parameter (default 0.5). The additive $\alpha \cdot \log(n_{experts})$ term in log-odds space compensates for the over-counting of shared evidence across experts — the same correction that resolves conjunction shrinkage in Section 4.1, now applied to neural network ensemble combination.
+where $w_s = a_s / \sum_j a_j$ are normalized weights derived from per-stage training accuracy $a_s$. Experts that achieve higher accuracy on the training set contribute proportionally more to the final prediction. The **diversity-prior shrinkage** parameter $\alpha = 1 / (2\sqrt{n_{experts}})$ replaces the fixed 0.5 default, adapting the correction to the number of experts. The additive $\alpha \cdot \log(n_{experts})$ term in log-odds space compensates for the over-counting of shared evidence across experts — the same correction that resolves conjunction shrinkage in Section 4.1, now applied to neural network ensemble combination.
 
 The final class probabilities are obtained by applying softmax to $\ell_{final}$.
 
@@ -515,10 +515,63 @@ The compute backend in `uqa/operators/_backend.py` provides transparent GPU acce
 |----------|----------|-------------|
 | `grid_forward()` | `F.conv2d` + `F.max_pool2d` | Manual padded convolution + reshape pooling |
 | `ridge_solve()` | `torch.linalg.solve` | `numpy.linalg.solve` |
+| `elastic_net_solve()` | Proximal gradient on device | `numpy` ISTA loop |
 | `batch_dense()` | `X @ W^T + b` on device | `numpy` matmul |
 | `batch_softmax()` | `F.softmax` | Shifted exp with manual normalization |
 
-#### 4.11.5 Model Catalog
+**Batched grid_forward.** For large datasets, `grid_forward()` processes samples in batches of 2048 to prevent GPU out-of-memory errors. Each batch is uploaded, convolved, pooled, and downloaded independently, then results are concatenated. On Apple Silicon (MPS), tensors with total elements exceeding `INT_MAX` ($2^{31} - 1$) fall back to CPU PyTorch, as the MPS backend does not support tensors that large. The same `INT_MAX` guard applies to `ridge_solve()`.
+
+#### 4.11.5 Self-Attention Layer
+
+The `AttentionSpec` layer implements context-dependent Product of Experts (Theorem 8.3, Paper 4). Self-attention determines how strongly each spatial position's evidence is weighted in the ensemble, providing a learned gating mechanism over the spatial feature map.
+
+**Three modes** are available, representing different assumptions about the query-key-value projections:
+
+| Mode | Q | K | V | Description |
+|------|---|---|---|-------------|
+| `content` | $X$ | $X$ | $X$ | Pure content-based attention — positions attend based on their own feature similarity |
+| `random_qk` | $W_Q X$ | $W_K X$ | $X$ | Random Q,K projections with V=X (extreme learning machine prior) |
+| `learned_v` | $W_Q X$ | $W_K X$ | $W_V X$ | Random Q,K with supervised V projection via hybrid ridge solve |
+
+For multi-head attention ($n_{heads} > 1$), the feature dimension is split across heads, each head computes attention independently, and the results are concatenated. The attention computation is:
+
+$$
+\text{Attention}(Q, K, V) = \text{softmax}\!\left(\frac{QK^T}{\sqrt{d_k}}\right) V
+$$
+
+where $d_k$ is the per-head dimension. For `random_qk` and `learned_v` modes, Q and K projection matrices are sampled from a Kaiming-He distribution $\mathcal{N}(0, \sqrt{2/d_{in}})$ and held fixed. In `learned_v` mode, the V projection is learned via ridge regression to maximize alignment with the target labels.
+
+**GPU optimization.** The attention layer uses chunked attention computation for memory efficiency, single-upload slicing for Q/K/V projections (avoiding redundant CPU-GPU transfers), and dispatches the V ridge solve through the same GPU-accelerated `ridge_solve()` backend.
+
+**Implementation.** `AttentionSpec` in `uqa/operators/deep_learn.py` defines the layer specification. The attention forward pass is implemented in the training pipeline and integrated into both `deep_learn()` and `deep_fusion()`.
+
+#### 4.11.6 Neural Network Pruning
+
+Post-training pruning reduces model size and can improve generalization by removing redundant parameters. UQA provides two complementary pruning techniques that can be applied independently or in combination.
+
+**Elastic net regularization** (`l1_ratio > 0`). Combines L1 (lasso) and L2 (ridge) penalties via proximal gradient descent (ISTA — Iterative Shrinkage-Thresholding Algorithm). The objective is:
+
+$$
+\min_W \frac{1}{n}\|Y - XW\|^2 + \lambda \left(\rho \|W\|_1 + \frac{1-\rho}{2} \|W\|_2^2\right)
+$$
+
+where $\rho$ is the `l1_ratio` parameter. The solver is warm-started from the ridge regression solution (the $\rho = 0$ case), which provides a good initial point and reduces the number of ISTA iterations needed for convergence. The L1 penalty drives small weights to exactly zero, producing structurally sparse weight matrices. The soft thresholding (proximal) step is:
+
+$$
+W \leftarrow \text{sign}(W) \cdot \max(|W| - \tau, 0)
+$$
+
+where $\tau = \lambda \rho / (n \cdot L)$ and $L$ is the Lipschitz constant of the smooth part of the objective.
+
+**Magnitude pruning** (`prune_ratio > 0`). After training (with or without elastic net), the smallest weights by absolute magnitude are set to zero. A `prune_ratio` of $p$ zeroes the bottom $p \cdot 100\%$ of weights by percentile. The threshold is computed as `numpy.percentile(|W|, p * 100)`, and all weights below this threshold are set to zero.
+
+**Combined pruning.** When both `l1_ratio > 0` and `prune_ratio > 0`, elastic net drives weights toward sparsity during optimization, and magnitude pruning provides a hard cutoff afterward. This two-phase approach yields sparser models than either technique alone.
+
+**Empirical results.** On MNIST (28x28 grayscale digits), 50% magnitude pruning retains approximately 94.68% test accuracy compared to the unpruned baseline of 97.89% — a modest accuracy trade-off for halving the number of active parameters.
+
+**Implementation.** `elastic_net_solve()` and `magnitude_prune()` in `uqa/operators/_backend.py` implement the two pruning backends. Both are GPU-accelerated when PyTorch is available. The `TrainedModel` dataclass stores `l1_ratio`, `prune_ratio`, and `weight_sparsity` metadata for inspection.
+
+#### 4.11.7 Model Catalog
 
 Trained models are persisted to the `_models` table in the SQLite catalog:
 
@@ -1015,8 +1068,14 @@ The table below maps each formal definition and theorem from the four papers to 
 | Fusion Gating (Section 6.5-6.7) | `gating` parameter in `LogOddsFusion`, `LogOddsFusionOperator`, `FusionWANDScorer` |
 | Progressive Fusion (Section 7) | `ProgressiveFusionOperator` in `uqa/operators/progressive_fusion.py` |
 | Analytical Training / PoE (Theorem 8.3) | `train_model()`, `predict()` in `uqa/operators/deep_learn.py` |
+| Self-Attention Layer (Theorem 8.3) | `AttentionSpec` in `uqa/operators/deep_learn.py` |
+| Accuracy-Weighted PoE | Per-stage accuracy weighting in `train_model()` and `predict()` |
+| Diversity-Prior Shrinkage | $\alpha = 1/(2\sqrt{n_{experts}})$ in `train_model()` |
 | Ridge Regression Posterior | `ridge_solve()` in `uqa/operators/_backend.py` |
+| Elastic Net (Proximal GD / ISTA) | `elastic_net_solve()` in `uqa/operators/_backend.py` |
+| Magnitude Pruning | `magnitude_prune()` in `uqa/operators/_backend.py` |
 | GPU-Accelerated Forward Pass | `grid_forward()` in `uqa/operators/_backend.py` |
+| Batched Grid Forward (2048 samples) | `grid_forward()` batch loop in `uqa/operators/_backend.py` |
 | Model Persistence | `_models` table in `uqa/storage/catalog.py`; `save_model()` / `load_model()` in `uqa/engine.py` |
 | Cross-Paradigm Join Costs (Section 4) | Cost/cardinality models in `uqa/planner/cost_model.py`, `uqa/planner/cardinality.py` |
 | Vector Selectivity (Section 5.3) | `_vector_selectivity()` in `uqa/planner/cardinality.py` |

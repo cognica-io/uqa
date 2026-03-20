@@ -218,9 +218,9 @@ Operators are functions that produce posting lists. They are the building blocks
 
 | Operator | Semantics |
 |----------|-----------|
-| DeepFusionOperator | Multi-layer Bayesian fusion (conv, pool, dense, softmax) over graph neighborhoods |
-| DeepLearnOperator | Analytical CNN training via PoE local learning with supervised conv weight estimation |
-| TrainedModel | Persisted representation of a trained model (weights, specs, expert heads) |
+| DeepFusionOperator | Multi-layer Bayesian fusion (conv, pool, dense, softmax, attention) over graph neighborhoods |
+| DeepLearnOperator | Analytical CNN training via PoE local learning with supervised conv weight estimation, attention, and pruning |
+| TrainedModel | Persisted representation of a trained model (weights, specs, expert heads, pruning metadata) |
 
 **Graph maintenance:**
 
@@ -1919,7 +1919,9 @@ from uqa.operators.deep_learn import (
 | `DenseSpec(output_channels=10)` | `output_channels`: target dimensionality (typically equal to the number of classes) | Fully connected layer (ridge regression) |
 | `SoftmaxSpec()` | (none) | Softmax classification head |
 
-The union type `LayerSpec = ConvSpec | PoolSpec | FlattenSpec | DenseSpec | SoftmaxSpec` is accepted by `deep_learn()`.
+| `AttentionSpec(n_heads=1, mode="content")` | `n_heads`: number of attention heads; `mode`: `"content"` (Q=K=V=X), `"random_qk"` (random Q,K projections, V=X), or `"learned_v"` (random Q,K, supervised V via ridge regression) | Self-attention layer (Theorem 8.3, Paper 4) |
+
+The union type `LayerSpec = ConvSpec | PoolSpec | FlattenSpec | DenseSpec | SoftmaxSpec | AttentionSpec` is accepted by `deep_learn()`.
 
 #### `Engine.deep_learn()`
 
@@ -1930,13 +1932,15 @@ Engine.deep_learn(
     label_field: str,
     embedding_field: str,
     edge_label: str,
-    layer_specs: list[ConvSpec | PoolSpec | FlattenSpec | DenseSpec | SoftmaxSpec],
+    layer_specs: list[ConvSpec | PoolSpec | FlattenSpec | DenseSpec | SoftmaxSpec | AttentionSpec],
     gating: str = "none",
     lam: float = 1.0,
+    l1_ratio: float = 0.0,
+    prune_ratio: float = 0.0,
 ) -> dict
 ```
 
-Trains a CNN classifier analytically using PoE local learning with supervised convolution weight estimation. No backpropagation is used — convolution weights are selected by grid search over candidate kernels, and dense layer weights are computed via closed-form ridge regression. Each (conv, pool) stage trains an independent expert head; inference averages expert logits with shrinkage correction (Theorem 4.4.1, Paper 4). The trained model is automatically persisted to the catalog via `save_model()`.
+Trains a CNN classifier analytically using PoE local learning with supervised convolution weight estimation. No backpropagation is used — convolution weights are selected by grid search over candidate kernels, and dense layer weights are computed via closed-form ridge regression. Each (conv, pool) stage trains an independent expert head; inference averages expert logits with accuracy-weighted PoE combination and diversity-prior shrinkage correction ($\alpha = 1 / (2\sqrt{n_{experts}})$). The trained model is automatically persisted to the catalog via `save_model()`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -1948,6 +1952,8 @@ Trains a CNN classifier analytically using PoE local learning with supervised co
 | `layer_specs` | list[LayerSpec] | Architecture specification (sequence of layer specs) |
 | `gating` | str | Gating mode: `"none"`, `"relu"`, or `"swish"` (default: `"none"`) |
 | `lam` | float | Ridge regression regularization parameter (default: 1.0) |
+| `l1_ratio` | float | Elastic net L1 ratio (default: 0.0). Values > 0 enable proximal gradient descent (ISTA), warm-started from ridge. |
+| `prune_ratio` | float | Magnitude pruning ratio (default: 0.0). Values > 0 zero the smallest weights by absolute magnitude percentile. |
 
 Returns a dict with keys:
 
@@ -1959,6 +1965,9 @@ Returns a dict with keys:
 | `feature_dim` | int | Dimensionality of the final feature vector |
 | `training_accuracy` | float | Accuracy on the training set |
 | `class_labels` | list | Sorted list of unique class labels |
+| `l1_ratio` | float | Elastic net L1 ratio used during training |
+| `prune_ratio` | float | Magnitude pruning ratio used during training |
+| `weight_sparsity` | float | Fraction of zero weights in the final model |
 
 ```python
 import numpy as np

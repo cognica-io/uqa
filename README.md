@@ -112,12 +112,14 @@ SELECT deep_learn(
     'mnist_cnn', label, embedding, 'spatial',
     convolve(n_channels => 32),
     pool('max', 2),
+    attention(n_heads => 4, mode => 'learned_v'),
     convolve(n_channels => 64),
     pool('max', 2),
     flatten(),
     dense(output_channels => 10),
     softmax(),
-    gating => 'relu', lambda => 1.0
+    gating => 'relu', lambda => 1.0,
+    l1_ratio => 0.3, prune_ratio => 0.5
 ) FROM mnist_train;
 
 -- Deep learning: inference with trained model
@@ -306,7 +308,7 @@ uqa/
                   information-theoretic bounds, graph cost model
   sql/            SQL compiler (pglast), expression evaluator, FTS query parser, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          2764 tests across 83 test files
+  tests/          2771 tests across 85 test files
 benchmarks/       309 pytest-benchmark tests across 15 files (posting list, storage, compiler,
                   execution, planner, scoring, graph, graph centrality, end-to-end SQL,
                   calibration, multi-field, external prior, advanced scoring, advanced graph,
@@ -395,6 +397,7 @@ Used inside `deep_fusion()` to compose neural network pipelines:
 | `softmax()` | Classification head (numerically stable) |
 | `batch_norm([epsilon => 1e-5])` | Per-channel normalization across nodes |
 | `dropout(p)` | Inference-mode scaling by (1 - p) |
+| `attention(n_heads => N, mode => 'content'\|'random_qk'\|'learned_v')` | Self-attention: context-dependent PoE (Theorem 8.3) |
 | `model('name', $1)` | Load trained model and create full inference pipeline (embed + conv + pool + dense + softmax) |
 | `embed(vector, in_channels => C, grid_h => H, grid_w => W)` | Inject raw embedding vector into channel map |
 
@@ -402,7 +405,7 @@ Used inside `deep_fusion()` to compose neural network pipelines:
 
 | Function | Description |
 |----------|-------------|
-| `deep_learn('model', label, embedding, 'edge_label', layers...[, gating][, lambda])` | SELECT aggregate: train a CNN classifier analytically (ridge regression, no backpropagation) |
+| `deep_learn('model', label, embedding, 'edge_label', layers...[, gating][, lambda][, l1_ratio][, prune_ratio])` | SELECT aggregate: train a CNN classifier analytically (ridge regression, no backpropagation). Optional L1 regularization and magnitude pruning. |
 | `deep_predict('model', embedding)` | Per-row scalar: inference with trained model, returns class probabilities |
 | `build_grid_graph('table', rows, cols, 'label')` | FROM-clause: construct 4-connected grid graph for spatial convolution |
 
@@ -748,7 +751,9 @@ python examples/showcase/deep_fusion_gnn.py      # Deep fusion as GNN: graph pro
 python examples/showcase/deep_fusion_cnn.py      # Deep fusion as CNN: spatial convolution over grids
 python examples/showcase/deep_fusion_nn.py       # Full neural network: pool, dense, flatten, softmax, batch_norm, dropout
 python examples/showcase/deep_learn_mnist.py     # MNIST training pipeline: deep_learn + deep_predict + deep_fusion(model())
-python examples/showcase/deep_learn_tiny_imagenet.py  # Tiny ImageNet RGB: 10-class CNN training on 64x64 images
+python examples/showcase/deep_learn_tiny_imagenet.py  # Tiny ImageNet RGB: 50-class CNN training on 64x64 images
+python examples/showcase/deep_learn_attention.py # Self-attention on MNIST: content, random_qk, learned_v modes
+python examples/showcase/deep_learn_mnist_pruning.py  # Neural network pruning: elastic net + magnitude pruning
 ```
 
 ### Interactive Shell

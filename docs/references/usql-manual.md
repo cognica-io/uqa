@@ -303,6 +303,10 @@ INSERT INTO table (col1, col2) VALUES (val1, val2);
 -- Multiple rows
 INSERT INTO table (col1, col2) VALUES (1, 'a'), (2, 'b'), (3, 'c');
 
+-- Parameterized INSERT (parameter binding via $N references)
+INSERT INTO table (label, embedding) VALUES ($1, $2);
+-- params=[label_value, vector_value]
+
 -- Insert from SELECT
 INSERT INTO table (col1, col2) SELECT ... ;
 
@@ -319,6 +323,14 @@ INSERT INTO table (name) VALUES ('Alice') RETURNING *;
 ```
 
 The `EXCLUDED` pseudo-table refers to the row that was proposed for insertion.
+
+**Parameterized INSERT.** Values in the VALUES clause may use parameter references (`$1`, `$2`, ...) instead of literal values. This is especially useful for vector embeddings, where passing a Python list via parameter binding is approximately 65x faster than constructing an `ARRAY[...]` string literal.
+
+```sql
+-- Insert with parameter binding (Python API)
+INSERT INTO images (label, embedding) VALUES ($1, $2);
+-- engine.sql(query, params=[label_value, vector_list])
+```
 
 ### UPDATE
 
@@ -1260,6 +1272,7 @@ USQL exposes analytical deep learning — training and inference without backpro
 | `flatten()` | Flatten spatial dimensions into a single vector |
 | `dense(output_channels => N)` | Fully connected layer with N outputs |
 | `softmax()` | Softmax classification head |
+| `attention(n_heads => N, mode => M)` | Self-attention layer (Theorem 8.3, Paper 4) |
 
 **Named options (after all layer specs):**
 
@@ -1267,6 +1280,8 @@ USQL exposes analytical deep learning — training and inference without backpro
 |--------|--------|---------|-------------|
 | `gating` | `'none'`, `'relu'`, `'swish'` | `'none'` | Nonlinear gating applied between layers |
 | `lambda` | any positive float | `1.0` | Ridge regression regularization strength |
+| `l1_ratio` | float in [0, 1] | `0.0` | Elastic net L1 ratio — proximal gradient descent (ISTA), warm-started from ridge |
+| `prune_ratio` | float in [0, 1) | `0.0` | Magnitude pruning — zeroes the smallest weights by percentile |
 
 ```sql
 -- Train a CNN classifier analytically (no backpropagation)
@@ -1284,6 +1299,80 @@ SELECT deep_learn(
 ```
 
 The model is persisted automatically — subsequent queries can reference it by name for inference.
+
+### Self-Attention Layer
+
+The `attention()` layer implements context-dependent Product of Experts (Theorem 8.3, Paper 4). Attention weights determine how strongly each spatial position's evidence is weighted in the product. Three modes are available:
+
+| Mode | Q, K, V | Description |
+|------|---------|-------------|
+| `'content'` | Q=K=V=X | Pure content-based attention — positions attend based on their own features |
+| `'random_qk'` | Random Q,K; V=X | Random Q,K projections with V=X (extreme learning machine prior) |
+| `'learned_v'` | Random Q,K; learned V | Random Q,K projections with learned V projection via supervised ridge regression |
+
+```sql
+-- Self-attention with 4 heads in content mode
+SELECT deep_learn(
+    'attn_model', label, embedding, 'spatial',
+    convolve(n_channels => 32),
+    attention(n_heads => 4, mode => 'content'),
+    pool('max', 2),
+    flatten(),
+    dense(output_channels => 10),
+    softmax(),
+    gating => 'relu', lambda => 1.0
+) FROM train_data;
+```
+
+The attention layer is GPU-optimized with chunked attention computation, single-upload slicing for Q/K/V projections, and hybrid ridge solve for the `learned_v` mode.
+
+### Neural Network Pruning
+
+Two pruning techniques can be applied to weight matrices via named arguments, either independently or in combination:
+
+**Elastic net** (`l1_ratio`): Combines L1 (lasso) and L2 (ridge) regularization via proximal gradient descent (ISTA — Iterative Shrinkage-Thresholding Algorithm). The solver is warm-started from the ridge regression solution for fast convergence. The `l1_ratio` parameter controls the L1/L2 balance: 1.0 is pure L1 (lasso), 0.0 is pure L2 (ridge).
+
+**Magnitude pruning** (`prune_ratio`): After training, zeroes the smallest weights by absolute magnitude percentile. A `prune_ratio` of 0.5 removes 50% of weights. The pruned model retains high accuracy — for example, 50% pruning retains approximately 94.68% accuracy on MNIST (baseline 97.89%).
+
+```sql
+-- Elastic net with 30% L1 ratio
+SELECT deep_learn(
+    'sparse_cnn', label, embedding, 'spatial',
+    convolve(n_channels => 32),
+    pool('max', 2),
+    flatten(),
+    dense(output_channels => 10),
+    softmax(),
+    gating => 'relu', lambda => 1.0,
+    l1_ratio => 0.3
+) FROM mnist_train;
+
+-- Magnitude pruning at 50%
+SELECT deep_learn(
+    'pruned_cnn', label, embedding, 'spatial',
+    convolve(n_channels => 32),
+    pool('max', 2),
+    flatten(),
+    dense(output_channels => 10),
+    softmax(),
+    gating => 'relu', lambda => 1.0,
+    prune_ratio => 0.5
+) FROM mnist_train;
+
+-- Combined: elastic net + magnitude pruning
+SELECT deep_learn(
+    'combined_cnn', label, embedding, 'spatial',
+    convolve(n_channels => 32),
+    pool('max', 2),
+    flatten(),
+    dense(output_channels => 10),
+    softmax(),
+    gating => 'relu', lambda => 1.0,
+    l1_ratio => 0.3, prune_ratio => 0.5
+) FROM mnist_train;
+```
+
+The return value includes `weight_sparsity` — the fraction of zero weights in the final model.
 
 ### Inference via deep_predict()
 

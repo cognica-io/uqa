@@ -270,6 +270,8 @@ returning_clause
 
 The `EXCLUDED` pseudo-table references the row proposed for insertion inside `ON CONFLICT DO UPDATE SET` expressions.
 
+Expressions inside `row_value` may include `param_ref` (`$1`, `$2`, ...) for parameterized inserts. This is particularly efficient for vector embeddings, where parameter binding avoids the overhead of constructing `ARRAY[...]` string literals (approximately 65x faster).
+
 ### 3.2 UPDATE
 
 ```ebnf
@@ -1151,6 +1153,7 @@ layer_spec
     | flatten_spec
     | dense_spec
     | softmax_spec
+    | attention_spec
     ;
 
 convolve_spec
@@ -1173,17 +1176,23 @@ softmax_spec
     = SOFTMAX '(' ')'
     ;
 
+attention_spec
+    = ATTENTION '(' [ 'n_heads' '=>' integer ] [ ',' 'mode' '=>' string_literal ] ')'
+    ;
+
 named_option
     = 'gating' '=>' string_literal
     | 'lambda' '=>' numeric_literal
+    | 'l1_ratio' '=>' numeric_literal
+    | 'prune_ratio' '=>' numeric_literal
     ;
 ```
 
 `DEEP_LEARN` trains a multi-layer neural network model. The `model_name` identifies the trained model for subsequent prediction. `label_col` and `embedding_col` reference the target and feature columns. `edge_label` specifies the graph edge label used for message passing in convolutional layers. Layer specs are composed in order — the first layer receives the input features and the last layer produces the output.
 
-`CONVOLVE` applies a graph convolution with optional channel count and random seed. `POOL` applies a pooling operation (`'mean'` or `'max'`) with a given kernel size. `FLATTEN` reshapes multi-dimensional features into a single vector. `DENSE` applies a fully connected layer with the specified output dimension. `SOFTMAX` normalizes output scores into a probability distribution.
+`CONVOLVE` applies a graph convolution with optional channel count and random seed. `POOL` applies a pooling operation (`'mean'` or `'max'`) with a given kernel size. `FLATTEN` reshapes multi-dimensional features into a single vector. `DENSE` applies a fully connected layer with the specified output dimension. `SOFTMAX` normalizes output scores into a probability distribution. `ATTENTION` applies self-attention (Theorem 8.3, Paper 4) with optional multi-head parallelism and mode selection: `'content'` (Q=K=V=X), `'random_qk'` (random Q,K projections, V=X), or `'learned_v'` (random Q,K, supervised V projection via ridge regression).
 
-The optional `named_option` arguments control fusion behavior: `gating` selects an activation function (`'relu'` or `'swish'`), and `lambda` sets a regularization coefficient.
+The optional `named_option` arguments control training behavior: `gating` selects an activation function (`'relu'` or `'swish'`), `lambda` sets the ridge regression regularization coefficient, `l1_ratio` enables elastic net regularization via proximal gradient descent (ISTA), and `prune_ratio` enables post-training magnitude pruning of the smallest weights by percentile.
 
 ### 15.2 Prediction
 

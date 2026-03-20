@@ -1,8 +1,8 @@
 # History
 
-## 0.21.0 (2026-03-18)
+## 0.21.0 (2026-03-20)
 
-Deep fusion as a complete neural network execution framework with analytical training pipeline. `deep_learn()` trains CNN classifiers via ridge regression and random multi-channel convolution — no backpropagation. `deep_predict()` and `deep_fusion(model())` provide inference. PyTorch GPU acceleration for conv/pool/dense operations. Storage backend ABCs for backend-agnostic persistence. Internal data model refactored from scalar logits to multi-channel vectors for full DL pipeline support. All 2764 tests pass.
+Deep fusion as a complete neural network execution framework with analytical training pipeline. `deep_learn()` trains CNN classifiers via ridge regression and random multi-channel convolution — no backpropagation. Self-attention (Theorem 8.3) as context-dependent PoE. Neural network pruning via elastic net (L1) and magnitude pruning. Parameterized INSERT for 65x faster vector data loading. `deep_predict()` and `deep_fusion(model())` provide inference. PyTorch GPU acceleration for conv/pool/dense/attention operations. Storage backend ABCs for backend-agnostic persistence. Internal data model refactored from scalar logits to multi-channel vectors for full DL pipeline support. All 2771 tests pass across 85 test files.
 
 ### Deep Fusion: Multi-Layer Bayesian Fusion Operator
 
@@ -80,14 +80,48 @@ Deep fusion as a complete neural network execution framework with analytical tra
 - **`convolve(n_channels => N[, seed => S])`**: Multi-channel random conv spec with optional seed for reproducibility.
 - **`model('name', $1)`**: Self-contained deep fusion layer function. Loads trained model from catalog, creates EmbedLayer with correct `in_channels`/`grid_size`, and builds the full inference pipeline.
 
+### Deep Learning: Self-Attention (Theorem 8.3)
+
+- **`attention(n_heads => N, mode => 'content'|'random_qk'|'learned_v')`**: Self-attention layer in `deep_learn()` and `deep_fusion()`. Paper 4, Theorem 8.3 derives attention as context-dependent Logarithmic Opinion Pooling (Product of Experts). Relaxing the uniform reliability assumption yields attention weights as expert reliability coefficients.
+- **Three training modes**: `content` (Q=K=V=X, no parameters), `random_qk` (random Q,K projections as ELM prior, V=X), `learned_v` (random Q,K, supervised V projection search via ridge regression over random orthogonal candidates).
+- **GPU optimization**: Adaptive chunk size (capped at 512 MB attention matrix), single-upload slicing, Q/K precomputation across V candidates, hybrid ridge solve (GPU matmul + CPU LAPACK).
+
+### Deep Learning: Neural Network Pruning
+
+- **`l1_ratio => 0.3`**: Elastic net (L1+L2) regularization via proximal gradient descent (ISTA). Warm-started from ridge solution for fast convergence. Creates naturally sparse weight patterns. GPU-accelerated on MPS/CUDA.
+- **`prune_ratio => 0.5`**: Post-training magnitude pruning. Zeroes the smallest fraction of weights by percentile. 50% pruning retains 94.68% accuracy on MNIST (baseline 97.89%, -3.2pp).
+- **Combined**: Both L1 sparsity and magnitude pruning can be applied together for maximum compression.
+- **`elastic_net_solve(X, Y, lam, l1_ratio)`**: ISTA solver in `_backend.py`. Frobenius norm Lipschitz estimate, soft-threshold proximal operator.
+- **`magnitude_prune(W, prune_ratio)`**: Percentile-based weight thresholding.
+
+### Deep Learning: Parameterized INSERT
+
+- **`INSERT INTO t (label, embedding) VALUES ($1, $2)`**: ParamRef support in `_extract_insert_value`. Numpy arrays and scalars passed directly via `params=[label, vec]`, bypassing SQL string formatting and pglast parsing. 65x faster than `ARRAY[...]` literals for vector data.
+
+### Deep Learning: Accuracy Improvements
+
+- **Accuracy-weighted PoE**: Expert head logits weighted by per-stage training accuracy instead of uniform average. Prevents low-accuracy early-stage experts from diluting the final head's signal.
+- **Diversity-prior shrinkage**: `alpha = 1/(2*sqrt(n_experts))` from neural-index research. Corrects for conjunction shrinkage in Product of Experts combination.
+- **Batched grid_forward**: 2048-sample mini-batches prevent GPU OOM on large datasets. MPS INT_MAX fallback for ridge_solve when tensor exceeds 2^31 elements.
+- **Tiny ImageNet**: 50 classes (was 10), 64/128/256 channels (was 16/32), 3-stage pool(2) (was 2-stage pool(4)), horizontal flip augmentation (2x training data), lambda=500. ~30% test accuracy (was ~22%, random baseline 2%).
+
 ### Deep Learning: Showcase Examples
 
-- **`examples/showcase/deep_learn_mnist.py`**: Full MNIST pipeline (60,000 train, 10,000 test). Architecture: conv(32ch) -> pool(2) -> conv(64ch) -> pool(2) -> flatten -> dense(10) -> softmax. Training via `SELECT deep_learn(...) FROM mnist_train`. Inference via both `deep_predict()` and `deep_fusion(model())`. 97.89% test accuracy.
-- **`examples/showcase/deep_learn_tiny_imagenet.py`**: Tiny ImageNet pipeline (10 classes, 500 train/class, 50 val/class, 64x64 RGB). Architecture: conv(16ch) -> pool(4) -> conv(32ch) -> pool(4) -> flatten -> dense(10) -> softmax. 61.6% test accuracy on 10-class subset.
+- **`examples/showcase/deep_learn_mnist.py`**: Full MNIST pipeline (60,000 train, 10,000 test). Architecture: conv(32ch) -> pool(2) -> conv(64ch) -> pool(2) -> flatten -> dense(10) -> softmax. Training via `SELECT deep_learn(...) FROM mnist_train`. Inference via both `deep_predict()` and `deep_fusion(model())`. Parameterized INSERT for data loading. 97.89% test accuracy.
+- **`examples/showcase/deep_learn_tiny_imagenet.py`**: Tiny ImageNet pipeline (50 classes, 500 train/class + flip augmentation, 50 val/class, 64x64 RGB). Architecture: conv(64ch) -> pool(2) -> conv(128ch) -> pool(2) -> conv(256ch) -> pool(2) -> flatten -> dense(50) -> softmax. ~30% test accuracy on 50-class subset (random baseline 2%).
+- **`examples/showcase/deep_learn_attention.py`**: Self-attention on MNIST. Three modes (content, random_qk, learned_v), GPU-optimized chunked attention, PoE training pipeline with attention expert heads.
+- **`examples/showcase/deep_learn_mnist_pruning.py`**: Neural network pruning on MNIST. Elastic net sweep (l1_ratio 0.1-0.7), magnitude pruning sweep (prune_ratio 0.5-0.9), combined configurations, accuracy vs sparsity summary table.
 
 ### Deep Learning: Tests
 
-- **18 new tests** in `uqa/tests/test_deep_learn.py`: ridge regression correctness (4), LayerSpec/TrainedModel serialization (3), Python API train+predict (3), SQL aggregate syntax (4), PoE deep_predict/deep_fusion compatibility (2), model catalog persistence (2).
+- **25 tests** in `uqa/tests/test_deep_learn.py`: ridge regression correctness (4), LayerSpec/TrainedModel serialization (3), Python API train+predict (3), SQL aggregate syntax (4), PoE deep_predict/deep_fusion compatibility (2), model catalog persistence (2), pruning (4), self-attention (3).
+- **3 parameterized INSERT tests** in `uqa/tests/test_sql.py`: scalar params, vector params, missing param error.
+
+### CI and Tooling
+
+- **Pyright pre-commit hook**: Local system pyright added to `.pre-commit-config.yaml`. Uses project's `pyproject.toml` settings (basic mode, `uqa/` directory).
+- **NDArray type annotations**: `ridge_solve`, `_build_kernel_np`, `hop_weights_to_kernel`, `_generate_kernels` return `NDArray[np.floating]` or `NDArray[np.float32]` for correct `.tolist()` type inference.
+- **`convolve()` direction validation**: SQL compiler validates direction argument must be `'both'`, `'out'`, or `'in'`.
 
 ## 0.20.1 (2026-03-18)
 
