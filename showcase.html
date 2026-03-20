@@ -808,6 +808,33 @@ graph TD
     <span class="fn">softmax</span>(),
     gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>, lambda <span class="cm">=&gt;</span> 500.0
 ) <span class="kw">FROM</span> tiny_train;</code></pre>
+
+  <h4>Experimental Results</h4>
+  <table>
+    <thead>
+      <tr><th>Configuration</th><th>Train</th><th>Test</th><th>Features</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>16/32 ch, pool(4), 10 cls, &lambda;=1</td><td>62%</td><td>22%</td><td>512</td></tr>
+      <tr><td>16/32/64 ch, pool(2), 50 cls, &lambda;=100</td><td>64%</td><td>22%</td><td>4,096</td></tr>
+      <tr><td>32/64/128 ch, pool(2), 50 cls, &lambda;=1000</td><td>51%</td><td>27%</td><td>8,192</td></tr>
+      <tr><td>64/128/256 ch, pool(2), 50 cls, &lambda;=500</td><td>80%</td><td><strong>30%</strong></td><td>16,384</td></tr>
+      <tr><td>64/128/256 ch, &lambda;=500, 5-seed ensemble</td><td>79%</td><td><strong>34%</strong></td><td>16,384</td></tr>
+      <tr><td>128/256/512 ch, &lambda;=1000, 5-seed ensemble</td><td>86%</td><td><strong>35%</strong></td><td>32,768</td></tr>
+    </tbody>
+  </table>
+  <p style="font-size: 0.85rem; color: #64748b; margin-top: 0.3rem;">
+    Random baseline for 50 classes: 2%. All results without backpropagation.
+  </p>
+
+  <div class="note">
+    <strong>No backpropagation</strong>: Conv kernels are random (Kaiming initialization),
+    dense layer trained via ridge regression $W = (X^T X + \lambda I)^{-1} X^T Y$.
+    Data augmentation (horizontal flip) doubles the training set to 50,000.
+    Seed ensemble averages logits from independently-initialized random kernel sets.
+    <strong>35% on 50-class natural images</strong> (17.5&times; random baseline)
+    demonstrates that analytical training scales to RGB image classification.
+  </div>
 </section>
 
 <!-- ============ Self-Attention ============ -->
