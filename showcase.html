@@ -21,7 +21,7 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
 <header class="hero hero-compact">
   <h1><span>UQA</span> Showcase</h1>
   <p class="tagline">
-    Ten demonstrations that bring the four theoretical papers to life &mdash;
+    Eleven demonstrations that bring the four theoretical papers to life &mdash;
     from four-paradigm unification to analytical deep learning training pipelines with self-attention, expressed as SQL.
   </p>
 </header>
@@ -67,6 +67,7 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
     <li class="toc-h3"><a href="#dl-mnist">MNIST</a></li>
     <li class="toc-h3"><a href="#dl-tiny">Tiny ImageNet</a></li>
     <li class="toc-h3"><a href="#dl-attention">Self-Attention</a></li>
+    <li class="toc-h3"><a href="#dl-pruning">Pruning</a></li>
     <li><a href="#source">Source Files</a></li>
   </ul>
 </aside>
@@ -112,7 +113,7 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
       <h3><a href="#deep-learn">Deep Learning</a></h3>
       <p>Analytical CNN training on MNIST and Tiny ImageNet &mdash; no backpropagation.
         <code>deep_learn()</code>, <code>deep_predict()</code>, and <code>model()</code>
-        with PyTorch GPU acceleration.</p>
+        with PyTorch GPU acceleration. Elastic net and magnitude pruning for weight sparsity.</p>
       <p style="font-size: 0.82rem; color: var(--accent); margin-top: 0.5rem;">Paper 4 (training)</p>
     </div>
     <div class="card">
@@ -988,6 +989,73 @@ graph TD
     the probabilistic framework (Remark 8.5) and remains an architectural choice;
     <code>scaled_dot_product_attention</code> provides the standard $q^T k / \sqrt{d}$ form.
   </div>
+
+  <h3 id="dl-pruning">Neural Network Pruning</h3>
+  <p class="paper-meta">
+    <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/deep_learn_mnist_pruning.py">deep_learn_mnist_pruning.py</a>
+    &middot; Block-WAND pruning (neural-index research)
+  </p>
+  <p>
+    Three independent pruning techniques, each optional via SQL named arguments.
+    L1 regularization (elastic net) creates naturally sparse weight patterns;
+    magnitude pruning zeroes the smallest weights post-training.
+    Both can be combined for maximum compression.
+  </p>
+
+  <h4>Pruning Pipeline</h4>
+  <pre class="mermaid">
+graph TD
+    Train["Training Data"] --> Ridge["Ridge / Elastic Net<br/>W = (X'X + &lambda;I)&#8315;&sup1;X'Y<br/>+ L1 proximal gradient"]
+
+    subgraph Optional["Optional Pruning"]
+        direction LR
+        L1["Elastic Net<br/>l1_ratio &gt; 0<br/>ISTA warm-started"] --> Mag["Magnitude Pruning<br/>prune_ratio &gt; 0<br/>percentile threshold"]
+    end
+
+    Ridge --> Optional
+    Optional --> Sparse["Sparse Weight Matrix<br/>W_pruned"]
+    Sparse --> Predict["deep_predict()<br/>same API, faster inference"]
+  </pre>
+
+  <h4>SQL: Training with Pruning</h4>
+
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">-- Elastic Net: L1 + L2 regularization for sparse weights</span>
+<span class="kw">SELECT</span> <span class="fn">deep_learn</span>(
+    <span class="st">'sparse_cnn'</span>, label, embedding, <span class="st">'spatial'</span>,
+    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 32),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 2),
+    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 64),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 2),
+    <span class="fn">flatten</span>(),
+    <span class="fn">dense</span>(output_channels <span class="cm">=&gt;</span> 10),
+    <span class="fn">softmax</span>(),
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>,
+    lambda <span class="cm">=&gt;</span> 1.0,
+    l1_ratio <span class="cm">=&gt;</span> 0.3,           <span class="cm">-- L1 weight (0 = ridge, 1 = lasso)</span>
+    prune_ratio <span class="cm">=&gt;</span> 0.5         <span class="cm">-- zero out 50% of smallest weights</span>
+) <span class="kw">FROM</span> mnist_train;</code></pre>
+
+  <h4>MNIST Results: Accuracy vs Sparsity</h4>
+  <table>
+    <thead>
+      <tr><th>Configuration</th><th>Test Accuracy</th><th>Sparsity</th><th>Weight Norm</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Baseline (ridge, no pruning)</td><td><strong>97.89%</strong></td><td>0.0%</td><td>5.56</td></tr>
+      <tr><td>Magnitude prune 50%</td><td>94.68%</td><td>50.0%</td><td>5.49</td></tr>
+      <tr><td>L1=0.3 + prune 50%</td><td>94.14%</td><td>50.0%</td><td>5.12</td></tr>
+      <tr><td>Magnitude prune 70%</td><td>67.21%</td><td>70.0%</td><td>5.31</td></tr>
+      <tr><td>Magnitude prune 90%</td><td>71.26%</td><td>90.0%</td><td>4.62</td></tr>
+    </tbody>
+  </table>
+
+  <div class="note">
+    <strong>50% pruning retains 94.68% accuracy</strong> (baseline 97.89%, &minus;3.2pp) &mdash;
+    half the dense layer weights are zeroed with minimal accuracy loss.
+    Elastic net (ISTA proximal gradient) is warm-started from the ridge solution for fast convergence.
+    All pruning is optional: <code>l1_ratio => 0</code> and <code>prune_ratio => 0</code> (default) disables pruning entirely.
+  </div>
 </section>
 
 <!-- ============ Source Files ============ -->
@@ -1065,6 +1133,13 @@ graph TD
         Self-attention on MNIST: content, random Q/K, learned V &mdash; GPU-optimized
       </p>
     </div>
+    <div class="card">
+      <h3>Deep Learn: Pruning</h3>
+      <p>
+        <a href="https://github.com/cognica-io/uqa/blob/main/examples/showcase/deep_learn_mnist_pruning.py">deep_learn_mnist_pruning.py</a><br>
+        Elastic net + magnitude pruning on MNIST: accuracy vs sparsity trade-off
+      </p>
+    </div>
   </div>
 
   <span class="example-tag tag-shell">Shell</span>
@@ -1077,7 +1152,8 @@ python examples/showcase/deep_fusion_cnn.py
 python examples/showcase/deep_fusion_nn.py
 python examples/showcase/deep_learn_mnist.py
 python examples/showcase/deep_learn_tiny_imagenet.py
-python examples/showcase/deep_learn_attention.py</code></pre>
+python examples/showcase/deep_learn_attention.py
+python examples/showcase/deep_learn_mnist_pruning.py</code></pre>
 </section>
 
 </div><!-- .content -->
