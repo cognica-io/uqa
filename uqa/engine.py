@@ -489,6 +489,8 @@ class Engine:
         layer_specs: list[Any] | None = None,
         gating: str = "none",
         lam: float = 1.0,
+        l1_ratio: float = 0.0,
+        prune_ratio: float = 0.0,
         # SQL aggregate callback interface
         rows: list[dict[str, Any]] | None = None,
         positional_args: list[Any] | None = None,
@@ -529,6 +531,8 @@ class Engine:
             )
             gating = str(named.get("gating", "none"))
             lam = float(named.get("lambda", 1.0))
+            l1_ratio = float(named.get("l1_ratio", 0.0))
+            prune_ratio = float(named.get("prune_ratio", 0.0))
 
             # Parse layer specs from nested function dicts
             layer_specs = []
@@ -572,6 +576,8 @@ class Engine:
             layer_specs=layer_specs or [],
             gating=gating,
             lam=lam,
+            l1_ratio=l1_ratio,
+            prune_ratio=prune_ratio,
             rows=rows,
         )
 

@@ -34,8 +34,10 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 from uqa.operators._backend import (
+    elastic_net_solve,
     grid_forward,
     hop_weights_to_kernel,
+    magnitude_prune,
     ridge_solve,
 )
 
@@ -143,6 +145,10 @@ class TrainedModel:
     in_channels: int = 1
     # Self-attention parameters (per attention layer)
     attention_params: list[dict[str, Any]] = field(default_factory=list)
+    # Pruning metadata
+    l1_ratio: float = 0.0
+    prune_ratio: float = 0.0
+    weight_sparsity: float = 0.0
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -382,6 +388,8 @@ def train_model(
     layer_specs: list[LayerSpec],
     gating: str = "none",
     lam: float = 1.0,
+    l1_ratio: float = 0.0,
+    prune_ratio: float = 0.0,
     rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Train via PoE local learning with supervised conv weight search.
@@ -579,7 +587,12 @@ def train_model(
 
         # Train expert head (for both stage and attention operations)
         X_stage = current_flat.astype(np.float64)
-        W_stage, b_stage = ridge_solve(X_stage, Y, lam)
+        if l1_ratio > 0:
+            W_stage, b_stage = elastic_net_solve(X_stage, Y, lam, l1_ratio)
+        else:
+            W_stage, b_stage = ridge_solve(X_stage, Y, lam)
+        if prune_ratio > 0:
+            W_stage = magnitude_prune(W_stage, prune_ratio)
         expert_weights_list.append(W_stage.flatten().tolist())
         expert_biases_list.append(b_stage.flatten().tolist())
         expert_input_channels.append(X_stage.shape[1])
@@ -591,7 +604,12 @@ def train_model(
     # Final head
     X_final = current_flat.astype(np.float64)
     n_features = X_final.shape[1]
-    W_final, b_final = ridge_solve(X_final, Y, lam)
+    if l1_ratio > 0:
+        W_final, b_final = elastic_net_solve(X_final, Y, lam, l1_ratio)
+    else:
+        W_final, b_final = ridge_solve(X_final, Y, lam)
+    if prune_ratio > 0:
+        W_final = magnitude_prune(W_final, prune_ratio)
     final_pred = np.argmax(X_final @ W_final.T + b_final, axis=1)
     final_acc = float(np.mean(final_pred == true_classes))
     expert_accuracies.append(final_acc)
@@ -715,6 +733,13 @@ def train_model(
         expert_accuracies=expert_accuracies,
         shrinkage_alpha=shrinkage_alpha,
         attention_params=attention_params_list,
+        l1_ratio=l1_ratio,
+        prune_ratio=prune_ratio,
+        weight_sparsity=float(
+            np.mean(np.array(W_final.flatten()) == 0)
+            if prune_ratio > 0 or l1_ratio > 0
+            else 0.0
+        ),
     )
 
     engine.save_model(model_name, trained.to_dict())
@@ -726,6 +751,9 @@ def train_model(
         "training_accuracy": accuracy,
         "feature_dim": n_features,
         "class_labels": trained.class_labels,
+        "l1_ratio": l1_ratio,
+        "prune_ratio": prune_ratio,
+        "weight_sparsity": trained.weight_sparsity,
     }
 
 

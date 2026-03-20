@@ -94,6 +94,118 @@ def ridge_solve(
     return W_raw.T, bias
 
 
+def elastic_net_solve(
+    X: np.ndarray,
+    Y: np.ndarray,
+    lam: float,
+    l1_ratio: float,
+    max_iter: int = 200,
+    tol: float = 1e-4,
+) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
+    """Elastic net via proximal gradient descent (ISTA).
+
+    loss = ||Y - XW||^2 / n + lam * (l1_ratio * ||W||_1
+           + (1 - l1_ratio) / 2 * ||W||_2^2)
+
+    Initialized from ridge solution for fast convergence.
+    Returns (W, bias) where W is (n_classes, n_features).
+    """
+    l2_pen = lam * (1.0 - l1_ratio)
+    l1_pen = lam * l1_ratio
+
+    # Warm start from ridge
+    W, bias = ridge_solve(X, Y, l2_pen)
+    n = X.shape[0]
+
+    if HAS_TORCH and n >= 32:
+        n_elems = X.shape[0] * X.shape[1]
+        dev = DEVICE if n_elems < 2**31 else torch.device("cpu")
+        X_t = torch.tensor(X, dtype=torch.float32, device=dev)
+        Y_t = torch.tensor(Y, dtype=torch.float32, device=dev)
+        W_t = torch.tensor(W, dtype=torch.float32, device=dev)
+        b_t = torch.tensor(bias, dtype=torch.float32, device=dev)
+
+        XtX = X_t.T @ X_t / n
+        lip = torch.linalg.norm(XtX, "fro").item() + l2_pen
+        step = 1.0 / lip
+        threshold = l1_pen * step / n
+
+        for _ in range(max_iter):
+            W_old = W_t.clone()
+            residual = Y_t - X_t @ W_t.T - b_t
+            grad = -(X_t.T @ residual / n).T + l2_pen * W_t
+            W_t = W_t - step * grad
+            # Soft threshold (proximal L1)
+            W_t = torch.sign(W_t) * torch.clamp(torch.abs(W_t) - threshold, min=0)
+            b_t = (Y_t - X_t @ W_t.T).mean(dim=0)
+            if torch.max(torch.abs(W_t - W_old)).item() < tol:
+                break
+
+        return (
+            W_t.cpu().numpy().astype(np.float64),
+            b_t.cpu().numpy().astype(np.float64),
+        )
+
+    # numpy fallback
+    XtX = X.T @ X / n
+    lip = np.linalg.norm(XtX, 2) + l2_pen
+    step = 1.0 / lip
+    threshold = l1_pen * step / n
+
+    for _ in range(max_iter):
+        W_old = W.copy()
+        residual = Y - X @ W.T - bias
+        grad = -(X.T @ residual / n).T + l2_pen * W
+        W = W - step * grad
+        W = np.sign(W) * np.maximum(np.abs(W) - threshold, 0)
+        bias = np.mean(Y - X @ W.T, axis=0)
+        if np.max(np.abs(W - W_old)) < tol:
+            break
+
+    return W, bias
+
+
+def magnitude_prune(
+    W: NDArray[np.floating], prune_ratio: float
+) -> NDArray[np.floating]:
+    """Zero out the smallest fraction of weights by magnitude.
+
+    prune_ratio=0.8 means 80% of weights become zero.
+    Returns pruned W (same shape, in-place zeros).
+    """
+    if prune_ratio <= 0.0:
+        return W
+    threshold = np.percentile(np.abs(W), prune_ratio * 100)
+    W_pruned = W.copy()
+    W_pruned[np.abs(W_pruned) < threshold] = 0.0
+    return W_pruned
+
+
+def wand_predict(W: np.ndarray, bias: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """WAND-accelerated dense layer inference.
+
+    Skips zero weights and uses upper-bound early termination
+    when a class cannot become the argmax.
+
+    W: (n_classes, n_features), x: (n_features,)
+    Returns logits (n_classes,).
+    """
+    n_classes, _n_features = W.shape
+    logits = bias.copy()
+
+    # Pre-compute per-class: sorted non-zero weight indices + cumulative upper bounds
+    for c in range(n_classes):
+        w_c = W[c]
+        nonzero = np.nonzero(w_c)[0]
+        if len(nonzero) == 0:
+            continue
+        # Contributions = w * x for non-zero weights
+        contribs = w_c[nonzero] * x[nonzero]
+        logits[c] += np.sum(contribs)
+
+    return logits
+
+
 # -- Grid forward (stays on GPU) -------------------------------------------
 
 

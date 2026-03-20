@@ -280,6 +280,99 @@ class TestDeepLearnAPI:
 
 
 # ----------------------------------------------------------------
+# Pruning tests
+# ----------------------------------------------------------------
+
+
+class TestPruning:
+    def test_elastic_net(self, grid_engine):
+        """L1 regularization should produce sparser weights."""
+        result = grid_engine.deep_learn(
+            model_name="l1_model",
+            table_name="images",
+            label_field="label",
+            embedding_field="embedding",
+            edge_label="spatial",
+            layer_specs=[
+                FlattenSpec(),
+                DenseSpec(output_channels=2),
+                SoftmaxSpec(),
+            ],
+            gating="relu",
+            lam=1.0,
+            l1_ratio=0.5,
+        )
+        assert result["l1_ratio"] == 0.5
+        assert result["num_classes"] == 2
+        # Should still predict
+        predictions = grid_engine.deep_predict("l1_model", [0.8] * 8 + [0.0] * 8)
+        assert len(predictions) == 2
+        total = sum(p for _, p in predictions)
+        assert total == pytest.approx(1.0, abs=1e-6)
+
+    def test_magnitude_pruning(self, grid_engine):
+        """Magnitude pruning should create sparse weights."""
+        result = grid_engine.deep_learn(
+            model_name="pruned_model",
+            table_name="images",
+            label_field="label",
+            embedding_field="embedding",
+            edge_label="spatial",
+            layer_specs=[
+                FlattenSpec(),
+                DenseSpec(output_channels=2),
+                SoftmaxSpec(),
+            ],
+            lam=1.0,
+            prune_ratio=0.5,
+        )
+        assert result["prune_ratio"] == 0.5
+        assert result["weight_sparsity"] > 0
+        # Should still predict
+        predictions = grid_engine.deep_predict("pruned_model", [0.8] * 8 + [0.0] * 8)
+        assert len(predictions) == 2
+
+    def test_elastic_net_plus_pruning(self, grid_engine):
+        """Combined L1 + magnitude pruning."""
+        result = grid_engine.deep_learn(
+            model_name="combo_model",
+            table_name="images",
+            label_field="label",
+            embedding_field="embedding",
+            edge_label="spatial",
+            layer_specs=[
+                FlattenSpec(),
+                DenseSpec(output_channels=2),
+                SoftmaxSpec(),
+            ],
+            lam=1.0,
+            l1_ratio=0.3,
+            prune_ratio=0.5,
+        )
+        assert result["weight_sparsity"] > 0
+        predictions = grid_engine.deep_predict("combo_model", [0.8] * 8 + [0.0] * 8)
+        total = sum(p for _, p in predictions)
+        assert total == pytest.approx(1.0, abs=1e-6)
+
+    def test_pruning_sql(self, grid_engine):
+        """Pruning via SQL named args."""
+        result = grid_engine.sql("""
+            SELECT deep_learn(
+                'sql_pruned', label, embedding, 'spatial',
+                flatten(),
+                dense(output_channels => 2),
+                softmax(),
+                lambda => 1.0,
+                l1_ratio => 0.3,
+                prune_ratio => 0.5
+            ) FROM images
+        """)
+        row = result.rows[0]["deep_learn"]
+        assert row["l1_ratio"] == 0.3
+        assert row["prune_ratio"] == 0.5
+
+
+# ----------------------------------------------------------------
 # SQL syntax tests
 # ----------------------------------------------------------------
 
