@@ -506,6 +506,7 @@ class Engine:
             ConvSpec,
             DenseSpec,
             FlattenSpec,
+            GlobalPoolSpec,
             PoolSpec,
             SoftmaxSpec,
             train_model,
@@ -545,6 +546,7 @@ class Engine:
                             ConvSpec(
                                 kernel_hops=int(item.get("kernel_hops", 1)),
                                 n_channels=int(item.get("n_channels", 1)),
+                                init_mode=str(item.get("init", "kaiming")),
                             )
                         )
                     elif fn == "pool":
@@ -557,6 +559,9 @@ class Engine:
                         )
                     elif fn == "flatten":
                         layer_specs.append(FlattenSpec())
+                    elif fn == "global_pool":
+                        gp_method = str(p[0]) if p else str(item.get("method", "avg"))
+                        layer_specs.append(GlobalPoolSpec(method=gp_method))
                     elif fn == "dense":
                         layer_specs.append(
                             DenseSpec(

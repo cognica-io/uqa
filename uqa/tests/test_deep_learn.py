@@ -17,10 +17,12 @@ from uqa.operators.deep_learn import (
     ConvSpec,
     DenseSpec,
     FlattenSpec,
+    GlobalPoolSpec,
     PoolSpec,
     SoftmaxSpec,
     TrainedModel,
     _dicts_to_specs,
+    _generate_kernels,
     _specs_to_dicts,
 )
 
@@ -558,3 +560,278 @@ class TestModelCatalogPersistence:
         e.delete_model("to_delete")
         assert e.load_model("to_delete") is None
         e.close()
+
+
+# ----------------------------------------------------------------
+# Tests: Global Pooling
+# ----------------------------------------------------------------
+
+
+class TestGlobalPooling:
+    def test_grid_global_pool_avg(self):
+        """Global average pooling reduces (batch, C*H*W) -> (batch, C)."""
+        from uqa.operators._backend import grid_global_pool
+
+        # 2 samples, 3 channels, 4x4 spatial = 48 features
+        rng = np.random.RandomState(42)
+        features = rng.randn(2, 48).astype(np.float32)
+        result = grid_global_pool(features, 4, 4, "avg")
+        assert result.shape == (2, 3)
+        # Verify: manual mean over spatial dims
+        reshaped = features.reshape(2, 3, 4, 4)
+        expected = reshaped.mean(axis=(2, 3))
+        np.testing.assert_allclose(result, expected, atol=1e-5)
+
+    def test_grid_global_pool_max(self):
+        """Global max pooling reduces (batch, C*H*W) -> (batch, C)."""
+        from uqa.operators._backend import grid_global_pool
+
+        rng = np.random.RandomState(42)
+        features = rng.randn(2, 48).astype(np.float32)
+        result = grid_global_pool(features, 4, 4, "max")
+        assert result.shape == (2, 3)
+        reshaped = features.reshape(2, 3, 4, 4)
+        expected = reshaped.max(axis=(2, 3))
+        np.testing.assert_allclose(result, expected, atol=1e-5)
+
+    def test_grid_global_pool_avg_max(self):
+        """avg_max concatenates avg and max -> (batch, 2*C)."""
+        from uqa.operators._backend import grid_global_pool
+
+        rng = np.random.RandomState(42)
+        features = rng.randn(2, 48).astype(np.float32)
+        result = grid_global_pool(features, 4, 4, "avg_max")
+        assert result.shape == (2, 6)  # 2*3 channels
+        reshaped = features.reshape(2, 3, 4, 4)
+        expected_avg = reshaped.mean(axis=(2, 3))
+        expected_max = reshaped.max(axis=(2, 3))
+        np.testing.assert_allclose(result[:, :3], expected_avg, atol=1e-5)
+        np.testing.assert_allclose(result[:, 3:], expected_max, atol=1e-5)
+
+    def test_global_pool_spec_serialization(self):
+        """GlobalPoolSpec round-trips through dict serialization."""
+        specs = [
+            ConvSpec(n_channels=8),
+            PoolSpec(),
+            GlobalPoolSpec(method="avg_max"),
+            DenseSpec(output_channels=3),
+            SoftmaxSpec(),
+        ]
+        dicts = _specs_to_dicts(specs)
+        assert dicts[2] == {"type": "global_pool", "method": "avg_max"}
+        restored = _dicts_to_specs(dicts)
+        assert isinstance(restored[2], GlobalPoolSpec)
+        assert restored[2].method == "avg_max"
+
+    def test_global_pool_training_sql(self, grid_engine):
+        """Train with global_pool('avg') via SQL and verify feature dim."""
+        e = grid_engine
+        result = e.sql("""
+            SELECT deep_learn(
+                'gp_test', label, embedding, 'spatial',
+                convolve(n_channels => 4),
+                pool('max', 2),
+                global_pool('avg'),
+                dense(output_channels => 2),
+                softmax(),
+                gating => 'relu', lambda => 1.0
+            ) FROM images
+        """)
+        row = result.rows[0]["deep_learn"]
+        # After conv(4ch) + pool(2) on 4x4 -> 2x2, global_pool('avg') -> 4-D
+        assert row["feature_dim"] == 4
+        assert row["num_classes"] == 2
+
+    def test_global_pool_avg_max_training_sql(self, grid_engine):
+        """Train with global_pool('avg_max') -- feature dim is 2*C."""
+        e = grid_engine
+        result = e.sql("""
+            SELECT deep_learn(
+                'gp_am_test', label, embedding, 'spatial',
+                convolve(n_channels => 4),
+                pool('max', 2),
+                global_pool('avg_max'),
+                dense(output_channels => 2),
+                softmax(),
+                gating => 'relu', lambda => 1.0
+            ) FROM images
+        """)
+        row = result.rows[0]["deep_learn"]
+        # avg_max concatenates: 4 + 4 = 8
+        assert row["feature_dim"] == 8
+
+    def test_global_pool_predict(self, grid_engine):
+        """Predictions work with global_pool-trained models."""
+        e = grid_engine
+        e.sql("""
+            SELECT deep_learn(
+                'gp_pred', label, embedding, 'spatial',
+                convolve(n_channels => 4),
+                pool('max', 2),
+                global_pool('avg'),
+                dense(output_channels => 2),
+                softmax(),
+                gating => 'relu', lambda => 1.0
+            ) FROM images
+        """)
+        rng = np.random.RandomState(42)
+        test_vec = rng.rand(16).tolist()
+        predictions = e.deep_predict("gp_pred", test_vec)
+        assert len(predictions) == 2
+        # Probabilities sum to 1
+        total_prob = sum(p for _, p in predictions)
+        assert abs(total_prob - 1.0) < 0.01
+
+
+# ----------------------------------------------------------------
+# Tests: Kernel Initialization Modes
+# ----------------------------------------------------------------
+
+
+class TestKernelInitModes:
+    def test_kaiming_default(self):
+        """Default Kaiming init produces correct shape."""
+        kernels = _generate_kernels(16, 3, seed=42)
+        assert kernels.shape == (16, 3, 3, 3)
+        assert kernels.dtype == np.float32
+
+    def test_orthogonal_shape(self):
+        """Orthogonal init produces correct shape."""
+        kernels = _generate_kernels(16, 3, seed=42, init_mode="orthogonal")
+        assert kernels.shape == (16, 3, 3, 3)
+
+    def test_orthogonal_diversity(self):
+        """Orthogonal filters have higher pairwise distances than Kaiming."""
+        kaiming = _generate_kernels(32, 3, seed=42, init_mode="kaiming")
+        ortho = _generate_kernels(32, 3, seed=42, init_mode="orthogonal")
+
+        # Flatten to (n_channels, fan_in) and compute pairwise cosine similarity
+        k_flat = kaiming.reshape(32, -1)
+        o_flat = ortho.reshape(32, -1)
+
+        k_norms = k_flat / np.linalg.norm(k_flat, axis=1, keepdims=True)
+        o_norms = o_flat / np.linalg.norm(o_flat, axis=1, keepdims=True)
+
+        k_cos = np.abs(k_norms @ k_norms.T)
+        o_cos = np.abs(o_norms @ o_norms.T)
+
+        # Mask diagonal
+        np.fill_diagonal(k_cos, 0)
+        np.fill_diagonal(o_cos, 0)
+
+        # Orthogonal should have lower off-diagonal cosine similarity
+        assert o_cos.mean() < k_cos.mean()
+
+    def test_gabor_shape(self):
+        """Gabor init produces correct shape."""
+        kernels = _generate_kernels(48, 3, seed=42, init_mode="gabor")
+        assert kernels.shape == (48, 3, 3, 3)
+
+    def test_gabor_structured(self):
+        """First Gabor filters should have near-zero mean (bandpass)."""
+        kernels = _generate_kernels(48, 1, seed=42, init_mode="gabor")
+        # First 48 filters are structured Gabor: zero-mean by construction
+        for i in range(min(48, 48)):
+            assert abs(kernels[i].mean()) < 0.1
+
+    def test_kmeans_shape(self):
+        """K-means init produces correct shape with training data."""
+        rng = np.random.RandomState(42)
+        # 20 samples of 1-channel 8x8 = 64-dim
+        data = rng.randn(20, 64).astype(np.float32)
+        kernels = _generate_kernels(
+            8,
+            1,
+            seed=42,
+            init_mode="kmeans",
+            training_data=data,
+            grid_h=8,
+            grid_w=8,
+        )
+        assert kernels.shape == (8, 1, 3, 3)
+
+    def test_kmeans_data_dependent(self):
+        """K-means kernels differ based on training data distribution."""
+        rng = np.random.RandomState(42)
+        data1 = rng.randn(20, 64).astype(np.float32)
+        data2 = rng.randn(20, 64).astype(np.float32) * 5.0
+        k1 = _generate_kernels(
+            4,
+            1,
+            seed=42,
+            init_mode="kmeans",
+            training_data=data1,
+            grid_h=8,
+            grid_w=8,
+        )
+        k2 = _generate_kernels(
+            4,
+            1,
+            seed=42,
+            init_mode="kmeans",
+            training_data=data2,
+            grid_h=8,
+            grid_w=8,
+        )
+        assert not np.allclose(k1, k2)
+
+    def test_orthogonal_training_sql(self, grid_engine):
+        """Train with orthogonal init via SQL."""
+        e = grid_engine
+        result = e.sql("""
+            SELECT deep_learn(
+                'ortho_test', label, embedding, 'spatial',
+                convolve(n_channels => 4, init => 'orthogonal'),
+                pool('max', 2),
+                flatten(),
+                dense(output_channels => 2),
+                softmax(),
+                gating => 'relu', lambda => 1.0
+            ) FROM images
+        """)
+        row = result.rows[0]["deep_learn"]
+        assert row["num_classes"] == 2
+        assert row["training_accuracy"] > 0.0
+
+    def test_gabor_training_sql(self, grid_engine):
+        """Train with gabor init via SQL."""
+        e = grid_engine
+        result = e.sql("""
+            SELECT deep_learn(
+                'gabor_test', label, embedding, 'spatial',
+                convolve(n_channels => 4, init => 'gabor'),
+                pool('max', 2),
+                flatten(),
+                dense(output_channels => 2),
+                softmax(),
+                gating => 'relu', lambda => 1.0
+            ) FROM images
+        """)
+        row = result.rows[0]["deep_learn"]
+        assert row["num_classes"] == 2
+
+    def test_combined_global_pool_and_orthogonal(self, grid_engine):
+        """Orthogonal init + global pooling combined -- the full Tier 1+2 stack."""
+        e = grid_engine
+        result = e.sql("""
+            SELECT deep_learn(
+                'combined_test', label, embedding, 'spatial',
+                convolve(n_channels => 8, init => 'orthogonal'),
+                pool('max', 2),
+                global_pool('avg_max'),
+                dense(output_channels => 2),
+                softmax(),
+                gating => 'relu', lambda => 1.0
+            ) FROM images
+        """)
+        row = result.rows[0]["deep_learn"]
+        # 8 channels, avg_max -> 16-D
+        assert row["feature_dim"] == 16
+        assert row["training_accuracy"] > 0.0
+
+        # Verify prediction works end-to-end
+        rng = np.random.RandomState(42)
+        predictions = e.deep_predict("combined_test", rng.rand(16).tolist())
+        assert len(predictions) == 2
+        total_prob = sum(p for _, p in predictions)
+        assert abs(total_prob - 1.0) < 0.01

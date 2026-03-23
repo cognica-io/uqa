@@ -35,7 +35,11 @@ if TYPE_CHECKING:
 
 from uqa.operators._backend import (
     elastic_net_solve,
+    generate_gabor_kernels,
+    generate_kmeans_kernels,
+    generate_orthogonal_kernels,
     grid_forward,
+    grid_global_pool,
     hop_weights_to_kernel,
     magnitude_prune,
     ridge_solve,
@@ -56,10 +60,17 @@ class ConvSpec:
     Random 3x3 kernels create diverse feature maps; ridge regression
     finds the optimal linear combination. This is the Bayesian approach:
     random weights = prior, ridge regression = posterior.
+
+    init_mode controls kernel initialization:
+        "kaiming"     -- random Kaiming normal (default, original behavior)
+        "orthogonal"  -- QR decomposition for maximum filter diversity
+        "gabor"       -- structured Gabor filter bank + random fill
+        "kmeans"      -- data-dependent k-means patch dictionary
     """
 
     kernel_hops: int = 1
     n_channels: int = 1
+    init_mode: str = "kaiming"
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +84,19 @@ class PoolSpec:
 @dataclass(frozen=True, slots=True)
 class FlattenSpec:
     """Flatten spatial nodes into a single vector."""
+
+
+@dataclass(frozen=True, slots=True)
+class GlobalPoolSpec:
+    """Global pooling: reduce spatial dims to 1x1, keep channels.
+
+    method:
+        "avg"     -- global average pooling (C-dim output)
+        "max"     -- global max pooling (C-dim output)
+        "avg_max" -- concatenation of avg and max (2*C-dim output)
+    """
+
+    method: str = "avg"
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +128,15 @@ class AttentionSpec:
     mode: str = "content"
 
 
-LayerSpec = ConvSpec | PoolSpec | FlattenSpec | DenseSpec | SoftmaxSpec | AttentionSpec
+LayerSpec = (
+    ConvSpec
+    | PoolSpec
+    | FlattenSpec
+    | GlobalPoolSpec
+    | DenseSpec
+    | SoftmaxSpec
+    | AttentionSpec
+)
 
 
 # -- Trained model --------------------------------------------------------
@@ -171,6 +203,7 @@ class TrainedModel:
             ConvLayer,
             DenseLayer,
             FlattenLayer,
+            GlobalPoolLayer,
             PoolLayer,
             SoftmaxLayer,
         )
@@ -220,6 +253,8 @@ class TrainedModel:
                 )
             elif t == "flatten":
                 layers.append(FlattenLayer())
+            elif t == "global_pool":
+                layers.append(GlobalPoolLayer(method=spec_dict.get("method", "avg")))
             elif t == "dense":
                 layers.append(
                     DenseLayer(
@@ -242,11 +277,32 @@ def _generate_kernels(
     n_channels: int,
     in_channels: int,
     seed: int = 42,
+    init_mode: str = "kaiming",
+    training_data: np.ndarray | None = None,
+    grid_h: int = 0,
+    grid_w: int = 0,
 ) -> NDArray[np.float32]:
-    """Generate random conv kernels (Kaiming initialization).
+    """Generate conv kernels with the specified initialization.
+
+    init_mode:
+        "kaiming"    -- random Kaiming normal (default)
+        "orthogonal" -- QR decomposition for maximum filter diversity
+        "gabor"      -- structured Gabor filter bank + random fill
+        "kmeans"     -- data-dependent k-means patch dictionary
 
     Returns (n_channels, in_channels, 3, 3) float32 array.
     """
+    if init_mode == "orthogonal":
+        return generate_orthogonal_kernels(n_channels, in_channels, seed)
+    elif init_mode == "gabor":
+        return generate_gabor_kernels(n_channels, in_channels, seed)
+    elif init_mode == "kmeans":
+        if training_data is None:
+            raise ValueError("kmeans init requires training_data")
+        return generate_kmeans_kernels(
+            n_channels, in_channels, training_data, grid_h, grid_w, seed
+        )
+    # Default: Kaiming
     rng = np.random.RandomState(seed)
     fan_in = in_channels * 9
     std = (2.0 / fan_in) ** 0.5
@@ -277,7 +333,7 @@ def _identify_stages(
     return stages
 
 
-_Operation = tuple[str, ...]  # ("stage", conv_d, pool_d) | ("attention", attn_d)
+_Operation = tuple[str, ...]  # ("stage"|"attention"|"global_pool", ...)
 
 
 def _identify_operations(
@@ -285,8 +341,9 @@ def _identify_operations(
 ) -> list[tuple[Any, ...]]:
     """Build ordered list of operations from spec dicts.
 
-    Returns ("stage", conv_d, pool_d) for conv+pool pairs
-    and ("attention", attn_d) for attention layers.
+    Returns ("stage", conv_d, pool_d) for conv+pool pairs,
+    ("attention", attn_d) for attention layers, and
+    ("global_pool", gp_d) for global pooling.
     """
     ops: list[tuple[Any, ...]] = []
     i = 0
@@ -303,6 +360,9 @@ def _identify_operations(
             ops.append(("stage", conv_d, pool_d))
         elif d["type"] == "attention":
             ops.append(("attention", d))
+            i += 1
+        elif d["type"] == "global_pool":
+            ops.append(("global_pool", d))
             i += 1
         else:
             i += 1
@@ -492,9 +552,17 @@ def train_model(
     in_ch = in_channels
     for stage_idx, (conv_d, _pool_d) in enumerate(stages_only):
         n_ch = conv_d.get("n_channels", 1)
+        init_mode = conv_d.get("init_mode", "kaiming")
         if n_ch > 1:
-            # Multi-channel: random kernels (prior)
-            kernels = _generate_kernels(n_ch, in_ch, seed=42 + stage_idx)
+            kernels = _generate_kernels(
+                n_ch,
+                in_ch,
+                seed=42 + stage_idx,
+                init_mode=init_mode,
+                training_data=embeddings if init_mode == "kmeans" else None,
+                grid_h=grid_size,
+                grid_w=grid_size,
+            )
             conv_weights.append([])
         else:
             # Single-channel: placeholder, will be searched
@@ -585,7 +653,13 @@ def train_model(
             attention_params_list.append(attn_params)
             attn_idx += 1
 
-        # Train expert head (for both stage and attention operations)
+        elif op[0] == "global_pool":
+            gp_method = op[1].get("method", "avg")
+            current_flat = grid_global_pool(current_flat, cur_h, cur_w, gp_method)
+            # After global pooling, spatial dims collapse to 1x1
+            cur_h, cur_w = 1, 1
+
+        # Train expert head (for stage, attention, and global_pool operations)
         X_stage = current_flat.astype(np.float64)
         if l1_ratio > 0:
             W_stage, b_stage = elastic_net_solve(X_stage, Y, lam, l1_ratio)
@@ -678,6 +752,10 @@ def train_model(
             )
             tmp = out_3d.transpose(0, 2, 1).reshape(batch_n, -1)
             tmp_attn_idx += 1
+        elif op[0] == "global_pool":
+            gp_method = op[1].get("method", "avg")
+            tmp = grid_global_pool(tmp, tmp_h, tmp_w, gp_method)
+            tmp_h, tmp_w = 1, 1
 
         eic = expert_input_channels[op_idx]
         W_e = np.array(expert_weights_list[op_idx]).reshape(dense_output, eic)
@@ -861,6 +939,11 @@ def predict(
                 current_flat = out_3d.transpose(0, 2, 1).reshape(1, -1)
                 attn_idx += 1
 
+            elif op[0] == "global_pool":
+                gp_method = op[1].get("method", "avg")
+                current_flat = grid_global_pool(current_flat, cur_h, cur_w, gp_method)
+                cur_h, cur_w = 1, 1
+
             # Expert head logits
             if has_experts:
                 feat = current_flat[0].astype(np.float64)
@@ -947,6 +1030,7 @@ def _specs_to_dicts(specs: list[LayerSpec]) -> list[dict[str, Any]]:
                     "type": "conv",
                     "kernel_hops": spec.kernel_hops,
                     "n_channels": spec.n_channels,
+                    "init_mode": spec.init_mode,
                 }
             )
         elif isinstance(spec, PoolSpec):
@@ -959,6 +1043,13 @@ def _specs_to_dicts(specs: list[LayerSpec]) -> list[dict[str, Any]]:
             )
         elif isinstance(spec, FlattenSpec):
             result.append({"type": "flatten"})
+        elif isinstance(spec, GlobalPoolSpec):
+            result.append(
+                {
+                    "type": "global_pool",
+                    "method": spec.method,
+                }
+            )
         elif isinstance(spec, DenseSpec):
             result.append(
                 {
@@ -984,13 +1075,21 @@ def _dicts_to_specs(dicts: list[dict[str, Any]]) -> list[LayerSpec]:
     for d in dicts:
         t = d["type"]
         if t == "conv":
-            result.append(ConvSpec(kernel_hops=d.get("kernel_hops", 1)))
+            result.append(
+                ConvSpec(
+                    kernel_hops=d.get("kernel_hops", 1),
+                    n_channels=d.get("n_channels", 1),
+                    init_mode=d.get("init_mode", "kaiming"),
+                )
+            )
         elif t == "pool":
             result.append(
                 PoolSpec(method=d.get("method", "max"), pool_size=d.get("pool_size", 2))
             )
         elif t == "flatten":
             result.append(FlattenSpec())
+        elif t == "global_pool":
+            result.append(GlobalPoolSpec(method=d.get("method", "avg")))
         elif t == "dense":
             result.append(DenseSpec(output_channels=d.get("output_channels", 10)))
         elif t == "softmax":

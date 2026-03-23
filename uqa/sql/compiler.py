@@ -7675,10 +7675,11 @@ class SQLCompiler:
                     direction = "both"
 
                     if n_channels > 1:
-                        # Multi-channel: generate random kernels
+                        # Multi-channel: generate kernels with init mode
                         from uqa.operators.deep_learn import _generate_kernels
 
                         seed = int(conv_named.get("seed", 42))
+                        init_mode = str(conv_named.get("init", "kaiming"))
                         # Determine input channels from previous conv layer
                         prev_out_ch = 1
                         for prev_la in reversed(layers):
@@ -7686,7 +7687,9 @@ class SQLCompiler:
                                 if prev_la.kernel_shape is not None:
                                     prev_out_ch = prev_la.kernel_shape[0]
                                 break
-                        kernels = _generate_kernels(n_channels, prev_out_ch, seed)
+                        kernels = _generate_kernels(
+                            n_channels, prev_out_ch, seed, init_mode=init_mode
+                        )
                         layers.append(
                             ConvLayer(
                                 edge_label=edge_label,
@@ -7829,6 +7832,23 @@ class SQLCompiler:
 
                 elif inner_name == "flatten":
                     layers.append(FlattenLayer())
+
+                elif inner_name == "global_pool":
+                    from uqa.operators.deep_fusion import GlobalPoolLayer
+
+                    gp_method = "avg"
+                    for ia in inner_args:
+                        if isinstance(ia, NamedArgExpr) and ia.name == "method":
+                            gp_method = str(self._extract_const_value(ia.arg))
+                        elif not isinstance(ia, NamedArgExpr):
+                            gp_method = self._extract_string_value(ia)
+                    if gp_method not in ("avg", "max", "avg_max"):
+                        raise ValueError(
+                            f"global_pool() method must be "
+                            f"'avg', 'max', or 'avg_max', "
+                            f"got {gp_method!r}"
+                        )
+                    layers.append(GlobalPoolLayer(method=gp_method))
 
                 elif inner_name == "softmax":
                     layers.append(SoftmaxLayer())
@@ -7979,7 +7999,23 @@ class SQLCompiler:
                                 direction="both",
                             )
                         )
-                    layers.append(FlattenLayer())
+                    # Reconstruct post-conv layers from model's layer_specs
+                    has_global_pool = any(
+                        s.get("type") == "global_pool" for s in model.layer_specs
+                    )
+                    if has_global_pool:
+                        from uqa.operators.deep_fusion import GlobalPoolLayer
+
+                        gp_spec = next(
+                            s
+                            for s in model.layer_specs
+                            if s.get("type") == "global_pool"
+                        )
+                        layers.append(
+                            GlobalPoolLayer(method=gp_spec.get("method", "avg"))
+                        )
+                    else:
+                        layers.append(FlattenLayer())
                     layers.append(
                         DenseLayer(
                             weights=tuple(model.dense_weights),

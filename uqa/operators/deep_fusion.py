@@ -161,6 +161,19 @@ class DropoutLayer:
 
 
 @dataclass(frozen=True, slots=True)
+class GlobalPoolLayer:
+    """Global pooling: reduce all spatial nodes to a single vector.
+
+    method:
+        "avg"     -- mean of all node channel vectors
+        "max"     -- element-wise max across all nodes
+        "avg_max" -- concatenation of avg and max (2x channels)
+    """
+
+    method: str = "avg"
+
+
+@dataclass(frozen=True, slots=True)
 class AttentionLayer:
     """Self-attention: context-dependent PoE (Theorem 8.3, Paper 4).
 
@@ -210,6 +223,7 @@ _Layer = (
     | PoolLayer
     | DenseLayer
     | FlattenLayer
+    | GlobalPoolLayer
     | SoftmaxLayer
     | BatchNormLayer
     | DropoutLayer
@@ -263,9 +277,9 @@ class DeepFusionOperator(Operator):
             if isinstance(layer, _SPATIAL_LAYERS) and flattened:
                 raise ValueError(
                     "deep_fusion: spatial layers (propagate, convolve, pool) "
-                    "must not appear after flatten()"
+                    "must not appear after flatten() or global_pool()"
                 )
-            if isinstance(layer, FlattenLayer):
+            if isinstance(layer, (FlattenLayer, GlobalPoolLayer)):
                 flattened = True
             if isinstance(layer, PoolLayer) and layer.pool_size < 2:
                 raise ValueError("deep_fusion: pool() pool_size must be >= 2")
@@ -328,6 +342,10 @@ class DeepFusionOperator(Operator):
                     num_channels = layer.output_channels
                 elif isinstance(layer, FlattenLayer):
                     channel_map, num_channels = self._execute_flatten_layer(channel_map)
+                elif isinstance(layer, GlobalPoolLayer):
+                    channel_map, num_channels = self._execute_global_pool_layer(
+                        layer, channel_map
+                    )
                 elif isinstance(layer, SoftmaxLayer):
                     self._execute_softmax_layer(channel_map)
                     softmax_applied = True
@@ -704,6 +722,29 @@ class DeepFusionOperator(Operator):
         return {rep_id: flat_vec}, new_num_channels
 
     @staticmethod
+    def _execute_global_pool_layer(
+        layer: GlobalPoolLayer,
+        channel_map: dict[int, np.ndarray],
+    ) -> tuple[dict[int, np.ndarray], int]:
+        """Global pooling: reduce all spatial nodes to a single vector."""
+        if not channel_map:
+            return {}, 0
+
+        sorted_ids = sorted(channel_map.keys())
+        X = np.stack([channel_map[did] for did in sorted_ids])
+
+        if layer.method == "avg":
+            pooled = X.mean(axis=0)
+        elif layer.method == "max":
+            pooled = X.max(axis=0)
+        else:
+            # avg_max: concatenate average and max
+            pooled = np.concatenate([X.mean(axis=0), X.max(axis=0)])
+
+        rep_id = sorted_ids[0]
+        return {rep_id: pooled}, len(pooled)
+
+    @staticmethod
     def _execute_softmax_layer(
         channel_map: dict[int, np.ndarray],
     ) -> None:
@@ -807,7 +848,11 @@ class DeepFusionOperator(Operator):
         context: ExecutionContext,
     ) -> tuple[dict[int, np.ndarray], int, bool]:
         """Grid-accelerated execution: conv+pool via backend, rest as usual."""
-        from uqa.operators._backend import batch_self_attention, grid_forward
+        from uqa.operators._backend import (
+            batch_self_attention,
+            grid_forward,
+            grid_global_pool,
+        )
 
         assert self._grid_shape is not None
         grid_h, grid_w = self._grid_shape
@@ -844,6 +889,12 @@ class DeepFusionOperator(Operator):
                     segments.append(("conv_pool", current_conv_pool))
                     current_conv_pool = []
                 segments.append(("attention", la))
+                i += 1
+            elif isinstance(la, GlobalPoolLayer):
+                if current_conv_pool:
+                    segments.append(("conv_pool", current_conv_pool))
+                    current_conv_pool = []
+                segments.append(("global_pool", la))
                 i += 1
             else:
                 if current_conv_pool:
@@ -910,17 +961,37 @@ class DeepFusionOperator(Operator):
                     self.gating,
                 )
                 current_flat = out_3d.transpose(0, 2, 1).reshape(1, -1)
+            elif seg_type == "global_pool":
+                gp_layer = seg_data
+                assert isinstance(gp_layer, GlobalPoolLayer)
+                current_flat = grid_global_pool(
+                    current_flat, cur_h, cur_w, gp_layer.method
+                )
+                cur_h, cur_w = 1, 1
 
-        # Rebuild channel_map from final features
+        # Rebuild channel_map from final features.
+        # If global_pool was applied, current_flat is (1, C) or (1, 2*C) --
+        # a single vector, not a spatial feature map. Store as one node.
+        # Otherwise, each spatial position becomes a node with 1 channel.
         channel_map.clear()
-        for i in range(current_flat.shape[1]):
-            channel_map[i + 1] = np.array([current_flat[0, i]], dtype=np.float64)
-        num_channels = 1
+        has_global_pool = any(seg_type == "global_pool" for seg_type, _ in segments)
+        if has_global_pool:
+            # Single node with all channels
+            channel_map[1] = current_flat[0].astype(np.float64)
+            num_channels = current_flat.shape[1]
+        else:
+            for i in range(current_flat.shape[1]):
+                channel_map[i + 1] = np.array([current_flat[0, i]], dtype=np.float64)
+            num_channels = 1
 
-        # Process remaining layers (flatten, dense, softmax, etc.)
+        # Process remaining layers (flatten, global_pool, dense, softmax, etc.)
         for layer in remaining_layers:
             if isinstance(layer, FlattenLayer):
                 channel_map, num_channels = self._execute_flatten_layer(channel_map)
+            elif isinstance(layer, GlobalPoolLayer):
+                channel_map, num_channels = self._execute_global_pool_layer(
+                    layer, channel_map
+                )
             elif isinstance(layer, DenseLayer):
                 self._execute_dense_layer(layer, channel_map)
                 num_channels = layer.output_channels
@@ -948,7 +1019,14 @@ class DeepFusionOperator(Operator):
             elif isinstance(layer, DenseLayer):
                 total += float(layer.input_channels * layer.output_channels)
             elif isinstance(
-                layer, (FlattenLayer, SoftmaxLayer, BatchNormLayer, DropoutLayer)
+                layer,
+                (
+                    FlattenLayer,
+                    GlobalPoolLayer,
+                    SoftmaxLayer,
+                    BatchNormLayer,
+                    DropoutLayer,
+                ),
             ):
                 total += float(stats.total_docs)
             elif isinstance(layer, AttentionLayer):
