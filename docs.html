@@ -760,8 +760,10 @@ $$</span>) <span class="kw">AS</span> (name agtype);
   <h3 id="deep-learn">Deep Learning</h3>
   <p>
     Train CNN classifiers analytically via <code>deep_learn()</code> &mdash;
-    no backpropagation. Training uses random multi-channel convolution (Kaiming prior)
-    and closed-form ridge regression (posterior).
+    no backpropagation. Training uses multi-channel convolution with configurable
+    kernel initialization (Kaiming, orthogonal, Gabor, k-means) and closed-form
+    ridge regression (posterior). <code>global_pool()</code> provides channel-preserving
+    spatial reduction as an alternative to <code>flatten()</code>.
   </p>
 
   <h4>Training</h4>
@@ -783,6 +785,17 @@ $$</span>) <span class="kw">AS</span> (name agtype);
     <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 64),
     <span class="fn">pool</span>(<span class="st">'max'</span>, 2),
     <span class="fn">flatten</span>(),
+    <span class="fn">dense</span>(output_channels <span class="cm">=&gt;</span> 10),
+    <span class="fn">softmax</span>(),
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>, lambda <span class="cm">=&gt;</span> 1.0
+) <span class="kw">FROM</span> mnist_train;
+
+<span class="cm">&mdash; Orthogonal init + global pooling (channel-preserving)</span>
+<span class="kw">SELECT</span> <span class="fn">deep_learn</span>(
+    <span class="st">'model_v2'</span>, label, embedding, <span class="st">'spatial'</span>,
+    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 32, init <span class="cm">=&gt;</span> <span class="st">'orthogonal'</span>),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 2),
+    <span class="fn">global_pool</span>(<span class="st">'avg'</span>),
     <span class="fn">dense</span>(output_channels <span class="cm">=&gt;</span> 10),
     <span class="fn">softmax</span>(),
     gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>, lambda <span class="cm">=&gt;</span> 1.0
@@ -813,6 +826,68 @@ config = engine.load_model(<span class="st">"mnist_cnn"</span>)
 
 <span class="cm"># Delete a model from the catalog</span>
 engine.delete_model(<span class="st">"mnist_cnn"</span>)</code></pre>
+
+  <h4>Kernel Initialization Modes</h4>
+  <p>
+    The <code>init</code> parameter on <code>convolve()</code> selects the kernel
+    initialization strategy:
+  </p>
+  <table>
+    <thead><tr><th>Mode</th><th>Method</th><th>Use Case</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>kaiming</code> (default)</td>
+        <td>Random normal scaled by $\sqrt{2/\text{fan\_in}}$</td>
+        <td>Good general-purpose prior</td>
+      </tr>
+      <tr>
+        <td><code>orthogonal</code></td>
+        <td>QR decomposition (Saxe et al. 2014)</td>
+        <td>Maximally diverse filters &mdash; each kernel is orthogonal to all others</td>
+      </tr>
+      <tr>
+        <td><code>gabor</code></td>
+        <td>Structured filter bank: 8 orientations &times; 3 frequencies &times; 2 phases</td>
+        <td>Optimal space-frequency localized features, analogous to V1 simple cells</td>
+      </tr>
+      <tr>
+        <td><code>kmeans</code></td>
+        <td>Data-dependent patch dictionary (Coates &amp; Ng 2012)</td>
+        <td>Cluster centroids from training data patches as conv kernels</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h4>Global Pooling</h4>
+  <p>
+    <code>global_pool()</code> provides channel-preserving spatial reduction as an alternative
+    to <code>flatten()</code>. It reduces spatial dimensions to 1&times;1 while keeping
+    per-channel statistics:
+  </p>
+  <table>
+    <thead><tr><th>Method</th><th>Output</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>global_pool('avg')</code></td>
+        <td>$C$-dimensional</td>
+        <td>Per-channel mean over all spatial positions</td>
+      </tr>
+      <tr>
+        <td><code>global_pool('max')</code></td>
+        <td>$C$-dimensional</td>
+        <td>Per-channel maximum</td>
+      </tr>
+      <tr>
+        <td><code>global_pool('avg_max')</code></td>
+        <td>$2C$-dimensional</td>
+        <td>Concatenation of avg and max (doubles channel count)</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Example: 8 channels on a 2&times;2 feature map: <code>flatten()</code> produces 32-D,
+    <code>global_pool('avg')</code> produces 8-D, <code>global_pool('avg_max')</code> produces 16-D.
+  </p>
 </section>
 
 <!-- ============ Geospatial ============ -->

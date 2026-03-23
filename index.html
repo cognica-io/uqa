@@ -55,9 +55,9 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
   <h2>Core Theory</h2>
 
   <p>
-    UQA is built on four interconnected theoretical papers that establish a mathematical
+    UQA is built on five interconnected theoretical papers that establish a mathematical
     foundation spanning database theory, information retrieval, probabilistic inference,
-    and neural computation.
+    neural computation, and vector calibration.
   </p>
 
   <div class="grid">
@@ -84,6 +84,13 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
       <p>Neural network structure emerges analytically from multi-signal Bayesian inference.
         Activation functions are derived as answers to probabilistic questions.</p>
       <p><a href="papers/4.%20From%20Bayesian%20Inference%20to%20Neural%20Computation%20-%20The%20Analytical%20Emergence%20of%20Neural%20Network%20Structure%20from%20Probabilistic%20Relevance%20Estimation.pdf" target="_blank">Read Paper &rarr;</a></p>
+    </div>
+    <div class="card">
+      <h3>Vector Calibration</h3>
+      <p>Vector similarity scores transform to calibrated relevance probabilities via
+        likelihood ratios over ANN index statistics, completing the probabilistic unification
+        of sparse and dense retrieval.</p>
+      <p><a href="papers/5.%20Vector%20Scores%20as%20Likelihood%20Ratios%20-%20Index-Derived%20Bayesian%20Calibration%20for%20Hybrid%20Search.pdf" target="_blank">Read Paper &rarr;</a></p>
     </div>
   </div>
 
@@ -181,7 +188,9 @@ graph TD
     <div class="card">
       <h3>Deep Learning</h3>
       <p>Analytical CNN training via <code>deep_learn()</code> &mdash;
-        no backpropagation. Multi-channel random conv (Kaiming prior),
+        no backpropagation. Multi-channel conv with configurable kernel
+        initialization (Kaiming, orthogonal, Gabor, k-means),
+        global pooling (<code>global_pool()</code>),
         self-attention (context-dependent PoE, Theorem 8.3),
         and ridge regression (posterior). PyTorch GPU acceleration
         (MPS/CUDA). Inference via <code>deep_predict()</code> or
@@ -317,8 +326,9 @@ graph TD
       <tr><th>Layer</th><th>Description</th></tr>
     </thead>
     <tbody>
-      <tr><td><code>convolve(n_channels =&gt; N)</code></td><td>Multi-channel spatial convolution (random Kaiming kernels)</td></tr>
+      <tr><td><code>convolve(n_channels =&gt; N, init =&gt; 'kaiming')</code></td><td>Multi-channel spatial convolution. Init modes: kaiming (default), orthogonal, gabor, kmeans</td></tr>
       <tr><td><code>pool('max', 2)</code></td><td>Spatial downsampling (max or avg pooling)</td></tr>
+      <tr><td><code>global_pool('avg'|'max'|'avg_max')</code></td><td>Channel-preserving spatial reduction: avg (per-channel mean), max, avg_max (both concatenated)</td></tr>
       <tr><td><code>attention(n_heads =&gt; 4, mode =&gt; 'random_qk')</code></td><td>Self-attention: context-dependent PoE (Section 8). Modes: content, random_qk, learned_v</td></tr>
       <tr><td><code>flatten()</code>, <code>dense(N)</code>, <code>softmax()</code></td><td>Classification head: flatten spatial features, dense projection, softmax</td></tr>
     </tbody>
@@ -536,10 +546,12 @@ $$</span>) <span class="kw">AS</span> (name agtype, friend agtype, age agtype);
 ) <span class="kw">ORDER BY</span> _score <span class="kw">DESC</span>;</code></pre>
 
   <p>
-    Training is analytical: random multi-channel convolution kernels (Kaiming-initialized)
-    serve as Bayesian prior, ridge regression computes the posterior. No gradient descent,
-    no learning rate, no epochs. Self-attention layers inject global context between
-    conv+pool stages via context-dependent PoE (Paper 4, Section 8).
+    Training is analytical: multi-channel convolution kernels serve as Bayesian prior
+    (Kaiming, orthogonal, Gabor, or k-means initialization), ridge regression computes
+    the posterior. No gradient descent, no learning rate, no epochs.
+    <code>global_pool()</code> provides channel-preserving spatial reduction as an
+    alternative to <code>flatten()</code>. Self-attention layers inject global context
+    between conv+pool stages via context-dependent PoE (Paper 4, Section 8).
     MNIST achieves 97.89% test accuracy.
   </p>
 

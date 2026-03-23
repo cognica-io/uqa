@@ -20,8 +20,9 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
 <!-- ====== Hero ====== -->
 <header class="hero hero-compact">
   <h1><span>UQA</span> Theoretical Foundations</h1>
-  <p class="tagline">Four papers establish the mathematical theory behind the unified query algebra &mdash;
-    from posting-list Boolean algebra to the analytical emergence of neural network structure.</p>
+  <p class="tagline">Five papers establish the mathematical theory behind the unified query algebra &mdash;
+    from posting-list Boolean algebra to the analytical emergence of neural network structure
+    and Bayesian vector calibration.</p>
 </header>
 
 <!-- ====== Nav ====== -->
@@ -71,6 +72,11 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
     <li class="toc-h3"><a href="#attention">Attention Mechanism</a></li>
     <li class="toc-h3"><a href="#depth">Depth and Inference</a></li>
     <li class="toc-h3"><a href="#paper4-impl">Implementation</a></li>
+    <li><a href="#paper5">V. Vector Calibration</a></li>
+    <li class="toc-h3"><a href="#vec-problem">The Gap</a></li>
+    <li class="toc-h3"><a href="#likelihood-ratio">Likelihood Ratio</a></li>
+    <li class="toc-h3"><a href="#index-statistics">Index Statistics</a></li>
+    <li class="toc-h3"><a href="#unified-logodds">Unified Log-Odds</a></li>
     <li><a href="#connections">Connections</a></li>
   </ul>
 </aside>
@@ -82,10 +88,10 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
 <section id="overview">
   <h2>Overview</h2>
   <p>
-    UQA is built on four interconnected theoretical papers that establish a mathematical
+    UQA is built on five interconnected theoretical papers that establish a mathematical
     foundation spanning database theory, information retrieval, probabilistic inference,
-    and neural computation. Each paper extends the previous one, forming a chain of
-    derivations from first principles.
+    neural computation, and vector calibration. Each paper extends the previous one,
+    forming a chain of derivations from first principles.
   </p>
 
   <pre class="mermaid">
@@ -94,6 +100,8 @@ graph LR
     P1 --> P3["Paper III<br/>Bayesian BM25<br/>(Jan 2026)"]
     P3 --> P4["Paper IV<br/>Neural Emergence<br/>(Feb 2026)"]
     P2 --> P4
+    P3 --> P5["Paper V<br/>Vector Calibration<br/>(Mar 2026)"]
+    P1 --> P5
   </pre>
 
   <div class="grid">
@@ -120,6 +128,12 @@ graph LR
       <p>Neural network structure emerges analytically from multi-signal Bayesian
         inference. Activation functions as probabilistic answers.</p>
       <p><a href="papers/4.%20From%20Bayesian%20Inference%20to%20Neural%20Computation%20-%20The%20Analytical%20Emergence%20of%20Neural%20Network%20Structure%20from%20Probabilistic%20Relevance%20Estimation.pdf" target="_blank">Read Paper &rarr;</a></p>
+    </div>
+    <div class="card">
+      <h3>V. Vector Calibration</h3>
+      <p>Vector similarity scores calibrated to relevance probabilities via
+        likelihood ratios over ANN index statistics. Structural identity with Bayesian BM25.</p>
+      <p><a href="papers/5.%20Vector%20Scores%20as%20Likelihood%20Ratios%20-%20Index-Derived%20Bayesian%20Calibration%20for%20Hybrid%20Search.pdf" target="_blank">Read Paper &rarr;</a></p>
     </div>
   </div>
 </section>
@@ -696,11 +710,103 @@ graph LR
   </p>
 </section>
 
+<!-- ============ Paper V ============ -->
+<section id="paper5">
+  <h2>V. Vector Scores as Likelihood Ratios</h2>
+  <p class="paper-meta">
+    <a href="papers/5.%20Vector%20Scores%20as%20Likelihood%20Ratios%20-%20Index-Derived%20Bayesian%20Calibration%20for%20Hybrid%20Search.pdf" target="_blank">Jeong (2026)</a>
+    &middot; Builds on Paper III (Bayesian BM25) and Paper I (Unified Framework)
+  </p>
+
+  <h3 id="vec-problem">The Gap: Vector Scores Are Not Probabilities</h3>
+  <p>
+    Paper III calibrates BM25 scores into probabilities via sigmoid transformation.
+    But vector similarity scores &mdash; cosine similarity, inner product, Euclidean
+    distance &mdash; are <strong>geometric quantities, not probabilities</strong>.
+    A cosine similarity of 0.85 does not mean an 85% chance of relevance, yet hybrid
+    systems routinely combine such scores with calibrated lexical signals through
+    ad-hoc normalization.
+  </p>
+  <p>
+    Paper V closes this gap by deriving a principled Bayesian calibration for vector
+    scores, structurally identical to the BM25 calibration of Paper III.
+  </p>
+
+  <h3 id="likelihood-ratio">Likelihood Ratio Formulation</h3>
+  <p>
+    The calibration transforms a raw vector score into a posterior probability
+    via a likelihood ratio:
+  </p>
+  <div class="math-block">
+    $$\text{logit}\ P(R=1 \mid d) = \log \frac{f_R(d)}{f_G(d)} + \text{logit}\ P(R=1)$$
+  </div>
+  <p>
+    where $f_R(d)$ is the local distance density among relevant documents (how likely
+    a relevant document produces this similarity score) and $f_G(d)$ is the global
+    background density (how likely any document produces this score). The ratio
+    $f_R / f_G$ measures how much the observed score favors relevance over the
+    background &mdash; the same Bayesian structure that underlies BM25 calibration.
+  </p>
+
+  <h3 id="index-statistics">Index-Derived Statistics</h3>
+  <p>
+    Both densities are extracted from statistics already computed during ANN index
+    construction and search, at negligible additional cost:
+  </p>
+  <table>
+    <thead>
+      <tr><th>Statistic</th><th>IVF Source</th><th>HNSW Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Local density $f_R(d)$</td>
+        <td>Intra-cluster distances within nearest IVF cell</td>
+        <td>Edge distances in the search trajectory neighborhood</td>
+      </tr>
+      <tr>
+        <td>Global density $f_G(d)$</td>
+        <td>Cross-cell population statistics</td>
+        <td>Edge distance distribution across all graph layers</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    No auxiliary training data or held-out relevance judgments are required.
+    The index itself provides both the numerator and denominator of the likelihood ratio.
+  </p>
+
+  <h3 id="unified-logodds">Unified Log-Odds Integration</h3>
+  <p>
+    The calibrated vector score integrates with Bayesian BM25 through additive
+    log-odds &mdash; the same fusion mechanism derived in Papers III and IV:
+  </p>
+  <div class="math-block">
+    $$\text{logit}\ P(R \mid d_{vec}, s_{bm25}) = \underbrace{\log \frac{\hat{f}_R(d)}{f_G(d)}}_{\text{calibrated vector}} + \underbrace{\alpha(s_{bm25} - \beta)}_{\text{calibrated lexical}} + \underbrace{\text{logit}\ P_{base}}_{\text{corpus prior}}$$
+  </div>
+  <p>
+    This completes the probabilistic unification of sparse and dense retrieval:
+    both paradigms are calibrated through the same Bayesian likelihood ratio structure,
+    each drawing on the statistics of its native index. The additive structure in
+    log-odds space is the same log-odds conjunction that Paper IV identifies as a
+    neural network layer.
+  </p>
+
+  <div class="note">
+    <strong>Structural identity</strong>: BM25 calibration (Paper III) derives
+    $\text{logit}\ P(R) = \alpha \cdot s_{BM25} - \beta + \text{logit}\ P_{base}$.
+    Vector calibration (Paper V) derives
+    $\text{logit}\ P(R) = \log(f_R / f_G) + \text{logit}\ P_{base}$.
+    Both are additive in log-odds space. Both draw calibration parameters from their
+    respective index structures. The mathematical framework is the same &mdash;
+    only the source of the likelihood ratio differs.
+  </div>
+</section>
+
 <!-- ============ Connections ============ -->
 <section id="connections">
   <h2>Connections Across Papers</h2>
   <p>
-    The four papers form a coherent theoretical arc. Here are the key connections
+    The five papers form a coherent theoretical arc. Here are the key connections
     between them.
   </p>
 
@@ -747,6 +853,16 @@ graph LR
     At full coverage, $p_{\text{default}} = 0.01$ (a missing document is genuinely penalized).
   </p>
 
+  <h3>From Lexical to Dense Calibration</h3>
+  <p>
+    Paper III calibrates BM25 (lexical) scores via sigmoid transformation using
+    index-level statistics. Paper V applies the same Bayesian likelihood ratio structure
+    to vector (dense) scores, drawing calibration parameters from ANN index statistics
+    (IVF cell populations, HNSW edge distances). The structural identity between the two
+    calibrations &mdash; both additive in log-odds space &mdash; means that sparse and
+    dense retrieval signals combine naturally through the same fusion mechanism.
+  </p>
+
   <h3>Robertson's Completed Circle</h3>
   <p>
     In 1977, Robertson introduced the Probability Ranking Principle, opening a door
@@ -759,6 +875,9 @@ graph LR
     Paper IV reveals what lies on the other side: the computational structure that a
     separate scientific tradition, developed over different decades and for different purposes,
     calls a <em>neural network</em>.
+    Paper V extends the closure to vector similarity &mdash; the dense counterpart to
+    BM25's sparse retrieval &mdash; completing the probabilistic unification of all
+    retrieval paradigms.
   </p>
   <p>
     The mathematics does not care what we call things. Whether we say "Bayesian posterior"

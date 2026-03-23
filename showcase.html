@@ -21,8 +21,9 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
 <header class="hero hero-compact">
   <h1><span>UQA</span> Showcase</h1>
   <p class="tagline">
-    Eleven demonstrations that bring the four theoretical papers to life &mdash;
-    from four-paradigm unification to analytical deep learning training pipelines with self-attention, expressed as SQL.
+    Eleven demonstrations that bring the five theoretical papers to life &mdash;
+    from four-paradigm unification to analytical deep learning with global pooling,
+    kernel initialization, and self-attention, expressed as SQL.
   </p>
 </header>
 
@@ -72,6 +73,7 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
     <li class="toc-h3"><a href="#dl-tiny">Tiny ImageNet</a></li>
     <li class="toc-h3"><a href="#dl-attention">Self-Attention</a></li>
     <li class="toc-h3"><a href="#dl-pruning">Pruning</a></li>
+    <li class="toc-h3"><a href="#dl-advanced">Pooling &amp; Init</a></li>
     <li><a href="#source">Source Files</a></li>
   </ul>
 </aside>
@@ -83,7 +85,7 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
 <section id="overview">
   <h2>Overview</h2>
   <p>
-    These nine showcase examples demonstrate UQA's most distinctive capabilities.
+    These eleven showcase examples demonstrate UQA's most distinctive capabilities.
     Each example is self-contained and runs with inline data &mdash; no external
     datasets or downloads required.
   </p>
@@ -646,14 +648,16 @@ engine.update_scoring_params(<span class="st">"papers"</span>, <span class="st">
 <section id="deep-learn">
   <h2>Deep Learning: Analytical Training</h2>
   <p class="paper-meta">
-    Paper 4 (training) &middot; 3 showcase examples
+    Paper 4 (training) &middot; 4 showcase examples
   </p>
   <p>
     Paper 4 proves neural networks emerge from Bayesian inference. <code>deep_learn()</code>
     takes this to its logical conclusion &mdash; training CNN classifiers without backpropagation.
-    Multi-channel random convolution kernels (Kaiming-initialized) serve as Bayesian prior;
-    ridge regression computes the posterior. Product of Experts (PoE) local learning trains
-    independent expert heads at each stage, combined via logit averaging with shrinkage correction.
+    Multi-channel convolution kernels serve as Bayesian prior with configurable initialization
+    (Kaiming, orthogonal, Gabor, k-means); ridge regression computes the posterior.
+    <code>global_pool()</code> provides channel-preserving spatial reduction as an alternative
+    to <code>flatten()</code>. Product of Experts (PoE) local learning trains independent
+    expert heads at each stage, combined via logit averaging with shrinkage correction.
   </p>
 
   <h4>MNIST Architecture (28&times;28 Grayscale)</h4>
@@ -1086,6 +1090,113 @@ graph TD
     half the dense layer weights are zeroed with minimal accuracy loss.
     Elastic net (ISTA proximal gradient) is warm-started from the ridge solution for fast convergence.
     All pruning is optional: <code>l1_ratio => 0</code> and <code>prune_ratio => 0</code> (default) disables pruning entirely.
+  </div>
+</section>
+
+<!-- ============ Global Pooling & Kernel Init ============ -->
+<section id="dl-advanced">
+  <h3>Global Pooling &amp; Kernel Initialization</h3>
+  <p class="paper-meta">
+    v0.22.0 &middot; Advanced layer options for deep_learn()
+  </p>
+  <p>
+    <strong>Global pooling</strong> (<code>global_pool()</code>) provides channel-preserving
+    spatial reduction as an alternative to <code>flatten()</code>. Instead of flattening all
+    spatial positions into a single long vector ($C \times H \times W$), global pooling
+    computes per-channel statistics, reducing spatial dimensions to 1&times;1 while retaining
+    channel information.
+  </p>
+
+  <h4>Architecture with Global Pooling</h4>
+  <pre class="mermaid">
+graph TD
+    Input["Input<br/>28 &times; 28 &times; 1 &mdash; 784-D"]
+
+    subgraph S1["Stage 1"]
+        direction LR
+        Conv1["Conv2d &mdash; 32ch<br/>Orthogonal Init"] --> ReLU1["ReLU"] --> Pool1["MaxPool2d 2 &times; 2<br/>&rarr; 14 &times; 14 &times; 32"]
+    end
+
+    subgraph GP["Global Pooling"]
+        direction LR
+        GPL["global_pool('avg_max')<br/>avg: 32-D + max: 32-D = 64-D"]
+    end
+
+    subgraph Classifier["Classifier"]
+        direction LR
+        Dense["Dense(10) &mdash; Ridge Regression"] --> Softmax["Softmax<br/>10 classes"]
+    end
+
+    Input --> S1 --> GP --> Classifier
+  </pre>
+
+  <p>
+    Dimensionality comparison (32 channels, 14&times;14 feature map after pooling):
+  </p>
+  <table>
+    <thead><tr><th>Strategy</th><th>Feature Dim</th><th>Dense Params (10 classes)</th></tr></thead>
+    <tbody>
+      <tr><td><code>flatten()</code></td><td>32 &times; 14 &times; 14 = 6,272</td><td>62,720</td></tr>
+      <tr><td><code>global_pool('avg')</code></td><td>32</td><td>320</td></tr>
+      <tr><td><code>global_pool('avg_max')</code></td><td>64</td><td>640</td></tr>
+    </tbody>
+  </table>
+
+  <p>
+    <strong>Kernel initialization</strong> controls the conv layer's Bayesian prior.
+    Four modes replace or supplement the default random initialization:
+  </p>
+  <table>
+    <thead><tr><th>Init Mode</th><th>Strategy</th></tr></thead>
+    <tbody>
+      <tr><td><code>kaiming</code> (default)</td><td>Random normal $\sim \mathcal{N}(0, \sqrt{2/\text{fan\_in}})$</td></tr>
+      <tr><td><code>orthogonal</code></td><td>QR decomposition &mdash; maximally diverse filters, zero redundancy</td></tr>
+      <tr><td><code>gabor</code></td><td>Structured filter bank: 8 orientations &times; 3 frequencies &times; 2 phases (48 Gabor filters)</td></tr>
+      <tr><td><code>kmeans</code></td><td>K-means++ on 10K random patches from training data &mdash; data-dependent dictionary</td></tr>
+    </tbody>
+  </table>
+
+  <h4>SQL: Global Pooling + Orthogonal Init</h4>
+  <span class="example-tag tag-sql">SQL</span>
+<pre><code><span class="cm">&mdash; Orthogonal kernels + global avg_max pooling</span>
+<span class="kw">SELECT</span> <span class="fn">deep_learn</span>(
+    <span class="st">'ortho_gpool'</span>, label, embedding, <span class="st">'spatial'</span>,
+    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 32, init <span class="cm">=&gt;</span> <span class="st">'orthogonal'</span>),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 2),
+    <span class="fn">global_pool</span>(<span class="st">'avg_max'</span>),
+    <span class="fn">dense</span>(output_channels <span class="cm">=&gt;</span> 10),
+    <span class="fn">softmax</span>(),
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>, lambda <span class="cm">=&gt;</span> 1.0
+) <span class="kw">FROM</span> mnist_train;
+
+<span class="cm">&mdash; Gabor filter bank + global avg pooling</span>
+<span class="kw">SELECT</span> <span class="fn">deep_learn</span>(
+    <span class="st">'gabor_gpool'</span>, label, embedding, <span class="st">'spatial'</span>,
+    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 48, init <span class="cm">=&gt;</span> <span class="st">'gabor'</span>),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 2),
+    <span class="fn">global_pool</span>(<span class="st">'avg'</span>),
+    <span class="fn">dense</span>(output_channels <span class="cm">=&gt;</span> 10),
+    <span class="fn">softmax</span>(),
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>, lambda <span class="cm">=&gt;</span> 1.0
+) <span class="kw">FROM</span> mnist_train;
+
+<span class="cm">&mdash; K-means data-dependent kernels</span>
+<span class="kw">SELECT</span> <span class="fn">deep_learn</span>(
+    <span class="st">'kmeans_model'</span>, label, embedding, <span class="st">'spatial'</span>,
+    <span class="fn">convolve</span>(n_channels <span class="cm">=&gt;</span> 64, init <span class="cm">=&gt;</span> <span class="st">'kmeans'</span>),
+    <span class="fn">pool</span>(<span class="st">'max'</span>, 2),
+    <span class="fn">flatten</span>(),
+    <span class="fn">dense</span>(output_channels <span class="cm">=&gt;</span> 10),
+    <span class="fn">softmax</span>(),
+    gating <span class="cm">=&gt;</span> <span class="st">'relu'</span>, lambda <span class="cm">=&gt;</span> 1.0
+) <span class="kw">FROM</span> mnist_train;</code></pre>
+
+  <div class="note">
+    <strong>Design principle</strong>: In analytical training (no backpropagation), the kernel
+    initialization <em>is</em> the feature extraction &mdash; kernels are never updated by
+    gradient descent. Better priors (orthogonal, Gabor, k-means) directly improve final
+    accuracy. Global pooling reduces the dense layer's parameter count by orders of magnitude,
+    acting as a strong regularizer.
   </div>
 </section>
 
