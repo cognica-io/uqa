@@ -120,6 +120,30 @@ This paper demonstrates that feedforward neural network structure **emerges anal
 - **Depth from recursive inference.** Deep networks are chains of iterated marginalization over latent variables (Theorem 9.1.1). Each layer constructs the evidence required by the next.
 
 
+### 2.5 Paper 5: Vector Scores as Likelihood Ratios — Index-Derived Bayesian Calibration for Hybrid Search (March 2026)
+
+This paper addresses a fundamental gap in hybrid search: vector similarity scores (cosine similarity, inner product, Euclidean distance) are geometric quantities, not probabilities. A cosine similarity of 0.85 does not mean an 85% chance of relevance, yet hybrid systems routinely combine such scores with calibrated lexical signals through ad-hoc normalization (min-max, arctangent) or rank-based fusion (RRF) that discards score magnitude information entirely.
+
+**The problem.** Any fixed monotonic transformation $g: \mathbb{R} \to [0, 1]$ applied to vector scores fails to account for the local density structure of the embedding space (Theorem 1.2.2). Two documents equidistant from a query carry different relevance information depending on whether they are in a dense cluster (many nearby documents) or a sparse region (few nearby documents). No query-independent function can capture this distinction.
+
+**The solution.** A Bayesian calibration framework transforms vector scores into calibrated relevance probabilities through a likelihood ratio formulation:
+
+$$
+\text{logit}\ P(R=1 \mid d) = \log \frac{f_R(d)}{f_G(d)} + \text{logit}\ P(R=1)
+$$
+
+where $f_R(d)$ is the local distance density among relevant documents and $f_G(d)$ is the global background density.
+
+**Key results:**
+
+- **Structural identity with BM25.** The log-odds posterior for vector calibration has the same additive structure as Bayesian BM25 (Remark 3.1.2). Both paradigms are calibrated through the same Bayesian likelihood ratio structure, each drawing on the statistics of its native index.
+
+- **Index-derived statistics.** Both densities are extracted from statistics already computed during ANN index construction and search — IVF cell populations and intra-cluster distances, HNSW edge distances and search trajectories — at negligible additional cost (Section 6).
+
+- **Circularity resolution.** The fundamental circularity problem (estimating the local density requires knowing which documents are relevant) is resolved through cross-modal conditional independence: any relevance signal conditionally independent of vector distance given true relevance (e.g., lexical matching, alternative embedding models) provides importance weights that break the self-referential loop (Section 4).
+
+- **Unified hybrid fusion.** Calibrated vector scores integrate with Bayesian BM25 through additive log-odds, completing the probabilistic unification of sparse and dense retrieval where every signal contributes independently calibrated Bayesian evidence.
+
 ## 3. Core Concepts
 
 ### 3.1 The Posting List
@@ -1907,21 +1931,22 @@ Layer specifications define the architecture passed to `deep_learn()`. All spec 
 
 ```python
 from uqa.operators.deep_learn import (
-    ConvSpec, PoolSpec, FlattenSpec, DenseSpec, SoftmaxSpec,
+    ConvSpec, PoolSpec, FlattenSpec, GlobalPoolSpec, DenseSpec, SoftmaxSpec,
 )
 ```
 
 | Spec | Parameters | Description |
 |------|------------|-------------|
-| `ConvSpec(kernel_hops=1, n_channels=1)` | `kernel_hops`: convolution neighborhood radius; `n_channels`: number of output channels (>1 uses random multi-channel kernels as an extreme learning machine prior) | Convolution layer |
+| `ConvSpec(kernel_hops=1, n_channels=1, init_mode="kaiming")` | `kernel_hops`: convolution neighborhood radius; `n_channels`: number of output channels (>1 uses multi-channel kernels); `init_mode`: `"kaiming"` (random normal), `"orthogonal"` (QR decomposition), `"gabor"` (structured filter bank), or `"kmeans"` (data-dependent patch dictionary) | Convolution layer |
 | `PoolSpec(method="max", pool_size=2)` | `method`: `"max"` or `"mean"`; `pool_size`: spatial downsampling factor | Pooling layer |
 | `FlattenSpec()` | (none) | Flatten spatial dimensions into a single vector |
+| `GlobalPoolSpec(method="avg")` | `method`: `"avg"` (per-channel mean), `"max"` (per-channel max), or `"avg_max"` (concatenation of both, 2x channels) | Channel-preserving spatial reduction |
 | `DenseSpec(output_channels=10)` | `output_channels`: target dimensionality (typically equal to the number of classes) | Fully connected layer (ridge regression) |
 | `SoftmaxSpec()` | (none) | Softmax classification head |
 
 | `AttentionSpec(n_heads=1, mode="content")` | `n_heads`: number of attention heads; `mode`: `"content"` (Q=K=V=X), `"random_qk"` (random Q,K projections, V=X), or `"learned_v"` (random Q,K, supervised V via ridge regression) | Self-attention layer (Theorem 8.3, Paper 4) |
 
-The union type `LayerSpec = ConvSpec | PoolSpec | FlattenSpec | DenseSpec | SoftmaxSpec | AttentionSpec` is accepted by `deep_learn()`.
+The union type `LayerSpec = ConvSpec | PoolSpec | FlattenSpec | GlobalPoolSpec | DenseSpec | SoftmaxSpec | AttentionSpec` is accepted by `deep_learn()`.
 
 #### `Engine.deep_learn()`
 
@@ -1932,7 +1957,7 @@ Engine.deep_learn(
     label_field: str,
     embedding_field: str,
     edge_label: str,
-    layer_specs: list[ConvSpec | PoolSpec | FlattenSpec | DenseSpec | SoftmaxSpec | AttentionSpec],
+    layer_specs: list[ConvSpec | PoolSpec | FlattenSpec | GlobalPoolSpec | DenseSpec | SoftmaxSpec | AttentionSpec],
     gating: str = "none",
     lam: float = 1.0,
     l1_ratio: float = 0.0,

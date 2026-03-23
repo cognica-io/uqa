@@ -1267,9 +1267,10 @@ USQL exposes analytical deep learning — training and inference without backpro
 
 | Function | Description |
 |----------|-------------|
-| `convolve(n_channels => N)` | Convolution layer with N output channels |
+| `convolve(n_channels => N[, init => 'kaiming'\|'orthogonal'\|'gabor'\|'kmeans'])` | Convolution layer with N output channels and optional kernel initialization mode |
 | `pool('method', size)` | Pooling layer — method is `'max'` or `'avg'`, size is the pool window |
 | `flatten()` | Flatten spatial dimensions into a single vector |
+| `global_pool('avg'\|'max'\|'avg_max')` | Channel-preserving spatial reduction — reduces spatial dims to 1x1, keeps channels. `avg_max` concatenates both (2x channels). |
 | `dense(output_channels => N)` | Fully connected layer with N outputs |
 | `softmax()` | Softmax classification head |
 | `attention(n_heads => N, mode => M)` | Self-attention layer (Theorem 8.3, Paper 4) |

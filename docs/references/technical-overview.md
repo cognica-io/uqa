@@ -174,7 +174,7 @@ where $L(s) = \sigma(\alpha(s-\beta))$ is the normalized likelihood ratio, $b_r(
 
 **Implementation.** `BayesianBM25Scorer` in `uqa/scoring/bayesian_bm25.py` delegates to the `bayesian-bm25` package, which implements the full three-term posterior with progressive hyperparameter estimation.
 
-### 3.4 Vector Similarity
+### 3.4 Vector Similarity and Calibration
 
 Cosine similarity $\cos\theta \in [-1, 1]$ is linearly calibrated to probability:
 
@@ -183,6 +183,14 @@ P_{vec} = \frac{1 + \cos\theta}{2}
 $$
 
 This mapping is exact for the case where vector similarity represents angular proximity. `VectorScorer` in `uqa/scoring/vector.py` delegates to `bayesian-bm25`'s `cosine_to_probability()` for numerical stability.
+
+**Bayesian vector calibration (Paper 5).** The linear mapping above is a first-order approximation. Paper 5 presents a principled Bayesian calibration framework that transforms vector similarity scores into calibrated relevance probabilities through a likelihood ratio formulation:
+
+$$
+\text{logit}\ P(R=1 \mid d) = \log \frac{f_R(d)}{f_G(d)} + \text{logit}\ P(R=1)
+$$
+
+where $f_R(d)$ is the local distance density among relevant documents and $f_G(d)$ is the global background density. Both densities are extracted from ANN index statistics (IVF cell populations, HNSW edge distances) at negligible additional cost. This has the same additive structure as the Bayesian BM25 three-term decomposition, establishing a structural identity between lexical and dense retrieval scoring and completing the probabilistic unification of sparse and dense paradigms.
 
 ### 3.5 Calibration Metrics
 
@@ -436,13 +444,16 @@ The key observation is that each layer type admits either a closed-form solution
 
 | Layer | Parameters | Estimation Method |
 |-------|-----------|-------------------|
-| `ConvLayer` | Multi-channel 3x3 kernels | Kaiming-initialized random prior (extreme learning machine) |
+| `ConvLayer` | Multi-channel 3x3 kernels | Configurable initialization: Kaiming random, orthogonal (QR), Gabor filter bank, or k-means patch dictionary |
 | `PoolLayer` | None | Stateless spatial downsampling |
 | `FlattenLayer` | None | Stateless reshaping |
+| `GlobalPoolLayer` | None | Channel-preserving spatial reduction (avg, max, or avg_max) |
 | `DenseLayer` | Weight matrix $W$, bias $b$ | Ridge regression (Bayesian posterior) |
 | `SoftmaxLayer` | None | Stateless normalization |
 
-**Convolution as Bayesian prior.** For multi-channel convolution ($n_{channels} > 1$), kernels are sampled from a Kaiming-He distribution $\mathcal{N}(0, \sqrt{2/fan_{in}})$ and held fixed. This is precisely the extreme learning machine paradigm (Huang et al., 2006): random projections create a diverse feature basis, and the subsequent linear layer finds the optimal combination. In the Bayesian interpretation, the random kernels constitute the prior over spatial filters; the ridge regression layer computes the posterior.
+**Convolution as Bayesian prior.** For multi-channel convolution ($n_{channels} > 1$), kernels are initialized via one of four strategies and held fixed. The default Kaiming-He initialization samples from $\mathcal{N}(0, \sqrt{2/fan_{in}})$ -- the extreme learning machine paradigm (Huang et al., 2006). Orthogonal initialization (Saxe et al., 2014) uses QR decomposition to produce maximally diverse filters. Gabor initialization generates structured bandpass filters at multiple orientations and frequencies. K-means initialization (Coates & Ng, 2012) extracts 3x3 patches from training images and clusters them to produce data-dependent kernels. In all cases, the random or structured kernels constitute the prior over spatial filters; the subsequent ridge regression layer computes the posterior.
+
+**Global pooling as dimensionality reduction.** `GlobalPoolLayer` reduces spatial dimensions to 1x1 while preserving channel structure, offering a lower-dimensional alternative to `FlattenLayer`. For a feature map with $C$ channels and $H \times W$ spatial positions, `flatten()` produces a $C \cdot H \cdot W$ dimensional vector while `global_pool('avg')` produces a $C$ dimensional vector. The `avg_max` variant concatenates average and max pooling for a $2C$ dimensional output, capturing both central tendency and peak activation per channel.
 
 **Dense layer as Bayesian posterior.** Given feature matrix $X \in \mathbb{R}^{n \times d}$ and one-hot label matrix $Y \in \mathbb{R}^{n \times c}$, the dense layer weights are the ridge regression solution:
 
@@ -1138,3 +1149,5 @@ The query optimizer ensures efficient execution: each paradigm's operator execut
 3. Jeong, J. (2026). Bayesian BM25: A Probabilistic Framework for Hybrid Text and Vector Search.
 
 4. Jeong, J. (2026). Advanced Fusion and Retrieval: Attention-Weighted Log-Odds, Multi-Stage Pipelines, and GNN Integration.
+
+5. Jeong, J. (2026). Vector Scores as Likelihood Ratios: Index-Derived Bayesian Calibration for Hybrid Search.

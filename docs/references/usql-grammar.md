@@ -1151,13 +1151,15 @@ layer_spec
     = convolve_spec
     | pool_spec
     | flatten_spec
+    | global_pool_spec
     | dense_spec
     | softmax_spec
     | attention_spec
     ;
 
 convolve_spec
-    = CONVOLVE '(' [ 'n_channels' '=>' integer ] [ ',' 'seed' '=>' integer ] ')'
+    = CONVOLVE '(' [ 'n_channels' '=>' integer ] [ ',' 'seed' '=>' integer ]
+                   [ ',' 'init' '=>' string_literal ] ')'
     ;
 
 pool_spec
@@ -1166,6 +1168,10 @@ pool_spec
 
 flatten_spec
     = FLATTEN '(' ')'
+    ;
+
+global_pool_spec
+    = GLOBAL_POOL '(' [ string_literal ] ')'
     ;
 
 dense_spec

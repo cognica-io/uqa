@@ -9,8 +9,8 @@ authors:
     affiliation: "Cognica, Inc."
 repository-code: "https://github.com/cognica-io/uqa"
 license: AGPL-3.0-only
-version: 0.21.0
-date-released: "2026-03-20"
+version: 0.22.0
+date-released: "2026-03-23"
 abstract: >-
   A multi-paradigm database engine that unifies relational, text retrieval,
   vector search, graph query, and geospatial paradigms under a single
@@ -94,3 +94,10 @@ keywords:
   - elastic-net
   - magnitude-pruning
   - parameterized-insert
+  - global-pooling
+  - kernel-initialization
+  - orthogonal-initialization
+  - gabor-filter
+  - vector-calibration
+  - likelihood-ratio
+  - density-estimation

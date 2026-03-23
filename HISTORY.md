@@ -1,5 +1,38 @@
 # History
 
+## 0.22.0 (2026-03-23)
+
+Global pooling layer, kernel initialization modes, and vector calibration theory (Paper 5). Global pooling (`global_pool()`) provides channel-preserving spatial reduction as an alternative to `flatten()`, reducing feature dimensionality while retaining per-channel statistics. Three new kernel initialization strategies -- orthogonal (QR decomposition), Gabor (structured filter bank), and k-means (data-dependent patch dictionary) -- replace or supplement the default Kaiming random initialization for `convolve()` layers. Paper 5 completes the probabilistic unification of sparse and dense retrieval by calibrating vector similarity scores into Bayesian probabilities via likelihood ratios over ANN index statistics. All 2788 tests pass across 83 test files.
+
+### Global Pooling Layer
+
+- **`global_pool('avg'|'max'|'avg_max')`**: Channel-preserving spatial reduction as an alternative to `flatten()`. Reduces spatial dimensions to 1x1 while keeping channel information: `avg` computes per-channel mean over all spatial positions, `max` takes per-channel maximum, `avg_max` concatenates both (doubling the channel count). For example, 8 channels on a 2x2 feature map: `flatten()` produces 32-D, `global_pool('avg')` produces 8-D, `global_pool('avg_max')` produces 16-D.
+- **`GlobalPoolSpec`**: Layer specification for `deep_learn()` training pipeline. Integrated into `_specs_to_dicts()` / `_dicts_to_specs()` serialization, `TrainedModel.to_deep_fusion_layers()`, and model catalog persistence.
+- **`GlobalPoolLayer`**: Deep fusion layer for inference. Supported in both graph-based execution path and grid-accelerated backend path (`grid_global_pool()` in `_backend.py`).
+- **`grid_global_pool(features, grid_h, grid_w, method)`**: Backend function with PyTorch GPU acceleration (adaptive pooling) and NumPy fallback. Batched processing (4096 samples per batch) to prevent GPU OOM.
+- **SQL syntax**: `global_pool('avg')`, `global_pool('max')`, `global_pool('avg_max')` inside `deep_learn()` and `deep_fusion()`. Method validation in SQL compiler.
+- **Model reconstruction**: `deep_fusion(model('name', $1))` correctly reconstructs `GlobalPoolLayer` from saved model specs instead of defaulting to `FlattenLayer`.
+
+### Kernel Initialization Modes
+
+- **`convolve(n_channels => N, init => 'kaiming'|'orthogonal'|'gabor'|'kmeans')`**: Configurable kernel initialization for conv layers. The `init` parameter selects the initialization strategy.
+- **Kaiming (default)**: Random normal initialization scaled by `sqrt(2/fan_in)`. Original behavior, good general-purpose prior.
+- **Orthogonal**: QR decomposition (Saxe et al. 2014). Produces maximally diverse filters -- each kernel is orthogonal to all others in the flattened `(in_channels * 3 * 3)` space. Eliminates the redundancy inherent in random initialization.
+- **Gabor**: Structured filter bank with 8 orientations x 3 frequencies x 2 phases = 48 Gabor filters (zero-mean, unit-norm bandpass). Remaining channels filled with Kaiming random. Gabor filters are optimal joint space-frequency localized features, analogous to V1 simple cells.
+- **K-means**: Data-dependent patch dictionary (Coates & Ng 2012). Extracts 10,000 random 3x3 patches from training images, normalizes them, and runs k-means++ with Lloyd's algorithm to find cluster centroids. Each centroid becomes a conv kernel representing a frequently occurring local pattern.
+- **`_generate_kernels(n_channels, in_channels, seed, init_mode, training_data, grid_h, grid_w)`**: Unified kernel generation function dispatching to `generate_orthogonal_kernels()`, `generate_gabor_kernels()`, or `generate_kmeans_kernels()` in `_backend.py`.
+
+### Paper 5: Vector Calibration
+
+- **Paper 5**: *Vector Scores as Likelihood Ratios -- Index-Derived Bayesian Calibration for Hybrid Search* (Jeong, 2026). Transforms vector similarity scores into calibrated relevance probabilities through a likelihood ratio formulation grounded in Bayes' theorem.
+- **README**: New "Vector Calibration" subsection in Background section explaining the likelihood ratio framework and its structural identity with Bayesian BM25 calibration.
+- **References**: Paper 5 added to References section and "For full formal treatment" cross-reference.
+
+### Tests
+
+- **16 new tests** in `uqa/tests/test_deep_learn.py`: global pooling backend (3), spec serialization (1), SQL training/prediction (3), kernel init modes -- shape and properties (6), SQL integration (2), combined global_pool + orthogonal (1).
+- **Total**: 2788 tests across 83 test files.
+
 ## 0.21.0 (2026-03-20)
 
 Deep fusion as a complete neural network execution framework with analytical training pipeline. `deep_learn()` trains CNN classifiers via ridge regression and random multi-channel convolution — no backpropagation. Self-attention (Theorem 8.3) as context-dependent PoE. Neural network pruning via elastic net (L1) and magnitude pruning. Parameterized INSERT for 65x faster vector data loading. `deep_predict()` and `deep_fusion(model())` provide inference. PyTorch GPU acceleration for conv/pool/dense/attention operations. Storage backend ABCs for backend-agnostic persistence. Internal data model refactored from scalar logits to multi-channel vectors for full DL pipeline support. All 2771 tests pass across 85 test files.

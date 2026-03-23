@@ -205,15 +205,17 @@ The return dict contains `"training_accuracy"` and the full model configuration.
 
 ```python
 from uqa.operators.deep_learn import (
-    ConvSpec, PoolSpec, FlattenSpec, DenseSpec, SoftmaxSpec, AttentionSpec,
+    ConvSpec, PoolSpec, FlattenSpec, GlobalPoolSpec,
+    DenseSpec, SoftmaxSpec, AttentionSpec,
 )
 ```
 
 | Spec | Parameters | Description |
 |------|------------|-------------|
-| `ConvSpec(kernel_hops, n_channels)` | `kernel_hops=1`, `n_channels=1` | Graph convolution layer. `n_channels > 1` creates random multi-channel feature maps (extreme learning machine). |
+| `ConvSpec(kernel_hops, n_channels, init_mode)` | `kernel_hops=1`, `n_channels=1`, `init_mode="kaiming"` | Graph convolution layer. `n_channels > 1` creates multi-channel feature maps. `init_mode`: `"kaiming"` (random normal), `"orthogonal"` (QR decomposition), `"gabor"` (structured filter bank), `"kmeans"` (data-dependent patch dictionary). |
 | `PoolSpec(method, pool_size)` | `method="max"`, `pool_size=2` | Pooling layer — `"max"` or `"mean"`. |
 | `FlattenSpec()` | (none) | Flatten spatial nodes into a single vector. |
+| `GlobalPoolSpec(method)` | `method="avg"` | Channel-preserving spatial reduction. `"avg"`: per-channel mean, `"max"`: per-channel max, `"avg_max"`: concatenation of both (2x channels). |
 | `DenseSpec(output_channels)` | `output_channels=10` | Dense (fully connected) layer. |
 | `SoftmaxSpec()` | (none) | Softmax classification head. |
 | `AttentionSpec(n_heads, mode)` | `n_heads=1`, `mode="content"` | Self-attention layer (Theorem 8.3, Paper 4). Modes: `"content"` (Q=K=V=X), `"random_qk"` (random Q,K, V=X), `"learned_v"` (random Q,K, supervised V). |
@@ -223,7 +225,8 @@ from uqa.operators.deep_learn import (
 ```python
 from uqa.engine import Engine
 from uqa.operators.deep_learn import (
-    ConvSpec, PoolSpec, FlattenSpec, DenseSpec, SoftmaxSpec, AttentionSpec,
+    ConvSpec, PoolSpec, FlattenSpec, GlobalPoolSpec,
+    DenseSpec, SoftmaxSpec, AttentionSpec,
 )
 
 engine = Engine()

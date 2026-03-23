@@ -324,7 +324,7 @@ uqa/
                   information-theoretic bounds, graph cost model
   sql/            SQL compiler (pglast), expression evaluator, FTS query parser, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          2771 tests across 85 test files
+  tests/          2788 tests across 83 test files
 benchmarks/       309 pytest-benchmark tests across 15 files (posting list, storage, compiler,
                   execution, planner, scoring, graph, graph centrality, end-to-end SQL,
                   calibration, multi-field, external prior, advanced scoring, advanced graph,
@@ -410,6 +410,7 @@ Used inside `deep_fusion()` to compose neural network pipelines:
 | `pool('label', 'method', size[, 'dir'])` | Spatial downsampling via greedy BFS partitioning |
 | `dense(ARRAY[W], ARRAY[b], output_channels => N, input_channels => M)` | Fully connected layer |
 | `flatten()` | Collapse spatial nodes into a single vector |
+| `global_pool('avg'\|'max'\|'avg_max')` | Channel-preserving spatial reduction (alternative to flatten) |
 | `softmax()` | Classification head (numerically stable) |
 | `batch_norm([epsilon => 1e-5])` | Per-channel normalization across nodes |
 | `dropout(p)` | Inference-mode scaling by (1 - p) |
@@ -421,7 +422,7 @@ Used inside `deep_fusion()` to compose neural network pipelines:
 
 | Function | Description |
 |----------|-------------|
-| `deep_learn('model', label, embedding, 'edge_label', layers...[, gating][, lambda][, l1_ratio][, prune_ratio])` | SELECT aggregate: train a CNN classifier analytically (ridge regression, no backpropagation). Optional L1 regularization and magnitude pruning. |
+| `deep_learn('model', label, embedding, 'edge_label', layers...[, gating][, lambda][, l1_ratio][, prune_ratio])` | SELECT aggregate: train a CNN classifier analytically (ridge regression, no backpropagation). Optional L1 regularization and magnitude pruning. Layers include `convolve(n_channels => N[, init => 'kaiming'\|'orthogonal'\|'gabor'\|'kmeans'])`, `pool()`, `flatten()`, `global_pool()`, `dense()`, `softmax()`, `attention()`. |
 | `deep_predict('model', embedding)` | Per-row scalar: inference with trained model, returns class probabilities |
 | `build_grid_graph('table', rows, cols, 'label')` | FROM-clause: construct 4-connected grid graph for spatial convolution |
 
