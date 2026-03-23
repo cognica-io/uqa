@@ -257,22 +257,32 @@ def grid_forward(
             results.append(x.reshape(x.shape[0], -1).cpu().numpy())
         return np.concatenate(results, axis=0)
 
-    # numpy fallback (single-channel only)
-    batch = embeddings.reshape(-1, grid_h, grid_w).astype(np.float32)
+    # numpy fallback (multi-channel)
+    n_in_ch = embeddings.shape[1] // (grid_h * grid_w)
+    if n_in_ch < 1:
+        n_in_ch = 1
+    batch = embeddings.reshape(-1, n_in_ch, grid_h, grid_w).astype(np.float32)
     for kernel_np, pool_size, pool_method in stages:
-        if kernel_np.ndim == 4 and kernel_np.shape[0] == 1:
-            kernel_2d = kernel_np[0, 0]
+        # kernel_np: (C_out, C_in, 3, 3)
+        if kernel_np.ndim < 4:
+            kernel_4d = kernel_np.reshape(-1, 1, 3, 3)
         else:
-            kernel_2d = (
-                kernel_np.reshape(3, 3) if kernel_np.size == 9 else kernel_np[0, 0]
-            )
-        h, w = batch.shape[1], batch.shape[2]
-        padded = np.pad(batch, ((0, 0), (1, 1), (1, 1)), mode="constant")
-        out = np.zeros_like(batch)
-        for di in range(3):
-            for dj in range(3):
-                if kernel_2d[di, dj] != 0:
-                    out += padded[:, di : di + h, dj : dj + w] * kernel_2d[di, dj]
+            kernel_4d = kernel_np
+        out_ch = kernel_4d.shape[0]
+        in_ch = kernel_4d.shape[1]
+        n_samples = batch.shape[0]
+        h, w = batch.shape[2], batch.shape[3]
+        padded = np.pad(batch, ((0, 0), (0, 0), (1, 1), (1, 1)), mode="constant")
+        out = np.zeros((n_samples, out_ch, h, w), dtype=np.float32)
+        for oc in range(out_ch):
+            for ic in range(in_ch):
+                for di in range(3):
+                    for dj in range(3):
+                        coeff = kernel_4d[oc, ic, di, dj]
+                        if coeff != 0:
+                            out[:, oc] += (
+                                padded[:, ic, di : di + h, dj : dj + w] * coeff
+                            )
         if gating == "relu":
             out = np.maximum(0.0, out)
         elif gating == "swish":
@@ -281,14 +291,14 @@ def grid_forward(
         if pool_size > 1:
             new_h = h // pool_size
             new_w = w // pool_size
-            cropped = out[:, : new_h * pool_size, : new_w * pool_size]
+            cropped = out[:, :, : new_h * pool_size, : new_w * pool_size]
             reshaped = cropped.reshape(
-                batch.shape[0], new_h, pool_size, new_w, pool_size
+                n_samples, out_ch, new_h, pool_size, new_w, pool_size
             )
             if pool_method == "max":
-                batch = reshaped.max(axis=(2, 4))
+                batch = reshaped.max(axis=(3, 5))
             else:
-                batch = reshaped.mean(axis=(2, 4))
+                batch = reshaped.mean(axis=(3, 5))
         else:
             batch = out
     return batch.reshape(batch.shape[0], -1)
