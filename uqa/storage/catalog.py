@@ -163,7 +163,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         self._migrate_table_field_analyzers(raw)
         self._migrate_models(raw)
         raw.commit()
-        self._conn = ManagedConnection(raw)
+        self._conn = ManagedConnection(raw, db_path=db_path)
         self._in_transaction = False
 
     @staticmethod
@@ -830,4 +830,13 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
     # -- Lifecycle -----------------------------------------------------
 
     def close(self) -> None:
+        # Checkpoint WAL to ensure all committed data is flushed to
+        # the main database file before closing.  Without this,
+        # large transactions (e.g. IVF _train with thousands of
+        # vectors) may remain only in the WAL file and appear as
+        # corruption on reopen.
+        try:
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
         self._conn.close()

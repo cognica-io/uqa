@@ -408,8 +408,17 @@ class ASCIIFoldingFilter(TokenFilter):
     def _fold(token: str) -> str:
         if token.isascii():
             return token
-        nfkd = unicodedata.normalize("NFKD", token)
-        return nfkd.encode("ascii", "ignore").decode("ascii")
+        result: list[str] = []
+        for ch in token:
+            if ch.isascii():
+                result.append(ch)
+                continue
+            nfkd = unicodedata.normalize("NFKD", ch)
+            folded = nfkd.encode("ascii", "ignore").decode("ascii")
+            # Keep the original character when no ASCII equivalent exists
+            # (e.g. CJK, Korean, Arabic, etc.)
+            result.append(folded if folded else ch)
+        return "".join(result)
 
     def to_dict(self) -> dict[str, Any]:
         return {"type": "ascii_folding"}

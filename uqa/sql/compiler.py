@@ -1709,6 +1709,7 @@ class SQLCompiler:
             engine=self._engine,
             subquery_executor=self._compile_select,
             outer_row=getattr(self, "_correlated_outer_row", None),
+            params=self._params,
         )
 
         old_doc = table.document_store.get(doc_id)
@@ -1754,6 +1755,7 @@ class SQLCompiler:
             engine=self._engine,
             subquery_executor=self._compile_select,
             outer_row=getattr(self, "_correlated_outer_row", None),
+            params=self._params,
         )
         result: dict[str, Any] = {}
         for target in returning_list:
@@ -1833,6 +1835,7 @@ class SQLCompiler:
             engine=self._engine,
             subquery_executor=self._compile_select,
             outer_row=getattr(self, "_correlated_outer_row", None),
+            params=self._params,
         )
 
         returning_rows: list[dict[str, Any]] = []
@@ -1925,6 +1928,7 @@ class SQLCompiler:
             engine=self._engine,
             subquery_executor=self._compile_select,
             outer_row=getattr(self, "_correlated_outer_row", None),
+            params=self._params,
         )
 
         # Parse SET clause
@@ -2109,6 +2113,7 @@ class SQLCompiler:
             engine=self._engine,
             subquery_executor=self._compile_select,
             outer_row=getattr(self, "_correlated_outer_row", None),
+            params=self._params,
         )
 
         returning_rows: list[dict[str, Any]] = []
@@ -2499,6 +2504,7 @@ class SQLCompiler:
                     pre_targets,
                     subquery_executor=self._compile_select,
                     engine=self._engine,
+                    params=self._params,
                 )
 
             group_aliases = self._build_group_aliases(group_cols, stmt.targetList)
@@ -2517,6 +2523,7 @@ class SQLCompiler:
                     physical,
                     stmt.havingClause,
                     subquery_executor=self._compile_select,
+                    params=self._params,
                 )
 
             # Non-aggregate computed expressions in SELECT (e.g.,
@@ -2532,6 +2539,7 @@ class SQLCompiler:
                     post_group_targets,
                     subquery_executor=self._compile_select,
                     engine=self._engine,
+                    params=self._params,
                 )
                 expected_cols = [name for name, _ in post_group_targets]
             else:
@@ -2565,6 +2573,7 @@ class SQLCompiler:
                     targets,
                     subquery_executor=self._compile_select,
                     engine=self._engine,
+                    params=self._params,
                 )
                 expected_cols = [name for name, _ in targets]
             else:
@@ -2599,6 +2608,7 @@ class SQLCompiler:
                         subquery_executor=self._compile_select,
                         sequences=self._engine._sequences,
                         engine=self._engine,
+                        params=self._params,
                     )
                     expected_cols = [name for name, _ in star_targets]
             elif not is_star:
@@ -2628,6 +2638,7 @@ class SQLCompiler:
                             subquery_executor=self._compile_select,
                             sequences=self._engine._sequences,
                             engine=self._engine,
+                            params=self._params,
                         )
                         expected_cols = [name for name, _ in targets]
                     else:
@@ -2668,6 +2679,7 @@ class SQLCompiler:
                     subquery_executor=self._compile_select,
                     sequences=self._engine._sequences,
                     engine=self._engine,
+                    params=self._params,
                 )
                 expected_cols = [name for name, _ in targets]
             else:
@@ -3684,6 +3696,83 @@ class SQLCompiler:
             return result
         return [node]
 
+    # UQA-specific WHERE functions that produce posting lists and cannot
+    # be evaluated as scalar expressions by ExprEvaluator.
+    _UQA_WHERE_FUNCTIONS: frozenset[str] = frozenset(
+        {
+            "text_match",
+            "bayesian_match",
+            "bayesian_match_with_prior",
+            "knn_match",
+            "bayesian_knn_match",
+            "traverse_match",
+            "temporal_traverse",
+            "path_filter",
+            "vector_exclude",
+            "spatial_within",
+            "fuse_log_odds",
+            "fuse_prob_and",
+            "fuse_prob_or",
+            "fuse_prob_not",
+            "fuse_attention",
+            "fuse_multihead",
+            "fuse_learned",
+            "sparse_threshold",
+            "multi_field_match",
+            "message_passing",
+            "graph_embedding",
+            "staged_retrieval",
+            "pagerank",
+            "hits",
+            "betweenness",
+            "weighted_rpq",
+            "progressive_fusion",
+            "deep_fusion",
+        }
+    )
+
+    @staticmethod
+    def _contains_uqa_function(node: Any) -> bool:
+        """Check if an AST subtree contains any UQA posting-list functions."""
+        if isinstance(node, FuncCall):
+            name = node.funcname[-1].sval.lower()
+            if name in SQLCompiler._UQA_WHERE_FUNCTIONS:
+                return True
+        if isinstance(node, A_Expr) and node.name:
+            op_name = node.name[0].sval if hasattr(node.name[0], "sval") else ""
+            if op_name == "@@":
+                return True
+        for attr in ("lexpr", "rexpr", "args", "arg"):
+            child = getattr(node, attr, None)
+            if child is None:
+                continue
+            if isinstance(child, list | tuple):
+                for c in child:
+                    if c is not None and SQLCompiler._contains_uqa_function(c):
+                        return True
+            elif SQLCompiler._contains_uqa_function(child):
+                return True
+        return False
+
+    def _split_uqa_conjuncts(self, where_node: Any) -> tuple[Any, Any]:
+        """Split a WHERE node into UQA function parts and scalar parts.
+
+        Returns (uqa_node, scalar_node) where either can be None.
+        UQA functions are compiled via _compile_where; scalar predicates
+        are deferred to ExprFilterOp.
+        """
+        conjuncts = self._extract_and_conjuncts(where_node)
+        uqa: list = []
+        scalar: list = []
+        for conj in conjuncts:
+            if self._contains_uqa_function(conj):
+                uqa.append(conj)
+            else:
+                scalar.append(conj)
+        uqa_node = self._reconstruct_and(uqa)
+        scalar_node = self._reconstruct_and(scalar)
+        return uqa_node, scalar_node
+
     @staticmethod
     def _collect_conjunct_aliases(node: Any) -> set[str]:
         """Collect table alias prefixes from ColumnRef nodes in an AST subtree."""
@@ -3771,8 +3860,32 @@ class SQLCompiler:
         if isinstance(scan, _TableScanOperator):
             alias = scan._alias
             if alias and alias in pushable:
-                where_node = self._reconstruct_and(pushable[alias])
-                return _FilteredScanOperator(scan, where_node, self._compile_select)
+                nodes = pushable[alias]
+                uqa_nodes = [n for n in nodes if self._contains_uqa_function(n)]
+                scalar_nodes = [n for n in nodes if not self._contains_uqa_function(n)]
+                if uqa_nodes:
+                    # UQA functions (text_match, knn_match, fuse_*, etc.)
+                    # must be compiled into posting-list operators and
+                    # executed against the table's inverted/vector indexes
+                    # BEFORE the join.
+                    uqa_where = self._reconstruct_and(uqa_nodes)
+                    ctx = self._context_for_table(scan._table)
+                    uqa_op = self._compile_where(uqa_where, ctx)
+                    uqa_op = self._optimize(uqa_op, ctx, scan._table)
+                    scalar_where = self._reconstruct_and(scalar_nodes)
+                    return _CompiledWhereScanOperator(
+                        scan._table,
+                        uqa_op,
+                        ctx,
+                        alias,
+                        scalar_filter=scalar_where,
+                        subquery_executor=self._compile_select,
+                        params=self._params,
+                    )
+                where_node = self._reconstruct_and(nodes)
+                return _FilteredScanOperator(
+                    scan, where_node, self._compile_select, params=self._params
+                )
         return scan
 
     def _apply_deferred_where(self, physical: Any, where_node: Any) -> Any:
@@ -3843,6 +3956,7 @@ class SQLCompiler:
             physical,
             where_node,
             subquery_executor=self._compile_select,
+            params=self._params,
         )
 
     def _compile_select_body(
@@ -6178,7 +6292,9 @@ class SQLCompiler:
         # use nested-loop join with expression evaluation
         if quals is None:
             raise ValueError("Non-CROSS JOIN requires ON clause")
-        return table, _ExprJoinOperator(left_op, right_op, quals, jt)
+        return table, _ExprJoinOperator(
+            left_op, right_op, quals, jt, params=self._params
+        )
 
     # -- DPccp join order optimization ------------------------------------
 
@@ -6469,10 +6585,10 @@ class SQLCompiler:
                     raise ValueError("@@  operator requires an execution context")
                 return compile_fts_match(query_string, effective_field, ctx, self)
 
-            # Simple case: column op constant (basic comparison only)
+            # Simple case: column op constant/param (basic comparison only)
             if (
                 isinstance(node.lexpr, ColumnRef)
-                and isinstance(node.rexpr, A_Const)
+                and isinstance(node.rexpr, A_Const | ParamRef)
                 and op_name in ("=", "!=", "<>", ">", ">=", "<", "<=")
             ):
                 field_name = self._extract_column_name(node.lexpr)
@@ -8533,7 +8649,7 @@ class SQLCompiler:
             ntile_buckets = 1
 
             if func_name in ("lag", "lead"):
-                evaluator = ExprEvaluator(engine=self._engine)
+                evaluator = ExprEvaluator(engine=self._engine, params=self._params)
                 if val.args:
                     arg_col = self._extract_column_name(val.args[0])
                     if len(val.args) > 1:
@@ -8541,11 +8657,11 @@ class SQLCompiler:
                     if len(val.args) > 2:
                         default_value = evaluator.evaluate(val.args[2], {})
             elif func_name == "ntile":
-                evaluator = ExprEvaluator(engine=self._engine)
+                evaluator = ExprEvaluator(engine=self._engine, params=self._params)
                 if val.args:
                     ntile_buckets = int(evaluator.evaluate(val.args[0], {}))
             elif func_name == "nth_value":
-                evaluator = ExprEvaluator(engine=self._engine)
+                evaluator = ExprEvaluator(engine=self._engine, params=self._params)
                 if val.args:
                     arg_col = self._extract_column_name(val.args[0])
                     if len(val.args) > 1:
@@ -8865,8 +8981,12 @@ class SQLCompiler:
             return node.fields[-1].sval
         raise ValueError(f"Expected ColumnRef, got {type(node).__name__}")
 
-    @staticmethod
-    def _extract_const_value(node: Any) -> Any:
+    def _extract_const_value(self, node: Any) -> Any:
+        if isinstance(node, ParamRef):
+            idx = node.number - 1
+            if idx < 0 or idx >= len(self._params):
+                raise ValueError(f"No value supplied for parameter ${node.number}")
+            return self._params[idx]
         if isinstance(node, A_Const):
             if node.isnull:
                 return None
@@ -9021,6 +9141,78 @@ class _TableScanOperator:
         return float(len(self._table.document_store.doc_ids))
 
 
+class _CompiledWhereScanOperator:
+    """Execute compiled UQA operators against a table for JOIN predicate pushdown.
+
+    UQA posting-list functions (text_match, knn_match, fuse_*, etc.)
+    must be compiled into operator trees and executed against the
+    table's inverted/vector indexes.  This operator:
+
+    1. Executes the compiled UQA operator to get matching doc_ids + scores.
+    2. Enriches each entry with full document fields from the document store
+       (required for downstream JOIN ON evaluation).
+    3. Optionally applies scalar filters via ExprEvaluator.
+    """
+
+    def __init__(
+        self,
+        table: Any,
+        uqa_op: Any,
+        ctx: Any,
+        alias: str | None = None,
+        scalar_filter: Any = None,
+        subquery_executor: Any = None,
+        params: list[Any] | None = None,
+    ) -> None:
+        self._table = table
+        self._uqa_op = uqa_op
+        self._ctx = ctx
+        self._alias = alias
+        self._scalar_filter = scalar_filter
+        self._subquery_executor = subquery_executor
+        self._params = params
+
+    def execute(self, context: Any) -> PostingList:
+        from uqa.sql.expr_evaluator import ExprEvaluator
+
+        pl = self._uqa_op.execute(self._ctx)
+
+        evaluator = None
+        if self._scalar_filter is not None:
+            evaluator = ExprEvaluator(
+                engine=None,
+                subquery_executor=self._subquery_executor,
+                params=self._params,
+            )
+
+        alias = self._alias
+        col_names = list(self._table.columns.keys()) if self._table.columns else []
+        entries: list[PostingEntry] = []
+        for entry in pl:
+            doc = self._table.document_store.get(entry.doc_id)
+            if doc is None:
+                continue
+            fields = dict(doc)
+            for col_name in col_names:
+                if col_name not in fields:
+                    fields[col_name] = None
+            if alias:
+                qualified = {f"{alias}.{k}": v for k, v in fields.items()}
+                fields = {**qualified, **fields}
+            if evaluator and not evaluator.evaluate(self._scalar_filter, fields):
+                continue
+            entries.append(
+                PostingEntry(
+                    entry.doc_id,
+                    Payload(score=entry.payload.score, fields=fields),
+                )
+            )
+        return PostingList.from_sorted(entries)
+
+    def cost_estimate(self, stats: Any) -> float:
+        return float(stats.total_docs) * 0.3
+
+
 class _FilteredScanOperator:
     """Wraps a scan operator and filters its output using a WHERE predicate.
 
@@ -9034,17 +9226,21 @@ class _FilteredScanOperator:
         scan: _TableScanOperator,
         where_node: Any,
         subquery_executor: Any,
+        params: list[Any] | None = None,
     ) -> None:
         self._scan = scan
         self._where_node = where_node
         self._subquery_executor = subquery_executor
+        self._params = params
 
     def execute(self, context: Any) -> PostingList:
         from uqa.sql.expr_evaluator import ExprEvaluator
 
         pl = self._scan.execute(context)
         evaluator = ExprEvaluator(
-            engine=None, subquery_executor=self._subquery_executor
+            engine=None,
+            subquery_executor=self._subquery_executor,
+            params=self._params,
         )
         filtered: list[PostingEntry] = []
         for entry in pl:
@@ -9165,16 +9361,18 @@ class _ExprJoinOperator:
         right: object,
         quals: Any,
         join_type: int,
+        params: list[Any] | None = None,
     ) -> None:
         self._left = left
         self._right = right
         self._quals = quals
         self._join_type = join_type
+        self._params = params
 
     def execute(self, context: object) -> Any:
         from uqa.sql.expr_evaluator import ExprEvaluator
 
-        evaluator = ExprEvaluator(engine=None)
+        evaluator = ExprEvaluator(engine=None, params=self._params)
         left_entries = _get_join_entries(self._left, context)
         right_entries = _get_join_entries(self._right, context)
 
@@ -9593,10 +9791,16 @@ class _ExprFilterOperator:
             if self._compiler is not None
             else None
         )
+        params = (
+            getattr(self._compiler, "_params", None)
+            if self._compiler is not None
+            else None
+        )
         evaluator = ExprEvaluator(
             engine=None,
             subquery_executor=self._subquery_executor,
             outer_row=outer_row,
+            params=params,
         )
         doc_store = context.document_store
         if doc_store is None:

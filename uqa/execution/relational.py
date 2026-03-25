@@ -189,16 +189,20 @@ class ExprFilterOp(PhysicalOperator):
         child: PhysicalOperator,
         where_node: Any,
         subquery_executor: Any = None,
+        params: list[Any] | None = None,
     ) -> None:
         self._child = child
         self._where_node = where_node
         self._subquery_executor = subquery_executor
+        self._params = params
 
     def open(self) -> None:
         self._child.open()
         from uqa.sql.expr_evaluator import ExprEvaluator
 
-        self._evaluator = ExprEvaluator(subquery_executor=self._subquery_executor)
+        self._evaluator = ExprEvaluator(
+            subquery_executor=self._subquery_executor, params=self._params
+        )
 
     def next(self) -> Batch | None:
         while True:
@@ -277,6 +281,7 @@ class ExprProjectOp(PhysicalOperator):
         sequences: dict | None = None,
         outer_row: dict[str, Any] | None = None,
         engine: Any = None,
+        params: list[Any] | None = None,
     ) -> None:
         self._child = child
         self._targets = targets
@@ -284,6 +289,7 @@ class ExprProjectOp(PhysicalOperator):
         self._sequences = sequences
         self._outer_row = outer_row
         self._engine = engine
+        self._params = params
 
     def open(self) -> None:
         self._child.open()
@@ -294,6 +300,7 @@ class ExprProjectOp(PhysicalOperator):
             sequences=self._sequences,
             outer_row=self._outer_row,
             engine=self._engine,
+            params=self._params,
         )
 
     def next(self) -> Batch | None:

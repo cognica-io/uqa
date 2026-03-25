@@ -596,3 +596,44 @@ class TestEngineIntegration:
             assert isinstance(vec_idx, IVFIndex)
             assert vec_idx._nlist == 8
             assert vec_idx._nprobe == 4
+
+    def test_ivf_train_persists_across_restart(self, tmp_path):
+        """IVF trained state (centroids + background stats) survives close/reopen."""
+        from uqa.engine import Engine
+        from uqa.storage.ivf_index import _State
+
+        db = str(tmp_path / "train_persist.db")
+        n_vectors = 300  # exceeds train_threshold (256)
+        dims = 16
+
+        with Engine(db_path=db) as engine:
+            engine.sql(f"CREATE TABLE docs (id SERIAL PRIMARY KEY, emb VECTOR({dims}))")
+            engine.sql("CREATE INDEX idx_emb ON docs USING ivf (emb) WITH (nlist = 4)")
+
+            for i in range(1, n_vectors + 1):
+                vec = _random_vector(dims, seed=i)
+                arr = "ARRAY[" + ",".join(str(float(v)) for v in vec) + "]"
+                engine.sql(f"INSERT INTO docs (emb) VALUES ({arr})")
+
+            vec_idx = engine._tables["docs"].vector_indexes["emb"]
+            assert isinstance(vec_idx, IVFIndex)
+            assert vec_idx._state == _State.TRAINED
+            assert vec_idx.background_stats is not None
+
+        # Reopen and verify trained state is fully restored.
+        with Engine(db_path=db) as engine:
+            vec_idx = engine._tables["docs"].vector_indexes["emb"]
+            assert isinstance(vec_idx, IVFIndex)
+            assert vec_idx.count() == n_vectors
+            assert vec_idx._state == _State.TRAINED
+            assert vec_idx._centroids is not None
+            assert vec_idx.background_stats is not None
+
+            # KNN search must work with trained centroids.
+            query = _random_vector(dims, seed=42)
+            result = vec_idx.search_knn(query, k=5)
+            assert len(result.entries) == 5
+
+            # probed_distances must not raise.
+            dists = vec_idx.probed_distances(query)
+            assert len(dists) > 0

@@ -157,6 +157,109 @@ class TestInsert:
         with pytest.raises(ValueError, match="not provided"):
             e.sql("INSERT INTO t (val) VALUES ($2)", params=[1])
 
+    def test_update_parameterized_where(self) -> None:
+        e = Engine()
+        e.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, name TEXT, val INTEGER)")
+        e.sql("INSERT INTO t (name, val) VALUES ('alice', 10)")
+        e.sql("INSERT INTO t (name, val) VALUES ('bob', 20)")
+        e.sql("UPDATE t SET val = $1 WHERE name = $2", params=[99, "alice"])
+        r = e.sql("SELECT name, val FROM t ORDER BY name")
+        assert r.rows[0] == {"name": "alice", "val": 99}
+        assert r.rows[1] == {"name": "bob", "val": 20}
+
+    def test_update_parameterized_set_and_where(self) -> None:
+        e = Engine()
+        e.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, name TEXT, val INTEGER)")
+        e.sql("INSERT INTO t (name, val) VALUES ('alice', 10)")
+        e.sql("UPDATE t SET val = $1 WHERE val > $2", params=[50, 5])
+        r = e.sql("SELECT val FROM t")
+        assert r.rows[0]["val"] == 50
+
+    def test_delete_parameterized_where(self) -> None:
+        e = Engine()
+        e.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, name TEXT)")
+        e.sql("INSERT INTO t (name) VALUES ('alice')")
+        e.sql("INSERT INTO t (name) VALUES ('bob')")
+        e.sql("DELETE FROM t WHERE name = $1", params=["alice"])
+        r = e.sql("SELECT name FROM t")
+        assert len(r.rows) == 1
+        assert r.rows[0]["name"] == "bob"
+
+    def test_select_parameterized_where(self) -> None:
+        e = Engine()
+        e.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, name TEXT, val INTEGER)")
+        e.sql("INSERT INTO t (name, val) VALUES ('alice', 10)")
+        e.sql("INSERT INTO t (name, val) VALUES ('bob', 20)")
+        r = e.sql("SELECT name FROM t WHERE val > $1", params=[15])
+        assert len(r.rows) == 1
+        assert r.rows[0]["name"] == "bob"
+
+    def test_select_parameterized_expression_where(self) -> None:
+        e = Engine()
+        e.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, val INTEGER)")
+        e.sql("INSERT INTO t (val) VALUES (10)")
+        e.sql("INSERT INTO t (val) VALUES (20)")
+        r = e.sql("SELECT val FROM t WHERE val * 2 > $1", params=[25])
+        assert len(r.rows) == 1
+        assert r.rows[0]["val"] == 20
+
+    def test_join_with_uqa_function_where(self) -> None:
+        """UQA functions in JOIN WHERE must be pushed to the table scan."""
+        e = Engine()
+        e.sql(
+            "CREATE TABLE rooms (  id SERIAL PRIMARY KEY, hotel_id INTEGER, name TEXT)"
+        )
+        e.sql("CREATE TABLE hotels (  id SERIAL PRIMARY KEY, name TEXT)")
+        e.sql("INSERT INTO hotels (name) VALUES ('Grand Hotel')")
+        e.sql("INSERT INTO hotels (name) VALUES ('Beach Resort')")
+        e.sql("INSERT INTO rooms (hotel_id, name) VALUES (1, 'ocean view suite')")
+        e.sql("INSERT INTO rooms (hotel_id, name) VALUES (1, 'mountain view')")
+        e.sql("INSERT INTO rooms (hotel_id, name) VALUES (2, 'ocean deluxe')")
+
+        r = e.sql(
+            "SELECT r.name AS room, h.name AS hotel, _score "
+            "FROM rooms r JOIN hotels h ON r.hotel_id = h.id "
+            "WHERE text_match(r.name, $1) "
+            "ORDER BY _score DESC",
+            params=["ocean"],
+        )
+        assert len(r.rows) == 2
+        room_names = {row["room"] for row in r.rows}
+        assert "ocean view suite" in room_names
+        assert "ocean deluxe" in room_names
+        assert all(row["_score"] > 0 for row in r.rows)
+
+    def test_join_with_uqa_function_and_scalar_filter(self) -> None:
+        """UQA functions + scalar filters both pushed to same table."""
+        e = Engine()
+        e.sql(
+            "CREATE TABLE items ("
+            "  id SERIAL PRIMARY KEY, cat_id INTEGER, title TEXT, active BOOLEAN"
+            ")"
+        )
+        e.sql("CREATE TABLE categories (id SERIAL PRIMARY KEY, name TEXT)")
+        e.sql("INSERT INTO categories (name) VALUES ('electronics')")
+        e.sql(
+            "INSERT INTO items (cat_id, title, active) "
+            "VALUES (1, 'wireless keyboard', TRUE)"
+        )
+        e.sql(
+            "INSERT INTO items (cat_id, title, active) "
+            "VALUES (1, 'wireless mouse', FALSE)"
+        )
+        e.sql(
+            "INSERT INTO items (cat_id, title, active) "
+            "VALUES (1, 'wired headset', TRUE)"
+        )
+
+        r = e.sql(
+            "SELECT i.title, c.name AS category "
+            "FROM items i JOIN categories c ON i.cat_id = c.id "
+            "WHERE text_match(i.title, 'wireless') AND i.active = TRUE"
+        )
+        assert len(r.rows) == 1
+        assert r.rows[0]["title"] == "wireless keyboard"
+
 
 # ==================================================================
 # DQL: Basic SELECT

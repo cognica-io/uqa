@@ -72,6 +72,7 @@ class IVFIndex(VectorIndex):
 
         self._centroids_table = f"_ivf_centroids_{table_name}_{field_name}"
         self._lists_table = f"_ivf_lists_{table_name}_{field_name}"
+        self._has_reader = hasattr(conn, "read_fetchall")
 
         self._create_tables()
 
@@ -84,6 +85,16 @@ class IVFIndex(VectorIndex):
         self._background_sigma: float | None = None
 
         self._load_state()
+
+    def _read_fetchall(self, sql: str, params: tuple = ()) -> list[tuple]:
+        if self._has_reader:
+            return self._conn.read_fetchall(sql, params)  # type: ignore[union-attr]
+        return self._conn.execute(sql, params).fetchall()
+
+    def _read_fetchone(self, sql: str, params: tuple = ()) -> tuple | None:
+        if self._has_reader:
+            return self._conn.read_fetchone(sql, params)  # type: ignore[union-attr]
+        return self._conn.execute(sql, params).fetchone()
 
     @property
     def train_threshold(self) -> int:
@@ -318,9 +329,9 @@ class IVFIndex(VectorIndex):
     # ------------------------------------------------------------------
 
     def _brute_force_knn(self, q: NDArray, k: int) -> PostingList:
-        rows = self._conn.execute(
+        rows = self._read_fetchall(
             f'SELECT doc_id, embedding FROM "{self._lists_table}"'
-        ).fetchall()
+        )
         if not rows:
             return PostingList()
 
@@ -344,9 +355,9 @@ class IVFIndex(VectorIndex):
         return PostingList(entries)
 
     def _brute_force_threshold(self, q: NDArray, threshold: float) -> PostingList:
-        rows = self._conn.execute(
+        rows = self._read_fetchall(
             f'SELECT doc_id, embedding FROM "{self._lists_table}"'
-        ).fetchall()
+        )
         if not rows:
             return PostingList()
 
@@ -382,9 +393,7 @@ class IVFIndex(VectorIndex):
 
         if self._state != _State.TRAINED or self._centroids is None:
             # Brute-force: scan all vectors.
-            rows = self._conn.execute(
-                f'SELECT embedding FROM "{self._lists_table}"'
-            ).fetchall()
+            rows = self._read_fetchall(f'SELECT embedding FROM "{self._lists_table}"')
             if not rows:
                 return np.empty(0, dtype=np.float32)
             data = np.empty((len(rows), self.dimensions), dtype=np.float32)
@@ -395,11 +404,11 @@ class IVFIndex(VectorIndex):
         centroid_ids = self._nearest_centroids(q, self._nprobe)
         centroid_ids_with_untrained = [*centroid_ids, _UNTRAINED_CENTROID_ID]
         placeholders = ",".join("?" * len(centroid_ids_with_untrained))
-        rows = self._conn.execute(
+        rows = self._read_fetchall(
             f'SELECT embedding FROM "{self._lists_table}" '
             f"WHERE centroid_id IN ({placeholders})",
             tuple(centroid_ids_with_untrained),
-        ).fetchall()
+        )
         if not rows:
             return np.empty(0, dtype=np.float32)
         data = np.empty((len(rows), self.dimensions), dtype=np.float32)
@@ -415,11 +424,11 @@ class IVFIndex(VectorIndex):
         centroid_ids_with_untrained = [*centroid_ids, _UNTRAINED_CENTROID_ID]
 
         placeholders = ",".join("?" * len(centroid_ids_with_untrained))
-        rows = self._conn.execute(
+        rows = self._read_fetchall(
             f'SELECT centroid_id, doc_id, embedding FROM "{self._lists_table}" '
             f"WHERE centroid_id IN ({placeholders})",
             tuple(centroid_ids_with_untrained),
-        ).fetchall()
+        )
 
         if not rows:
             return PostingList()
@@ -456,11 +465,11 @@ class IVFIndex(VectorIndex):
         centroid_ids_with_untrained = [*centroid_ids, _UNTRAINED_CENTROID_ID]
 
         placeholders = ",".join("?" * len(centroid_ids_with_untrained))
-        rows = self._conn.execute(
+        rows = self._read_fetchall(
             f'SELECT centroid_id, doc_id, embedding FROM "{self._lists_table}" '
             f"WHERE centroid_id IN ({placeholders})",
             tuple(centroid_ids_with_untrained),
-        ).fetchall()
+        )
 
         if not rows:
             return PostingList()
@@ -523,13 +532,14 @@ class IVFIndex(VectorIndex):
         centroids = self._kmeans(data, actual_nlist)
         self._centroids = centroids
 
-        # Persist centroids.
+        # Persist centroids (atomic: delete old + insert new).
         self._conn.execute(f'DELETE FROM "{self._centroids_table}"')
         self._conn.executemany(
             f'INSERT INTO "{self._centroids_table}" '
             f"(centroid_id, centroid) VALUES (?, ?)",
             [(i, c.tobytes()) for i, c in enumerate(centroids)],
         )
+        self._conn.commit()
 
         # Reassign all vectors to their nearest centroid.
         assignments = data @ centroids.T  # (n, nlist)
@@ -539,6 +549,7 @@ class IVFIndex(VectorIndex):
             f'UPDATE "{self._lists_table}" SET centroid_id = ? WHERE doc_id = ?',
             [(int(best[j]), doc_id) for j, doc_id in enumerate(doc_ids)],
         )
+        self._conn.commit()
 
         # Estimate background distance distribution f_G from random
         # query top-K distances (Definition 4.5.1).  We simulate random

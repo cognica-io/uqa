@@ -7,7 +7,7 @@ include = ["uqa*"]
 
 [project]
 name = "uqa"
-version = "0.22.0"
+version = "0.22.1"
 description = "Unified Query Algebra — a multi-paradigm database engine unifying relational, text, vector, graph, and geospatial queries"
 license = "AGPL-3.0-only"
 requires-python = ">=3.12"

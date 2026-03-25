@@ -43,6 +43,7 @@ from pglast.ast import (
     FuncCall,
     MinMaxExpr,
     NullTest,
+    ParamRef,
     RangeVar,
     SelectStmt,
     SQLValueFunction,
@@ -97,6 +98,7 @@ class ExprEvaluator:
         A_ArrayExpr: "_eval_a_array_expr",
         MinMaxExpr: "_eval_min_max",
         SQLValueFunction: "_eval_sql_value_function",
+        ParamRef: "_eval_param_ref",
     }
 
     def __init__(
@@ -105,12 +107,14 @@ class ExprEvaluator:
         sequences: dict | None = None,
         outer_row: dict[str, Any] | None = None,
         engine: Any = None,
+        params: list[Any] | None = None,
     ) -> None:
         self._subquery_executor = subquery_executor
         self._sequences = sequences
         self._subquery_cache: dict[int, Any] = {}
         self._outer_row = outer_row
         self._engine = engine
+        self._params: list[Any] = params if params is not None else []
 
     def evaluate(self, node: Any, row: dict[str, Any]) -> Any:
         """Evaluate *node* against *row* and return the result."""
@@ -159,6 +163,12 @@ class ExprEvaluator:
         if isinstance(val, PgBoolean):
             return val.boolval
         raise ValueError(f"Unknown A_Const value type: {type(val).__name__}")
+
+    def _eval_param_ref(self, node: ParamRef, row: dict[str, Any] | None = None) -> Any:
+        idx = node.number - 1
+        if idx < 0 or idx >= len(self._params):
+            raise ValueError(f"No value supplied for parameter ${node.number}")
+        return self._params[idx]
 
     # -- A_Expr (arithmetic, comparison, concatenation) ----------------
 

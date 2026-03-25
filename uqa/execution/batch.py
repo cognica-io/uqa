@@ -122,6 +122,8 @@ class ColumnVector:
     def from_values(cls, values: list[Any], dtype: DataType) -> ColumnVector:
         """Create a ColumnVector from a list of Python values."""
         arrow_type = _DTYPE_TO_ARROW[dtype]
+        if dtype == DataType.BOOLEAN:
+            values = [bool(v) if v is not None else None for v in values]
         arr = pa.array(values, type=arrow_type)
         return cls(arr, dtype)
 
@@ -300,6 +302,8 @@ class Batch:
                 fields.append(pa.field(name, arr.type))
             else:
                 arrow_type = _DTYPE_TO_ARROW[dtype]
+                if dtype == DataType.BOOLEAN:
+                    values = [bool(v) if v is not None else None for v in values]
                 arrays.append(pa.array(values, type=arrow_type))
                 fields.append(pa.field(name, arrow_type))
 

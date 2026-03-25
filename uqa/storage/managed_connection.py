@@ -35,17 +35,57 @@ if TYPE_CHECKING:
 class ManagedConnection:
     """Proxy around ``sqlite3.Connection`` with transaction suppression.
 
-    All operations on the underlying ``sqlite3.Connection`` are serialized
-    through a threading lock.  SQLite cursors are not safe for concurrent
-    use from multiple threads on the same connection -- even with WAL mode
-    and ``check_same_thread=False`` -- because cursor step operations can
-    interleave and corrupt results.
+    Write operations and the main-thread reads are serialized through a
+    threading lock on the primary connection.
+
+    For parallel read access (e.g. fusion signal branches executed via
+    ``ThreadPoolExecutor``), each thread gets its own read-only SQLite
+    connection via :meth:`read_fetchall` / :meth:`read_fetchone`.  WAL
+    mode allows concurrent readers across separate connections without
+    blocking writers.
     """
 
-    def __init__(self, raw: sqlite3.Connection) -> None:
+    def __init__(self, raw: sqlite3.Connection, db_path: str | None = None) -> None:
         self._raw = raw
+        self._db_path = db_path
         self._in_transaction = False
         self._lock = threading.Lock()
+        self._local = threading.local()
+        self._readers: list[sqlite3.Connection] = []
+        self._readers_lock = threading.Lock()
+
+    # -- Per-thread read connections -----------------------------------
+
+    def _get_reader(self) -> sqlite3.Connection:
+        """Return a thread-local read-only connection.
+
+        Falls back to the primary connection when no ``db_path`` was
+        provided (in-memory databases cannot share connections).
+        """
+        if self._db_path is None:
+            return self._raw
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(self._db_path, check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA query_only=ON")
+            conn.execute("PRAGMA mmap_size=268435456")
+            self._local.conn = conn
+            with self._readers_lock:
+                self._readers.append(conn)
+        return conn
+
+    def read_fetchall(
+        self, sql: str, parameters: sqlite3._Parameters = ()
+    ) -> list[tuple]:
+        """Execute a read query on a thread-local connection."""
+        return self._get_reader().execute(sql, parameters).fetchall()
+
+    def read_fetchone(
+        self, sql: str, parameters: sqlite3._Parameters = ()
+    ) -> tuple | None:
+        """Execute a read query on a thread-local connection."""
+        return self._get_reader().execute(sql, parameters).fetchone()
 
     # -- Proxy all unhandled attributes to the raw connection -----------
 
@@ -144,6 +184,13 @@ class ManagedConnection:
     # -- Lifecycle -----------------------------------------------------
 
     def close(self) -> None:
+        with self._readers_lock:
+            for conn in self._readers:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._readers.clear()
         with self._lock:
             self._raw.close()
 
