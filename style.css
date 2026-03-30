@@ -64,7 +64,6 @@ nav ul {
   display: flex;
   gap: 1.5rem;
   list-style: none;
-  overflow-x: auto;
 }
 nav a {
   display: block;
