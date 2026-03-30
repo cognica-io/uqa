@@ -8,12 +8,107 @@
       name="description"
       content="Try UQA (Unified Query Algebra) directly in your browser. Write SQL queries with full-text search, BM25 scoring, graph traversal, and more."
     />
-    <script type="module" crossorigin src="/uqa/playground/assets/index-G99szBZ6.js"></script>
-    <link rel="stylesheet" crossorigin href="/uqa/playground/assets/index-DZxHL2II.css">
+    <style>
+      .site-hero {
+        background: #0f172a;
+        color: #f1f5f9;
+        padding: 2.5rem 1.5rem 2rem;
+        text-align: center;
+      }
+      .site-hero h1 {
+        font-size: 2rem;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        margin: 0 0 0.5rem;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      }
+      .site-hero h1 span { color: #2563eb; }
+      .site-hero .tagline {
+        font-size: 1.15rem;
+        color: #94a3b8;
+        max-width: 640px;
+        margin: 0 auto;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      }
+      .site-nav {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        background: rgba(255,255,255,0.95);
+        backdrop-filter: blur(8px);
+        border-bottom: 1px solid #e2e8f0;
+        padding: 0 1.5rem;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      }
+      .site-nav ul {
+        max-width: 960px;
+        margin: 0 auto;
+        display: flex;
+        gap: 1.5rem;
+        list-style: none;
+        padding: 0;
+      }
+      .site-nav li { position: relative; }
+      .site-nav a {
+        display: block;
+        padding: 0.75rem 0;
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #64748b;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+      .site-nav a:hover { color: #1a1a2e; }
+      .site-nav a.active {
+        color: #2563eb;
+        border-bottom: 2px solid #2563eb;
+      }
+      .site-nav li.dropdown > a::after {
+        content: "";
+        display: inline-block;
+        width: 0; height: 0;
+        margin-left: 0.35rem;
+        vertical-align: 0.15em;
+        border-left: 4px solid transparent;
+        border-right: 4px solid transparent;
+        border-top: 4px solid currentColor;
+      }
+      .site-nav .dropdown-menu {
+        display: none;
+        position: absolute;
+        top: 100%;
+        left: 0;
+        min-width: 170px;
+        background: #fff;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+        padding: 0.4rem 0;
+        z-index: 20;
+      }
+      .site-nav li.dropdown:hover .dropdown-menu { display: block; }
+      .site-nav .dropdown-menu a {
+        display: block;
+        padding: 0.45rem 1rem;
+        font-size: 0.83rem;
+        font-weight: 500;
+        color: #64748b;
+      }
+      .site-nav .dropdown-menu a:hover {
+        color: #1a1a2e;
+        background: #f8fafc;
+      }
+      .site-nav .dropdown-menu a.active {
+        color: #2563eb;
+        border-bottom: none;
+      }
+    </style>
+    <script type="module" crossorigin src="/uqa/playground/assets/index-eciZ_AzV.js"></script>
+    <link rel="stylesheet" crossorigin href="/uqa/playground/assets/index-BAIcirbk.css">
   </head>
   <body>
     <!-- ====== Hero ====== -->
-    <header class="hero hero-compact">
+    <header class="site-hero">
       <h1><span>UQA</span> Playground</h1>
       <p class="tagline">
         An interactive in-memory database running entirely in your browser via
@@ -22,7 +117,7 @@
     </header>
 
     <!-- ====== Nav ====== -->
-    <nav>
+    <nav class="site-nav">
       <ul>
         <li><a href="../">Overview</a></li>
         <li><a href="../docs.html">Docs</a></li>
@@ -49,6 +144,5 @@
     </nav>
 
     <div id="root"></div>
-    <link rel="stylesheet" href="../style.css" />
   </body>
 </html>
