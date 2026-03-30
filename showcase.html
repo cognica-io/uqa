@@ -32,14 +32,25 @@ mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
   <ul>
     <li><a href="index.html">Overview</a></li>
     <li><a href="docs.html">Docs</a></li>
-    <li><a href="examples.html">Examples</a></li>
-    <li><a href="showcase.html" class="active">Showcase</a></li>
-    <li><a href="theory.html">Theory</a></li>
-    <li><a href="index.html#architecture">Architecture</a></li>
-    <li><a href="index.html#operators">Operators</a></li>
-    <li><a href="index.html#optimizer">Optimizer</a></li>
-    <li><a href="index.html#sql">SQL</a></li>
-    <li><a href="benchmarks-data/">Benchmarks</a></li>
+    <li class="dropdown">
+      <a href="#" class="active">Resources</a>
+      <div class="dropdown-menu">
+        <a href="examples.html">Examples</a>
+        <a href="showcase.html" class="active">Showcase</a>
+        <a href="theory.html">Theory</a>
+        <a href="benchmarks-data/">Benchmarks</a>
+      </div>
+    </li>
+    <li class="dropdown">
+      <a href="#">Internals</a>
+      <div class="dropdown-menu">
+        <a href="index.html#architecture">Architecture</a>
+        <a href="index.html#operators">Operators</a>
+        <a href="index.html#optimizer">Optimizer</a>
+        <a href="index.html#sql">SQL</a>
+      </div>
+    </li>
+    <li><a href="playground/">Playground</a></li>
   </ul>
 </nav>
 

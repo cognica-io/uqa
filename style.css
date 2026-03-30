@@ -77,6 +77,49 @@ nav a {
 nav a:hover { color: var(--fg); text-decoration: none; }
 nav a.active { color: var(--accent); border-bottom: 2px solid var(--accent); }
 
+/* --- Nav dropdowns --- */
+nav li { position: relative; }
+nav li.dropdown > a::after {
+  content: "";
+  display: inline-block;
+  width: 0; height: 0;
+  margin-left: 0.35rem;
+  vertical-align: 0.15em;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 4px solid currentColor;
+}
+nav li.dropdown .dropdown-menu {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 170px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+  padding: 0.4rem 0;
+  z-index: 20;
+}
+nav li.dropdown:hover .dropdown-menu { display: block; }
+nav li.dropdown .dropdown-menu a {
+  display: block;
+  padding: 0.45rem 1rem;
+  font-size: 0.83rem;
+  font-weight: 500;
+  color: var(--muted);
+  border-bottom: none;
+}
+nav li.dropdown .dropdown-menu a:hover {
+  color: var(--fg);
+  background: var(--surface);
+}
+nav li.dropdown .dropdown-menu a.active {
+  color: var(--accent);
+  border-bottom: none;
+}
+
 /* --- Sections --- */
 .container { max-width: var(--max-w); margin: 0 auto; padding: 0 1.5rem; }
 section { padding: 3rem 0; }
