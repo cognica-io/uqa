@@ -1,0 +1,46 @@
+name: Deploy Playground
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "playground/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deploy-playground
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        working-directory: playground
+        run: npm install
+
+      - name: Build
+        working-directory: playground
+        run: npm run build
+
+      - name: Deploy to gh-pages
+        run: |
+          git fetch origin gh-pages
+          git worktree add gh-pages-branch origin/gh-pages
+          rm -rf gh-pages-branch/playground
+          cp -r playground/dist gh-pages-branch/playground
+          cd gh-pages-branch
+          git add playground
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git diff --cached --quiet || git commit -m "Deploy UQA Playground"
+          git push origin HEAD:gh-pages

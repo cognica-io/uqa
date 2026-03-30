@@ -9,6 +9,8 @@ build/
 .pytest_cache/
 .claude/
 .playwright-mcp/
+playground/node_modules/
+playground/dist/
 data/*
 !data/*.sh
 docs/design/
