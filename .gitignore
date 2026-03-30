@@ -16,3 +16,5 @@ data/*
 !data/*.sh
 docs/design/
 docs/papers/*.md
+benchmarks/bench_hybrid_fusion.py
+benchmarks/bench_beir_calibration.py
