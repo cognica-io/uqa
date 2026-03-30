@@ -239,6 +239,7 @@ class TestAttentionFusionSQL:
     def engine(self) -> Engine:
         e = Engine()
         e.sql("CREATE TABLE docs (title TEXT, body TEXT)")
+        e.sql("CREATE INDEX idx_docs_gin ON docs USING gin (title, body)")
         e.sql(
             "INSERT INTO docs (title, body) VALUES "
             "('machine learning basics', 'deep neural networks for classification'), "
@@ -344,6 +345,7 @@ class TestAttentionFusionQueryBuilder:
     def engine(self) -> Engine:
         e = Engine()
         e.sql("CREATE TABLE qb_docs (title TEXT, body TEXT)")
+        e.sql("CREATE INDEX idx_qb_docs_gin ON qb_docs USING gin (title, body)")
         e.sql(
             "INSERT INTO qb_docs (title, body) VALUES "
             "('machine learning basics', 'deep neural networks'), "

@@ -58,6 +58,9 @@ class Engine:
         # In-memory model storage (for non-persistent engines)
         self._models: dict[str, dict[str, Any]] = {}
 
+        # GIN index tracking: index_name -> (table_name, columns)
+        self._gin_indexes: dict[str, tuple[str, tuple[str, ...]]] = {}
+
         # Persistence and transactions
         self._catalog: Catalog | None = None
         self._index_manager: IndexManager | None = None
@@ -254,6 +257,21 @@ class Engine:
             sp_idx = SpatialIndex(tbl_name, col_name, conn=catalog.conn)
             tbl.spatial_indexes[col_name] = sp_idx
 
+        # -- GIN full-text indexes ----------------------------------------
+        # Restore fts_fields on each table so INSERT continues to index
+        # the correct columns.  The inverted index data is already in
+        # SQLite (SQLiteInvertedIndex shares the catalog connection).
+        for name, idx_type, tbl_name, cols, _params in catalog.load_indexes():
+            if idx_type != "gin":
+                continue
+            tbl = self._tables.get(tbl_name)
+            if tbl is None:
+                continue
+            col_tuple = tuple(cols) if cols else ()
+            for col_name in col_tuple:
+                tbl.fts_fields.add(col_name)
+            self._gin_indexes[name] = (tbl_name, col_tuple)
+
     @staticmethod
     def _migrate_old_format_table(
         catalog: Catalog, table_name: str, table: Any
@@ -352,9 +370,14 @@ class Engine:
 
         tbl.document_store.put(doc_id, stored)
 
-        text_fields = {k: v for k, v in stored.items() if isinstance(v, str)}
-        if text_fields:
-            tbl.inverted_index.add_document(doc_id, text_fields)
+        if tbl.fts_fields:
+            text_fields = {
+                k: v
+                for k, v in stored.items()
+                if k in tbl.fts_fields and isinstance(v, str)
+            }
+            if text_fields:
+                tbl.inverted_index.add_document(doc_id, text_fields)
 
         if vec_col_for_index is not None and vec_array is not None:
             vec_idx = tbl.vector_indexes.get(vec_col_for_index)
@@ -378,7 +401,8 @@ class Engine:
         if tbl is None:
             raise ValueError(f"Table '{table}' does not exist")
         tbl.document_store.delete(doc_id)
-        tbl.inverted_index.remove_document(doc_id)
+        if tbl.fts_fields:
+            tbl.inverted_index.remove_document(doc_id)
 
     def get_graph_store(self, table: str) -> GraphStore:
         """Return the graph store associated with the given table."""

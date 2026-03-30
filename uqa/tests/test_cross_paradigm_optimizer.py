@@ -541,6 +541,7 @@ class TestSQLCrossParadigmOptimizer:
         """EXPLAIN on a fusion query shows LogOddsFusion in the plan."""
         e = Engine()
         e.sql("CREATE TABLE docs (id INTEGER PRIMARY KEY, title TEXT, body TEXT)")
+        e.sql("CREATE INDEX idx_docs_gin ON docs USING gin (title, body)")
         for i in range(1, 6):
             e.sql(
                 f"INSERT INTO docs (id, title, body) VALUES "

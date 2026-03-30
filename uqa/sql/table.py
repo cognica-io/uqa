@@ -203,6 +203,10 @@ class Table:
         # Per-field R*Tree spatial indexes, created via CREATE INDEX ... USING rtree.
         self.spatial_indexes: dict[str, Any] = {}
 
+        # Columns with GIN indexes, created via CREATE INDEX ... USING gin.
+        # Only these columns are indexed in the inverted index on INSERT.
+        self.fts_fields: set[str] = set()
+
         self._next_id = 1
         self._stats: dict[str, ColumnStats] = {}
         self._unique_indexes: dict[str, dict[Any, int]] = {}
@@ -331,9 +335,14 @@ class Table:
         self.document_store.put(doc_id, coerced)
 
         indexed: IndexedTerms | None = None
-        text_fields = {k: v for k, v in coerced.items() if isinstance(v, str)}
-        if text_fields:
-            indexed = self.inverted_index.add_document(doc_id, text_fields)
+        if self.fts_fields:
+            text_fields = {
+                k: v
+                for k, v in coerced.items()
+                if k in self.fts_fields and isinstance(v, str)
+            }
+            if text_fields:
+                indexed = self.inverted_index.add_document(doc_id, text_fields)
 
         for field_name, vec in vectors.items():
             vec_idx = self.vector_indexes.get(field_name)

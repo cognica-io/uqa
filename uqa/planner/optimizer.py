@@ -36,6 +36,7 @@ class QueryOptimizer:
         index_manager: IndexManager | None = None,
         table_name: str | None = None,
         graph_stats: GraphStats | None = None,
+        row_count: int | None = None,
     ):
         self.stats = stats
         self.estimator = CardinalityEstimator(column_stats, graph_stats=graph_stats)
@@ -43,6 +44,7 @@ class QueryOptimizer:
         self._graph_stats = graph_stats
         self._index_manager = index_manager
         self._table_name = table_name
+        self._row_count = row_count
 
     def optimize(self, op: Operator) -> Operator:
         op = self._simplify_algebra(op)
@@ -761,7 +763,12 @@ class QueryOptimizer:
             )
             if idx is not None:
                 scan_cost = idx.scan_cost(op.predicate)
-                full_scan_cost = float(self.stats.total_docs)
+                total = (
+                    self._row_count
+                    if self._row_count is not None
+                    else self.stats.total_docs
+                )
+                full_scan_cost = float(total)
                 if scan_cost < full_scan_cost:
                     return IndexScanOperator(idx, op.field, op.predicate)
 

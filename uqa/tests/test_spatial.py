@@ -557,6 +557,7 @@ class TestSpatialFusion:
             "POINT(-118.2437, 34.0522))"
         )
         e.sql("CREATE INDEX idx_rloc ON restaurants USING rtree (location)")
+        e.sql("CREATE INDEX idx_rdesc_gin ON restaurants USING gin (description)")
 
         # Fuse text + spatial signals
         result = e.sql(

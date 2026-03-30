@@ -315,6 +315,7 @@ class TestListIndexes:
         shell._engine.sql(
             "CREATE TABLE docs (id SERIAL PRIMARY KEY, title TEXT, body TEXT)"
         )
+        shell._engine.sql("CREATE INDEX idx_docs_gin ON docs USING gin (title, body)")
         shell._engine.sql("INSERT INTO docs (title, body) VALUES ('Hello', 'World')")
         shell._cmd_list_indexes()
         out = capsys.readouterr().out

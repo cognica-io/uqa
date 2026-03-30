@@ -641,11 +641,7 @@ class UQAShell:
             return
         rows = []
         for name, table in sorted(tables.items()):
-            idx = table.inverted_index
-            if hasattr(idx, "_known_fields"):
-                fields = sorted(idx._known_fields)
-            else:
-                fields = sorted({f for (f, _) in idx._index})
+            fields = sorted(table.fts_fields) if table.fts_fields else []
             if fields:
                 rows.append(
                     {

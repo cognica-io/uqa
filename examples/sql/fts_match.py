@@ -38,6 +38,8 @@ engine.sql("""
     )
 """)
 
+engine.sql("CREATE INDEX idx_articles_gin ON articles USING gin (title, body)")
+
 rows = [
     (
         "database internals",

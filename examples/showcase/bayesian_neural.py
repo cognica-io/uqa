@@ -53,6 +53,7 @@ engine.sql("""
         embedding VECTOR(8)
     )
 """)
+engine.sql("CREATE INDEX idx_papers_gin ON papers USING gin (title, abstract)")
 
 rng = np.random.RandomState(42)
 

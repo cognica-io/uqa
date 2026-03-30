@@ -158,6 +158,8 @@ engine.sql("""
     )
 """)
 
+engine.sql("CREATE INDEX idx_articles_gin ON articles USING gin (title, body)")
+
 engine.sql("""INSERT INTO articles (title, body, category) VALUES
     ('The Transformer Architecture',
      'The transformer model uses self attention to process sequences without recurrence',
@@ -253,6 +255,7 @@ with Engine(db_path=db_path) as e1:
 
     # Create a table and index some data
     e1.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, content TEXT)")
+    e1.sql("CREATE INDEX idx_docs_gin ON docs USING gin (content)")
     e1.sql("INSERT INTO docs (content) VALUES ('The runners are running')")
     print("  Session 1: inserted test document")
 

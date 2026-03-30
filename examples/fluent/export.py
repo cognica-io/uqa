@@ -43,6 +43,7 @@ engine.sql("""
         year INTEGER
     )
 """)
+engine.sql("CREATE INDEX idx_articles_gin ON articles USING gin (body)")
 
 engine.sql("""INSERT INTO articles (title, body, category, year) VALUES
     ('The Transformer Architecture',

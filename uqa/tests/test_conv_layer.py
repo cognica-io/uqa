@@ -38,6 +38,7 @@ def grid_engine() -> Engine:
             embedding VECTOR(4)
         )
     """)
+    e.sql("CREATE INDEX idx_patches_gin ON patches USING gin (content)")
 
     # 3x3 grid of patches for image_id=1
     # Patches with similar positions have similar embeddings

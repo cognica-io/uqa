@@ -68,6 +68,11 @@ engine.sql("""
 """)
 
 # ==================================================================
+# CREATE INDEX: GIN index for text search on description
+# ==================================================================
+engine.sql("CREATE INDEX idx_restaurants_gin ON restaurants USING gin (description)")
+
+# ==================================================================
 # CREATE INDEX: R*Tree spatial index
 # ==================================================================
 engine.sql("CREATE INDEX idx_location ON restaurants USING rtree (location)")

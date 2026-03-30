@@ -210,6 +210,7 @@ class TestSQLIntegration:
         """)
         # Create IVF index with small nlist so training triggers early.
         e.sql("CREATE INDEX idx_emb ON docs USING ivf (embedding) WITH (nlist = 4)")
+        e.sql("CREATE INDEX idx_docs_gin ON docs USING gin (title)")
 
         rng = np.random.RandomState(42)
         base = rng.randn(8).astype(np.float32)

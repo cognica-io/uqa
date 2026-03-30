@@ -36,6 +36,7 @@ def engine_with_docs() -> Engine:
         "category TEXT, "
         "embedding VECTOR(16))"
     )
+    engine.sql("CREATE INDEX idx_papers_gin ON papers USING gin (title, abstract)")
     rng = np.random.RandomState(42)
 
     docs = [

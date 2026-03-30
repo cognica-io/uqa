@@ -563,6 +563,7 @@ class TestEnginePersistenceSQL:
                     body TEXT NOT NULL
                 )
             """)
+            engine.sql("CREATE INDEX idx_docs_gin ON docs USING gin (body)")
             engine.sql("""
                 INSERT INTO docs (body) VALUES
                     ('the quick brown fox'),
@@ -790,6 +791,7 @@ class TestEnginePersistencePostings:
                     title TEXT NOT NULL
                 )
             """)
+            engine.sql("CREATE INDEX idx_docs_gin ON docs USING gin (title)")
             engine.add_document(1, {"title": "the quick brown fox"}, table="docs")
             engine.add_document(2, {"title": "lazy dog"}, table="docs")
             engine.add_document(3, {"title": "quick fox jumps high"}, table="docs")
@@ -810,6 +812,7 @@ class TestEnginePersistencePostings:
                     body TEXT NOT NULL
                 )
             """)
+            engine.sql("CREATE INDEX idx_docs_gin ON docs USING gin (body)")
             engine.add_document(1, {"body": "cat sat near cat mat"}, table="docs")
             idx = engine._tables["docs"].inverted_index
             pl_before = idx.get_posting_list("body", "cat")
@@ -832,6 +835,7 @@ class TestEnginePersistencePostings:
                     body TEXT NOT NULL
                 )
             """)
+            engine.sql("CREATE INDEX idx_docs_gin ON docs USING gin (title, body)")
             engine.add_document(
                 1,
                 {"title": "hello world", "body": "a b c d e"},
@@ -856,6 +860,7 @@ class TestEnginePersistencePostings:
                     title TEXT NOT NULL
                 )
             """)
+            engine.sql("CREATE INDEX idx_papers_gin ON papers USING gin (title)")
             engine.sql("""
                 INSERT INTO papers (title) VALUES
                     ('neural network learning'),

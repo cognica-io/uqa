@@ -60,6 +60,8 @@ engine.sql("""
     )
 """)
 
+engine.sql("CREATE INDEX idx_products_gin ON products USING gin (body)")
+
 engine.sql("""
     INSERT INTO products (id, name, body) VALUES
         (1, 'Sedan',    'A comfortable car for daily commuting'),
@@ -147,6 +149,7 @@ engine.sql("""
         body TEXT
     )
 """)
+engine.sql("CREATE INDEX idx_products_gin ON products USING gin (body)")
 # Re-assign analyzers
 engine.set_table_analyzer("products", "body", "product_index", phase="index")
 engine.set_table_analyzer("products", "body", "product_search", phase="search")
@@ -276,6 +279,7 @@ engine.sql("""
         body TEXT
     )
 """)
+engine.sql("CREATE INDEX idx_products_gin ON products USING gin (body)")
 engine.set_table_analyzer("products", "body", "idx_with_syn", phase="index")
 # No search-time synonyms needed: all variants are already in the index
 
@@ -350,6 +354,7 @@ engine.sql("""
         body TEXT
     )
 """)
+engine.sql("CREATE INDEX idx_products_gin ON products USING gin (body)")
 engine.set_table_analyzer("products", "body", "file_index", phase="index")
 engine.set_table_analyzer("products", "body", "file_search", phase="search")
 

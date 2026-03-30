@@ -41,6 +41,7 @@ def engine() -> Engine:
             embedding VECTOR(4)
         )
     """)
+    e.sql("CREATE INDEX idx_docs_gin ON docs USING gin (title, body)")
     rows = [
         (
             "database internals",

@@ -25,6 +25,7 @@ def engine():
             score REAL
         )
     """)
+    e.sql("CREATE INDEX idx_docs_gin ON docs USING gin (title, body)")
     e.sql("""INSERT INTO docs (title, body, year, score) VALUES
         ('attention is all you need', 'transformer model uses self attention', 2017, 9.5),
         ('bert pre-training', 'bidirectional encoder representations', 2019, 8.0),

@@ -1061,6 +1061,13 @@ class SQLCompiler:
                 index_manager = getattr(self._engine, "_index_manager", None)
                 if index_manager is not None:
                     index_manager.drop_indexes_for_table(table_name)
+                # Clean up GIN indexes for this table.
+                gin_indexes = getattr(self._engine, "_gin_indexes", {})
+                to_remove = [
+                    name for name, (tbl, _) in gin_indexes.items() if tbl == table_name
+                ]
+                for name in to_remove:
+                    del gin_indexes[name]
                 del self._engine._tables[table_name]
                 self._engine._temp_tables.discard(table_name)
                 if self._engine._catalog is not None:
@@ -1071,10 +1078,32 @@ class SQLCompiler:
 
     def _compile_drop_index(self, stmt: DropStmt) -> SQLResult:
         index_manager = getattr(self._engine, "_index_manager", None)
-        if index_manager is None:
-            raise ValueError("Index operations require a persistent engine (db_path)")
+        gin_indexes: dict[str, tuple[str, tuple[str, ...]]] = getattr(
+            self._engine, "_gin_indexes", {}
+        )
         for obj in stmt.objects:
             index_name = obj[-1].sval
+
+            # Check if this is a GIN index.
+            if index_name in gin_indexes:
+                tbl_name, cols = gin_indexes[index_name]
+                table = self._engine._tables.get(tbl_name)
+                if table is not None:
+                    for col in cols:
+                        table.fts_fields.discard(col)
+                    # If no FTS fields remain, clear the inverted index.
+                    if not table.fts_fields:
+                        table.inverted_index.clear()
+                del gin_indexes[index_name]
+                # Remove from catalog.
+                if self._engine._catalog is not None:
+                    self._engine._catalog.drop_index(index_name)
+                continue
+
+            if index_manager is None:
+                raise ValueError(
+                    "Index operations require a persistent engine (db_path)"
+                )
             if stmt.missing_ok:
                 index_manager.drop_index_if_exists(index_name)
             else:
@@ -1437,6 +1466,65 @@ class SQLCompiler:
 
         access_method = (stmt.accessMethod or "btree").lower()
 
+        if access_method == "gin":
+            # GIN index: full-text search inverted index on specified columns.
+            # Mark columns as FTS fields on the table.
+            for col_name in columns:
+                table.fts_fields.add(col_name)
+
+            # Apply analyzer if specified via WITH (analyzer='...')
+            if stmt.options:
+                from pglast.ast import DefElem
+
+                from uqa.analysis.analyzer import get_analyzer
+
+                for opt in stmt.options:
+                    if isinstance(opt, DefElem) and opt.defname.lower() == "analyzer":
+                        analyzer_name = (
+                            opt.arg.sval
+                            if hasattr(opt.arg, "sval")
+                            else str(opt.arg.ival)
+                            if hasattr(opt.arg, "ival")
+                            else None
+                        )
+                        if analyzer_name:
+                            analyzer = get_analyzer(analyzer_name)
+                            for col_name in columns:
+                                table.inverted_index.set_field_analyzer(
+                                    col_name, analyzer, "both"
+                                )
+
+            # Backfill: index existing rows for the newly added FTS fields.
+            for doc_id in table.document_store.doc_ids:
+                doc = table.document_store.get(doc_id)
+                if doc is None:
+                    continue
+                text_fields: dict[str, str] = {}
+                for col_name in columns:
+                    val = doc.get(col_name)
+                    if isinstance(val, str):
+                        text_fields[col_name] = val
+                if text_fields:
+                    table.inverted_index.add_document(doc_id, text_fields)
+
+            # Persist index definition to catalog.
+            index_manager = getattr(self._engine, "_index_manager", None)
+            if index_manager is not None:
+                index_def = IndexDef(
+                    name=index_name,
+                    index_type=IndexType.GIN,
+                    table_name=table_name,
+                    columns=tuple(columns),
+                )
+                self._engine._catalog.save_index(index_def)
+
+            # Track GIN index on the engine for DROP INDEX support.
+            gin_indexes = getattr(self._engine, "_gin_indexes", None)
+            if gin_indexes is not None:
+                gin_indexes[index_name] = (table_name, tuple(columns))
+
+            return SQLResult([], [])
+
         if access_method in ("hnsw", "ivf"):
             # IVF vector index: CREATE INDEX ... USING hnsw|ivf
             # "hnsw" is accepted for backward compatibility and maps to IVF.
@@ -1731,16 +1819,22 @@ class SQLCompiler:
             elif new_value is None:
                 new_doc.pop(col_name, None)
 
-        table.inverted_index.remove_document(doc_id)
+        if table.fts_fields:
+            table.inverted_index.remove_document(doc_id)
         table.remove_from_unique_indexes(doc_id)
         table.document_store.put(doc_id, new_doc)
         for col_name_u, uidx in table._unique_indexes.items():
             val_u = new_doc.get(col_name_u)
             if val_u is not None:
                 uidx[val_u] = doc_id
-        text_fields = {k: v for k, v in new_doc.items() if isinstance(v, str)}
-        if text_fields:
-            table.inverted_index.add_document(doc_id, text_fields)
+        if table.fts_fields:
+            text_fields = {
+                k: v
+                for k, v in new_doc.items()
+                if k in table.fts_fields and isinstance(v, str)
+            }
+            if text_fields:
+                table.inverted_index.add_document(doc_id, text_fields)
 
     def _project_returning(
         self,
@@ -1865,7 +1959,8 @@ class SQLCompiler:
                 fk_validator(old_doc, new_doc)
 
             # Remove old inverted index entries
-            table.inverted_index.remove_document(doc_id)
+            if table.fts_fields:
+                table.inverted_index.remove_document(doc_id)
 
             # Update unique indexes: remove old, add new
             table.remove_from_unique_indexes(doc_id)
@@ -1880,9 +1975,14 @@ class SQLCompiler:
                     uidx[val] = doc_id
 
             # Re-index text fields
-            text_fields = {k: v for k, v in new_doc.items() if isinstance(v, str)}
-            if text_fields:
-                table.inverted_index.add_document(doc_id, text_fields)
+            if table.fts_fields:
+                text_fields = {
+                    k: v
+                    for k, v in new_doc.items()
+                    if k in table.fts_fields and isinstance(v, str)
+                }
+                if text_fields:
+                    table.inverted_index.add_document(doc_id, text_fields)
 
             # Update spatial indexes for changed POINT columns
             for col_name, sp_idx in table.spatial_indexes.items():
@@ -1998,16 +2098,22 @@ class SQLCompiler:
                     else:
                         new_doc.pop(col_name, None)
 
-                table.inverted_index.remove_document(doc_id)
+                if table.fts_fields:
+                    table.inverted_index.remove_document(doc_id)
                 table.remove_from_unique_indexes(doc_id)
                 table.document_store.put(doc_id, new_doc)
                 for col_name_u, uidx in table._unique_indexes.items():
                     val_u = new_doc.get(col_name_u)
                     if val_u is not None:
                         uidx[val_u] = doc_id
-                text_fields = {k: v for k, v in new_doc.items() if isinstance(v, str)}
-                if text_fields:
-                    table.inverted_index.add_document(doc_id, text_fields)
+                if table.fts_fields:
+                    text_fields = {
+                        k: v
+                        for k, v in new_doc.items()
+                        if k in table.fts_fields and isinstance(v, str)
+                    }
+                    if text_fields:
+                        table.inverted_index.add_document(doc_id, text_fields)
 
                 if stmt.returningList:
                     returning_rows.append(
@@ -2076,7 +2182,8 @@ class SQLCompiler:
                     returning_rows.append(
                         self._project_returning(doc, stmt.returningList, table)
                     )
-            table.inverted_index.remove_document(doc_id)
+            if table.fts_fields:
+                table.inverted_index.remove_document(doc_id)
             for si in table.spatial_indexes.values():
                 si.delete(doc_id)
             table.remove_from_unique_indexes(doc_id)
@@ -2163,7 +2270,8 @@ class SQLCompiler:
 
         deleted = 0
         for doc_id in to_delete:
-            table.inverted_index.remove_document(doc_id)
+            if table.fts_fields:
+                table.inverted_index.remove_document(doc_id)
             for si in table.spatial_indexes.values():
                 si.delete(doc_id)
             table.remove_from_unique_indexes(doc_id)
@@ -2373,6 +2481,7 @@ class SQLCompiler:
             column_stats,
             index_manager=ctx.index_manager,
             table_name=table_name,
+            row_count=table.row_count if table is not None else None,
         )
         return optimizer.optimize(op)
 

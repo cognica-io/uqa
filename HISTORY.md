@@ -1,5 +1,34 @@
 # History
 
+## 0.23.0 (2026-03-30)
+
+GIN index support for explicit full-text search column management, ported from the TypeScript implementation (`uqa-js`). Text columns are no longer auto-indexed on INSERT; users must create a GIN index via `CREATE INDEX ... USING gin` to enable full-text search on specific columns, matching PostgreSQL semantics. All 2796 tests pass across 83 test files.
+
+### GIN Index
+
+- **`CREATE INDEX ... USING gin (col1, col2, ...)`**: Creates a GIN (Generalized Inverted Index) on specified text columns. Only GIN-indexed columns are added to the inverted index on INSERT, UPDATE, and `put_document()`. Previously, all TEXT columns were auto-indexed unconditionally. This change aligns with PostgreSQL where GIN indexes must be explicitly created for full-text search.
+- **`WITH (analyzer='...')`**: Optional analyzer parameter on GIN index creation. Assigns a per-field analyzer to each indexed column (e.g., `CREATE INDEX idx ON docs USING gin (body) WITH (analyzer='standard')`).
+- **Backfill on creation**: When a GIN index is created on a table with existing rows, all current documents are automatically indexed for the specified columns. No manual re-indexing is required.
+- **`DROP INDEX`**: Dropping a GIN index removes the associated columns from `fts_fields`. If no FTS fields remain, the inverted index is cleared entirely.
+- **Catalog persistence**: GIN index definitions are persisted to the catalog and restored on Engine restart, including `fts_fields` reconstruction from stored index metadata.
+- **`fts_fields` tracking**: Each `Table` now maintains a `fts_fields: set[str]` that controls which columns participate in inverted index operations. INSERT, UPDATE, DELETE, `put_document()`, and `delete_document()` all respect this set.
+
+### Optimizer
+
+- **Row-count-based full scan cost**: The query optimizer's index scan substitution previously used `inverted_index.stats.total_docs` for the full scan cost estimate. With GIN-gated indexing, tables without GIN indexes have `total_docs == 0`, which made the optimizer always prefer full scans over B-tree index scans. The optimizer now accepts an explicit `row_count` parameter from the document store, decoupling the full scan cost estimate from the inverted index state.
+
+### Internal Changes
+
+- **`IndexType.GIN`**: New enum value in `storage/index_types.py`.
+- **`Engine._gin_indexes`**: Tracks GIN index definitions (`name -> (table_name, columns)`) for DROP INDEX and DROP TABLE cleanup.
+- **`IndexManager.load_from_catalog()`**: Skips GIN indexes (managed by Engine/Table, not IndexManager).
+- **CLI `\di`**: Lists GIN-indexed fields from `table.fts_fields` instead of probing the inverted index's internal state.
+
+### Tests
+
+- All existing FTS tests updated to create GIN indexes before inserting data (22 test files updated).
+- **Total**: 2796 tests across 83 test files.
+
 ## 0.22.1 (2026-03-25)
 
 Bug fix release: ASCIIFoldingFilter CJK preservation, IVF thread-safe parallel reads, JOIN + UQA function predicate pushdown, BOOLEAN column PyArrow compatibility, parameter binding across all DML/DQL paths, and multi-channel NumPy fallback in grid_forward. All 2796 tests pass across 83 test files.

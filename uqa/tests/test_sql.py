@@ -38,6 +38,7 @@ def engine() -> Engine:
             citations INTEGER DEFAULT 0
         )
     """)
+    e.sql("CREATE INDEX idx_papers_gin ON papers USING gin (title, venue, field)")
 
     # -- DML: insert rows --------------------------------------------
     e.sql("""INSERT INTO papers (title, year, venue, field, citations) VALUES
@@ -210,6 +211,7 @@ class TestInsert:
             "CREATE TABLE rooms (  id SERIAL PRIMARY KEY, hotel_id INTEGER, name TEXT)"
         )
         e.sql("CREATE TABLE hotels (  id SERIAL PRIMARY KEY, name TEXT)")
+        e.sql("CREATE INDEX idx_rooms_gin ON rooms USING gin (name)")
         e.sql("INSERT INTO hotels (name) VALUES ('Grand Hotel')")
         e.sql("INSERT INTO hotels (name) VALUES ('Beach Resort')")
         e.sql("INSERT INTO rooms (hotel_id, name) VALUES (1, 'ocean view suite')")
@@ -238,6 +240,7 @@ class TestInsert:
             ")"
         )
         e.sql("CREATE TABLE categories (id SERIAL PRIMARY KEY, name TEXT)")
+        e.sql("CREATE INDEX idx_items_gin ON items USING gin (title)")
         e.sql("INSERT INTO categories (name) VALUES ('electronics')")
         e.sql(
             "INSERT INTO items (cat_id, title, active) "
@@ -755,6 +758,7 @@ def hybrid_engine() -> Engine:
             embedding VECTOR(8)
         )
     """)
+    e.sql("CREATE INDEX idx_papers_gin ON papers USING gin (title, field)")
 
     rng = np.random.RandomState(42)
     base = rng.randn(8).astype(np.float32)

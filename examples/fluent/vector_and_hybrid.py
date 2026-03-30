@@ -39,6 +39,9 @@ engine.sql("""
         embedding VECTOR(8)
     )
 """)
+engine.sql(
+    "CREATE INDEX idx_products_gin ON products USING gin (name, category, brand)"
+)
 
 rng = np.random.RandomState(42)
 

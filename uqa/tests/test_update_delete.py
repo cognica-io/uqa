@@ -28,6 +28,7 @@ def engine():
         "category TEXT"
         ")"
     )
+    e.sql("CREATE INDEX idx_products_gin ON products USING gin (name, category)")
     e.sql(
         "INSERT INTO products (id, name, price, quantity, category) VALUES "
         "(1, 'Widget', 10.50, 100, 'tools'), "

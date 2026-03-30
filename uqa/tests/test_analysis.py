@@ -358,6 +358,7 @@ class TestSynonymFilterFile:
         )
         engine.sql(f"SELECT * FROM create_analyzer('file_syn', '{config}')")
         engine.sql("CREATE TABLE docs (id INT, body TEXT)")
+        engine.sql("CREATE INDEX idx_docs_gin ON docs USING gin (body)")
         engine.set_table_analyzer("docs", "body", "file_syn", phase="search")
         engine.sql("INSERT INTO docs (id, body) VALUES (1, 'a fast car for commuting')")
         # "automobile" expands to ["automobile", "car", "vehicle"] at search time
@@ -797,6 +798,7 @@ class TestAnalyzerSQL:
         engine.sql(
             "CREATE TABLE articles (id SERIAL PRIMARY KEY, title TEXT, body TEXT)"
         )
+        engine.sql("CREATE INDEX idx_articles_gin ON articles USING gin (title, body)")
         engine.sql(
             "INSERT INTO articles (title, body) VALUES "
             "('The Quick Brown Fox', 'jumps over the lazy dog')"
@@ -817,6 +819,7 @@ class TestAnalyzerSQL:
 
         engine = Engine()
         engine.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, content TEXT)")
+        engine.sql("CREATE INDEX idx_docs_gin ON docs USING gin (content)")
         engine.sql("INSERT INTO docs (content) VALUES ('hello world')")
         engine.sql("INSERT INTO docs (content) VALUES ('goodbye world')")
 

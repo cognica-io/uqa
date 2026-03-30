@@ -445,6 +445,7 @@ class TestEngineIntegration:
         db = str(tmp_path / "test.db")
         with Engine(db_path=db) as engine:
             engine.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, body TEXT)")
+            engine.sql("CREATE INDEX idx_docs_gin ON docs USING gin (body)")
             for i in range(1, 200):
                 engine.sql(f"INSERT INTO docs (body) VALUES ('alpha term{i}')")
 
@@ -462,6 +463,7 @@ class TestEngineIntegration:
         db = str(tmp_path / "test.db")
         with Engine(db_path=db) as engine:
             engine.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, body TEXT)")
+            engine.sql("CREATE INDEX idx_docs_gin ON docs USING gin (body)")
             engine.sql("INSERT INTO docs (body) VALUES ('hello world')")
 
             # Verify tables exist.

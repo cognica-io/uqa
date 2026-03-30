@@ -27,6 +27,7 @@ engine.sql("""
         embedding VECTOR(4)
     )
 """)
+engine.sql("CREATE INDEX idx_docs_gin ON docs USING gin (body)")
 
 # -- Insert documents with embeddings via SQL ---------------------------
 engine.sql("""

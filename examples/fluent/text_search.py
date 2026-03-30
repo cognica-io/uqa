@@ -35,6 +35,9 @@ engine.sql("""
         citations INTEGER
     )
 """)
+engine.sql(
+    "CREATE INDEX idx_articles_gin ON articles USING gin (title, body, category)"
+)
 
 articles = [
     (

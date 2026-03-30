@@ -70,6 +70,7 @@ class TestMultiFieldSearchOperator:
     def engine(self) -> Engine:
         e = Engine()
         e.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, title TEXT, body TEXT)")
+        e.sql("CREATE INDEX idx_docs_gin ON docs USING gin (title, body)")
         e.sql(
             "INSERT INTO docs (title, body) VALUES "
             "('machine learning guide', 'intro to ML algorithms')"
@@ -125,6 +126,7 @@ class TestMultiFieldSQL:
     def engine(self) -> Engine:
         e = Engine()
         e.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, title TEXT, body TEXT)")
+        e.sql("CREATE INDEX idx_docs_gin ON docs USING gin (title, body)")
         e.sql(
             "INSERT INTO docs (title, body) VALUES "
             "('machine learning', 'algorithms for ML')"
@@ -160,6 +162,7 @@ class TestMultiFieldQueryBuilder:
     def engine(self) -> Engine:
         e = Engine()
         e.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, title TEXT, body TEXT)")
+        e.sql("CREATE INDEX idx_docs_gin ON docs USING gin (title, body)")
         e.sql(
             "INSERT INTO docs (title, body) VALUES "
             "('machine learning', 'algorithms for ML')"

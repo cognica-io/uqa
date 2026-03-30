@@ -140,6 +140,7 @@ class TestExternalPriorSQL:
     def engine(self) -> Engine:
         e = Engine()
         e.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, content TEXT, authority TEXT)")
+        e.sql("CREATE INDEX idx_docs_gin ON docs USING gin (content)")
         e.sql(
             "INSERT INTO docs (content, authority) VALUES ('machine learning', 'high')"
         )
@@ -169,6 +170,7 @@ class TestExternalPriorQueryBuilder:
     def test_fluent_api_with_authority_prior(self) -> None:
         e = Engine()
         e.sql("CREATE TABLE articles (id SERIAL PRIMARY KEY, body TEXT, source TEXT)")
+        e.sql("CREATE INDEX idx_articles_gin ON articles USING gin (body)")
         e.sql(
             "INSERT INTO articles (body, source) "
             "VALUES ('information retrieval systems', 'high')"

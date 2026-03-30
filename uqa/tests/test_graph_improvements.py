@@ -579,6 +579,7 @@ class TestCentralitySQL:
 
         engine = Engine()
         engine.sql("CREATE TABLE net (id SERIAL PRIMARY KEY, name TEXT)")
+        engine.sql("CREATE INDEX idx_net_gin ON net USING gin (name)")
         engine.sql("INSERT INTO net (name) VALUES ('A'), ('B'), ('C'), ('D')")
         for i in range(1, 5):
             engine.sql(f"SELECT * FROM graph_add_vertex({i}, '', 'net')")
@@ -692,6 +693,7 @@ class TestProgressiveFusionSQL:
 
         engine = Engine()
         engine.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, content TEXT)")
+        engine.sql("CREATE INDEX idx_docs_gin ON docs USING gin (content)")
         engine.sql("INSERT INTO docs (content) VALUES ('machine learning algorithms')")
         engine.sql("INSERT INTO docs (content) VALUES ('deep learning networks')")
         engine.sql("INSERT INTO docs (content) VALUES ('database indexing')")

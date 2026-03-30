@@ -77,6 +77,11 @@ For full formal treatment, see [Paper 1](docs/papers/1.%20A%20Unified%20Mathemat
 UQA extends standard SQL with cross-paradigm query functions:
 
 ```sql
+-- GIN index: enable full-text search on specific columns (PostgreSQL-compatible)
+CREATE INDEX idx_articles_gin ON articles USING gin (title, body);
+CREATE INDEX idx_papers_gin ON papers USING gin (title, abstract)
+    WITH (analyzer='english_stem');
+
 -- Full-text search with @@ operator (query string mini-language)
 SELECT title, _score FROM articles
 WHERE title @@ 'database AND query' ORDER BY _score DESC;
@@ -483,6 +488,7 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 | Spatial | `_rtree_{table}_{field}` | R*Tree virtual table for POINT columns; created via `CREATE INDEX ... USING rtree` |
 | Graph | `_graph_vertices_{table}`, `_graph_edges_{table}` | Per-table adjacency-indexed graph with vertex labels |
 | Named Graphs | `_graph_catalog_{table}`, `_graph_membership_{table}` | Per-graph partitioned adjacency with catalog and membership tables |
+| GIN Indexes | Catalog entry + `fts_fields` | `CREATE INDEX ... USING gin`; controls which columns are indexed in the inverted index |
 | B-tree Indexes | SQLite indexes on `_data_{table}` | `CREATE INDEX` support |
 | Analyzers | `_analyzers` | Custom text analyzer configurations |
 | Field Analyzers | `_table_field_analyzers` | Per-field index/search analyzer assignments |
@@ -505,6 +511,7 @@ All data is persisted to SQLite when an engine is created with `db_path`:
 - Predicate-aware cardinality damping (same-column vs different-column correlation)
 - Join-algorithm-aware DPccp cost model (index join vs hash join threshold)
 - R*Tree spatial index scan for POINT column range queries
+- GIN index for explicit full-text search column management (`CREATE INDEX ... USING gin`)
 - B-tree index scan substitution (replace full scans when profitable)
 - FDW predicate pushdown (comparison, IN, LIKE, ILIKE, BETWEEN pushed to DuckDB/Arrow Flight SQL for Hive partition pruning)
 - FDW full query pushdown (same-server queries delegated entirely to DuckDB/Arrow Flight SQL via AST deparsing)
@@ -588,7 +595,7 @@ Shell commands:
 |---------|-------------|
 | `\dt` | List tables (regular and foreign) |
 | `\d <table>` | Describe table schema (regular or foreign) |
-| `\di` | List inverted-index fields per table |
+| `\di` | List GIN-indexed fields per table |
 | `\dF` | List foreign tables (server, source, options) |
 | `\dS` | List foreign servers (type, connection options) |
 | `\dg` | List named graphs (vertex/edge counts) |

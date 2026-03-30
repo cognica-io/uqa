@@ -37,6 +37,8 @@ engine.sql("""
     )
 """)
 
+engine.sql("CREATE INDEX idx_papers_gin ON papers USING gin (title)")
+
 engine.sql("""INSERT INTO papers (title, year, field, citations) VALUES
     ('Attention Is All You Need', 2017, 'nlp', 90000),
     ('BERT', 2019, 'nlp', 75000),

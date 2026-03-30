@@ -15,6 +15,7 @@ from typing import Any
 
 class IndexType(enum.Enum):
     BTREE = "btree"
+    GIN = "gin"
     INVERTED = "inverted"
     HNSW = "hnsw"
     IVF = "ivf"

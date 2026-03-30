@@ -99,6 +99,7 @@ class TestMultiStageSQL:
     def engine(self) -> Engine:
         e = Engine()
         e.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, content TEXT)")
+        e.sql("CREATE INDEX idx_docs_gin ON docs USING gin (content)")
         e.sql("INSERT INTO docs (content) VALUES ('machine learning algorithms')")
         e.sql("INSERT INTO docs (content) VALUES ('deep learning neural networks')")
         e.sql("INSERT INTO docs (content) VALUES ('database indexing structures')")
@@ -129,6 +130,7 @@ class TestMultiStageQueryBuilder:
     def engine(self) -> Engine:
         e = Engine()
         e.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, content TEXT)")
+        e.sql("CREATE INDEX idx_docs_gin ON docs USING gin (content)")
         e.sql("INSERT INTO docs (content) VALUES ('machine learning algorithms')")
         e.sql("INSERT INTO docs (content) VALUES ('deep learning neural networks')")
         return e

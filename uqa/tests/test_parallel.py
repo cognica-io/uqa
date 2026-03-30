@@ -123,6 +123,7 @@ class TestParallelBooleanOps:
     def engine(self):
         e = Engine(parallel_workers=4)
         e.sql("CREATE TABLE docs (id INTEGER PRIMARY KEY, title TEXT, cat TEXT)")
+        e.sql("CREATE INDEX idx_docs_gin ON docs USING gin (title, cat)")
         docs = [
             {"title": "neural network basics", "cat": "ml"},
             {"title": "transformer models", "cat": "dl"},
@@ -306,6 +307,7 @@ class TestSQLParallel:
         """SQL fusion query works with parallel execution."""
         e = Engine(parallel_workers=4)
         e.sql("CREATE TABLE docs (id INTEGER PRIMARY KEY, title TEXT, body TEXT)")
+        e.sql("CREATE INDEX idx_docs_gin ON docs USING gin (title, body)")
         for i in range(1, 4):
             e.sql(
                 f"INSERT INTO docs (id, title, body) VALUES "

@@ -39,6 +39,8 @@ engine.sql("""
     )
 """)
 
+engine.sql("CREATE INDEX idx_articles_gin ON articles USING gin (title, body)")
+
 rng = np.random.RandomState(42)
 
 articles = [
