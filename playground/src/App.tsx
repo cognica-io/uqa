@@ -2,8 +2,10 @@ import { UQAPlayground } from "./components/UQAPlayground"
 
 export default function App() {
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
-      <UQAPlayground />
-    </div>
+    <section style={{ padding: "3rem 0" }}>
+      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "0 1.5rem" }}>
+        <UQAPlayground />
+      </div>
+    </section>
   )
 }
