@@ -86,6 +86,23 @@ CREATE INDEX idx_papers_gin ON papers USING gin (title, abstract)
 SELECT title, _score FROM articles
 WHERE title @@ 'database AND query' ORDER BY _score DESC;
 
+-- Search result highlighting (matched terms wrapped in tags)
+SELECT title, uqa_highlight(body, 'database query') AS snippet
+FROM articles WHERE body @@ 'database query'
+ORDER BY _score DESC;
+
+-- Custom highlight tags and snippet extraction
+SELECT title, uqa_highlight(body, 'search', '<em>', '</em>', 2, 100) AS snippet
+FROM articles WHERE body @@ 'search';
+
+-- Faceted search: value counts over search results
+SELECT uqa_facets(category) FROM articles WHERE body @@ 'database';
+-- Returns: facet_value | facet_count
+
+-- Multi-field facets in a single query
+SELECT uqa_facets(category, author) FROM articles WHERE body @@ 'database';
+-- Returns: facet_field | facet_value | facet_count
+
 -- Hybrid text + vector fusion via @@
 SELECT title, _score FROM articles
 WHERE _all @@ 'body:search AND embedding:[0.1, 0.9, 0.0, 0.0]'
@@ -327,9 +344,10 @@ uqa/
   execution/      Volcano iterator engine: Apache Arrow columnar batches, vectorized operators, disk spilling
   planner/        Cost model, cardinality estimator, optimizer, DPccp join enumerator, parallel executor,
                   information-theoretic bounds, graph cost model
+  search/         Search result highlighting, snippet extraction, FTS query term extraction
   sql/            SQL compiler (pglast), expression evaluator, FTS query parser, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          2788 tests across 83 test files
+  tests/          2831 tests across 84 test files
 benchmarks/       309 pytest-benchmark tests across 15 files (posting list, storage, compiler,
                   execution, planner, scoring, graph, graph centrality, end-to-end SQL,
                   calibration, multi-field, external prior, advanced scoring, advanced graph,
@@ -358,7 +376,7 @@ benchmarks/       309 pytest-benchmark tests across 15 files (posting list, stor
 | Date/Time | `EXTRACT`, `DATE_TRUNC`, `DATE_PART`, `NOW()`, `CURRENT_DATE`, `CURRENT_TIMESTAMP`, `CURRENT_TIME`, `CLOCK_TIMESTAMP`, `TIMEOFDAY`, `AGE`, `TO_CHAR`, `TO_DATE`, `TO_TIMESTAMP`, `MAKE_DATE`, `MAKE_TIMESTAMP`, `MAKE_INTERVAL`, `TO_NUMBER`, `OVERLAPS`, `ISFINITE` |
 | JSON | `->`, `->>`, `#>`, `#>>` operators, `@>` / `<@` containment, `?` / `?|` / `?&` key existence, `JSONB_SET`, `JSONB_STRIP_NULLS`, `JSON_BUILD_OBJECT`, `JSON_BUILD_ARRAY`, `JSON_OBJECT_KEYS`, `JSON_EXTRACT_PATH`, `JSON_TYPEOF`, `JSON_AGG`, `::jsonb` cast |
 | Table Funcs | `GENERATE_SERIES`, `UNNEST`, `REGEXP_SPLIT_TO_TABLE`, `JSON_EACH`/`JSON_EACH_TEXT`, `JSON_ARRAY_ELEMENTS`/`JSON_ARRAY_ELEMENTS_TEXT` |
-| FTS | `column @@ 'query'` full-text search operator with query string mini-language: bare terms, `"phrases"`, `field:term`, `field:[vector]`, `AND`/`OR`/`NOT`, implicit AND, parenthesized grouping, hybrid text+vector fusion |
+| FTS | `column @@ 'query'` full-text search operator with query string mini-language: bare terms, `"phrases"`, `field:term`, `field:[vector]`, `AND`/`OR`/`NOT`, implicit AND, parenthesized grouping, hybrid text+vector fusion, `uqa_highlight()` result highlighting, `uqa_facets()` faceted search |
 | Functions | 90+ scalar functions: string (`CONCAT_WS`, `POSITION`, `LPAD`, `REVERSE`, `MD5`, `OVERLAY`, `REGEXP_MATCH`, `ENCODE`/`DECODE`, ...), math (`POWER`, `SQRT`, `LN`, `CBRT`, `GCD`, `LCM`, `MIN_SCALE`, `TRIM_SCALE`, trig, ...), conditional (`GREATEST`, `LEAST`, `NULLIF`) |
 | Prepared | `PREPARE name AS ...`, `EXECUTE name(params)`, `DEALLOCATE name` |
 | Utility | `EXPLAIN SELECT ...`, `ANALYZE [table]` |
@@ -446,6 +464,8 @@ Used inside `deep_fusion()` to compose neural network pipelines:
 |----------|-------------|
 | `path_agg(path, func)` | Per-row nested array aggregation (`sum`, `count`, `avg`, `min`, `max`) |
 | `path_value(path)` | Access nested field value by dot-path |
+| `uqa_highlight(col, query [, start, end [, frags, size]])` | Highlight matched terms with tags (stemming-aware) |
+| `uqa_facets(col [, col2, ...])` | Facet counts over search results (`facet_value \| facet_count`) |
 | `deep_predict('model', embedding)` | Inference with trained model (class probabilities) |
 
 ### FROM-Clause Table Functions

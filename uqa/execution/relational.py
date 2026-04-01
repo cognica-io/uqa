@@ -282,6 +282,7 @@ class ExprProjectOp(PhysicalOperator):
         outer_row: dict[str, Any] | None = None,
         engine: Any = None,
         params: list[Any] | None = None,
+        analyzer: Any = None,
     ) -> None:
         self._child = child
         self._targets = targets
@@ -290,6 +291,7 @@ class ExprProjectOp(PhysicalOperator):
         self._outer_row = outer_row
         self._engine = engine
         self._params = params
+        self._analyzer = analyzer
 
     def open(self) -> None:
         self._child.open()
@@ -301,6 +303,7 @@ class ExprProjectOp(PhysicalOperator):
             outer_row=self._outer_row,
             engine=self._engine,
             params=self._params,
+            analyzer=self._analyzer,
         )
 
     def next(self) -> Batch | None:

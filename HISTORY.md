@@ -1,5 +1,38 @@
 # History
 
+## 0.24.0 (2026-04-01)
+
+SQL faceted search and search result highlighting. Two new SQL functions bring search-engine-style faceting and term highlighting into the SQL layer, complementing the existing `@@` full-text search operator. All 2831 tests pass across 84 test files.
+
+### Search Result Highlighting
+
+- **`uqa_highlight(field, query)`**: SELECT scalar function that returns the field text with matched query terms wrapped in `<b>`/`</b>` tags. Uses the table's text analyzer for stemming-aware matching (e.g., query `"run"` highlights `"running"` in the original text).
+- **Custom tags**: `uqa_highlight(field, query, '<em>', '</em>')` for arbitrary start/end markup.
+- **Snippet extraction**: `uqa_highlight(field, query, start_tag, end_tag, max_fragments, fragment_size)` extracts the best fragments around matches instead of returning the full text. Fragments are snapped to word boundaries with `...` ellipsis markers.
+- **Analyzer-aware matching**: The highlighter re-tokenizes the original text to locate character offsets, runs each token through the same analysis pipeline used for indexing, and checks whether the analyzed form matches any analyzed query term. This correctly handles stemming, lowercasing, and stop word removal.
+- **FTS query parsing**: `extract_query_terms()` properly parses the FTS grammar (AND/OR/NOT, `"phrases"`, `field:term`) to extract searchable terms, rather than naively splitting on whitespace.
+
+### Faceted Search
+
+- **`uqa_facets(field)`**: SELECT function that transforms the query into facet rows with `facet_value | facet_count` columns. Facet counts are computed over the WHERE-filtered posting list, respecting any `@@`, `text_match`, or other search predicates.
+- **Multi-field facets**: `uqa_facets(field1, field2, ...)` returns `facet_field | facet_value | facet_count` rows for multiple fields in a single query.
+- **Alphabetically sorted**: Facet values are sorted alphabetically by default.
+
+### New Module
+
+- **`uqa/search/`**: New package containing `highlight.py` with core highlighting logic (`highlight()`, `extract_query_terms()`, fragment extraction) and `__init__.py`.
+
+### Internal Changes
+
+- **`ExprEvaluator`**: New `analyzer` parameter for stemming-aware `uqa_highlight()` evaluation. The table's inverted index analyzer is threaded from `SQLCompiler._execute_relational()` through `ExprProjectOp` to `ExprEvaluator`.
+- **`ExprProjectOp`**: New `analyzer` parameter forwarded to `ExprEvaluator` on `open()`.
+- **`SQLCompiler._try_facets()`**: Intercepts `uqa_facets()` in the SELECT list before relational execution, runs facet computation over the posting list, and returns facet rows directly.
+
+### Tests
+
+- **35 new tests** in `uqa/tests/test_sql_facets_highlight.py`: 12 highlight utility tests, 7 FTS query term extraction tests, 8 SQL highlight integration tests, 8 SQL facet integration tests.
+- **Total**: 2831 tests across 84 test files.
+
 ## 0.23.0 (2026-03-30)
 
 GIN index support for explicit full-text search column management, ported from the TypeScript implementation (`uqa-js`). Text columns are no longer auto-indexed on INSERT; users must create a GIN index via `CREATE INDEX ... USING gin` to enable full-text search on specific columns, matching PostgreSQL semantics. All 2796 tests pass across 83 test files.

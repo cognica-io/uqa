@@ -9,8 +9,8 @@ authors:
     affiliation: "Cognica, Inc."
 repository-code: "https://github.com/cognica-io/uqa"
 license: AGPL-3.0-only
-version: 0.23.0
-date-released: "2026-03-30"
+version: 0.24.0
+date-released: "2026-04-01"
 abstract: >-
   A multi-paradigm database engine that unifies relational, text retrieval,
   vector search, graph query, and geospatial paradigms under a single
@@ -103,3 +103,6 @@ keywords:
   - density-estimation
   - gin-index
   - generalized-inverted-index
+  - faceted-search
+  - search-highlighting
+  - snippet-extraction

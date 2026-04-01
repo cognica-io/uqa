@@ -713,6 +713,54 @@ FROM orders;
 |-----------|------|-------------|
 | `path` | string | Dot-separated path to a nested field |
 
+#### `uqa_highlight(field, query [, start_tag, end_tag [, max_fragments, fragment_size]])`
+
+Highlight matched query terms in the field text. Returns the text with matched tokens wrapped in tags. Uses the table's analyzer for stemming-aware matching.
+
+```sql
+-- Default <b>...</b> tags
+SELECT title, uqa_highlight(body, 'database query') AS snippet
+FROM articles WHERE body @@ 'database query';
+
+-- Custom tags
+SELECT title, uqa_highlight(body, 'search', '<em>', '</em>') AS snippet
+FROM articles WHERE body @@ 'search';
+
+-- Snippet extraction: 2 fragments of 100 chars each
+SELECT title, uqa_highlight(body, 'query', '<b>', '</b>', 2, 100) AS snippet
+FROM articles WHERE body @@ 'query';
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `field` | column | (required) | Text column to highlight |
+| `query` | string | (required) | FTS query string (same syntax as `@@`) |
+| `start_tag` | string | `'<b>'` | Opening markup tag |
+| `end_tag` | string | `'</b>'` | Closing markup tag |
+| `max_fragments` | integer | `0` | Number of fragments to extract (0 = full text) |
+| `fragment_size` | integer | `150` | Maximum characters per fragment |
+
+The query string is parsed using the same FTS grammar as the `@@` operator. Boolean operators (`AND`, `OR`, `NOT`), quoted phrases, and field-prefixed terms are all supported. The highlighter analyzes both the text tokens and query terms with the table's analyzer, so stemmed queries correctly highlight inflected forms.
+
+#### `uqa_facets(field1 [, field2, ...])`
+
+Compute facet counts over the search results. Replaces normal row output with summary rows showing distinct values and their counts.
+
+```sql
+-- Single field: returns facet_value | facet_count
+SELECT uqa_facets(category) FROM articles WHERE body @@ 'database';
+
+-- Multi-field: returns facet_field | facet_value | facet_count
+SELECT uqa_facets(category, author) FROM articles WHERE body @@ 'database';
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `field1` | column | First field to facet on |
+| `field2, ...` | column | Additional fields (optional) |
+
+Single-field output: `facet_value | facet_count`. Multi-field output: `facet_field | facet_value | facet_count`. Values are sorted alphabetically. Facet counts respect all WHERE-clause predicates.
+
 #### `POINT(x, y)`
 
 Construct a point value from longitude and latitude.

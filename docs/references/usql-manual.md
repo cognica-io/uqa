@@ -1021,6 +1021,67 @@ WHERE bayesian_match(title, 'transformer attention')
 ORDER BY _score DESC;
 ```
 
+### Search Result Highlighting
+
+`uqa_highlight()` is a SELECT scalar function that highlights matched query terms in the original text. It uses the table's analyzer for stemming-aware matching.
+
+```sql
+-- Basic highlighting (default <b>...</b> tags)
+SELECT title, uqa_highlight(body, 'transformer attention') AS snippet
+FROM articles
+WHERE body @@ 'transformer attention'
+ORDER BY _score DESC;
+
+-- Custom tags
+SELECT title, uqa_highlight(body, 'search', '<em>', '</em>') AS snippet
+FROM articles WHERE body @@ 'search';
+
+-- Snippet extraction (max_fragments, fragment_size)
+SELECT title, uqa_highlight(body, 'query', '<b>', '</b>', 2, 100) AS snippet
+FROM articles WHERE body @@ 'query';
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `field` | column | (required) | Text column to highlight |
+| `query` | string | (required) | FTS query string (same syntax as `@@`) |
+| `start_tag` | string | `'<b>'` | Opening tag for matched terms |
+| `end_tag` | string | `'</b>'` | Closing tag for matched terms |
+| `max_fragments` | integer | `0` | Number of fragments (0 = full text) |
+| `fragment_size` | integer | `150` | Characters per fragment |
+
+The function parses the query using the same FTS grammar as the `@@` operator, extracting terms from boolean expressions, phrases, and field-prefixed tokens. Each text token is analyzed with the table's analyzer before matching, so stemmed queries correctly highlight inflected forms (e.g., `"run"` highlights `"running"`).
+
+### Faceted Search
+
+`uqa_facets()` computes facet counts over the search results. It replaces the normal row output with facet summary rows.
+
+```sql
+-- Single-field facet: returns facet_value | facet_count
+SELECT uqa_facets(category) FROM articles WHERE body @@ 'database';
+
+-- Multi-field facet: returns facet_field | facet_value | facet_count
+SELECT uqa_facets(category, author) FROM articles WHERE body @@ 'database';
+
+-- Facets over all rows (no WHERE)
+SELECT uqa_facets(year) FROM articles;
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `field1` | column | First field to facet on |
+| `field2, ...` | column | Additional fields (optional, enables multi-field mode) |
+
+Output columns:
+
+| Column | Present | Description |
+|--------|---------|-------------|
+| `facet_field` | Multi-field only | Which field this row counts |
+| `facet_value` | Always | The distinct field value |
+| `facet_count` | Always | Number of matching documents with this value |
+
+Facet values are sorted alphabetically. The facet computation respects any WHERE-clause filtering, including `@@`, `text_match()`, `bayesian_match()`, and relational predicates.
+
 ### Vector Similarity Search
 
 ```sql

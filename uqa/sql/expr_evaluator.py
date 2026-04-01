@@ -108,6 +108,7 @@ class ExprEvaluator:
         outer_row: dict[str, Any] | None = None,
         engine: Any = None,
         params: list[Any] | None = None,
+        analyzer: Any = None,
     ) -> None:
         self._subquery_executor = subquery_executor
         self._sequences = sequences
@@ -115,6 +116,7 @@ class ExprEvaluator:
         self._outer_row = outer_row
         self._engine = engine
         self._params: list[Any] = params if params is not None else []
+        self._analyzer = analyzer
 
     def evaluate(self, node: Any, row: dict[str, Any]) -> Any:
         """Evaluate *node* against *row* and return the result."""
@@ -604,6 +606,8 @@ class ExprEvaluator:
             return self._eval_path_agg(node, row)
         if func_name == "path_value":
             return self._eval_path_value(node, row)
+        if func_name == "uqa_highlight":
+            return self._eval_uqa_highlight(node, row)
         args = [self.evaluate(a, row) for a in (node.args or ())]
         fn = _SCALAR_FUNCTIONS.get(func_name)
         if fn is not None:
@@ -713,6 +717,46 @@ class ExprEvaluator:
 
         hdoc = HierarchicalDocument(0, row)
         return hdoc.eval_path(path_expr)
+
+    def _eval_uqa_highlight(self, node: FuncCall, row: dict[str, Any]) -> Any:
+        """Evaluate uqa_highlight(field, query [, start_tag, end_tag, max_fragments, fragment_size]).
+
+        Returns the field text with matched query terms wrapped in tags.
+        Uses the table's analyzer for stemming-aware matching when
+        available via the engine.
+        """
+        from uqa.search.highlight import extract_query_terms, highlight
+
+        args = node.args or ()
+        if len(args) < 2:
+            raise ValueError(
+                "uqa_highlight() requires at least 2 arguments: field, query"
+            )
+
+        text = self.evaluate(args[0], row)
+        query_string = self.evaluate(args[1], row)
+        start_tag = self.evaluate(args[2], row) if len(args) > 2 else "<b>"
+        end_tag = self.evaluate(args[3], row) if len(args) > 3 else "</b>"
+        max_fragments = int(self.evaluate(args[4], row)) if len(args) > 4 else 0
+        fragment_size = int(self.evaluate(args[5], row)) if len(args) > 5 else 150
+
+        if text is None:
+            return None
+
+        text = str(text)
+        query_terms = extract_query_terms(str(query_string))
+        if not query_terms:
+            return text
+
+        return highlight(
+            text,
+            query_terms,
+            start_tag=start_tag,
+            end_tag=end_tag,
+            max_fragments=max_fragments,
+            fragment_size=fragment_size,
+            analyzer=self._analyzer,
+        )
 
 
 # -- Module-level helpers ------------------------------------------------

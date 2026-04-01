@@ -98,6 +98,14 @@ Fusion meta-functions (WHERE clause):
 SELECT scalar functions:
   path_agg('path', 'func')          -- per-row nested array aggregation
   path_value('path')                 -- access nested field value
+  uqa_highlight(col, 'query')       -- highlight matched terms with <b> tags
+  uqa_highlight(col, 'query', '<em>', '</em>')
+                                     -- custom highlight tags
+  uqa_highlight(col, 'query', tag, tag, max_fragments, fragment_size)
+                                     -- snippet extraction mode
+  uqa_facets(col [, col2, ...])     -- facet counts over search results
+                                       returns facet_value | facet_count rows
+                                       (facet_field added for multi-field)
 
 FROM-clause table functions:
   traverse(start_id, 'label', max_hops) -- graph traversal
@@ -2741,6 +2749,13 @@ class SQLCompiler:
                 if not defer_proj:
                     if use_expr:
                         targets = self._build_expr_targets(stmt.targetList)
+                        _hl_analyzer = (
+                            table.inverted_index.analyzer
+                            if table is not None
+                            and hasattr(table, "inverted_index")
+                            and table.inverted_index is not None
+                            else None
+                        )
                         physical = ExprProjectOp(
                             physical,
                             targets,
@@ -2748,6 +2763,7 @@ class SQLCompiler:
                             sequences=self._engine._sequences,
                             engine=self._engine,
                             params=self._params,
+                            analyzer=_hl_analyzer,
                         )
                         expected_cols = [name for name, _ in targets]
                     else:
@@ -2782,6 +2798,13 @@ class SQLCompiler:
         if defer_proj:
             if use_expr:
                 targets = self._build_expr_targets(stmt.targetList)
+                _hl_analyzer = (
+                    table.inverted_index.analyzer
+                    if table is not None
+                    and hasattr(table, "inverted_index")
+                    and table.inverted_index is not None
+                    else None
+                )
                 physical = ExprProjectOp(
                     physical,
                     targets,
@@ -2789,6 +2812,7 @@ class SQLCompiler:
                     sequences=self._engine._sequences,
                     engine=self._engine,
                     params=self._params,
+                    analyzer=_hl_analyzer,
                 )
                 expected_cols = [name for name, _ in targets]
             else:
@@ -4172,7 +4196,12 @@ class SQLCompiler:
                 scan_limit = self._extract_int_value(stmt.limitCount) + scan_offset
             pl = self._scan_all(ctx, limit=scan_limit)
 
-        # 9. Execute relational operations via physical operators
+        # 9. Intercept uqa_facets(): run FacetOperator over the posting list
+        facet_result = self._try_facets(stmt.targetList, pl, ctx)
+        if facet_result is not None:
+            return facet_result
+
+        # 10. Execute relational operations via physical operators
         return self._execute_relational(
             stmt,
             pl,
@@ -4181,6 +4210,61 @@ class SQLCompiler:
             deferred_where=deferred_where,
             join_source=join_source or foreign_source,
         )
+
+    def _try_facets(
+        self,
+        target_list: tuple | None,
+        pl: PostingList,
+        ctx: ExecutionContext,
+    ) -> SQLResult | None:
+        """Detect uqa_facets() in SELECT and return facet rows.
+
+        Returns ``None`` when the SELECT list does not contain
+        ``uqa_facets()``, allowing normal execution to proceed.
+        """
+        if target_list is None:
+            return None
+
+        facet_fields: list[str] = []
+        for target in target_list:
+            val = target.val
+            if isinstance(val, FuncCall):
+                fn = val.funcname[-1].sval.lower()
+                if fn == "uqa_facets":
+                    for arg in val.args or ():
+                        facet_fields.append(self._extract_column_name(arg))
+
+        if not facet_fields:
+            return None
+
+        # Materialize doc_ids from the posting list for FacetOperator
+        doc_ids = [entry.doc_id for entry in pl]
+
+        all_rows: list[dict[str, Any]] = []
+        multi = len(facet_fields) > 1
+        for field_name in facet_fields:
+            doc_store = ctx.document_store
+            if doc_store is None:
+                continue
+            value_counts: dict[str, int] = {}
+            for doc_id in doc_ids:
+                value = doc_store.get_field(doc_id, field_name)
+                if value is not None:
+                    key = str(value)
+                    value_counts[key] = value_counts.get(key, 0) + 1
+            for value, count in sorted(value_counts.items()):
+                row: dict[str, Any] = {}
+                if multi:
+                    row["facet_field"] = field_name
+                row["facet_value"] = value
+                row["facet_count"] = count
+                all_rows.append(row)
+
+        if multi:
+            columns = ["facet_field", "facet_value", "facet_count"]
+        else:
+            columns = ["facet_value", "facet_count"]
+        return SQLResult(columns, all_rows)
 
     def _compile_values(self, stmt: SelectStmt) -> SQLResult:
         """Handle standalone VALUES (1, 'a'), (2, 'b') queries."""
