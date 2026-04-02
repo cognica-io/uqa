@@ -1,5 +1,57 @@
 # History
 
+## 0.25.0 (2026-04-02)
+
+PostgreSQL compatibility: schema namespaces, session commands, in-memory transactions with real rollback, DDL enhancements, and query result correctness fixes. All 2734 tests pass across 84 test files; 30 examples and 309 benchmarks verified.
+
+### Schema Support
+
+- **`CREATE SCHEMA`** / **`DROP SCHEMA [CASCADE]`**: Full schema namespace support with `SchemaAwareTableStore` that stores tables in `{schema: {table_name: Table}}` with `search_path` resolution. All 80+ table access sites use the dict-compatible interface transparently.
+- **`SET search_path TO 'myschema', 'public'`**: Changes schema resolution order at runtime. Unqualified table names resolve through the search path; qualified names (`myschema.users`) resolve directly.
+- **Schema-qualified DDL/DML**: `CREATE TABLE myschema.t (...)`, `INSERT INTO myschema.t ...`, `SELECT * FROM myschema.t`, etc.
+- **`information_schema.tables`** and **`pg_catalog.pg_tables`** now report the actual schema name per table instead of hardcoded `"public"`.
+
+### Session Commands
+
+- **`SET`** / **`SHOW`** / **`RESET`** / **`RESET ALL`**: Session variable storage with PostgreSQL-compatible defaults (`server_version`, `client_encoding`, `search_path`, `timezone`, etc.). `SET LOCAL` is accepted.
+- **`DISCARD ALL`**: Clears session variables, prepared statements, and temporary tables.
+
+### In-Memory Transactions
+
+- **`BEGIN`** / **`COMMIT`** / **`ROLLBACK`**: Full transaction support in in-memory engines with real rollback. `InMemoryTransaction` snapshots all document stores on `begin()` and restores them on `rollback()` via `copy.deepcopy`.
+- **`SAVEPOINT`** / **`RELEASE SAVEPOINT`** / **`ROLLBACK TO SAVEPOINT`**: Nested snapshots on a stack.
+
+### DDL Enhancements
+
+- **`DEFAULT CURRENT_TIMESTAMP`**, **`DEFAULT CURRENT_DATE`**: Column defaults can now use SQL value functions and function calls. AST nodes are stored as defaults and evaluated via `ExprEvaluator` at insert time (deferred evaluation, matching PostgreSQL behavior).
+- **`ALTER TABLE ADD CONSTRAINT`**: Supports `CHECK`, `UNIQUE`, `PRIMARY KEY`, and `FOREIGN KEY` constraints. CHECK constraints validate existing data before accepting.
+- **`ON CONFLICT DO NOTHING`** without explicit column specification: Catches UNIQUE/PK violations at insert time and silently skips the row.
+- **In-memory `CREATE INDEX` / `DROP INDEX`**: BTREE index metadata is tracked in `engine._btree_indexes` so `CREATE INDEX` and `DROP INDEX` work without a persistent engine. GIN and RTREE indexes already worked in-memory.
+
+### Query Result Correctness
+
+- **`SELECT *` no longer exposes `_doc_id` / `_score`**: Internal columns are filtered from single-table `SELECT *` results. Graph traversal and search queries retain these columns.
+- **Aggregate duplicate columns eliminated**: `SELECT COUNT(*) AS c` now returns only column `c`, not both `c` and `count`. The `_iter_batches` function filters rows through the declared column list.
+- **LEFT JOIN + GROUP BY fix**: Unmatched left rows now have all right-side columns explicitly set to `None` (both qualified and unqualified). `GROUP BY` and aggregate arguments use qualified column names (`d.name`, `e.id`) to prevent ambiguity when tables share column names.
+- **Date/time functions return proper types**: `CURRENT_DATE` returns `datetime.date`, `NOW()` / `CURRENT_TIMESTAMP` return `datetime.datetime`, `CURRENT_TIME` returns `datetime.time`. `DATE_TRUNC`, `MAKE_TIMESTAMP`, `MAKE_DATE`, `TO_DATE`, `TO_TIMESTAMP` also return native objects. Arrow batch system extended with `TIMESTAMP`, `DATE`, `TIME`, `INTERVAL` DataTypes. Predicate evaluation handles `date`/`str` comparison coercion.
+
+### Internal Changes
+
+- **`SchemaAwareTableStore`** (`engine.py`): Dict-compatible class with `_schemas: dict[str, dict[str, Table]]`, `search_path`, `create_schema()`, `drop_schema()`, `qualified_items()`.
+- **`InMemoryTransaction`** (`storage/transaction.py`): Snapshot-based rollback with `_snapshot_tables()` / `_restore_tables()`. Savepoints as nested snapshots.
+- **`_qualified_name()`** (`compiler.py`): Static helper to build `"schema.table"` from `RangeVar.schemaname` + `relname`.
+- **`_extract_qualified_column_name()`** (`compiler.py`): Returns `"d.name"` for qualified ColumnRef nodes.
+- **`_coerce_for_comparison()`** (`core/types.py`): Transparent date/str coercion in `Equals`, `GreaterThan`, etc.
+- **`_coerce_datetime()`** (`table.py`): Parses date/time strings into native objects on INSERT for timestamp columns.
+- **`_evaluate_default()`** (`table.py`): Evaluates pglast AST nodes via `ExprEvaluator` for deferred column defaults.
+- **`_INTERNAL_COLUMNS`** (`compiler.py`): `frozenset({"_doc_id", "_score"})` for filtering internal columns.
+- **`DataType.TIMESTAMP/DATE/TIME/INTERVAL`** (`batch.py`): New enum values with Arrow type mappings.
+
+### Tests
+
+- **73 new tests** in `test_pg_compat_bugs.py`: session variables (8), in-memory transactions (4), SELECT * filtering (3), aggregate duplicates (4), LEFT JOIN + GROUP BY (2), DEFAULT SQL functions (4), ADD CONSTRAINT (3), ON CONFLICT DO NOTHING (4), in-memory indexes (4), schema support (12), plus updated datetime tests.
+- **Total**: 2880 tests across 84 test files.
+
 ## 0.24.0 (2026-04-01)
 
 SQL faceted search and search result highlighting. Two new SQL functions bring search-engine-style faceting and term highlighting into the SQL layer, complementing the existing `@@` full-text search operator. All 2831 tests pass across 84 test files.

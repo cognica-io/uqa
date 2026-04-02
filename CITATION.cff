@@ -9,8 +9,8 @@ authors:
     affiliation: "Cognica, Inc."
 repository-code: "https://github.com/cognica-io/uqa"
 license: AGPL-3.0-only
-version: 0.24.0
-date-released: "2026-04-01"
+version: 0.25.0
+date-released: "2026-04-02"
 abstract: >-
   A multi-paradigm database engine that unifies relational, text retrieval,
   vector search, graph query, and geospatial paradigms under a single
@@ -106,3 +106,6 @@ keywords:
   - faceted-search
   - search-highlighting
   - snippet-extraction
+  - schema-namespace
+  - session-variables
+  - in-memory-transactions
