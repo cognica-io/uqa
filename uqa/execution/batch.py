@@ -38,6 +38,10 @@ class DataType(enum.Enum):
     TEXT = "text"
     BOOLEAN = "boolean"
     BYTES = "bytes"
+    TIMESTAMP = "timestamp"
+    DATE = "date"
+    TIME = "time"
+    INTERVAL = "interval"
 
 
 # DataType -> Arrow type mapping.
@@ -47,6 +51,10 @@ _DTYPE_TO_ARROW: dict[DataType, pa.DataType] = {
     DataType.TEXT: pa.utf8(),
     DataType.BOOLEAN: pa.bool_(),
     DataType.BYTES: pa.binary(),
+    DataType.TIMESTAMP: pa.timestamp("us"),
+    DataType.DATE: pa.date32(),
+    DataType.TIME: pa.time64("us"),
+    DataType.INTERVAL: pa.duration("us"),
 }
 
 
@@ -62,6 +70,14 @@ def _arrow_type_to_dtype(arrow_type: pa.DataType) -> DataType:
         return DataType.TEXT
     if pa.types.is_binary(arrow_type) or pa.types.is_large_binary(arrow_type):
         return DataType.BYTES
+    if pa.types.is_timestamp(arrow_type):
+        return DataType.TIMESTAMP
+    if pa.types.is_date(arrow_type):
+        return DataType.DATE
+    if pa.types.is_time(arrow_type):
+        return DataType.TIME
+    if pa.types.is_duration(arrow_type):
+        return DataType.INTERVAL
     return DataType.TEXT
 
 
@@ -91,6 +107,16 @@ _SQL_TO_DTYPE: dict[str, DataType] = {
     "decimal": DataType.FLOAT,
     "boolean": DataType.BOOLEAN,
     "bool": DataType.BOOLEAN,
+    "date": DataType.DATE,
+    "time": DataType.TIME,
+    "timetz": DataType.TIME,
+    "time without time zone": DataType.TIME,
+    "time with time zone": DataType.TIME,
+    "timestamp": DataType.TIMESTAMP,
+    "timestamptz": DataType.TIMESTAMP,
+    "timestamp without time zone": DataType.TIMESTAMP,
+    "timestamp with time zone": DataType.TIMESTAMP,
+    "interval": DataType.INTERVAL,
 }
 
 
@@ -343,6 +369,8 @@ def _normalize_list(lst: list[Any]) -> list[Any]:
 
 def _infer_dtype(value: Any) -> DataType:
     """Infer DataType from a Python value."""
+    import datetime as _dt
+
     if isinstance(value, bool):
         return DataType.BOOLEAN
     if isinstance(value, int):
@@ -351,4 +379,12 @@ def _infer_dtype(value: Any) -> DataType:
         return DataType.FLOAT
     if isinstance(value, bytes):
         return DataType.BYTES
+    if isinstance(value, _dt.datetime):
+        return DataType.TIMESTAMP
+    if isinstance(value, _dt.date):
+        return DataType.DATE
+    if isinstance(value, _dt.time):
+        return DataType.TIME
+    if isinstance(value, _dt.timedelta):
+        return DataType.INTERVAL
     return DataType.TEXT

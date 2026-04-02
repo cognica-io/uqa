@@ -15,6 +15,9 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from datetime import date as _date
+from datetime import datetime as _datetime
+from datetime import time as _time
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -69,6 +72,36 @@ _SQL_TYPE_MAP: dict[str, type] = {
 }
 
 _AUTO_INCREMENT_TYPES = frozenset({"serial", "bigserial"})
+
+_DATETIME_TYPES = frozenset(
+    {
+        "date",
+        "time",
+        "timetz",
+        "time without time zone",
+        "time with time zone",
+        "timestamp",
+        "timestamptz",
+        "timestamp without time zone",
+        "timestamp with time zone",
+    }
+)
+
+
+def _evaluate_default(default: Any) -> Any:
+    """Evaluate a column DEFAULT value.
+
+    Literal defaults (int, str, etc.) are returned as-is.  AST nodes
+    (SQLValueFunction, FuncCall) are evaluated via ExprEvaluator to
+    support ``DEFAULT CURRENT_TIMESTAMP`` and similar expressions.
+    """
+    mod = type(default).__module__ or ""
+    if mod.startswith("pglast"):
+        from uqa.sql.expr_evaluator import ExprEvaluator
+
+        evaluator = ExprEvaluator()
+        return evaluator.evaluate(default, {})
+    return default
 
 
 @dataclass(slots=True)
@@ -247,18 +280,20 @@ class Table:
             doc_id = self._next_id
             self._next_id += 1
 
+        # -- DEFAULT value application ----------------------------------
+        for col_name, col_def in self.columns.items():
+            if col_def.default is not None and row.get(col_name) is None:
+                row[col_name] = _evaluate_default(col_def.default)
+
         # -- NOT NULL validation --------------------------------------
         for col_name, col_def in self.columns.items():
             if col_def.not_null and not col_def.auto_increment:
                 value = row.get(col_name)
                 if value is None:
-                    if col_def.default is not None:
-                        row[col_name] = col_def.default
-                    else:
-                        raise ValueError(
-                            f"NOT NULL constraint violated: "
-                            f"column '{col_name}' in table '{self.name}'"
-                        )
+                    raise ValueError(
+                        f"NOT NULL constraint violated: "
+                        f"column '{col_name}' in table '{self.name}'"
+                    )
 
         # -- UNIQUE constraint validation --------------------------------
         self._build_unique_indexes()
@@ -325,10 +360,14 @@ class Table:
                     coerced[col_name] = _coerce_numeric(
                         row[col_name], col_def.numeric_scale
                     )
+                elif col_def.type_name in _DATETIME_TYPES:
+                    coerced[col_name] = _coerce_datetime(
+                        row[col_name], col_def.type_name
+                    )
                 else:
                     coerced[col_name] = col_def.python_type(row[col_name])
             elif col_def.default is not None:
-                coerced[col_name] = col_def.default
+                coerced[col_name] = _evaluate_default(col_def.default)
             # else: column absent -> not stored (sparse document)
 
         # -- persist ---------------------------------------------------
@@ -510,6 +549,18 @@ class Table:
     def get_column_stats(self, col_name: str) -> ColumnStats | None:
         """Return cached statistics for a column, or None if not analyzed."""
         return self._stats.get(col_name)
+
+
+def _coerce_datetime(value: Any, type_name: str) -> _date | _datetime | _time:
+    """Coerce a value to the appropriate datetime type."""
+    if isinstance(value, (_datetime, _date, _time)):
+        return value
+    s = str(value)
+    if type_name.startswith("date") and "time" not in type_name:
+        return _date.fromisoformat(s)
+    if type_name.startswith("time") and "stamp" not in type_name:
+        return _time.fromisoformat(s)
+    return _datetime.fromisoformat(s)
 
 
 def _coerce_json(value: Any) -> Any:

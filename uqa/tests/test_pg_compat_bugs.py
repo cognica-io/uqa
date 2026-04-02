@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 import pytest
 
 from uqa.engine import Engine
@@ -487,3 +489,458 @@ class TestIntervalAndNamedArg:
     def test_make_interval_single_arg(self, engine):
         result = engine.sql("SELECT MAKE_INTERVAL(hours => 12) AS iv")
         assert result.rows[0]["iv"] is not None
+
+
+# ==================================================================
+# SET / SHOW / RESET / DISCARD
+# ==================================================================
+
+
+class TestSessionVariables:
+    """SET, SHOW, RESET, and DISCARD must work like PostgreSQL."""
+
+    def test_set_and_show(self, engine):
+        engine.sql("SET client_encoding TO 'UTF8'")
+        result = engine.sql("SHOW client_encoding")
+        assert result.columns == ["client_encoding"]
+        assert result.rows[0]["client_encoding"] == "UTF8"
+
+    def test_set_integer_value(self, engine):
+        engine.sql("SET statement_timeout = 5000")
+        result = engine.sql("SHOW statement_timeout")
+        assert result.rows[0]["statement_timeout"] == "5000"
+
+    def test_set_multiple_values(self, engine):
+        engine.sql("SET search_path TO 'myschema', 'public'")
+        result = engine.sql("SHOW search_path")
+        assert "myschema" in result.rows[0]["search_path"]
+        assert "public" in result.rows[0]["search_path"]
+
+    def test_show_defaults(self, engine):
+        result = engine.sql("SHOW server_version")
+        assert result.rows[0]["server_version"] == "17.0"
+
+    def test_reset(self, engine):
+        engine.sql("SET client_encoding TO 'LATIN1'")
+        engine.sql("RESET client_encoding")
+        result = engine.sql("SHOW client_encoding")
+        assert result.rows[0]["client_encoding"] == "UTF8"
+
+    def test_reset_all(self, engine):
+        engine.sql("SET client_encoding TO 'LATIN1'")
+        engine.sql("SET statement_timeout = 9999")
+        engine.sql("RESET ALL")
+        result = engine.sql("SHOW client_encoding")
+        assert result.rows[0]["client_encoding"] == "UTF8"
+
+    def test_set_local(self, engine):
+        engine.sql("SET LOCAL timezone TO 'US/Eastern'")
+        result = engine.sql("SHOW timezone")
+        assert result.rows[0]["timezone"] == "US/Eastern"
+
+    def test_discard_all(self, engine):
+        engine.sql("SET client_encoding TO 'LATIN1'")
+        engine.sql("DISCARD ALL")
+        result = engine.sql("SHOW client_encoding")
+        assert result.rows[0]["client_encoding"] == "UTF8"
+
+
+# ==================================================================
+# In-memory transactions (BEGIN / COMMIT / ROLLBACK)
+# ==================================================================
+
+
+class TestInMemoryTransactions:
+    """BEGIN/COMMIT/ROLLBACK must work in in-memory engines."""
+
+    def test_begin_commit(self, engine):
+        engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+        engine.sql("BEGIN")
+        engine.sql("INSERT INTO t VALUES (1, 'a')")
+        engine.sql("COMMIT")
+        result = engine.sql("SELECT * FROM t")
+        assert len(result.rows) == 1
+
+    def test_begin_rollback(self, engine):
+        engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+        engine.sql("INSERT INTO t VALUES (1, 'a')")
+        engine.sql("BEGIN")
+        engine.sql("INSERT INTO t VALUES (2, 'b')")
+        engine.sql("ROLLBACK")
+        result = engine.sql("SELECT * FROM t")
+        assert len(result.rows) == 1
+        assert result.rows[0]["v"] == "a"
+
+    def test_context_manager(self, engine):
+        engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+        with engine.begin() as txn:
+            engine.sql("INSERT INTO t VALUES (1, 'a')")
+            txn.commit()
+        result = engine.sql("SELECT * FROM t")
+        assert len(result.rows) == 1
+
+    def test_nested_begin_raises(self, engine):
+        engine.sql("BEGIN")
+        with pytest.raises(ValueError, match="already active"):
+            engine.sql("BEGIN")
+        engine.sql("COMMIT")
+
+
+# ==================================================================
+# SELECT * must not expose internal columns (_doc_id, _score)
+# ==================================================================
+
+
+class TestSelectStarNoInternalColumns:
+    """SELECT * should only return user-defined columns."""
+
+    def test_single_table_no_internal_cols(self, engine):
+        engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        engine.sql("INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob')")
+        result = engine.sql("SELECT * FROM t")
+        assert "_doc_id" not in result.columns
+        assert "_score" not in result.columns
+        assert set(result.columns) == {"id", "name"}
+        assert len(result.rows) == 2
+
+    def test_explicit_columns_still_work(self, engine):
+        engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        engine.sql("INSERT INTO t VALUES (1, 'Alice')")
+        result = engine.sql("SELECT id, name FROM t")
+        assert result.columns == ["id", "name"]
+
+    def test_select_star_with_order_by(self, engine):
+        engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)")
+        engine.sql("INSERT INTO t VALUES (2, 'b'), (1, 'a')")
+        result = engine.sql("SELECT * FROM t ORDER BY id")
+        assert "_doc_id" not in result.columns
+        assert result.rows[0]["id"] == 1
+
+
+# ==================================================================
+# Aggregate results must not have duplicate columns
+# ==================================================================
+
+
+class TestAggregateDuplicateColumns:
+    """SELECT COUNT(*) AS c should only have column 'c', not 'count' too."""
+
+    def test_count_alias_only(self, engine):
+        engine.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, name TEXT)")
+        engine.sql("INSERT INTO t (name) VALUES ('a'), ('b'), ('c')")
+        result = engine.sql("SELECT COUNT(*) AS c FROM t")
+        assert result.columns == ["c"]
+        assert set(result.rows[0].keys()) == {"c"}
+        assert result.rows[0]["c"] == 3
+
+    def test_sum_alias_only(self, engine):
+        engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
+        engine.sql("INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)")
+        result = engine.sql("SELECT SUM(val) AS s FROM t")
+        assert result.columns == ["s"]
+        assert set(result.rows[0].keys()) == {"s"}
+        assert result.rows[0]["s"] == 60
+
+    def test_group_by_count_alias(self, engine):
+        engine.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, cat TEXT, val INTEGER)")
+        engine.sql("INSERT INTO t (cat, val) VALUES ('a', 1), ('a', 2), ('b', 3)")
+        result = engine.sql(
+            "SELECT cat, COUNT(*) AS cnt FROM t GROUP BY cat ORDER BY cat"
+        )
+        assert result.columns == ["cat", "cnt"]
+        assert set(result.rows[0].keys()) == {"cat", "cnt"}
+
+    def test_natural_name_without_alias(self, engine):
+        engine.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, val INTEGER)")
+        engine.sql("INSERT INTO t (val) VALUES (1), (2), (3)")
+        result = engine.sql("SELECT COUNT(*) FROM t")
+        assert result.columns == ["count"]
+        assert result.rows[0]["count"] == 3
+
+
+# ==================================================================
+# LEFT JOIN + GROUP BY must produce correct results
+# ==================================================================
+
+
+class TestLeftJoinGroupBy:
+    """LEFT JOIN with GROUP BY must handle unmatched rows correctly."""
+
+    def test_left_join_group_by_count(self, engine):
+        engine.sql(
+            "CREATE TABLE departments (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"
+        )
+        engine.sql(
+            "CREATE TABLE employees ("
+            "id INTEGER PRIMARY KEY, name TEXT, dept_id INTEGER)"
+        )
+        engine.sql(
+            "INSERT INTO departments VALUES (1, 'Engineering'), (2, 'Sales'), (3, 'HR')"
+        )
+        engine.sql(
+            "INSERT INTO employees VALUES (1, 'Alice', 1), (2, 'Bob', 1), (3, 'Carol', 2)"
+        )
+
+        result = engine.sql(
+            "SELECT d.name, COUNT(e.id) AS cnt "
+            "FROM departments d LEFT JOIN employees e ON d.id = e.dept_id "
+            "GROUP BY d.name ORDER BY d.name"
+        )
+        rows = result.rows
+        assert len(rows) == 3
+        by_name = {r["name"]: r["cnt"] for r in rows}
+        assert by_name["Engineering"] == 2
+        assert by_name["Sales"] == 1
+        assert by_name["HR"] == 0
+
+    def test_left_join_unmatched_null_columns(self, engine):
+        engine.sql("CREATE TABLE a (id INTEGER PRIMARY KEY, val TEXT)")
+        engine.sql("CREATE TABLE b (id INTEGER PRIMARY KEY, a_id INTEGER, data TEXT)")
+        engine.sql("INSERT INTO a VALUES (1, 'x'), (2, 'y')")
+        engine.sql("INSERT INTO b VALUES (10, 1, 'hello')")
+
+        result = engine.sql(
+            "SELECT a.val, b.data FROM a LEFT JOIN b ON a.id = b.a_id ORDER BY a.val"
+        )
+        rows = result.rows
+        assert len(rows) == 2
+        assert rows[0]["val"] == "x"
+        assert rows[0]["data"] == "hello"
+        assert rows[1]["val"] == "y"
+        assert rows[1]["data"] is None
+
+
+# ==================================================================
+# DEFAULT with SQL functions (CURRENT_TIMESTAMP, etc.)
+# ==================================================================
+
+
+class TestDefaultSQLFunctions:
+    """DEFAULT CURRENT_TIMESTAMP and similar must work."""
+
+    def test_default_current_timestamp(self, engine):
+        engine.sql(
+            "CREATE TABLE log ("
+            "id SERIAL PRIMARY KEY, "
+            "msg TEXT, "
+            "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
+        engine.sql("INSERT INTO log (msg) VALUES ('hello')")
+        result = engine.sql("SELECT created_at FROM log")
+        ts = result.rows[0]["created_at"]
+        assert isinstance(ts, dt.datetime)
+
+    def test_default_current_date(self, engine):
+        engine.sql(
+            "CREATE TABLE events ("
+            "id SERIAL PRIMARY KEY, "
+            "event_date DATE DEFAULT CURRENT_DATE)"
+        )
+        engine.sql("INSERT INTO events (id) VALUES (1)")
+        result = engine.sql("SELECT event_date FROM events")
+        d = result.rows[0]["event_date"]
+        assert isinstance(d, dt.date)
+
+    def test_default_literal_still_works(self, engine):
+        engine.sql(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT DEFAULT 'active')"
+        )
+        engine.sql("INSERT INTO t (id) VALUES (1)")
+        result = engine.sql("SELECT status FROM t")
+        assert result.rows[0]["status"] == "active"
+
+    def test_explicit_value_overrides_default(self, engine):
+        engine.sql(
+            "CREATE TABLE t ("
+            "id SERIAL PRIMARY KEY, "
+            "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
+        engine.sql("INSERT INTO t (created_at) VALUES ('2020-01-01T00:00:00')")
+        result = engine.sql("SELECT created_at FROM t")
+        assert result.rows[0]["created_at"] == dt.datetime(2020, 1, 1, 0, 0, 0)
+
+
+# ==================================================================
+# ALTER TABLE ADD CONSTRAINT
+# ==================================================================
+
+
+class TestAlterTableAddConstraint:
+    """ALTER TABLE ADD CONSTRAINT must work for CHECK, UNIQUE, FK."""
+
+    def test_add_check_constraint(self, engine):
+        engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
+        engine.sql("INSERT INTO t VALUES (1, 10)")
+        engine.sql("ALTER TABLE t ADD CONSTRAINT chk_val CHECK (val > 0)")
+        with pytest.raises(ValueError, match="CHECK"):
+            engine.sql("INSERT INTO t VALUES (2, -5)")
+
+    def test_add_check_validates_existing(self, engine):
+        engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
+        engine.sql("INSERT INTO t VALUES (1, -1)")
+        with pytest.raises(ValueError, match="violated"):
+            engine.sql("ALTER TABLE t ADD CONSTRAINT chk CHECK (val > 0)")
+
+    def test_add_unique_constraint(self, engine):
+        engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, code TEXT)")
+        engine.sql("INSERT INTO t VALUES (1, 'A')")
+        engine.sql("ALTER TABLE t ADD CONSTRAINT uq_code UNIQUE (code)")
+        with pytest.raises(ValueError, match="UNIQUE"):
+            engine.sql("INSERT INTO t VALUES (2, 'A')")
+
+
+# ==================================================================
+# ON CONFLICT DO NOTHING without column specification
+# ==================================================================
+
+
+class TestOnConflictDoNothing:
+    """INSERT ... ON CONFLICT DO NOTHING must work without columns."""
+
+    def test_do_nothing_skips_duplicate_pk(self, engine):
+        engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)")
+        engine.sql("INSERT INTO t VALUES (1, 'a')")
+        engine.sql("INSERT INTO t VALUES (1, 'b') ON CONFLICT DO NOTHING")
+        result = engine.sql("SELECT val FROM t WHERE id = 1")
+        assert result.rows[0]["val"] == "a"
+
+    def test_do_nothing_skips_duplicate_unique(self, engine):
+        engine.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, code TEXT UNIQUE)")
+        engine.sql("INSERT INTO t (code) VALUES ('X')")
+        engine.sql("INSERT INTO t (code) VALUES ('X') ON CONFLICT DO NOTHING")
+        result = engine.sql("SELECT COUNT(*) AS cnt FROM t")
+        assert result.rows[0]["cnt"] == 1
+
+    def test_do_nothing_inserts_non_duplicate(self, engine):
+        engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)")
+        engine.sql("INSERT INTO t VALUES (1, 'a')")
+        engine.sql("INSERT INTO t VALUES (2, 'b') ON CONFLICT DO NOTHING")
+        result = engine.sql("SELECT COUNT(*) AS cnt FROM t")
+        assert result.rows[0]["cnt"] == 2
+
+    def test_do_nothing_with_explicit_columns(self, engine):
+        engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)")
+        engine.sql("INSERT INTO t VALUES (1, 'a')")
+        engine.sql("INSERT INTO t VALUES (1, 'b') ON CONFLICT (id) DO NOTHING")
+        result = engine.sql("SELECT val FROM t WHERE id = 1")
+        assert result.rows[0]["val"] == "a"
+
+
+# ==================================================================
+# In-memory CREATE INDEX / DROP INDEX
+# ==================================================================
+
+
+class TestInMemoryIndex:
+    """CREATE INDEX and DROP INDEX must work in in-memory engines."""
+
+    def test_create_btree_index(self, engine):
+        engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        engine.sql("INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob')")
+        engine.sql("CREATE INDEX idx_name ON t (name)")
+        result = engine.sql("SELECT name FROM t WHERE name = 'Alice'")
+        assert len(result.rows) == 1
+
+    def test_drop_btree_index(self, engine):
+        engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
+        engine.sql("CREATE INDEX idx_val ON t (val)")
+        engine.sql("DROP INDEX idx_val")
+        # After drop, queries still work (just no index)
+        engine.sql("INSERT INTO t VALUES (1, 10)")
+        result = engine.sql("SELECT val FROM t")
+        assert result.rows[0]["val"] == 10
+
+    def test_drop_index_if_exists(self, engine):
+        engine.sql("DROP INDEX IF EXISTS nonexistent_idx")
+
+    def test_create_gin_index_in_memory(self, engine):
+        engine.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, body TEXT)")
+        engine.sql("INSERT INTO docs (body) VALUES ('hello world')")
+        engine.sql("CREATE INDEX idx_body ON docs USING gin (body)")
+        # GIN index should enable FTS
+        result = engine.sql("SELECT body FROM docs WHERE text_match(body, 'hello')")
+        assert len(result.rows) == 1
+
+
+# ==================================================================
+# CREATE SCHEMA / DROP SCHEMA
+# ==================================================================
+
+
+class TestSchemaSupport:
+    """Schema namespace must work like PostgreSQL."""
+
+    def test_create_schema(self, engine):
+        engine.sql("CREATE SCHEMA myschema")
+        assert "myschema" in engine._tables.schemas
+
+    def test_create_schema_if_not_exists(self, engine):
+        engine.sql("CREATE SCHEMA myschema")
+        engine.sql("CREATE SCHEMA IF NOT EXISTS myschema")
+
+    def test_create_schema_duplicate_raises(self, engine):
+        engine.sql("CREATE SCHEMA myschema")
+        with pytest.raises(ValueError, match="already exists"):
+            engine.sql("CREATE SCHEMA myschema")
+
+    def test_create_table_in_schema(self, engine):
+        engine.sql("CREATE SCHEMA sales")
+        engine.sql("CREATE TABLE sales.orders (id INTEGER PRIMARY KEY, total INTEGER)")
+        engine.sql("INSERT INTO sales.orders VALUES (1, 100)")
+        result = engine.sql("SELECT total FROM sales.orders")
+        assert result.rows[0]["total"] == 100
+
+    def test_schema_isolation(self, engine):
+        engine.sql("CREATE SCHEMA s1")
+        engine.sql("CREATE SCHEMA s2")
+        engine.sql("CREATE TABLE s1.t (id INTEGER PRIMARY KEY, val TEXT)")
+        engine.sql("CREATE TABLE s2.t (id INTEGER PRIMARY KEY, val TEXT)")
+        engine.sql("INSERT INTO s1.t VALUES (1, 'schema1')")
+        engine.sql("INSERT INTO s2.t VALUES (1, 'schema2')")
+        r1 = engine.sql("SELECT val FROM s1.t")
+        r2 = engine.sql("SELECT val FROM s2.t")
+        assert r1.rows[0]["val"] == "schema1"
+        assert r2.rows[0]["val"] == "schema2"
+
+    def test_search_path_resolution(self, engine):
+        engine.sql("CREATE SCHEMA myschema")
+        engine.sql("CREATE TABLE myschema.users (id INTEGER PRIMARY KEY, name TEXT)")
+        engine.sql("INSERT INTO myschema.users VALUES (1, 'Alice')")
+        engine.sql("SET search_path TO 'myschema', 'public'")
+        result = engine.sql("SELECT name FROM users")
+        assert result.rows[0]["name"] == "Alice"
+
+    def test_default_public_schema(self, engine):
+        engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+        engine.sql("INSERT INTO t VALUES (1)")
+        result = engine.sql("SELECT id FROM public.t")
+        assert result.rows[0]["id"] == 1
+
+    def test_drop_schema_empty(self, engine):
+        engine.sql("CREATE SCHEMA temp_schema")
+        engine.sql("DROP SCHEMA temp_schema")
+        assert "temp_schema" not in engine._tables.schemas
+
+    def test_drop_schema_cascade(self, engine):
+        engine.sql("CREATE SCHEMA doomed")
+        engine.sql("CREATE TABLE doomed.t (id INTEGER)")
+        engine.sql("DROP SCHEMA doomed CASCADE")
+        assert "doomed" not in engine._tables.schemas
+
+    def test_drop_schema_nonempty_raises(self, engine):
+        engine.sql("CREATE SCHEMA nonempty")
+        engine.sql("CREATE TABLE nonempty.t (id INTEGER)")
+        with pytest.raises(ValueError, match="not empty"):
+            engine.sql("DROP SCHEMA nonempty")
+
+    def test_drop_schema_if_exists(self, engine):
+        engine.sql("DROP SCHEMA IF EXISTS nonexistent")
+
+    def test_information_schema_tables(self, engine):
+        engine.sql("CREATE SCHEMA myschema")
+        engine.sql("CREATE TABLE myschema.t (id INTEGER)")
+        result = engine.sql(
+            "SELECT table_schema, table_name FROM information_schema.tables "
+            "WHERE table_name = 't'"
+        )
+        assert any(r["table_schema"] == "myschema" for r in result.rows)

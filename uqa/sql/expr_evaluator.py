@@ -524,29 +524,29 @@ class ExprEvaluator:
         op = SQLValueFunctionOp(node.op)
         now = datetime.now(UTC)
         if op == SQLValueFunctionOp.SVFOP_CURRENT_DATE:
-            return now.strftime("%Y-%m-%d")
+            return now.date()
         if op in (
             SQLValueFunctionOp.SVFOP_CURRENT_TIMESTAMP,
             SQLValueFunctionOp.SVFOP_CURRENT_TIMESTAMP_N,
         ):
-            return now.strftime("%Y-%m-%dT%H:%M:%S")
+            return now.replace(microsecond=0)
         if op in (
             SQLValueFunctionOp.SVFOP_CURRENT_TIME,
             SQLValueFunctionOp.SVFOP_CURRENT_TIME_N,
         ):
-            return now.strftime("%H:%M:%S")
+            return now.timetz().replace(microsecond=0)
         if op in (
             SQLValueFunctionOp.SVFOP_LOCALTIMESTAMP,
             SQLValueFunctionOp.SVFOP_LOCALTIMESTAMP_N,
         ):
             local_now = datetime.now()
-            return local_now.strftime("%Y-%m-%dT%H:%M:%S")
+            return local_now.replace(microsecond=0)
         if op in (
             SQLValueFunctionOp.SVFOP_LOCALTIME,
             SQLValueFunctionOp.SVFOP_LOCALTIME_N,
         ):
             local_now = datetime.now()
-            return local_now.strftime("%H:%M:%S")
+            return local_now.time().replace(microsecond=0)
         raise ValueError(f"Unsupported SQLValueFunction: {op.name}")
 
     # -- FuncCall (scalar functions) -----------------------------------
@@ -1541,7 +1541,7 @@ def _sf_trim_scale(args: list[Any]) -> Any:
 
 
 def _sf_now(args: list[Any]) -> Any:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
+    return datetime.now(UTC).replace(microsecond=0)
 
 
 def _sf_extract(args: list[Any]) -> Any:
@@ -1563,8 +1563,7 @@ def _sf_make_timestamp(args: list[Any]) -> Any:
     h, mi, s = int(args[3]), int(args[4]), float(args[5])
     sec = int(s)
     usec = int((s - sec) * 1_000_000)
-    dt = datetime(y, mo, d, h, mi, sec, usec)
-    return dt.isoformat()
+    return datetime(y, mo, d, h, mi, sec, usec)
 
 
 def _sf_make_interval(args: list[Any]) -> Any:
@@ -1587,7 +1586,7 @@ def _sf_make_interval(args: list[Any]) -> Any:
 def _sf_make_date(args: list[Any]) -> Any:
     if any(a is None for a in args[:3]):
         return None
-    return date(int(args[0]), int(args[1]), int(args[2])).isoformat()
+    return date(int(args[0]), int(args[1]), int(args[2]))
 
 
 def _sf_to_char(args: list[Any]) -> Any:
@@ -2017,10 +2016,15 @@ _SCALAR_FUNCTIONS: dict[str, Any] = {
 }
 
 
-def _extract_datetime_field(field: str, timestamp_str: str) -> Any:
-    """Extract a field from a timestamp/date string (EXTRACT / DATE_PART)."""
+def _extract_datetime_field(field: str, timestamp_str: str | date | datetime) -> Any:
+    """Extract a field from a timestamp/date (EXTRACT / DATE_PART)."""
 
-    dt = datetime.fromisoformat(timestamp_str)
+    if isinstance(timestamp_str, datetime):
+        dt = timestamp_str
+    elif isinstance(timestamp_str, date):
+        dt = datetime(timestamp_str.year, timestamp_str.month, timestamp_str.day)
+    else:
+        dt = datetime.fromisoformat(str(timestamp_str))
     if field == "year":
         return dt.year
     if field == "month":
@@ -2047,10 +2051,15 @@ def _extract_datetime_field(field: str, timestamp_str: str) -> Any:
     raise ValueError(f"Unknown EXTRACT field: {field}")
 
 
-def _date_trunc(precision: str, timestamp_str: str) -> str:
+def _date_trunc(precision: str, timestamp_str: str | date | datetime) -> datetime:
     """Truncate a timestamp to the given precision (DATE_TRUNC)."""
 
-    dt = datetime.fromisoformat(timestamp_str)
+    if isinstance(timestamp_str, datetime):
+        dt = timestamp_str
+    elif isinstance(timestamp_str, date):
+        dt = datetime(timestamp_str.year, timestamp_str.month, timestamp_str.day)
+    else:
+        dt = datetime.fromisoformat(str(timestamp_str))
     if precision == "year":
         dt = dt.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
     elif precision == "month":
@@ -2065,7 +2074,7 @@ def _date_trunc(precision: str, timestamp_str: str) -> str:
         dt = dt.replace(microsecond=0)
     else:
         raise ValueError(f"Unknown DATE_TRUNC precision: {precision}")
-    return dt.isoformat()
+    return dt
 
 
 # -- JSON helpers (Paper 1, Section 5.2-5.3) ----------------------------
@@ -2267,37 +2276,42 @@ def _pg_format_to_strftime(fmt: str) -> str:
     return result
 
 
-def _to_char(value: str, fmt: str) -> str:
+def _to_char(value: str | date | datetime, fmt: str) -> str:
     """TO_CHAR(timestamp, format)"""
 
-    try:
-        dt = datetime.fromisoformat(str(value))
-    except (ValueError, TypeError):
-        return str(value)
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, date):
+        dt = datetime(value.year, value.month, value.day)
+    else:
+        try:
+            dt = datetime.fromisoformat(str(value))
+        except (ValueError, TypeError):
+            return str(value)
     py_fmt = _pg_format_to_strftime(fmt)
     return dt.strftime(py_fmt)
 
 
-def _to_date(text: str, fmt: str) -> str:
-    """TO_DATE(text, format) -- returns ISO date string."""
+def _to_date(text: str, fmt: str) -> date | Any:
+    """TO_DATE(text, format) -- returns date object."""
 
     py_fmt = _pg_format_to_strftime(fmt)
     try:
-        dt = datetime.strptime(text, py_fmt)
+        dt = datetime.strptime(str(text), py_fmt)
     except (ValueError, TypeError):
         return text
-    return dt.date().isoformat()
+    return dt.date()
 
 
-def _to_timestamp(text: str, fmt: str) -> str:
-    """TO_TIMESTAMP(text, format) -- returns ISO timestamp string."""
+def _to_timestamp(text: str, fmt: str) -> datetime | Any:
+    """TO_TIMESTAMP(text, format) -- returns datetime object."""
 
     py_fmt = _pg_format_to_strftime(fmt)
     try:
-        dt = datetime.strptime(text, py_fmt)
+        dt = datetime.strptime(str(text), py_fmt)
     except (ValueError, TypeError):
         return text
-    return dt.isoformat()
+    return dt
 
 
 def _age(args: list[Any]) -> str:

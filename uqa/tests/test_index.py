@@ -326,12 +326,12 @@ class TestInMemoryEngine:
         assert len(result) == 1
         assert result.rows[0]["val"] == 42
 
-    def test_create_index_fails_without_db_path(self):
-        """CREATE INDEX on in-memory engine raises error."""
+    def test_create_index_works_without_db_path(self):
+        """CREATE INDEX on in-memory engine tracks metadata."""
         engine = Engine()
         engine.sql("CREATE TABLE t (id SERIAL PRIMARY KEY, val INTEGER)")
-        with pytest.raises(ValueError, match="persistent engine"):
-            engine.sql("CREATE INDEX idx ON t (val)")
+        engine.sql("CREATE INDEX idx ON t (val)")
+        assert "idx" in engine._btree_indexes
 
 
 # -- Index types -----------------------------------------------------------

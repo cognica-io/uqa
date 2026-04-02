@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-import re
+import datetime as dt
 
 import pytest
 
@@ -68,18 +68,17 @@ class TestDateTimeFunctions:
     def test_now(self, engine):
         result = engine.sql("SELECT NOW() AS ts")
         ts = result.rows[0]["ts"]
-        # Should be ISO format datetime string
-        assert re.match(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", ts)
+        assert isinstance(ts, dt.datetime)
 
     def test_current_date(self, engine):
         result = engine.sql("SELECT CURRENT_DATE AS d")
         d = result.rows[0]["d"]
-        assert re.match(r"\d{4}-\d{2}-\d{2}$", d)
+        assert isinstance(d, dt.date)
 
     def test_current_timestamp(self, engine):
         result = engine.sql("SELECT CURRENT_TIMESTAMP AS ts")
         ts = result.rows[0]["ts"]
-        assert re.match(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", ts)
+        assert isinstance(ts, dt.datetime)
 
 
 # ==================================================================
@@ -125,15 +124,21 @@ class TestExtractDatePartDateTrunc:
 
     def test_date_trunc_year(self, ts_table):
         result = ts_table.sql("SELECT DATE_TRUNC('year', ts) AS t FROM log")
-        assert result.rows[0]["t"].startswith("2024-01-01")
+        t = result.rows[0]["t"]
+        assert isinstance(t, dt.datetime)
+        assert t.year == 2024 and t.month == 1 and t.day == 1
 
     def test_date_trunc_month(self, ts_table):
         result = ts_table.sql("SELECT DATE_TRUNC('month', ts) AS t FROM log")
-        assert result.rows[0]["t"].startswith("2024-06-01")
+        t = result.rows[0]["t"]
+        assert isinstance(t, dt.datetime)
+        assert t.year == 2024 and t.month == 6 and t.day == 1
 
     def test_date_trunc_day(self, ts_table):
         result = ts_table.sql("SELECT DATE_TRUNC('day', ts) AS t FROM log")
-        assert result.rows[0]["t"].startswith("2024-06-15T00:00:00")
+        t = result.rows[0]["t"]
+        assert isinstance(t, dt.datetime)
+        assert t.hour == 0 and t.minute == 0 and t.second == 0
 
     def test_extract_quarter(self, ts_table):
         result = ts_table.sql("SELECT EXTRACT(quarter FROM ts) AS q FROM log")
@@ -157,29 +162,29 @@ class TestMakeTimestamp:
         e = Engine()
         r = e.sql("SELECT make_timestamp(2024, 3, 15, 10, 30, 0) AS ts")
         ts = r.rows[0]["ts"]
-        assert "2024-03-15" in ts
-        assert "10:30:00" in ts
+        assert isinstance(ts, dt.datetime)
+        assert ts == dt.datetime(2024, 3, 15, 10, 30, 0)
 
     def test_with_fractional_seconds(self):
         e = Engine()
         r = e.sql("SELECT make_timestamp(2024, 1, 1, 0, 0, 30.5) AS ts")
         ts = r.rows[0]["ts"]
-        assert "2024-01-01" in ts
-        assert "00:00:30" in ts
+        assert isinstance(ts, dt.datetime)
+        assert ts.second == 30
 
     def test_midnight(self):
         e = Engine()
         r = e.sql("SELECT make_timestamp(2024, 12, 31, 0, 0, 0) AS ts")
         ts = r.rows[0]["ts"]
-        assert "2024-12-31" in ts
-        assert "00:00:00" in ts
+        assert isinstance(ts, dt.datetime)
+        assert ts == dt.datetime(2024, 12, 31, 0, 0, 0)
 
     def test_end_of_day(self):
         e = Engine()
         r = e.sql("SELECT make_timestamp(2024, 6, 15, 23, 59, 59) AS ts")
         ts = r.rows[0]["ts"]
-        assert "2024-06-15" in ts
-        assert "23:59:59" in ts
+        assert isinstance(ts, dt.datetime)
+        assert ts == dt.datetime(2024, 6, 15, 23, 59, 59)
 
 
 # ==================================================================

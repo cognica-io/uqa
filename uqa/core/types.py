@@ -83,12 +83,40 @@ class Predicate(ABC):
     def evaluate(self, value: Any) -> bool: ...
 
 
+def _coerce_for_comparison(value: Any, target: Any) -> tuple[Any, Any]:
+    """Coerce mismatched date/datetime types for comparison.
+
+    When one side is a date/datetime object and the other is a string,
+    parse the string to match.
+    """
+    import datetime as _dt
+
+    if isinstance(value, (_dt.date, _dt.datetime)) and isinstance(target, str):
+        try:
+            if isinstance(value, _dt.datetime):
+                target = _dt.datetime.fromisoformat(target)
+            else:
+                target = _dt.date.fromisoformat(target)
+        except ValueError:
+            pass
+    elif isinstance(target, (_dt.date, _dt.datetime)) and isinstance(value, str):
+        try:
+            if isinstance(target, _dt.datetime):
+                value = _dt.datetime.fromisoformat(value)
+            else:
+                value = _dt.date.fromisoformat(value)
+        except ValueError:
+            pass
+    return value, target
+
+
 @dataclass(frozen=True, slots=True)
 class Equals(Predicate):
     target: Any
 
     def evaluate(self, value: Any) -> bool:
-        return value == self.target
+        v, t = _coerce_for_comparison(value, self.target)
+        return v == t
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +124,8 @@ class NotEquals(Predicate):
     target: Any
 
     def evaluate(self, value: Any) -> bool:
-        return value != self.target
+        v, t = _coerce_for_comparison(value, self.target)
+        return v != t
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +133,8 @@ class GreaterThan(Predicate):
     target: Any
 
     def evaluate(self, value: Any) -> bool:
-        return value > self.target
+        v, t = _coerce_for_comparison(value, self.target)
+        return v > t
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +142,8 @@ class GreaterThanOrEqual(Predicate):
     target: Any
 
     def evaluate(self, value: Any) -> bool:
-        return value >= self.target
+        v, t = _coerce_for_comparison(value, self.target)
+        return v >= t
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +151,8 @@ class LessThan(Predicate):
     target: Any
 
     def evaluate(self, value: Any) -> bool:
-        return value < self.target
+        v, t = _coerce_for_comparison(value, self.target)
+        return v < t
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,7 +160,8 @@ class LessThanOrEqual(Predicate):
     target: Any
 
     def evaluate(self, value: Any) -> bool:
-        return value <= self.target
+        v, t = _coerce_for_comparison(value, self.target)
+        return v <= t
 
 
 @dataclass(frozen=True, slots=True)

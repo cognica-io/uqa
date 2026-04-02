@@ -374,12 +374,12 @@ class TestSQLTransactions:
             result = engine.sql("SELECT x FROM t ORDER BY x")
             assert len(result) == 2
 
-    def test_begin_without_db_path_raises(self):
+    def test_begin_without_db_path_works(self):
         from uqa.engine import Engine
 
         engine = Engine()
-        with pytest.raises(ValueError, match="persistent engine"):
-            engine.sql("BEGIN")
+        engine.sql("BEGIN")
+        engine.sql("COMMIT")
 
     def test_commit_without_begin_raises(self, tmp_path):
         from uqa.engine import Engine
@@ -507,9 +507,26 @@ class TestEngineBeginAPI:
             result = engine2.sql("SELECT x FROM t")
             assert len(result) == 1
 
-    def test_in_memory_begin_raises(self):
+    def test_in_memory_begin_returns_transaction(self):
+        from uqa.engine import Engine
+        from uqa.storage.transaction import InMemoryTransaction
+
+        engine = Engine()
+        txn = engine.begin()
+        assert isinstance(txn, InMemoryTransaction)
+        assert txn.active
+        txn.commit()
+        assert not txn.active
+
+    def test_in_memory_rollback_restores_data(self):
         from uqa.engine import Engine
 
         engine = Engine()
-        with pytest.raises(ValueError, match="persistent engine"):
-            engine.begin()
+        engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)")
+        engine.sql("INSERT INTO t VALUES (1, 'original')")
+        txn = engine.begin()
+        engine.sql("INSERT INTO t VALUES (2, 'rolled_back')")
+        txn.rollback()
+        result = engine.sql("SELECT * FROM t")
+        assert len(result.rows) == 1
+        assert result.rows[0]["val"] == "original"

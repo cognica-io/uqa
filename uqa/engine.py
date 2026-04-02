@@ -23,7 +23,184 @@ from uqa.planner.parallel import ParallelExecutor
 from uqa.sql.table import _SQL_TYPE_MAP, ColumnDef, ColumnStats, Table
 from uqa.storage.catalog import Catalog
 from uqa.storage.index_manager import IndexManager
-from uqa.storage.transaction import Transaction
+from uqa.storage.transaction import InMemoryTransaction, Transaction
+
+
+class SchemaAwareTableStore:
+    """Schema-qualified table namespace with ``search_path`` resolution.
+
+    Internally stores tables in ``{schema: {table_name: Table}}``.
+    Implements the ``dict`` interface so existing code that does
+    ``_tables.get(name)``, ``_tables[name] = t``, ``name in _tables``
+    continues to work.  Unqualified names resolve via ``search_path``.
+    Qualified names (``"schema.table"``) resolve directly.
+    """
+
+    def __init__(self) -> None:
+        self._schemas: dict[str, dict[str, Any]] = {"public": {}}
+        self._search_path: list[str] = ["public"]
+
+    # -- Schema management -----------------------------------------------
+
+    def create_schema(self, name: str, if_not_exists: bool = False) -> None:
+        if name in self._schemas:
+            if if_not_exists:
+                return
+            raise ValueError(f"Schema '{name}' already exists")
+        self._schemas[name] = {}
+
+    def drop_schema(
+        self, name: str, cascade: bool = False, if_exists: bool = False
+    ) -> None:
+        if name not in self._schemas:
+            if if_exists:
+                return
+            raise ValueError(f"Schema '{name}' does not exist")
+        if name == "public":
+            raise ValueError("Cannot drop schema 'public'")
+        tables = self._schemas[name]
+        if tables and not cascade:
+            raise ValueError(f"Schema '{name}' is not empty, use CASCADE to drop")
+        del self._schemas[name]
+
+    @property
+    def search_path(self) -> list[str]:
+        return list(self._search_path)
+
+    @search_path.setter
+    def search_path(self, value: list[str]) -> None:
+        self._search_path = list(value)
+
+    @property
+    def schemas(self) -> set[str]:
+        return set(self._schemas.keys())
+
+    # -- Resolution helpers ----------------------------------------------
+
+    def _parse_qualified(self, name: str) -> tuple[str | None, str]:
+        """Split ``'schema.table'`` into ``(schema, table)``.
+
+        Returns ``(None, name)`` for unqualified names.
+        """
+        if "." in name:
+            parts = name.split(".", 1)
+            if parts[0] in self._schemas:
+                return parts[0], parts[1]
+        return None, name
+
+    def _resolve(self, name: str) -> tuple[str, str] | None:
+        """Resolve an unqualified or qualified name to (schema, table).
+
+        Returns ``None`` when no matching table is found.
+        """
+        schema, table = self._parse_qualified(name)
+        if schema is not None:
+            if table in self._schemas.get(schema, {}):
+                return schema, table
+            return None
+        for s in self._search_path:
+            tables = self._schemas.get(s)
+            if tables is not None and table in tables:
+                return s, table
+        return None
+
+    def _default_schema(self) -> str:
+        """Return the first writable schema in search_path."""
+        for s in self._search_path:
+            if s in self._schemas:
+                return s
+        return "public"
+
+    # -- Dict-compatible interface ---------------------------------------
+
+    def get(self, name: str, default: Any = None) -> Any:
+        resolved = self._resolve(name)
+        if resolved is None:
+            return default
+        s, t = resolved
+        return self._schemas[s][t]
+
+    def __getitem__(self, name: str) -> Any:
+        resolved = self._resolve(name)
+        if resolved is None:
+            raise KeyError(name)
+        s, t = resolved
+        return self._schemas[s][t]
+
+    def __setitem__(self, name: str, table: Any) -> None:
+        schema, table_name = self._parse_qualified(name)
+        if schema is None:
+            schema = self._default_schema()
+        if schema not in self._schemas:
+            self._schemas[schema] = {}
+        self._schemas[schema][table_name] = table
+
+    def __delitem__(self, name: str) -> None:
+        resolved = self._resolve(name)
+        if resolved is None:
+            raise KeyError(name)
+        s, t = resolved
+        del self._schemas[s][t]
+
+    def __contains__(self, name: object) -> bool:
+        if not isinstance(name, str):
+            return False
+        return self._resolve(name) is not None
+
+    def pop(self, name: str, *args: Any) -> Any:
+        resolved = self._resolve(name)
+        if resolved is None:
+            if args:
+                return args[0]
+            raise KeyError(name)
+        s, t = resolved
+        return self._schemas[s].pop(t)
+
+    def keys(self):
+        """Yield all table names (unqualified) across all schemas."""
+        for tables in self._schemas.values():
+            yield from tables.keys()
+
+    def values(self):
+        """Yield all Table objects across all schemas."""
+        for tables in self._schemas.values():
+            yield from tables.values()
+
+    def items(self):
+        """Yield (table_name, Table) across all schemas."""
+        for tables in self._schemas.values():
+            yield from tables.items()
+
+    def __iter__(self):
+        return self.keys()
+
+    def __len__(self) -> int:
+        return sum(len(t) for t in self._schemas.values())
+
+    def __bool__(self) -> bool:
+        return any(self._schemas.values())
+
+    # -- Schema-qualified access -----------------------------------------
+
+    def set_in_schema(self, schema: str, table_name: str, table: Any) -> None:
+        """Register a table in a specific schema."""
+        if schema not in self._schemas:
+            self._schemas[schema] = {}
+        self._schemas[schema][table_name] = table
+
+    def get_from_schema(self, schema: str, table_name: str) -> Any | None:
+        """Look up a table in a specific schema."""
+        return self._schemas.get(schema, {}).get(table_name)
+
+    def tables_in_schema(self, schema: str) -> dict[str, Any]:
+        """Return all tables in a given schema."""
+        return dict(self._schemas.get(schema, {}))
+
+    def qualified_items(self):
+        """Yield (schema, table_name, Table) for all tables."""
+        for schema, tables in self._schemas.items():
+            for name, table in tables.items():
+                yield schema, name, table
 
 
 class Engine:
@@ -42,7 +219,7 @@ class Engine:
     ):
         self._parallel_executor = ParallelExecutor(max_workers=parallel_workers)
         self.spill_threshold = spill_threshold
-        self._tables: dict[str, Any] = {}
+        self._tables: SchemaAwareTableStore = SchemaAwareTableStore()
         self._views: dict[str, Any] = {}  # name -> SelectStmt AST
         self._prepared: dict[str, Any] = {}  # name -> PrepareStmt AST
         self._sequences: dict[str, dict[str, int]] = {}
@@ -61,10 +238,16 @@ class Engine:
         # GIN index tracking: index_name -> (table_name, columns)
         self._gin_indexes: dict[str, tuple[str, tuple[str, ...]]] = {}
 
+        # In-memory BTREE index tracking: index_name -> (table_name, columns)
+        self._btree_indexes: dict[str, tuple[str, tuple[str, ...]]] = {}
+
+        # Session variables (SET/SHOW/RESET)
+        self._session_vars: dict[str, str] = {}
+
         # Persistence and transactions
         self._catalog: Catalog | None = None
         self._index_manager: IndexManager | None = None
-        self._transaction: Transaction | None = None
+        self._transaction: Transaction | InMemoryTransaction | None = None
         if db_path is not None:
             self._catalog = Catalog(db_path)
             self._index_manager = IndexManager(self._catalog.conn, self._catalog)
@@ -927,18 +1110,20 @@ class Engine:
 
     # -- Transaction interface -----------------------------------------
 
-    def begin(self) -> Transaction:
+    def begin(self) -> Transaction | InMemoryTransaction:
         """Start an explicit transaction.
 
-        Returns a :class:`Transaction` that must be committed or rolled
-        back.  While a transaction is active, all writes are deferred
-        until ``commit()``.  Can also be used as a context manager.
+        Returns a :class:`Transaction` (persistent) or
+        :class:`InMemoryTransaction` (in-memory) that must be committed
+        or rolled back.  Can also be used as a context manager.
 
-        Raises :class:`ValueError` for in-memory engines or if a
-        transaction is already active.
+        Raises :class:`ValueError` if a transaction is already active.
         """
         if self._catalog is None:
-            raise ValueError("Transactions require a persistent engine (db_path)")
+            if self._transaction is not None and self._transaction.active:
+                raise ValueError("Transaction already active")
+            self._transaction = InMemoryTransaction(self._tables)
+            return self._transaction
         if self._transaction is not None and self._transaction.active:
             raise ValueError("Transaction already active")
         self._transaction = Transaction(self._catalog.conn)

@@ -24,7 +24,8 @@ class LeftOuterJoinOperator(JoinOperator):
     """Hash join preserving all left entries.
 
     All left entries appear in the result. Unmatched left entries
-    get a single-element doc_ids tuple and empty right-side fields.
+    get right-side columns explicitly set to None, matching
+    PostgreSQL LEFT JOIN semantics.
     """
 
     def __init__(
@@ -32,12 +33,21 @@ class LeftOuterJoinOperator(JoinOperator):
         left: object,
         right: object,
         condition: JoinCondition,
+        right_columns: list[str] | None = None,
     ) -> None:
         super().__init__(left, right, condition)
+        self._right_columns = right_columns
 
     def execute(self, context: object) -> GeneralizedPostingList:
         left_entries = self._get_entries(self.left, context)
         right_entries = self._get_entries(self.right, context)
+
+        # Collect right-side field names for NULL padding on unmatched rows
+        right_field_names: set[str] = set()
+        if self._right_columns:
+            right_field_names.update(self._right_columns)
+        if right_entries:
+            right_field_names.update(right_entries[0].payload.fields.keys())
 
         # Build hash table on right side
         right_index: dict[object, list] = defaultdict(list)
@@ -69,13 +79,17 @@ class LeftOuterJoinOperator(JoinOperator):
                         )
                     )
             else:
-                # No match: preserve left entry with None right side
+                # No match: preserve left with right-side columns as None
+                fields = dict(left_entry.payload.fields)
+                for rk in right_field_names:
+                    if rk not in fields:
+                        fields[rk] = None
                 result.append(
                     GeneralizedPostingEntry(
                         doc_ids=(_entry_doc_id(left_entry),),
                         payload=Payload(
                             score=left_entry.payload.score,
-                            fields=dict(left_entry.payload.fields),
+                            fields=fields,
                         ),
                     )
                 )
@@ -102,6 +116,7 @@ class RightOuterJoinOperator(JoinOperator):
         left: object,
         right: object,
         condition: JoinCondition,
+        left_columns: list[str] | None = None,
     ) -> None:
         # Swap: run LEFT JOIN with right as left, left as right
         swapped_condition = JoinCondition(
@@ -109,7 +124,9 @@ class RightOuterJoinOperator(JoinOperator):
             right_field=condition.left_field,
         )
         super().__init__(left, right, swapped_condition)
-        self._inner = LeftOuterJoinOperator(right, left, swapped_condition)
+        self._inner = LeftOuterJoinOperator(
+            right, left, swapped_condition, right_columns=left_columns
+        )
 
     def execute(self, context: object) -> GeneralizedPostingList:
         return self._inner.execute(context)
@@ -126,12 +143,29 @@ class FullOuterJoinOperator(JoinOperator):
         left: object,
         right: object,
         condition: JoinCondition,
+        left_columns: list[str] | None = None,
+        right_columns: list[str] | None = None,
     ) -> None:
         super().__init__(left, right, condition)
+        self._left_columns = left_columns
+        self._right_columns = right_columns
 
     def execute(self, context: object) -> GeneralizedPostingList:
         left_entries = self._get_entries(self.left, context)
         right_entries = self._get_entries(self.right, context)
+
+        # Collect field names for NULL padding
+        right_field_names: set[str] = set()
+        if self._right_columns:
+            right_field_names.update(self._right_columns)
+        if right_entries:
+            right_field_names.update(right_entries[0].payload.fields.keys())
+
+        left_field_names: set[str] = set()
+        if self._left_columns:
+            left_field_names.update(self._left_columns)
+        if left_entries:
+            left_field_names.update(left_entries[0].payload.fields.keys())
 
         # Build hash table on right side
         right_index: dict[object, list] = defaultdict(list)
@@ -169,26 +203,34 @@ class FullOuterJoinOperator(JoinOperator):
                         )
                     )
             else:
-                # Unmatched left entry
+                # Unmatched left: right-side columns as None
+                fields = dict(left_entry.payload.fields)
+                for rk in right_field_names:
+                    if rk not in fields:
+                        fields[rk] = None
                 result.append(
                     GeneralizedPostingEntry(
                         doc_ids=(_entry_doc_id(left_entry),),
                         payload=Payload(
                             score=left_entry.payload.score,
-                            fields=dict(left_entry.payload.fields),
+                            fields=fields,
                         ),
                     )
                 )
 
-        # Unmatched right entries
+        # Unmatched right entries: left-side columns as None
         for right_entry in right_entries:
             if _entry_doc_id(right_entry) not in matched_right_ids:
+                fields = dict(right_entry.payload.fields)
+                for lk in left_field_names:
+                    if lk not in fields:
+                        fields[lk] = None
                 result.append(
                     GeneralizedPostingEntry(
                         doc_ids=(_entry_doc_id(right_entry),),
                         payload=Payload(
                             score=right_entry.payload.score,
-                            fields=dict(right_entry.payload.fields),
+                            fields=fields,
                         ),
                     )
                 )
