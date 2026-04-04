@@ -7766,6 +7766,8 @@ class SQLCompiler:
             field_name = self._extract_column_name(args[0])
             query = self._extract_string_value(args[1])
             return self._make_text_search_op(field_name, query, ctx, bayesian=True)
+        if name == "bayesian_match_with_prior":
+            return self._make_bayesian_with_prior_op(args, ctx)
         if name == "knn_match":
             return self._make_calibrated_knn_op(args, ctx)
         if name == "bayesian_knn_match":
@@ -7786,8 +7788,8 @@ class SQLCompiler:
             return self._make_message_passing_op(args)
         raise ValueError(
             f"Unknown signal function for fusion: {name}. "
-            f"Use text_match, bayesian_match, knn_match, "
-            f"bayesian_knn_match, traverse_match, "
+            f"Use text_match, bayesian_match, bayesian_match_with_prior, "
+            f"knn_match, bayesian_knn_match, traverse_match, "
             f"spatial_within, pagerank, hits, betweenness, or weighted_rpq."
         )
 

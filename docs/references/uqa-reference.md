@@ -573,7 +573,7 @@ Returns: PostingList with `_embedding` field containing the structural embedding
 
 ### 4.2 Fusion Meta-Functions
 
-Fusion functions combine multiple signal functions into a single relevance score. Each signal argument must be a signal function call (`text_match`, `bayesian_match`, `knn_match`, `traverse_match`, or `spatial_within`). Inside a fusion context, `text_match` is automatically promoted to Bayesian BM25 calibration so all signals produce probabilities in $(0, 1)$.
+Fusion functions combine multiple signal functions into a single relevance score. Each signal argument must be a signal function call (`text_match`, `bayesian_match`, `bayesian_match_with_prior`, `knn_match`, `bayesian_knn_match`, `traverse_match`, `spatial_within`, `pagerank`, `hits`, `betweenness`, `weighted_rpq`, or `message_passing`). Inside a fusion context, `text_match` is automatically promoted to Bayesian BM25 calibration so all signals produce probabilities in $(0, 1)$.
 
 #### `fuse_log_odds(signal1, signal2, ...[, alpha])`
 

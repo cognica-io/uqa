@@ -1,5 +1,22 @@
 # History
 
+## 0.25.1 (2026-04-04)
+
+Register `bayesian_match_with_prior` as a calibrated signal for fusion functions. Previously, `bayesian_match_with_prior` worked only as a standalone WHERE-clause function but raised `Unknown signal function for fusion` when used inside `fuse_attention`, `fuse_log_odds`, or any other fusion meta-function. All 2881 tests pass across 84 test files.
+
+### Bug Fix
+
+- **`bayesian_match_with_prior` in fusion context**: Added the function to `_compile_calibrated_signal` so it can be used as a signal argument inside all fusion meta-functions (`fuse_log_odds`, `fuse_attention`, `fuse_multihead`, `fuse_learned`, `fuse_prob_and`, `fuse_prob_or`, `fuse_prob_not`, `fuse_mean`, `staged_retrieval`, `progressive_fusion`, `sparse_threshold`). Since the function already produces calibrated Bayesian posteriors, no additional calibration wrapper is needed.
+
+### Documentation
+
+- **`uqa-reference.md`**: Updated the calibrated signal list in Section 4.2 (Fusion Meta-Functions) to include `bayesian_match_with_prior`.
+
+### Tests
+
+- **1 new test** in `test_external_prior.py`: `test_bayesian_with_prior_in_fuse_attention` verifies that `bayesian_match_with_prior` works as a signal inside `fuse_attention` and produces scores in (0, 1).
+- **Total**: 2881 tests across 84 test files.
+
 ## 0.25.0 (2026-04-02)
 
 PostgreSQL compatibility: schema namespaces, session commands, in-memory transactions with real rollback, DDL enhancements, and query result correctness fixes. All 2734 tests pass across 84 test files; 30 examples and 309 benchmarks verified.

@@ -155,6 +155,21 @@ class TestExternalPriorSQL:
         )
         assert result is not None
 
+    def test_bayesian_with_prior_in_fuse_attention(self, engine: Engine) -> None:
+        """bayesian_match_with_prior should work as a calibrated signal
+        inside fuse_attention (and other fusion functions)."""
+        result = engine.sql(
+            "SELECT content, _score FROM docs WHERE fuse_attention("
+            "  bayesian_match_with_prior("
+            "    content, 'learning', 'authority', 'authority'),"
+            "  bayesian_match(content, 'machine')"
+            ") ORDER BY _score DESC"
+        )
+        assert result is not None
+        assert len(result) > 0
+        for row in result:
+            assert 0.0 < row["_score"] < 1.0
+
     def test_bayesian_with_prior_invalid_mode(self, engine: Engine) -> None:
         with pytest.raises(ValueError, match="Unknown prior mode"):
             engine.sql(
