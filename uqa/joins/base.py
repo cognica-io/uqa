@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from uqa.cancel import CancellationToken
     from uqa.core.posting_list import GeneralizedPostingList
 
 
@@ -25,6 +26,8 @@ class JoinCondition:
 class JoinOperator(ABC):
     """Abstract base for join operators (Section 4, Paper 1)."""
 
+    cancel_token: CancellationToken | None = None
+
     def __init__(
         self,
         left: object,
@@ -34,6 +37,11 @@ class JoinOperator(ABC):
         self.left = left
         self.right = right
         self.condition = condition
+
+    def check_cancelled(self) -> None:
+        """Raise :class:`~uqa.cancel.QueryCancelled` if cancelled."""
+        if self.cancel_token is not None:
+            self.cancel_token.check()
 
     @abstractmethod
     def execute(self, context: object) -> GeneralizedPostingList: ...

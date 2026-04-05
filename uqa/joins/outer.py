@@ -57,6 +57,7 @@ class LeftOuterJoinOperator(JoinOperator):
                 right_index[key].append(entry)
 
         # Probe from left side, preserving all left entries
+        self.check_cancelled()
         result: list[GeneralizedPostingEntry] = []
         for left_entry in left_entries:
             left_key = left_entry.payload.fields.get(self.condition.left_field)
@@ -175,6 +176,7 @@ class FullOuterJoinOperator(JoinOperator):
                 right_index[key].append(entry)
 
         # LEFT JOIN pass: all left entries, matched rights tracked
+        self.check_cancelled()
         matched_right_ids: set[int] = set()
         result: list[GeneralizedPostingEntry] = []
 

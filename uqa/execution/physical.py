@@ -21,11 +21,25 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from uqa.cancel import CancellationToken
     from uqa.execution.batch import Batch
 
 
 class PhysicalOperator(ABC):
     """Abstract base for Volcano-model physical operators."""
+
+    cancel_token: CancellationToken | None = None
+
+    def check_cancelled(self) -> None:
+        """Raise :class:`~uqa.cancel.QueryCancelled` if cancelled."""
+        if self.cancel_token is not None:
+            self.cancel_token.check()
+
+    def propagate_cancel_token(self, token: CancellationToken) -> None:
+        """Set the cancel token on this operator and all children."""
+        self.cancel_token = token
+        if hasattr(self, "_child") and isinstance(self._child, PhysicalOperator):
+            self._child.propagate_cancel_token(token)
 
     @abstractmethod
     def open(self) -> None:

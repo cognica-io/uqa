@@ -1,5 +1,22 @@
 # History
 
+## 0.25.2 (2026-04-05)
+
+Thread-safe query cancellation. A new `CancellationToken` mechanism allows in-flight queries to be cancelled from any thread via `Engine.cancel()`. All 2881 tests pass across 84 test files.
+
+### Query Cancellation
+
+- **`CancellationToken`** and **`QueryCancelled`** exception (`uqa/cancel.py`): Lightweight token that can be set from any thread; operators check it in hot loops and raise `QueryCancelled` when triggered.
+- **`Engine.cancel()`** / **`Engine.cancel_token`**: Public API for cancelling the engine's current query. `cancel()` sets the token; `cancel_token` exposes it for external integrations (e.g., wire protocol servers).
+- **`PhysicalOperator` base class**: Gains `cancel_token`, `check_cancelled()`, and `propagate_cancel_token()` so every operator tree shares a single token.
+- **`JoinOperator` and `CrossJoinOperator`**: Gain `cancel_token` and `check_cancelled()` for join-loop cancellation.
+- **Operator hot-loop checks**: SeqScan, PostingListScan, Filter, ExprFilter, Sort, HashAgg, Distinct, Window, InnerJoin, CrossJoin, LeftOuterJoin, and FullOuterJoin check the cancellation token on each iteration.
+- **SQLCompiler**: Propagates the engine's cancel token to the operator tree before execution begins.
+
+### Tests
+
+- **Total**: 2881 tests across 84 test files.
+
 ## 0.25.1 (2026-04-04)
 
 Register `bayesian_match_with_prior` as a calibrated signal for fusion functions. Previously, `bayesian_match_with_prior` worked only as a standalone WHERE-clause function but raised `Unknown signal function for fusion` when used inside `fuse_attention`, `fuse_log_odds`, or any other fusion meta-function. All 2881 tests pass across 84 test files.

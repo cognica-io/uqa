@@ -65,6 +65,7 @@ class SeqScanOp(PhysicalOperator):
                 yield doc_id, data
 
     def next(self) -> Batch | None:
+        self.check_cancelled()
         if self._iterator is None:
             return None
         rows: list[dict[str, Any]] = []
@@ -111,6 +112,7 @@ class PostingListScanOp(PhysicalOperator):
         self._cached_entries = self._pl.entries
 
     def next(self) -> Batch | None:
+        self.check_cancelled()
         entries = self._cached_entries
         if self._offset >= len(entries):
             return None

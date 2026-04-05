@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from uqa.fdw.foreign_table import ForeignServer, ForeignTable
     from uqa.fdw.handler import FDWHandler
     from uqa.graph.index import PathIndex
+from uqa.cancel import CancellationToken
 from uqa.core.types import DocId, Edge, Payload, PostingEntry, Vertex
 from uqa.graph.store import GraphStore, MemoryGraphStore
 from uqa.planner.parallel import ParallelExecutor
@@ -218,6 +219,7 @@ class Engine:
         spill_threshold: int = 0,
     ):
         self._parallel_executor = ParallelExecutor(max_workers=parallel_workers)
+        self._cancel_token = CancellationToken()
         self.spill_threshold = spill_threshold
         self._tables: SchemaAwareTableStore = SchemaAwareTableStore()
         self._views: dict[str, Any] = {}  # name -> SelectStmt AST
@@ -1135,6 +1137,20 @@ class Engine:
         """Create a fluent query builder scoped to a table."""
         return QueryBuilder(self, table=table)
 
+    @property
+    def cancel_token(self) -> CancellationToken:
+        """Cancellation token for the currently running query."""
+        return self._cancel_token
+
+    def cancel(self) -> None:
+        """Cancel the currently running query.
+
+        Thread-safe: can be called from any thread while a query is
+        executing in another.  Operators check the token periodically
+        in their hot loops and raise :class:`~uqa.cancel.QueryCancelled`.
+        """
+        self._cancel_token.cancel()
+
     def sql(self, query: str, params: list[Any] | None = None) -> Any:
         """Execute a SQL query against the engine's storage.
 
@@ -1143,6 +1159,7 @@ class Engine:
         """
         from uqa.sql.compiler import SQLCompiler
 
+        self._cancel_token.reset()
         compiler = SQLCompiler(self)
         return compiler.execute(query, params=params)
 

@@ -2705,8 +2705,18 @@ class SQLCompiler:
         """Execute an operator tree via PlanExecutor with timing stats."""
         from uqa.planner.executor import PlanExecutor
 
+        self._propagate_cancel_to_tree(op)
         executor = PlanExecutor(ctx)
         return executor.execute(op)
+
+    def _propagate_cancel_to_tree(self, op: Any) -> None:
+        """Recursively set the cancel token on all operators in the tree."""
+        if hasattr(op, "cancel_token"):
+            op.cancel_token = self._engine._cancel_token
+        if hasattr(op, "left"):
+            self._propagate_cancel_to_tree(op.left)
+        if hasattr(op, "right"):
+            self._propagate_cancel_to_tree(op.right)
 
     def _explain_plan(self, op: Any, ctx: ExecutionContext) -> SQLResult:
         """Format the optimized query plan as an EXPLAIN result."""
@@ -3039,6 +3049,9 @@ class SQLCompiler:
             physical = LimitOp(
                 physical, self._extract_int_value(stmt.limitCount), offset
             )
+
+        # Propagate cancellation token to all operators in the pipeline.
+        physical.propagate_cancel_token(self._engine._cancel_token)
 
         # Execute physical plan
         physical.open()

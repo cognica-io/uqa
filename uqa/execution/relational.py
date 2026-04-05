@@ -140,6 +140,7 @@ class FilterOp(PhysicalOperator):
 
     def next(self) -> Batch | None:
         while True:
+            self.check_cancelled()
             batch = self._child.next()
             if batch is None:
                 return None
@@ -206,6 +207,7 @@ class ExprFilterOp(PhysicalOperator):
 
     def next(self) -> Batch | None:
         while True:
+            self.check_cancelled()
             batch = self._child.next()
             if batch is None:
                 return None
@@ -553,11 +555,13 @@ class SortOp(PhysicalOperator):
         if self._spill_threshold <= 0:
             all_rows: list[dict[str, Any]] = []
             while True:
+                self.check_cancelled()
                 batch = self._child.next()
                 if batch is None:
                     break
                 all_rows.extend(batch.to_rows())
             self._child.close()
+            self.check_cancelled()
             self._sort_rows(all_rows, self._sort_keys)
             self._sorted_rows = all_rows
             self._offset = 0
@@ -577,6 +581,7 @@ class SortOp(PhysicalOperator):
         run_paths: list[str] = []
 
         while True:
+            self.check_cancelled()
             batch = self._child.next()
             if batch is None:
                 break
@@ -608,6 +613,7 @@ class SortOp(PhysicalOperator):
         )
 
     def next(self) -> Batch | None:
+        self.check_cancelled()
         if self._merge_iter is not None:
             rows: list[dict[str, Any]] = []
             for row in self._merge_iter:
@@ -996,6 +1002,7 @@ class HashAggOp(PhysicalOperator):
 
     def _drain_child(self) -> Any:
         while True:
+            self.check_cancelled()
             batch = self._child.next()
             if batch is None:
                 break
@@ -1003,6 +1010,7 @@ class HashAggOp(PhysicalOperator):
         self._child.close()
 
     def next(self) -> Batch | None:
+        self.check_cancelled()
         if self._result_iter is not None:
             rows: list[dict[str, Any]] = []
             for row in self._result_iter:
@@ -1080,6 +1088,7 @@ class DistinctOp(PhysicalOperator):
         if self._spill_threshold <= 0:
             all_rows: list[dict[str, Any]] = []
             while True:
+                self.check_cancelled()
                 batch = self._child.next()
                 if batch is None:
                     break
@@ -1216,6 +1225,7 @@ class WindowOp(PhysicalOperator):
 
         all_rows: list[dict[str, Any]] = []
         while True:
+            self.check_cancelled()
             batch = self._child.next()
             if batch is None:
                 break

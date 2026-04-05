@@ -61,6 +61,7 @@ class InnerJoinOperator(JoinOperator):
                 build_index[key].append(entry)
 
         # Probe from larger side
+        self.check_cancelled()
         result: list[GeneralizedPostingEntry] = []
         for probe_entry in probe_entries:
             probe_key = probe_entry.payload.fields.get(probe_field)

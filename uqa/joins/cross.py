@@ -6,8 +6,13 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from uqa.core.posting_list import GeneralizedPostingList
 from uqa.core.types import GeneralizedPostingEntry, Payload
+
+if TYPE_CHECKING:
+    from uqa.cancel import CancellationToken
 
 
 def _entry_doc_id(entry: object) -> int:
@@ -24,9 +29,16 @@ class CrossJoinOperator:
     Bounded by Theorem 4.4.1: |result| <= |L| * |R|.
     """
 
+    cancel_token: CancellationToken | None = None
+
     def __init__(self, left: object, right: object) -> None:
         self.left = left
         self.right = right
+
+    def check_cancelled(self) -> None:
+        """Raise :class:`~uqa.cancel.QueryCancelled` if cancelled."""
+        if self.cancel_token is not None:
+            self.cancel_token.check()
 
     def execute(self, context: object) -> GeneralizedPostingList:
         left_entries = self._get_entries(self.left, context)
@@ -34,6 +46,7 @@ class CrossJoinOperator:
 
         result: list[GeneralizedPostingEntry] = []
         for left_entry in left_entries:
+            self.check_cancelled()
             for right_entry in right_entries:
                 merged_fields = {
                     **left_entry.payload.fields,
