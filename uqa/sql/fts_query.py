@@ -420,8 +420,21 @@ def _compile_phrase(
 
         return _Empty()
 
-    analyzer = idx.get_search_analyzer(field) if field else idx.analyzer
-    terms = analyzer.analyze(node.phrase)
+    if field:
+        terms = idx.get_search_analyzer(field).analyze(node.phrase)
+    else:
+        # All-field phrase: collect terms from each field's analyzer
+        field_analyzers = getattr(idx, "field_analyzers", None)
+        if field_analyzers:
+            seen: set[str] = set()
+            terms = []
+            for fn in field_analyzers:
+                for t in idx.get_search_analyzer(fn).analyze(node.phrase):
+                    if t not in seen:
+                        seen.add(t)
+                        terms.append(t)
+        else:
+            terms = idx.analyzer.analyze(node.phrase)
     if not terms:
         from uqa.core.posting_list import PostingList
         from uqa.operators.base import Operator as _Op

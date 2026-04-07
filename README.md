@@ -347,7 +347,7 @@ uqa/
   search/         Search result highlighting, snippet extraction, FTS query term extraction
   sql/            SQL compiler (pglast), expression evaluator, FTS query parser, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          2880 tests across 84 test files
+  tests/          2881 tests across 84 test files
 benchmarks/       309 pytest-benchmark tests across 15 files (posting list, storage, compiler,
                   execution, planner, scoring, graph, graph centrality, end-to-end SQL,
                   calibration, multi-field, external prior, advanced scoring, advanced graph,

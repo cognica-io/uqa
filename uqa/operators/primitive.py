@@ -103,16 +103,33 @@ class TermOperator(Operator):
         if idx is None:
             return PostingList()
 
-        # Use search-time analyzer (falls back to index-time, then default)
-        analyzer = idx.get_search_analyzer(self.field) if self.field else idx.analyzer
-        tokens = analyzer.analyze(self.term)
-        if not tokens:
-            return PostingList()
-
         if self.field is not None:
+            # Single-field search: use that field's search analyzer.
+            analyzer = idx.get_search_analyzer(self.field)
+            tokens = analyzer.analyze(self.term)
+            if not tokens:
+                return PostingList()
             lists = [idx.get_posting_list(self.field, t) for t in tokens]
         else:
-            lists = [idx.get_posting_list_any_field(t) for t in tokens]
+            # All-field search: analyze the term with each field's own
+            # search analyzer and look up per-field posting lists, then
+            # union everything.  This ensures that fields indexed with
+            # different analyzers (e.g. standard_cjk) produce the
+            # correct tokens at search time.
+            lists = []
+            field_analyzers = getattr(idx, "field_analyzers", None)
+            if field_analyzers:
+                for field_name in field_analyzers:
+                    analyzer = idx.get_search_analyzer(field_name)
+                    tokens = analyzer.analyze(self.term)
+                    for t in tokens:
+                        lists.append(idx.get_posting_list(field_name, t))
+            else:
+                tokens = idx.analyzer.analyze(self.term)
+                for t in tokens:
+                    lists.append(idx.get_posting_list_any_field(t))
+            if not lists:
+                return PostingList()
 
         # Union posting lists so synonym-expanded tokens match any variant
         result = lists[0]

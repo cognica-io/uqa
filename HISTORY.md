@@ -1,5 +1,23 @@
 # History
 
+## 0.25.4 (2026-04-07)
+
+Fix per-field analyzer resolution in all-field full-text search. When a GIN index covers multiple fields with different analyzers (e.g., `standard_cjk` on one field, `english_stem` on another), all-field search (no explicit field specified) was using only the index-level default analyzer. Fields with custom analyzers produced incorrect tokens at search time. All 2881 tests pass across 84 test files.
+
+### Bug Fix
+
+- **All-field `TermOperator` per-field analysis** (`operators/primitive.py`): When no field is specified, `TermOperator.__call__` now iterates over each field's own search analyzer via `idx.field_analyzers`, tokenizes the query with each analyzer independently, looks up per-field posting lists, and unions all results. Falls back to the index-level `idx.analyzer` when `field_analyzers` is absent.
+- **All-field FTS scoring tree per-field analysis** (`sql/compiler.py`): `_compile_fts_tree` now collects terms from each field's search analyzer (with deduplication) when no field is specified, ensuring the scoring tree uses the correct tokens per field. Falls back to `idx.analyzer` when `field_analyzers` is absent.
+- **All-field phrase query per-field analysis** (`sql/fts_query.py`): `_compile_phrase` now collects terms from each field's search analyzer (with deduplication) when no field is specified, fixing phrase queries on multi-analyzer GIN indexes.
+
+### Tests
+
+- **Total**: 2881 tests across 84 test files.
+
+## 0.25.3 (2026-04-05)
+
+Version bump for correct PyPI release. No code changes from 0.25.2.
+
 ## 0.25.2 (2026-04-05)
 
 Thread-safe query cancellation. A new `CancellationToken` mechanism allows in-flight queries to be cancelled from any thread via `Engine.cancel()`. All 2881 tests pass across 84 test files.

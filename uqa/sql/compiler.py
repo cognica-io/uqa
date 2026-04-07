@@ -7443,8 +7443,24 @@ class SQLCompiler:
         from uqa.operators.primitive import ScoreOperator, TermOperator
 
         idx = ctx.inverted_index
-        analyzer = idx.get_search_analyzer(field_name) if field_name else idx.analyzer
-        terms = analyzer.analyze(query)
+        if field_name:
+            analyzer = idx.get_search_analyzer(field_name)
+            terms = analyzer.analyze(query)
+        else:
+            # All-field search: collect terms from each field's analyzer
+            # so that per-field analyzers (e.g. standard_cjk) produce the
+            # correct tokens for scoring.
+            seen: set[str] = set()
+            terms = []
+            field_analyzers = getattr(idx, "field_analyzers", None)
+            if field_analyzers:
+                for fn in field_analyzers:
+                    for t in idx.get_search_analyzer(fn).analyze(query):
+                        if t not in seen:
+                            seen.add(t)
+                            terms.append(t)
+            else:
+                terms = idx.analyzer.analyze(query)
         if not terms:
             return TermOperator(query, field_name)
         # Pass the raw query to a single TermOperator so it analyzes
@@ -7563,8 +7579,20 @@ class SQLCompiler:
         idx = ctx.inverted_index
         scorer = ExternalPriorScorer(BayesianBM25Params(), idx.stats, prior_fn)
 
-        analyzer = idx.get_search_analyzer(field_name) if field_name else idx.analyzer
-        terms = analyzer.analyze(query)
+        if field_name:
+            terms = idx.get_search_analyzer(field_name).analyze(query)
+        else:
+            seen: set[str] = set()
+            terms = []
+            field_analyzers = getattr(idx, "field_analyzers", None)
+            if field_analyzers:
+                for fn in field_analyzers:
+                    for t in idx.get_search_analyzer(fn).analyze(query):
+                        if t not in seen:
+                            seen.add(t)
+                            terms.append(t)
+            else:
+                terms = idx.analyzer.analyze(query)
         retrieval = TermOperator(query, field_name)
 
         return _ExternalPriorSearchOperator(
