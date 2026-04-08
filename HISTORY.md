@@ -1,5 +1,18 @@
 # History
 
+## 0.25.6 (2026-04-08)
+
+Add `graph_create` / `graph_drop` aliases for `create_graph` / `drop_graph`. This provides a consistent `graph_*` naming convention across all standalone property graph SQL functions. All 2918 tests pass across 85 test files.
+
+### Graph Function Aliases
+
+- **`graph_create('name')`** (`sql/compiler.py`): Alias for `create_graph('name')`. Both forms are accepted.
+- **`graph_drop('name')`** (`sql/compiler.py`): Alias for `drop_graph('name')`. Both forms are accepted.
+
+### Tests
+
+- **Total**: 2918 tests across 85 test files.
+
 ## 0.25.5 (2026-04-08)
 
 Standalone property graph SQL functions. Six new FROM-clause functions allow creating, querying, traversing, and deleting graph nodes and edges entirely through SQL, without requiring Cypher or the Python API. Nodes are independent entities with auto-generated IDs and JSON properties, operating on named graphs. All 2918 tests pass across 85 test files.

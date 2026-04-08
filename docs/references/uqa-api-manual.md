@@ -105,7 +105,7 @@ engine.get_graph(name: str) -> GraphStore
 engine.has_graph(name: str) -> bool
 ```
 
-Manage named graphs for Cypher queries and FROM-clause graph functions. Named graphs are persisted via the SQLite catalog (`_graph_catalog` and `_graph_membership` tables). All graph functions now accept direct graph names without the `graph:` prefix (backward compatible):
+Manage named graphs for Cypher queries and FROM-clause graph functions. Named graphs are persisted via the SQLite catalog (`_graph_catalog` and `_graph_membership` tables). All graph functions now accept direct graph names without the `graph:` prefix (backward compatible). The aliases `graph_create` and `graph_drop` are also accepted for a consistent `graph_*` naming convention:
 
 ```sql
 SELECT * FROM traverse(1, 'knows', 2, 'social');

@@ -925,14 +925,16 @@ SELECT value FROM json_array_elements_text('["a", "b", "c"]');
 
 #### `create_graph(name)` / `drop_graph(name)`
 
-Named graph management functions. `create_graph` creates an isolated graph namespace with dedicated SQLite-backed storage. `drop_graph` removes a named graph and its storage.
+Named graph management functions. `create_graph` creates an isolated graph namespace with dedicated SQLite-backed storage. `drop_graph` removes a named graph and its storage. The aliases `graph_create` and `graph_drop` are also accepted for a consistent `graph_*` naming convention.
 
 ```sql
 -- Create a named graph
 SELECT * FROM create_graph('social');
+SELECT * FROM graph_create('social');   -- alias
 
 -- Drop a named graph (cascades all vertices and edges)
 SELECT * FROM drop_graph('social');
+SELECT * FROM graph_drop('social');     -- alias
 ```
 
 | Parameter | Type | Description |

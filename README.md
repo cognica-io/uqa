@@ -492,8 +492,8 @@ Used inside `deep_fusion()` to compose neural network pipelines:
 | `graph_neighbors('graph', id[, 'TYPE'][, 'dir'][, depth])` | Multi-hop BFS neighbor traversal with path tracking |
 | `graph_delete_node('graph', id)` | Delete node and incident edges from named graph |
 | `graph_delete_edge('graph', id)` | Delete edge from named graph |
-| `create_graph('name')` | Create a named graph namespace |
-| `drop_graph('name')` | Drop a named graph |
+| `create_graph('name')` / `graph_create('name')` | Create a named graph namespace |
+| `drop_graph('name')` / `graph_drop('name')` | Drop a named graph |
 | `cypher('graph', $$ query $$) AS (cols)` | Execute openCypher query on a named graph |
 | `create_analyzer('name', 'config')` | Create a custom text analyzer (JSON config) |
 | `drop_analyzer('name')` | Drop a custom text analyzer |

@@ -5653,9 +5653,9 @@ class SQLCompiler:
 
         if name == "cypher":
             return self._build_cypher_from(node, args)
-        if name == "create_graph":
+        if name in ("create_graph", "graph_create"):
             return self._build_create_graph(args)
-        if name == "drop_graph":
+        if name in ("drop_graph", "graph_drop"):
             return self._build_drop_graph(args)
         if name == "traverse":
             return self._build_traverse_from(args)

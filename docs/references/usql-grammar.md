@@ -1350,11 +1350,11 @@ cypher_call
     ;
 
 create_graph_call
-    = CREATE_GRAPH '(' graph_name ')'
+    = ( CREATE_GRAPH | GRAPH_CREATE ) '(' graph_name ')'
     ;
 
 drop_graph_call
-    = DROP_GRAPH '(' graph_name ')'
+    = ( DROP_GRAPH | GRAPH_DROP ) '(' graph_name ')'
     ;
 ```
 
