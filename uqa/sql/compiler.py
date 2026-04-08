@@ -6493,10 +6493,15 @@ class SQLCompiler:
         graph_name = self._extract_string_value(args[0])
         gs = self._engine.get_graph(graph_name)
 
-        # Detect per-vertex mode: 2nd arg is an integer
+        # Detect per-vertex mode: 2nd arg is an integer (literal, param,
+        # or correlated column reference from LATERAL context)
         per_vertex = len(args) > 1 and (
             (isinstance(args[1], A_Const) and isinstance(args[1].val, PgInteger))
             or isinstance(args[1], ParamRef)
+            or (
+                isinstance(args[1], ColumnRef)
+                and self._resolve_correlated_column_ref(args[1]) is not None
+            )
         )
 
         if per_vertex:
@@ -10059,10 +10064,34 @@ class SQLCompiler:
                 return val.boolval
         raise ValueError(f"Expected A_Const, got {type(node).__name__}: {node}")
 
+    def _resolve_correlated_column_ref(self, node: Any) -> Any | None:
+        """Resolve a ColumnRef against the correlated outer row context.
+
+        Returns the resolved value, or None if the node is not a
+        ColumnRef or there is no correlated context.
+        """
+        if not isinstance(node, ColumnRef):
+            return None
+        outer_row = getattr(self, "_correlated_outer_row", None)
+        if outer_row is None:
+            return None
+        # Try qualified (e.g. "n.node_id") then unqualified ("node_id")
+        parts = [f.sval for f in node.fields if hasattr(f, "sval")]
+        qualified = ".".join(parts)
+        if qualified in outer_row:
+            return outer_row[qualified]
+        unqualified = parts[-1] if parts else None
+        if unqualified and unqualified in outer_row:
+            return outer_row[unqualified]
+        return None
+
     def _extract_string_value(self, node: Any) -> str:
         if isinstance(node, A_Const) and isinstance(node.val, PgString):
             return node.val.sval
         if isinstance(node, ColumnRef):
+            resolved = self._resolve_correlated_column_ref(node)
+            if resolved is not None:
+                return str(resolved)
             return node.fields[-1].sval
         if isinstance(node, ParamRef):
             idx = node.number - 1
@@ -10074,6 +10103,13 @@ class SQLCompiler:
     def _extract_int_value(self, node: Any) -> int:
         if isinstance(node, A_Const) and isinstance(node.val, PgInteger):
             return node.val.ival
+        if isinstance(node, ColumnRef):
+            resolved = self._resolve_correlated_column_ref(node)
+            if resolved is not None:
+                val = resolved
+                if isinstance(val, float) and val == int(val):
+                    return int(val)
+                return int(val)
         if isinstance(node, ParamRef):
             idx = node.number - 1
             if idx < 0 or idx >= len(self._params):

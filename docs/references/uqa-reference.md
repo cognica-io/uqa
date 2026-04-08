@@ -1033,7 +1033,7 @@ SELECT * FROM graph_neighbors('social', 1, 'KNOWS');
 
 #### `graph_traverse(graph, id[, types][, direction][, depth[, strategy]])`
 
-Advanced graph traversal with multiple edge types and BFS/DFS strategy selection. The `types` parameter accepts comma-separated edge labels (e.g., `'CALLS,IMPORTS'`), an `ARRAY` literal (e.g., `ARRAY['CALLS','IMPORTS']`), or `NULL` for all types.
+Advanced graph traversal with multiple edge types and BFS/DFS strategy selection. The `types` parameter accepts comma-separated edge labels (e.g., `'CALLS,IMPORTS'`), an `ARRAY` literal (e.g., `ARRAY['CALLS','IMPORTS']`), or `NULL` for all types. The start vertex ID can be a literal, a parameter (`$1`), or a correlated column reference from a LATERAL subquery.
 
 ```sql
 -- BFS traversal following KNOWS and FOLLOWS edges
@@ -1050,6 +1050,12 @@ SELECT * FROM graph_traverse('social', 1, 'CALLS', 'outgoing', 5, 'dfs');
 
 -- All edge types (empty string), defaults to BFS
 SELECT * FROM graph_traverse('social', 1, '', 'both', 2);
+
+-- LATERAL: count reachable nodes per start vertex
+SELECT s.sid, sub.cnt
+FROM start_nodes s,
+LATERAL (SELECT COUNT(*) AS cnt
+         FROM graph_traverse('social', s.sid, '', 'outgoing', 2, 'bfs')) sub;
 ```
 
 | Column | Type | Description |
@@ -1089,7 +1095,7 @@ SELECT * FROM graph_edges('social', 'KNOWS', '{"since":2020}');
 
 #### `graph_edges(graph, vertex_id[, type | NULL][, direction])` (per-vertex mode)
 
-Query edges incident to a specific vertex. When the second argument is an integer, per-vertex mode is activated. Use `NULL` for the type argument to match all edge types.
+Query edges incident to a specific vertex. When the second argument is an integer, per-vertex mode is activated. Use `NULL` for the type argument to match all edge types. The vertex ID can be a literal, a parameter (`$1`), or a correlated column reference from a LATERAL subquery.
 
 ```sql
 -- Outgoing edges from vertex 1
@@ -1100,6 +1106,18 @@ SELECT * FROM graph_edges('social', 3, 'KNOWS', 'incoming');
 
 -- All edges touching vertex 2 (both directions)
 SELECT * FROM graph_edges('social', 2, NULL, 'both');
+
+-- LATERAL: count outgoing edges per node
+SELECT n.name, sub.cnt
+FROM nodes n,
+LATERAL (SELECT COUNT(*) AS cnt
+         FROM graph_edges('social', n.node_id, NULL, 'outgoing')) sub;
+
+-- LATERAL: list edges per node
+SELECT n.name, e.label, e.target_id
+FROM nodes n,
+LATERAL (SELECT label, target_id
+         FROM graph_edges('social', n.node_id, NULL, 'outgoing')) e;
 ```
 
 | Column | Type | Description |
@@ -1405,8 +1423,8 @@ The SQL compiler uses pglast (PostgreSQL parser) to parse SQL into an AST, then 
 - **Constraints**: PRIMARY KEY, NOT NULL, DEFAULT, UNIQUE, CHECK, FOREIGN KEY
 - **DML**: INSERT (VALUES, SELECT, ON CONFLICT DO NOTHING/UPDATE, RETURNING), UPDATE (SET, FROM join, RETURNING), DELETE (WHERE, USING join, RETURNING)
 - **DQL**: SELECT with DISTINCT, WHERE, GROUP BY, HAVING, ORDER BY (NULLS FIRST/LAST), LIMIT, OFFSET, FETCH FIRST n ROWS ONLY, standalone VALUES
-- **Joins**: INNER, LEFT, RIGHT, FULL OUTER, CROSS JOIN with equality and non-equality ON conditions, LATERAL subquery
-- **Subqueries**: IN, EXISTS, scalar, correlated, LATERAL
+- **Joins**: INNER, LEFT, RIGHT, FULL OUTER, CROSS JOIN with equality and non-equality ON conditions, LATERAL subquery (including correlated graph table functions)
+- **Subqueries**: IN, EXISTS, scalar, correlated, LATERAL (with correlated column references in graph functions)
 - **CTEs**: WITH ... AS, WITH RECURSIVE
 - **Window functions**: ROW_NUMBER, RANK, DENSE_RANK, NTILE, LAG, LEAD, NTH_VALUE, PERCENT_RANK, CUME_DIST with ROWS/RANGE BETWEEN frames, WINDOW w AS (...), FILTER (WHERE ...) on window aggregates
 - **Aggregates**: COUNT/SUM/AVG/MIN/MAX, STRING_AGG, ARRAY_AGG, BOOL_AND/EVERY, BOOL_OR, STDDEV, VARIANCE, PERCENTILE_CONT/DISC, MODE, JSON_OBJECT_AGG, CORR, COVAR_POP/SAMP, REGR_* (10 functions), FILTER (WHERE ...), ORDER BY within aggregate
@@ -1563,6 +1581,13 @@ SELECT p.title, top.cnt
 FROM papers p, LATERAL (
     SELECT COUNT(*) AS cnt FROM citations c WHERE c.paper_id = p.id
 ) top;
+
+-- LATERAL with graph table functions (correlated column reference)
+SELECT n.name, sub.edge_count
+FROM nodes n, LATERAL (
+    SELECT COUNT(*) AS edge_count
+    FROM graph_edges('social', n.node_id, NULL, 'outgoing')
+) sub;
 
 -- Subqueries
 SELECT title FROM papers

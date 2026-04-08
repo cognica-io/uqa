@@ -532,6 +532,17 @@ SELECT * FROM t1, t2;              -- implicit cross join
 SELECT *
 FROM t1
 JOIN LATERAL (SELECT * FROM t2 WHERE t2.ref = t1.id) AS sub ON TRUE;
+
+-- LATERAL with graph table functions (correlated column reference)
+SELECT n.name, sub.cnt
+FROM nodes n,
+LATERAL (SELECT COUNT(*) AS cnt
+         FROM graph_edges('social', n.node_id, NULL, 'outgoing')) sub;
+
+SELECT s.id, sub.cnt
+FROM start_nodes s,
+LATERAL (SELECT COUNT(*) AS cnt
+         FROM graph_traverse('social', s.id, '', 'outgoing', 2, 'bfs')) sub;
 ```
 
 ### Multi-Way Joins

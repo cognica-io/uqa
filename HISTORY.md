@@ -1,5 +1,22 @@
 # History
 
+## 0.25.9 (2026-04-08)
+
+Fix LATERAL correlated column references in graph table functions. `graph_edges` and `graph_traverse` now resolve outer-row column references (e.g., `n.node_id`) when used inside LATERAL subqueries, enabling per-row graph queries such as edge counts per vertex. All 2945 tests pass across 85 test files.
+
+### Bug Fix
+
+- **LATERAL correlated graph functions** (`sql/compiler.py`): When `graph_edges` or `graph_traverse` receives a correlated column reference (e.g., `n.node_id` from an outer LATERAL row) as the vertex ID argument, it now resolves the reference against `_correlated_outer_row` at execution time. Previously, `ColumnRef` AST nodes were not recognized as vertex IDs, causing `graph_edges` to fall through to graph-wide mode and treat the column name as an edge label filter --- returning zero results.
+- **`_resolve_correlated_column_ref` helper** (`sql/compiler.py`): New method resolves `ColumnRef` nodes against the correlated outer row context. Supports both qualified (`n.node_id`) and unqualified (`node_id`) references.
+- **`_extract_int_value` ColumnRef support** (`sql/compiler.py`): Now handles `ColumnRef` nodes by resolving them through `_resolve_correlated_column_ref`, enabling integer extraction from correlated references.
+- **`_extract_string_value` ColumnRef enhancement** (`sql/compiler.py`): When a correlated outer row is present, resolves `ColumnRef` to the actual runtime value instead of returning the column name as a string literal.
+- **`per_vertex` detection** (`sql/compiler.py`): The per-vertex mode check in `_build_graph_edges` now recognizes `ColumnRef` with a resolvable correlated value, in addition to `A_Const` (integer literals) and `ParamRef` (parameters).
+
+### Tests
+
+- **3 new tests** in `test_graph_standalone_sql.py`: `TestLateralGraphEdges` covers LATERAL edge count per vertex (with aggregate), LATERAL edge list per vertex (with columns), and LATERAL graph_traverse per vertex.
+- **Total**: 2945 tests across 85 test files.
+
 ## 0.25.8 (2026-04-08)
 
 Fix `graph_edges` and `graph_traverse` parameter parsing for Cognica compatibility. `graph_edges` now supports per-vertex mode with vertex ID, NULL type filter, and direction. `graph_traverse` accepts `ARRAY['CALLS','IMPORTS']` in addition to comma-separated strings. All 2942 tests pass across 85 test files.

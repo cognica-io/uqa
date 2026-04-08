@@ -1331,6 +1331,12 @@ strategy
     = 'bfs' | 'dfs'
     ;
 
+vertex_id
+    = integer_literal          (* e.g., 1, 42 *)
+    | param_ref                (* e.g., $1 *)
+    | column_ref               (* correlated reference in LATERAL context, e.g., n.node_id *)
+    ;
+
 json_properties
     = string_literal        (* JSON object string, e.g., '{"name":"Alice"}' *)
     ;

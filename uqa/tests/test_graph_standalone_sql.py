@@ -499,6 +499,76 @@ class TestGraphEdgesPerVertex:
         assert len(rows) == 0
 
 
+class TestLateralGraphEdges:
+    """LATERAL subquery with graph_edges correlated column reference."""
+
+    def test_lateral_edge_count_per_vertex(self) -> None:
+        engine = _engine_with_social_graph()
+        # Create a nodes table to drive the LATERAL join
+        engine.sql("CREATE TABLE nodes (node_id INT PRIMARY KEY, name TEXT)")
+        engine.sql("INSERT INTO nodes VALUES (1, 'Alice')")
+        engine.sql("INSERT INTO nodes VALUES (2, 'Bob')")
+        engine.sql("INSERT INTO nodes VALUES (3, 'Carol')")
+
+        rows = engine.sql(
+            "SELECT n.name, sub.cnt "
+            "FROM nodes n, "
+            "LATERAL (SELECT COUNT(*) AS cnt "
+            "FROM graph_edges('social', n.node_id, NULL, 'outgoing')) sub "
+            "ORDER BY n.name"
+        ).rows
+        # Alice(1): KNOWS->Bob, FOLLOWS->Carol = 2
+        # Bob(2): KNOWS->Carol = 1
+        # Carol(3): no outgoing = 0
+        assert len(rows) == 3
+        assert rows[0]["name"] == "Alice"
+        assert rows[0]["cnt"] == 2
+        assert rows[1]["name"] == "Bob"
+        assert rows[1]["cnt"] == 1
+        assert rows[2]["name"] == "Carol"
+        assert rows[2]["cnt"] == 0
+
+    def test_lateral_edge_list_per_vertex(self) -> None:
+        engine = _engine_with_social_graph()
+        engine.sql("CREATE TABLE nodes (node_id INT PRIMARY KEY, name TEXT)")
+        engine.sql("INSERT INTO nodes VALUES (1, 'Alice')")
+        engine.sql("INSERT INTO nodes VALUES (2, 'Bob')")
+
+        rows = engine.sql(
+            "SELECT n.name, e.label, e.target_id "
+            "FROM nodes n, "
+            "LATERAL (SELECT label, target_id "
+            "FROM graph_edges('social', n.node_id, NULL, 'outgoing')) e "
+            "ORDER BY n.name, e.label"
+        ).rows
+        # Alice: FOLLOWS->3, KNOWS->2; Bob: KNOWS->3
+        assert len(rows) == 3
+        assert rows[0] == {"name": "Alice", "label": "FOLLOWS", "target_id": 3}
+        assert rows[1] == {"name": "Alice", "label": "KNOWS", "target_id": 2}
+        assert rows[2] == {"name": "Bob", "label": "KNOWS", "target_id": 3}
+
+    def test_lateral_graph_traverse_per_vertex(self) -> None:
+        engine = _engine_with_social_graph()
+        engine.sql("CREATE TABLE start_nodes (sid INT PRIMARY KEY)")
+        engine.sql("INSERT INTO start_nodes VALUES (1)")
+        engine.sql("INSERT INTO start_nodes VALUES (2)")
+
+        rows = engine.sql(
+            "SELECT s.sid, sub.cnt "
+            "FROM start_nodes s, "
+            "LATERAL (SELECT COUNT(*) AS cnt "
+            "FROM graph_traverse('social', s.sid, '', 'outgoing', 2, 'bfs')) sub "
+            "ORDER BY s.sid"
+        ).rows
+        # From 1 (Alice): BFS depth<=2 reaches Bob(2), Carol(3) = 2
+        # From 2 (Bob): BFS depth<=2 reaches Carol(3) = 1
+        assert len(rows) == 2
+        assert rows[0]["sid"] == 1
+        assert rows[0]["cnt"] == 2
+        assert rows[1]["sid"] == 2
+        assert rows[1]["cnt"] == 1
+
+
 class TestGraphTraverseArray:
     def test_array_literal_edge_types(self) -> None:
         engine = _engine_with_social_graph()
