@@ -1,5 +1,20 @@
 # History
 
+## 0.25.8 (2026-04-08)
+
+Fix `graph_edges` and `graph_traverse` parameter parsing for Cognica compatibility. `graph_edges` now supports per-vertex mode with vertex ID, NULL type filter, and direction. `graph_traverse` accepts `ARRAY['CALLS','IMPORTS']` in addition to comma-separated strings. All 2942 tests pass across 85 test files.
+
+### Bug Fix
+
+- **`graph_edges` per-vertex mode** (`sql/compiler.py`): When the second argument is an integer, `graph_edges` switches to per-vertex mode: `graph_edges('graph', vertex_id[, 'TYPE' | NULL][, 'direction'])`. Returns only edges incident to the specified vertex, filtered by type and direction (`outgoing`/`incoming`/`both`). The graph-wide mode (string second arg) remains unchanged.
+- **`graph_traverse` ARRAY literal support** (`sql/compiler.py`): The edge types argument now accepts `ARRAY['CALLS', 'IMPORTS']` (SQL array literal), `'CALLS,IMPORTS'` (comma-separated string), or `NULL` (all types). Uses new `_extract_edge_labels()` helper.
+- **NULL argument handling** (`sql/compiler.py`): New `_extract_string_or_null()` helper returns `None` for SQL `NULL` instead of raising `ValueError`. Used by `graph_edges` and `graph_traverse` for optional type filter arguments.
+
+### Tests
+
+- **7 new tests** in `test_graph_standalone_sql.py`: Covers per-vertex edge querying (outgoing, incoming, both, with type filter, no edges), ARRAY literal edge types in `graph_traverse`, and NULL edge type handling.
+- **Total**: 2942 tests across 85 test files.
+
 ## 0.25.7 (2026-04-08)
 
 Add `graph_traverse` and `graph_edges` SQL functions. `graph_traverse` supports advanced traversal with multiple edge types and BFS/DFS strategy selection. `graph_edges` queries edges by type and property filter, enabling edge count and edge-level analytics. All 2935 tests pass across 85 test files.

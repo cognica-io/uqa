@@ -146,6 +146,10 @@ SELECT * FROM graph_edges('social', 'KNOWS');
 -- returns: id, source_id, target_id, label, properties
 SELECT COUNT(*) FROM graph_edges('social');
 
+-- Per-vertex edge query (vertex ID as 2nd arg)
+SELECT * FROM graph_edges('social', 1, NULL, 'outgoing');
+SELECT * FROM graph_edges('social', 3, 'KNOWS', 'incoming');
+
 -- Delete node (cascades to incident edges)
 SELECT * FROM graph_delete_node('social', 2);
 

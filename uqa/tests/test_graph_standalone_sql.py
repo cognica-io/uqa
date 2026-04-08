@@ -457,6 +457,67 @@ class TestGraphEdges:
             engine.sql("SELECT * FROM graph_edges('nope')")
 
 
+class TestGraphEdgesPerVertex:
+    def test_per_vertex_outgoing(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql(
+            "SELECT * FROM graph_edges('social', 1, NULL, 'outgoing')"
+        ).rows
+        # Alice (1) has outgoing: KNOWS->Bob, FOLLOWS->Carol
+        assert len(rows) == 2
+        labels = {row["label"] for row in rows}
+        assert labels == {"KNOWS", "FOLLOWS"}
+
+    def test_per_vertex_incoming(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql(
+            "SELECT * FROM graph_edges('social', 3, NULL, 'incoming')"
+        ).rows
+        # Carol (3) has incoming: KNOWS from Bob, FOLLOWS from Alice
+        assert len(rows) == 2
+
+    def test_per_vertex_with_type(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql(
+            "SELECT * FROM graph_edges('social', 1, 'KNOWS', 'outgoing')"
+        ).rows
+        assert len(rows) == 1
+        assert rows[0]["label"] == "KNOWS"
+        assert rows[0]["target_id"] == 2
+
+    def test_per_vertex_both(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql("SELECT * FROM graph_edges('social', 2, NULL, 'both')").rows
+        # Bob (2): incoming KNOWS from Alice, outgoing KNOWS to Carol
+        assert len(rows) == 2
+
+    def test_per_vertex_no_edges(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql(
+            "SELECT * FROM graph_edges('social', 3, NULL, 'outgoing')"
+        ).rows
+        assert len(rows) == 0
+
+
+class TestGraphTraverseArray:
+    def test_array_literal_edge_types(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql(
+            "SELECT * FROM graph_traverse('social', 1, ARRAY['KNOWS','FOLLOWS'], "
+            "'outgoing', 1, 'bfs')"
+        ).rows
+        ids = {row["id"] for row in rows}
+        assert ids == {2, 3}
+
+    def test_null_edge_types(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql(
+            "SELECT * FROM graph_traverse('social', 1, NULL, 'outgoing', 1)"
+        ).rows
+        ids = {row["id"] for row in rows}
+        assert ids == {2, 3}
+
+
 class TestGraphTraverse:
     def test_bfs_single_type(self) -> None:
         engine = _engine_with_social_graph()

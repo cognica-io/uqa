@@ -1033,11 +1033,17 @@ SELECT * FROM graph_neighbors('social', 1, 'KNOWS');
 
 #### `graph_traverse(graph, id[, types][, direction][, depth[, strategy]])`
 
-Advanced graph traversal with multiple edge types and BFS/DFS strategy selection. The `types` parameter accepts comma-separated edge labels (e.g., `'CALLS,IMPORTS'`).
+Advanced graph traversal with multiple edge types and BFS/DFS strategy selection. The `types` parameter accepts comma-separated edge labels (e.g., `'CALLS,IMPORTS'`), an `ARRAY` literal (e.g., `ARRAY['CALLS','IMPORTS']`), or `NULL` for all types.
 
 ```sql
 -- BFS traversal following KNOWS and FOLLOWS edges
 SELECT * FROM graph_traverse('social', 1, 'KNOWS,FOLLOWS', 'outgoing', 3, 'bfs');
+
+-- Using ARRAY literal for edge types
+SELECT * FROM graph_traverse('social', 1, ARRAY['KNOWS','FOLLOWS'], 'outgoing', 3, 'bfs');
+
+-- NULL means all edge types
+SELECT * FROM graph_traverse('social', 1, NULL, 'outgoing', 2);
 
 -- DFS traversal
 SELECT * FROM graph_traverse('social', 1, 'CALLS', 'outgoing', 5, 'dfs');
@@ -1063,9 +1069,9 @@ SELECT * FROM graph_traverse('social', 1, '', 'both', 2);
 | `depth` | integer | Maximum traversal hops (default 1) |
 | `strategy` | string | `'bfs'` (default) or `'dfs'` |
 
-#### `graph_edges(graph[, type][, filter_json])`
+#### `graph_edges(graph[, type][, filter_json])` (graph-wide mode)
 
-Query edges in a named graph as a virtual table. Optionally filter by edge label and/or JSON property predicates.
+Query all edges in a named graph as a virtual table. Optionally filter by edge label and/or JSON property predicates.
 
 ```sql
 -- All edges in a graph
@@ -1081,6 +1087,21 @@ SELECT COUNT(*) FROM graph_edges('social');
 SELECT * FROM graph_edges('social', 'KNOWS', '{"since":2020}');
 ```
 
+#### `graph_edges(graph, vertex_id[, type | NULL][, direction])` (per-vertex mode)
+
+Query edges incident to a specific vertex. When the second argument is an integer, per-vertex mode is activated. Use `NULL` for the type argument to match all edge types.
+
+```sql
+-- Outgoing edges from vertex 1
+SELECT * FROM graph_edges('social', 1, NULL, 'outgoing');
+
+-- Incoming KNOWS edges to vertex 3
+SELECT * FROM graph_edges('social', 3, 'KNOWS', 'incoming');
+
+-- All edges touching vertex 2 (both directions)
+SELECT * FROM graph_edges('social', 2, NULL, 'both');
+```
+
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | integer | Edge ID |
@@ -1088,12 +1109,6 @@ SELECT * FROM graph_edges('social', 'KNOWS', '{"since":2020}');
 | `target_id` | integer | Target vertex ID |
 | `label` | text | Edge label |
 | `properties` | text | JSON string of edge properties |
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `graph` | string | Named graph name |
-| `type` | string | Optional edge label filter |
-| `filter_json` | string | Optional JSON object for property filtering |
 
 #### `graph_delete_node(graph, id)` / `graph_delete_edge(graph, id)`
 

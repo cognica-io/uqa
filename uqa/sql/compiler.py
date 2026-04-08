@@ -6447,11 +6447,40 @@ class SQLCompiler:
         self._expanded_views.append("_graph_nodes")
         return result_table, None
 
-    def _build_graph_edges(self, args: tuple) -> tuple[Table | None, Any]:
-        """Handle ``SELECT * FROM graph_edges('graph'[, 'TYPE'][, '{"filter"}'])``.
+    def _extract_string_or_null(self, node: Any) -> str | None:
+        """Extract a string value, returning None for SQL NULL."""
+        if isinstance(node, A_Const) and node.isnull:
+            return None
+        return self._extract_string_value(node)
 
-        Returns all edges in a named graph, optionally filtered by edge label
-        and/or JSON property predicates.
+    def _extract_edge_labels(self, node: Any) -> set[str] | None:
+        """Extract edge labels from a string, ARRAY literal, or NULL.
+
+        Accepts:
+          - ``'CALLS,IMPORTS'`` (comma-separated string)
+          - ``ARRAY['CALLS', 'IMPORTS']`` (SQL array literal)
+          - ``NULL`` or empty string (returns None = all labels)
+        """
+        if isinstance(node, A_Const) and node.isnull:
+            return None
+        if isinstance(node, A_ArrayExpr):
+            labels: set[str] = set()
+            for elem in node.elements:
+                labels.add(self._extract_string_value(elem))
+            return labels if labels else None
+        raw = self._extract_string_value(node)
+        if not raw:
+            return None
+        return {t.strip() for t in raw.split(",")}
+
+    def _build_graph_edges(self, args: tuple) -> tuple[Table | None, Any]:
+        """Handle ``graph_edges`` in two modes.
+
+        **Graph-wide mode** (1-3 string args):
+            ``graph_edges('graph'[, 'TYPE'][, '{"filter"}'])``
+
+        **Per-vertex mode** (vertex ID as 2nd arg):
+            ``graph_edges('graph', vertex_id[, 'TYPE' | NULL][, 'direction'])``
 
         Columns: ``id``, ``source_id``, ``target_id``, ``label``, ``properties``.
         """
@@ -6460,32 +6489,65 @@ class SQLCompiler:
         from uqa.sql.table import ColumnDef as SQLColumnDef
 
         if not args:
-            raise ValueError("graph_edges('graph'[, 'type'][, '{\"filter\"}'])")
+            raise ValueError("graph_edges('graph'[, ...])")
         graph_name = self._extract_string_value(args[0])
-
-        edge_label: str | None = None
-        if len(args) > 1:
-            raw = self._extract_string_value(args[1])
-            if raw:
-                edge_label = raw
-
-        filter_props: dict[str, object] = {}
-        if len(args) > 2:
-            filter_str = self._extract_string_value(args[2])
-            filter_props = json_mod.loads(filter_str)
-
         gs = self._engine.get_graph(graph_name)
-        all_edges = gs.edges_in_graph(graph_name)
 
-        if edge_label is not None:
-            all_edges = [e for e in all_edges if e.label == edge_label]
+        # Detect per-vertex mode: 2nd arg is an integer
+        per_vertex = len(args) > 1 and (
+            (isinstance(args[1], A_Const) and isinstance(args[1].val, PgInteger))
+            or isinstance(args[1], ParamRef)
+        )
 
-        if filter_props:
-            all_edges = [
-                e
-                for e in all_edges
-                if all(e.properties.get(k) == val for k, val in filter_props.items())
-            ]
+        if per_vertex:
+            vertex_id = self._extract_int_value(args[1])
+            edge_label: str | None = None
+            if len(args) > 2:
+                edge_label = self._extract_string_or_null(args[2])
+
+            direction = "outgoing"
+            if len(args) > 3:
+                direction = self._extract_string_value(args[3]).lower()
+
+            all_edges = gs.edges_in_graph(graph_name)
+            filtered = []
+            for e in all_edges:
+                if edge_label is not None and e.label != edge_label:
+                    continue
+                if direction == "outgoing" and e.source_id == vertex_id:
+                    filtered.append(e)
+                elif direction == "incoming" and e.target_id == vertex_id:
+                    filtered.append(e)
+                elif direction == "both" and (
+                    e.source_id == vertex_id or e.target_id == vertex_id
+                ):
+                    filtered.append(e)
+            all_edges = filtered
+        else:
+            # Graph-wide mode
+            edge_label = None
+            if len(args) > 1:
+                edge_label = self._extract_string_or_null(args[1])
+                if edge_label == "":
+                    edge_label = None
+
+            filter_props: dict[str, object] = {}
+            if len(args) > 2:
+                filter_str = self._extract_string_or_null(args[2])
+                if filter_str:
+                    filter_props = json_mod.loads(filter_str)
+
+            all_edges = gs.edges_in_graph(graph_name)
+            if edge_label is not None:
+                all_edges = [e for e in all_edges if e.label == edge_label]
+            if filter_props:
+                all_edges = [
+                    e
+                    for e in all_edges
+                    if all(
+                        e.properties.get(k) == val for k, val in filter_props.items()
+                    )
+                ]
 
         result_table = Table(
             "_graph_edges",
@@ -6687,9 +6749,7 @@ class SQLCompiler:
 
         edge_labels: set[str] | None = None
         if len(args) > 2:
-            raw = self._extract_string_value(args[2])
-            if raw:
-                edge_labels = {t.strip() for t in raw.split(",")}
+            edge_labels = self._extract_edge_labels(args[2])
 
         direction = "outgoing"
         if len(args) > 3:

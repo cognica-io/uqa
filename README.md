@@ -491,7 +491,7 @@ Used inside `deep_fusion()` to compose neural network pipelines:
 | `graph_nodes('graph'[, 'Label'][, '{"filter"}'])` | Query graph nodes by label and property filter |
 | `graph_neighbors('graph', id[, 'TYPE'][, 'dir'][, depth])` | Multi-hop BFS neighbor traversal with path tracking |
 | `graph_traverse('graph', id[, 'types'][, 'dir'][, depth[, 'strategy']])` | Advanced traversal with multi-type and BFS/DFS |
-| `graph_edges('graph'[, 'TYPE'][, '{"filter"}'])` | Query graph edges by type and property filter |
+| `graph_edges('graph'[, 'TYPE'][, '{"filter"}'])` | Query graph edges (graph-wide or per-vertex) |
 | `graph_delete_node('graph', id)` | Delete node and incident edges from named graph |
 | `graph_delete_edge('graph', id)` | Delete edge from named graph |
 | `create_graph('name')` / `graph_create('name')` | Create a named graph namespace |

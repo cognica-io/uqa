@@ -1316,11 +1316,15 @@ graph_traverse_call
     ;
 
 graph_edges_call
-    = GRAPH_EDGES '(' graph_name [ ',' edge_type [ ',' json_filter ] ] ')'
+    = GRAPH_EDGES '(' graph_name [ ',' edge_type_or_filter ] ')'
+    | GRAPH_EDGES '(' graph_name ',' vertex_id
+                      [ ',' ( edge_type | NULL ) [ ',' direction ] ] ')'
     ;
 
 edge_types
     = string_literal        (* comma-separated edge labels, e.g., 'CALLS,IMPORTS' *)
+    | array_literal         (* ARRAY['CALLS', 'IMPORTS'] *)
+    | NULL                  (* all edge types *)
     ;
 
 strategy
