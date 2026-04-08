@@ -1,5 +1,17 @@
 # History
 
+## 0.25.10 (2026-04-08)
+
+Fix named graph vertex and edge persistence. The engine-level graph store was initialized as a pure `MemoryGraphStore` even when backed by SQLite, causing all vertex and edge data added to named graphs to be lost on process exit. Named graph metadata (`_named_graphs`) was persisted correctly, creating the illusion that graphs existed while their data was empty. All 2945 tests pass across 85 test files.
+
+### Bug Fix
+
+- **Named graph store persistence** (`engine.py`): When `db_path` is provided, `Engine._graph_store` is now initialized as `SQLiteGraphStore(conn)` instead of `MemoryGraphStore()`. This enables write-through persistence for all named graph mutations (vertices, edges, graph lifecycle). Previously, only per-table graph stores used `SQLiteGraphStore`; the engine-level store for named graphs was always in-memory, losing all vertex and edge data on process termination while the graph name in `_named_graphs` survived --- giving the appearance of an empty graph on restart.
+
+### Tests
+
+- **Total**: 2945 tests across 85 test files.
+
 ## 0.25.9 (2026-04-08)
 
 Fix LATERAL correlated column references in graph table functions. `graph_edges` and `graph_traverse` now resolve outer-row column references (e.g., `n.node_id`) when used inside LATERAL subqueries, enabling per-row graph queries such as edge counts per vertex. All 2945 tests pass across 85 test files.

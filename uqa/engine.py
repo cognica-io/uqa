@@ -24,6 +24,7 @@ from uqa.planner.parallel import ParallelExecutor
 from uqa.sql.table import _SQL_TYPE_MAP, ColumnDef, ColumnStats, Table
 from uqa.storage.catalog import Catalog
 from uqa.storage.index_manager import IndexManager
+from uqa.storage.sqlite_graph_store import SQLiteGraphStore
 from uqa.storage.transaction import InMemoryTransaction, Transaction
 
 
@@ -253,6 +254,10 @@ class Engine:
         if db_path is not None:
             self._catalog = Catalog(db_path)
             self._index_manager = IndexManager(self._catalog.conn, self._catalog)
+            # Replace the default MemoryGraphStore with a persistent
+            # SQLiteGraphStore so that named-graph vertices and edges
+            # survive process restarts (write-through to SQLite).
+            self._graph_store = SQLiteGraphStore(self._catalog.conn)
             self._load_from_catalog()
 
     # -- Catalog restore -----------------------------------------------
