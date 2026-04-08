@@ -224,6 +224,23 @@ SELECT * FROM cypher('social', $$
     ORDER BY p.name
 $$) AS (name agtype, friend agtype, age agtype);
 
+-- Standalone property graph SQL functions
+SELECT * FROM graph_create('research');
+
+SELECT * FROM graph_create_node('research', 'Paper', '{"title": "Attention Is All You Need"}');
+SELECT * FROM graph_create_node('research', 'Paper', '{"title": "BERT"}');
+SELECT * FROM graph_create_edge('research', 'CITES', 2, 1);
+
+SELECT id, label, properties FROM graph_nodes('research', 'Paper');
+SELECT * FROM graph_neighbors('research', 2, 'CITES', 'outgoing', 2);
+SELECT * FROM graph_traverse('research', 2, 'CITES', 'outgoing', 3, 'bfs');
+SELECT COUNT(*) FROM graph_edges('research');
+
+-- LATERAL correlated graph query: edge count per vertex
+SELECT n.id, n.label, e.cnt
+FROM graph_nodes('research') AS n,
+LATERAL (SELECT COUNT(*) AS cnt FROM graph_edges('research', n.id)) AS e;
+
 -- Geospatial: R*Tree spatial index with Haversine distance
 CREATE TABLE restaurants (
     id SERIAL PRIMARY KEY,
@@ -344,14 +361,15 @@ uqa/
   execution/      Volcano iterator engine: Apache Arrow columnar batches, vectorized operators, disk spilling
   planner/        Cost model, cardinality estimator, optimizer, DPccp join enumerator, parallel executor,
                   information-theoretic bounds, graph cost model
+  cancel.py       Thread-safe query cancellation (CancellationToken, QueryCancelled)
   search/         Search result highlighting, snippet extraction, FTS query term extraction
   sql/            SQL compiler (pglast), expression evaluator, FTS query parser, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          2881 tests across 84 test files
-benchmarks/       309 pytest-benchmark tests across 15 files (posting list, storage, compiler,
+  tests/          2945 tests across 85 test files
+benchmarks/       309 pytest-benchmark tests across 17 files (posting list, storage, compiler,
                   execution, planner, scoring, graph, graph centrality, end-to-end SQL,
                   calibration, multi-field, external prior, advanced scoring, advanced graph,
-                  named graphs)
+                  named graphs, BEIR calibration, hybrid fusion)
 ```
 
 ## Key Features
@@ -584,6 +602,25 @@ Independent operator branches (Union, Intersect, Fusion signals) execute concurr
 ```python
 engine = Engine(db_path="my.db", parallel_workers=4)  # default: 4
 engine = Engine(parallel_workers=0)                   # disable parallelism
+```
+
+### Query Cancellation
+
+In-flight queries can be cancelled from any thread via `Engine.cancel()`. All operator hot loops check a shared `CancellationToken` and raise `QueryCancelled` when triggered:
+
+```python
+import threading
+
+engine = Engine(db_path="large.db")
+
+# Cancel from another thread after 5 seconds
+timer = threading.Timer(5.0, engine.cancel)
+timer.start()
+
+try:
+    result = engine.sql("SELECT * FROM huge_table WHERE text_match(body, 'query')")
+except Exception:
+    print("Query cancelled")
 ```
 
 ## Requirements
