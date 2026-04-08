@@ -1,5 +1,22 @@
 # History
 
+## 0.25.7 (2026-04-08)
+
+Add `graph_traverse` and `graph_edges` SQL functions. `graph_traverse` supports advanced traversal with multiple edge types and BFS/DFS strategy selection. `graph_edges` queries edges by type and property filter, enabling edge count and edge-level analytics. All 2935 tests pass across 85 test files.
+
+### Graph Traverse
+
+- **`graph_traverse('graph', id, 'types', 'dir', depth, 'strategy')`** (`sql/compiler.py`): FROM-clause function performing advanced traversal on a named graph. Supports comma-separated edge type filters (e.g., `'CALLS,IMPORTS'`), direction (`outgoing`/`incoming`/`both`), configurable depth, and strategy selection (`bfs` or `dfs`). Returns rows with columns `id`, `label`, `properties`, `depth`, `path`. Complements `graph_neighbors` which handles single edge types only.
+
+### Graph Edges
+
+- **`graph_edges('graph'[, 'TYPE'][, '{"filter"}'])`** (`sql/compiler.py`): FROM-clause function returning all edges in a named graph as rows with columns `id`, `source_id`, `target_id`, `label`, `properties`. Optionally filters by edge label and/or JSON property predicates. Enables `SELECT COUNT(*) FROM graph_edges('g')` for edge counting.
+
+### Tests
+
+- **17 new tests** in `test_graph_standalone_sql.py`: Covers BFS and DFS strategies, multiple edge types, direction options, edge querying, edge filtering, edge counting, and property return.
+- **Total**: 2935 tests across 85 test files.
+
 ## 0.25.6 (2026-04-08)
 
 Add `graph_create` / `graph_drop` aliases for `create_graph` / `drop_graph`. This provides a consistent `graph_*` naming convention across all standalone property graph SQL functions. All 2918 tests pass across 85 test files.

@@ -1309,6 +1309,24 @@ graph_delete_edge_call
     = GRAPH_DELETE_EDGE '(' graph_name ',' edge_id ')'
     ;
 
+graph_traverse_call
+    = GRAPH_TRAVERSE '(' graph_name ',' vertex_id
+                         [ ',' edge_types [ ',' direction [ ',' max_depth
+                         [ ',' strategy ] ] ] ] ')'
+    ;
+
+graph_edges_call
+    = GRAPH_EDGES '(' graph_name [ ',' edge_type [ ',' json_filter ] ] ')'
+    ;
+
+edge_types
+    = string_literal        (* comma-separated edge labels, e.g., 'CALLS,IMPORTS' *)
+    ;
+
+strategy
+    = 'bfs' | 'dfs'
+    ;
+
 json_properties
     = string_literal        (* JSON object string, e.g., '{"name":"Alice"}' *)
     ;
@@ -1336,7 +1354,7 @@ Path expressions support bounded repetition: `'knows{2,4}'` matches paths of 2 t
 
 `GRAPH_ADD_VERTEX` and `GRAPH_ADD_EDGE` add vertices and edges to a table's per-table graph store. Properties are specified as comma-separated `key=value` pairs in a single string.
 
-`GRAPH_CREATE_NODE` and `GRAPH_CREATE_EDGE` create standalone vertices and edges in a named graph with auto-generated IDs and JSON properties. `GRAPH_NODES` queries vertices by label and JSON property filter. `GRAPH_NEIGHBORS` performs multi-hop BFS traversal with direction and depth control, returning `id`, `label`, `properties`, `depth`, and `path` columns. `GRAPH_DELETE_NODE` removes a vertex and all incident edges. `GRAPH_DELETE_EDGE` removes a single edge.
+`GRAPH_CREATE_NODE` and `GRAPH_CREATE_EDGE` create standalone vertices and edges in a named graph with auto-generated IDs and JSON properties. `GRAPH_NODES` and `GRAPH_EDGES` query vertices and edges by label and JSON property filter. `GRAPH_NEIGHBORS` performs multi-hop BFS traversal with direction and depth control, returning `id`, `label`, `properties`, `depth`, and `path` columns. `GRAPH_TRAVERSE` extends `GRAPH_NEIGHBORS` with comma-separated edge type filters and BFS/DFS strategy selection. `GRAPH_DELETE_NODE` removes a vertex and all incident edges. `GRAPH_DELETE_EDGE` removes a single edge.
 
 `GENERATE_SERIES` produces integer or timestamp series.
 
@@ -1371,6 +1389,9 @@ SELECT * FROM graph_create_node('social', 'Person', '{"name":"Alice"}');
 SELECT * FROM graph_create_edge('social', 'KNOWS', 1, 2, '{"since":2020}');
 SELECT * FROM graph_nodes('social', 'Person', '{"name":"Alice"}');
 SELECT * FROM graph_neighbors('social', 1, 'KNOWS', 'outgoing', 2);
+SELECT * FROM graph_traverse('social', 1, 'KNOWS,FOLLOWS', 'outgoing', 3, 'bfs');
+SELECT * FROM graph_edges('social', 'KNOWS');
+SELECT COUNT(*) FROM graph_edges('social');
 SELECT * FROM graph_delete_node('social', 2);
 SELECT * FROM graph_delete_edge('social', 1);
 ```

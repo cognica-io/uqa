@@ -393,6 +393,162 @@ class TestGraphDeleteEdge:
 
 
 # =====================================================================
+# graph_traverse
+# =====================================================================
+
+
+class TestGraphEdges:
+    def test_all_edges(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql("SELECT * FROM graph_edges('social')").rows
+        assert len(rows) == 3
+        labels = {row["label"] for row in rows}
+        assert labels == {"KNOWS", "FOLLOWS"}
+
+    def test_filter_by_type(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql("SELECT * FROM graph_edges('social', 'KNOWS')").rows
+        assert len(rows) == 2
+        assert all(row["label"] == "KNOWS" for row in rows)
+
+    def test_filter_by_properties(self) -> None:
+        engine = _engine_with_graph()
+        engine.sql("SELECT * FROM graph_create_node('social', 'P', '{}')")
+        engine.sql("SELECT * FROM graph_create_node('social', 'P', '{}')")
+        engine.sql(
+            "SELECT * FROM graph_create_edge('social', 'KNOWS', 1, 2, "
+            "'{\"since\":2020}')"
+        )
+        engine.sql(
+            "SELECT * FROM graph_create_edge('social', 'KNOWS', 2, 1, "
+            "'{\"since\":2021}')"
+        )
+        rows = engine.sql(
+            "SELECT * FROM graph_edges('social', 'KNOWS', '{\"since\":2020}')"
+        ).rows
+        assert len(rows) == 1
+        assert rows[0]["source_id"] == 1
+        assert rows[0]["target_id"] == 2
+
+    def test_columns(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql("SELECT * FROM graph_edges('social', 'FOLLOWS')").rows
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["source_id"] == 1
+        assert row["target_id"] == 3
+        assert row["label"] == "FOLLOWS"
+        props = json.loads(row["properties"])
+        assert isinstance(props, dict)
+
+    def test_empty_graph(self) -> None:
+        engine = _engine_with_graph()
+        rows = engine.sql("SELECT * FROM graph_edges('social')").rows
+        assert len(rows) == 0
+
+    def test_count_edges(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql("SELECT COUNT(*) AS cnt FROM graph_edges('social')").rows
+        assert rows[0]["cnt"] == 3
+
+    def test_nonexistent_graph_raises(self) -> None:
+        engine = Engine()
+        with pytest.raises(ValueError, match="does not exist"):
+            engine.sql("SELECT * FROM graph_edges('nope')")
+
+
+class TestGraphTraverse:
+    def test_bfs_single_type(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql(
+            "SELECT * FROM graph_traverse('social', 1, 'KNOWS', 'outgoing', 2, 'bfs')"
+        ).rows
+        ids = {row["id"] for row in rows}
+        assert ids == {2, 3}
+
+    def test_dfs_single_type(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql(
+            "SELECT * FROM graph_traverse('social', 1, 'KNOWS', 'outgoing', 2, 'dfs')"
+        ).rows
+        ids = {row["id"] for row in rows}
+        assert ids == {2, 3}
+
+    def test_multiple_edge_types(self) -> None:
+        engine = _engine_with_social_graph()
+        # KNOWS and FOLLOWS from Alice (1)
+        rows = engine.sql(
+            "SELECT * FROM graph_traverse('social', 1, 'KNOWS,FOLLOWS', "
+            "'outgoing', 1, 'bfs')"
+        ).rows
+        ids = {row["id"] for row in rows}
+        assert ids == {2, 3}
+
+    def test_empty_types_means_all(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql(
+            "SELECT * FROM graph_traverse('social', 1, '', 'outgoing', 1)"
+        ).rows
+        ids = {row["id"] for row in rows}
+        assert ids == {2, 3}
+
+    def test_incoming_direction(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql(
+            "SELECT * FROM graph_traverse('social', 3, 'KNOWS,FOLLOWS', "
+            "'incoming', 1, 'bfs')"
+        ).rows
+        ids = {row["id"] for row in rows}
+        assert ids == {1, 2}
+
+    def test_both_directions(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql(
+            "SELECT * FROM graph_traverse('social', 2, 'KNOWS', 'both', 1)"
+        ).rows
+        ids = {row["id"] for row in rows}
+        assert ids == {1, 3}
+
+    def test_depth_and_path(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql(
+            "SELECT * FROM graph_traverse('social', 1, 'KNOWS', 'outgoing', 2, 'bfs')"
+        ).rows
+        depth_map = {row["id"]: row["depth"] for row in rows}
+        assert depth_map[2] == 1
+        assert depth_map[3] == 2
+        for row in rows:
+            path = json.loads(row["path"])
+            assert path[0] == 1
+            assert path[-1] == row["id"]
+
+    def test_default_strategy_is_bfs(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql(
+            "SELECT * FROM graph_traverse('social', 1, 'KNOWS', 'outgoing', 2)"
+        ).rows
+        ids = {row["id"] for row in rows}
+        assert ids == {2, 3}
+
+    def test_no_results(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql(
+            "SELECT * FROM graph_traverse('social', 3, 'KNOWS', 'outgoing', 1)"
+        ).rows
+        assert len(rows) == 0
+
+    def test_properties_returned(self) -> None:
+        engine = _engine_with_social_graph()
+        rows = engine.sql(
+            "SELECT * FROM graph_traverse('social', 1, 'KNOWS', 'outgoing', 1)"
+        ).rows
+        assert len(rows) == 1
+        assert rows[0]["label"] == "Person"
+        props = json.loads(rows[0]["properties"])
+        assert props["name"] == "Bob"
+
+
+# =====================================================================
 # End-to-end workflow
 # =====================================================================
 

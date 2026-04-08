@@ -5712,6 +5712,10 @@ class SQLCompiler:
             return self._build_graph_delete_node(args)
         if name == "graph_delete_edge":
             return self._build_graph_delete_edge(args)
+        if name == "graph_traverse":
+            return self._build_graph_traverse(args)
+        if name == "graph_edges":
+            return self._build_graph_edges(args)
         if name == "build_grid_graph":
             return self._build_grid_graph(args)
         raise ValueError(f"Unknown table function: {name}")
@@ -6443,6 +6447,70 @@ class SQLCompiler:
         self._expanded_views.append("_graph_nodes")
         return result_table, None
 
+    def _build_graph_edges(self, args: tuple) -> tuple[Table | None, Any]:
+        """Handle ``SELECT * FROM graph_edges('graph'[, 'TYPE'][, '{"filter"}'])``.
+
+        Returns all edges in a named graph, optionally filtered by edge label
+        and/or JSON property predicates.
+
+        Columns: ``id``, ``source_id``, ``target_id``, ``label``, ``properties``.
+        """
+        import json as json_mod
+
+        from uqa.sql.table import ColumnDef as SQLColumnDef
+
+        if not args:
+            raise ValueError("graph_edges('graph'[, 'type'][, '{\"filter\"}'])")
+        graph_name = self._extract_string_value(args[0])
+
+        edge_label: str | None = None
+        if len(args) > 1:
+            raw = self._extract_string_value(args[1])
+            if raw:
+                edge_label = raw
+
+        filter_props: dict[str, object] = {}
+        if len(args) > 2:
+            filter_str = self._extract_string_value(args[2])
+            filter_props = json_mod.loads(filter_str)
+
+        gs = self._engine.get_graph(graph_name)
+        all_edges = gs.edges_in_graph(graph_name)
+
+        if edge_label is not None:
+            all_edges = [e for e in all_edges if e.label == edge_label]
+
+        if filter_props:
+            all_edges = [
+                e
+                for e in all_edges
+                if all(e.properties.get(k) == val for k, val in filter_props.items())
+            ]
+
+        result_table = Table(
+            "_graph_edges",
+            [
+                SQLColumnDef(name="id", type_name="integer", python_type=int),
+                SQLColumnDef(name="source_id", type_name="integer", python_type=int),
+                SQLColumnDef(name="target_id", type_name="integer", python_type=int),
+                SQLColumnDef(name="label", type_name="text", python_type=str),
+                SQLColumnDef(name="properties", type_name="text", python_type=str),
+            ],
+        )
+        for e in all_edges:
+            result_table.insert(
+                {
+                    "id": e.edge_id,
+                    "source_id": e.source_id,
+                    "target_id": e.target_id,
+                    "label": e.label,
+                    "properties": json_mod.dumps(e.properties),
+                }
+            )
+        self._engine._tables["_graph_edges"] = result_table
+        self._expanded_views.append("_graph_edges")
+        return result_table, None
+
     def _build_graph_neighbors(self, args: tuple) -> tuple[Table | None, Any]:
         """Handle ``SELECT * FROM graph_neighbors('graph', id[, 'TYPE'][, 'dir'][, depth])``.
 
@@ -6588,6 +6656,130 @@ class SQLCompiler:
         result_table.insert({"result": f"edge {eid} deleted from {graph_name}"})
         self._engine._tables["_graph_delete_edge"] = result_table
         self._expanded_views.append("_graph_delete_edge")
+        return result_table, None
+
+    def _build_graph_traverse(self, args: tuple) -> tuple[Table | None, Any]:
+        """Handle ``graph_traverse('graph', id, 'types', 'dir', depth, 'strategy')``.
+
+        Advanced graph traversal with multiple edge types and BFS/DFS strategy.
+
+        Parameters:
+          - graph: named graph
+          - id: start vertex ID
+          - types: comma-separated edge labels (empty string for all)
+          - dir: 'outgoing'|'incoming'|'both' (default 'outgoing')
+          - depth: max hops (default 1)
+          - strategy: 'bfs' (default) or 'dfs'
+
+        Columns: ``id``, ``label``, ``properties``, ``depth``, ``path``.
+        """
+        import json as json_mod
+        from collections import deque
+
+        from uqa.sql.table import ColumnDef as SQLColumnDef
+
+        if len(args) < 2:
+            raise ValueError(
+                "graph_traverse('graph', id[, 'types'][, 'dir'][, depth[, 'strategy']])"
+            )
+        graph_name = self._extract_string_value(args[0])
+        start_id = self._extract_int_value(args[1])
+
+        edge_labels: set[str] | None = None
+        if len(args) > 2:
+            raw = self._extract_string_value(args[2])
+            if raw:
+                edge_labels = {t.strip() for t in raw.split(",")}
+
+        direction = "outgoing"
+        if len(args) > 3:
+            direction = self._extract_string_value(args[3]).lower()
+
+        max_depth = 1
+        if len(args) > 4:
+            max_depth = self._extract_int_value(args[4])
+
+        strategy = "bfs"
+        if len(args) > 5:
+            strategy = self._extract_string_value(args[5]).lower()
+
+        gs = self._engine.get_graph(graph_name)
+
+        def _neighbors_multi(vid: int) -> list[int]:
+            if edge_labels is None:
+                ids: list[int] = []
+                if direction in ("outgoing", "both"):
+                    ids.extend(
+                        gs.neighbors(vid, label=None, direction="out", graph=graph_name)
+                    )
+                if direction in ("incoming", "both"):
+                    ids.extend(
+                        gs.neighbors(vid, label=None, direction="in", graph=graph_name)
+                    )
+                return ids
+            ids = []
+            for lbl in edge_labels:
+                if direction in ("outgoing", "both"):
+                    ids.extend(
+                        gs.neighbors(vid, label=lbl, direction="out", graph=graph_name)
+                    )
+                if direction in ("incoming", "both"):
+                    ids.extend(
+                        gs.neighbors(vid, label=lbl, direction="in", graph=graph_name)
+                    )
+            return ids
+
+        visited: dict[int, tuple[int, list[int]]] = {}
+
+        if strategy == "dfs":
+            stack: list[tuple[int, int, list[int]]] = [(start_id, 0, [start_id])]
+            while stack:
+                vid, depth, path = stack.pop()
+                if depth > 0 and vid not in visited:
+                    visited[vid] = (depth, path)
+                if depth >= max_depth:
+                    continue
+                for nid in _neighbors_multi(vid):
+                    if nid not in visited and nid != start_id:
+                        stack.append((nid, depth + 1, [*path, nid]))
+        else:
+            queue: deque[tuple[int, int, list[int]]] = deque()
+            queue.append((start_id, 0, [start_id]))
+            while queue:
+                vid, depth, path = queue.popleft()
+                if depth > 0 and vid not in visited:
+                    visited[vid] = (depth, path)
+                if depth >= max_depth:
+                    continue
+                for nid in _neighbors_multi(vid):
+                    if nid not in visited and nid != start_id:
+                        queue.append((nid, depth + 1, [*path, nid]))
+
+        result_table = Table(
+            "_graph_traverse",
+            [
+                SQLColumnDef(name="id", type_name="integer", python_type=int),
+                SQLColumnDef(name="label", type_name="text", python_type=str),
+                SQLColumnDef(name="properties", type_name="text", python_type=str),
+                SQLColumnDef(name="depth", type_name="integer", python_type=int),
+                SQLColumnDef(name="path", type_name="text", python_type=str),
+            ],
+        )
+        for vid, (depth, path) in sorted(
+            visited.items(), key=lambda x: (x[1][0], x[0])
+        ):
+            vertex = gs.get_vertex(vid)
+            result_table.insert(
+                {
+                    "id": vid,
+                    "label": vertex.label if vertex else "",
+                    "properties": json_mod.dumps(vertex.properties if vertex else {}),
+                    "depth": depth,
+                    "path": json_mod.dumps(path),
+                }
+            )
+        self._engine._tables["_graph_traverse"] = result_table
+        self._expanded_views.append("_graph_traverse")
         return result_table, None
 
     def _build_grid_graph(self, args: tuple) -> tuple[Table | None, Any]:

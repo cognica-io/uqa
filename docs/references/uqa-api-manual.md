@@ -137,6 +137,15 @@ SELECT * FROM graph_nodes('social', 'Person', '{"name":"Alice"}');
 SELECT * FROM graph_neighbors('social', 1, 'KNOWS', 'outgoing', 2);
 -- returns: id, label, properties, depth, path (JSON array)
 
+-- Advanced traversal with multiple edge types and BFS/DFS strategy
+SELECT * FROM graph_traverse('social', 1, 'KNOWS,FOLLOWS', 'outgoing', 3, 'bfs');
+-- returns: id, label, properties, depth, path (JSON array)
+
+-- Query edges by type (enables edge counting)
+SELECT * FROM graph_edges('social', 'KNOWS');
+-- returns: id, source_id, target_id, label, properties
+SELECT COUNT(*) FROM graph_edges('social');
+
 -- Delete node (cascades to incident edges)
 SELECT * FROM graph_delete_node('social', 2);
 

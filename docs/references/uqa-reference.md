@@ -1031,6 +1031,70 @@ SELECT * FROM graph_neighbors('social', 1, 'KNOWS');
 | `direction` | string | `'outgoing'` (default), `'incoming'`, or `'both'` |
 | `depth` | integer | Maximum traversal hops (default 1) |
 
+#### `graph_traverse(graph, id[, types][, direction][, depth[, strategy]])`
+
+Advanced graph traversal with multiple edge types and BFS/DFS strategy selection. The `types` parameter accepts comma-separated edge labels (e.g., `'CALLS,IMPORTS'`).
+
+```sql
+-- BFS traversal following KNOWS and FOLLOWS edges
+SELECT * FROM graph_traverse('social', 1, 'KNOWS,FOLLOWS', 'outgoing', 3, 'bfs');
+
+-- DFS traversal
+SELECT * FROM graph_traverse('social', 1, 'CALLS', 'outgoing', 5, 'dfs');
+
+-- All edge types (empty string), defaults to BFS
+SELECT * FROM graph_traverse('social', 1, '', 'both', 2);
+```
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | integer | Reached vertex ID |
+| `label` | text | Vertex label |
+| `properties` | text | JSON string of vertex properties |
+| `depth` | integer | Hop distance from start vertex |
+| `path` | text | JSON array of vertex IDs from start to this vertex |
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `graph` | string | Named graph name |
+| `id` | integer | Start vertex ID |
+| `types` | string | Comma-separated edge labels (empty string or omit for all) |
+| `direction` | string | `'outgoing'` (default), `'incoming'`, or `'both'` |
+| `depth` | integer | Maximum traversal hops (default 1) |
+| `strategy` | string | `'bfs'` (default) or `'dfs'` |
+
+#### `graph_edges(graph[, type][, filter_json])`
+
+Query edges in a named graph as a virtual table. Optionally filter by edge label and/or JSON property predicates.
+
+```sql
+-- All edges in a graph
+SELECT * FROM graph_edges('social');
+
+-- Filter by edge type
+SELECT * FROM graph_edges('social', 'KNOWS');
+
+-- Count edges
+SELECT COUNT(*) FROM graph_edges('social');
+
+-- Filter by type and properties
+SELECT * FROM graph_edges('social', 'KNOWS', '{"since":2020}');
+```
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | integer | Edge ID |
+| `source_id` | integer | Source vertex ID |
+| `target_id` | integer | Target vertex ID |
+| `label` | text | Edge label |
+| `properties` | text | JSON string of edge properties |
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `graph` | string | Named graph name |
+| `type` | string | Optional edge label filter |
+| `filter_json` | string | Optional JSON object for property filtering |
+
 #### `graph_delete_node(graph, id)` / `graph_delete_edge(graph, id)`
 
 Delete a vertex or edge from a named graph. Deleting a vertex also removes all its incident edges. Persistence is handled automatically by the SQLite-backed graph store.
