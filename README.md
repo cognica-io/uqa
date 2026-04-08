@@ -486,6 +486,12 @@ Used inside `deep_fusion()` to compose neural network pipelines:
 | `betweenness(['table_or_graph'])` | Betweenness centrality as table source |
 | `graph_add_vertex(id, 'label', 'table'[, 'props'])` | Add graph vertex to table's graph store |
 | `graph_add_edge(eid, src, tgt, 'label', 'table'[, 'props'])` | Add graph edge to table's graph store |
+| `graph_create_node('graph', 'Label'[, '{"props"}'])` | Create standalone node with auto-ID and JSON properties |
+| `graph_create_edge('graph', 'TYPE', src, tgt[, '{"props"}'])` | Create standalone edge with auto-ID and JSON properties |
+| `graph_nodes('graph'[, 'Label'][, '{"filter"}'])` | Query graph nodes by label and property filter |
+| `graph_neighbors('graph', id[, 'TYPE'][, 'dir'][, depth])` | Multi-hop BFS neighbor traversal with path tracking |
+| `graph_delete_node('graph', id)` | Delete node and incident edges from named graph |
+| `graph_delete_edge('graph', id)` | Delete edge from named graph |
 | `create_graph('name')` | Create a named graph namespace |
 | `drop_graph('name')` | Drop a named graph |
 | `cypher('graph', $$ query $$) AS (cols)` | Execute openCypher query on a named graph |

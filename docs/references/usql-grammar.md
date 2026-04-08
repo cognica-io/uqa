@@ -1283,6 +1283,44 @@ graph_add_edge_call
                          label ',' table_name [ ',' properties ] ')'
     ;
 
+graph_create_node_call
+    = GRAPH_CREATE_NODE '(' graph_name ',' label [ ',' json_properties ] ')'
+    ;
+
+graph_create_edge_call
+    = GRAPH_CREATE_EDGE '(' graph_name ',' edge_type ',' source_id ',' target_id
+                             [ ',' json_properties ] ')'
+    ;
+
+graph_nodes_call
+    = GRAPH_NODES '(' graph_name [ ',' label [ ',' json_filter ] ] ')'
+    ;
+
+graph_neighbors_call
+    = GRAPH_NEIGHBORS '(' graph_name ',' vertex_id
+                          [ ',' edge_type [ ',' direction [ ',' max_depth ] ] ] ')'
+    ;
+
+graph_delete_node_call
+    = GRAPH_DELETE_NODE '(' graph_name ',' vertex_id ')'
+    ;
+
+graph_delete_edge_call
+    = GRAPH_DELETE_EDGE '(' graph_name ',' edge_id ')'
+    ;
+
+json_properties
+    = string_literal        (* JSON object string, e.g., '{"name":"Alice"}' *)
+    ;
+
+json_filter
+    = string_literal        (* JSON object for property matching *)
+    ;
+
+direction
+    = 'outgoing' | 'incoming' | 'both'
+    ;
+
 graph_source
     = string_literal        (* table name or graph name (direct, no prefix required) *)
     ;
@@ -1297,6 +1335,8 @@ Path expressions support bounded repetition: `'knows{2,4}'` matches paths of 2 t
 `PROGRESSIVE_FUSION` implements cascading multi-stage WAND fusion. Signals are grouped into stages separated by integer cutoffs. Each stage narrows the candidate set via top-k pruning.
 
 `GRAPH_ADD_VERTEX` and `GRAPH_ADD_EDGE` add vertices and edges to a table's per-table graph store. Properties are specified as comma-separated `key=value` pairs in a single string.
+
+`GRAPH_CREATE_NODE` and `GRAPH_CREATE_EDGE` create standalone vertices and edges in a named graph with auto-generated IDs and JSON properties. `GRAPH_NODES` queries vertices by label and JSON property filter. `GRAPH_NEIGHBORS` performs multi-hop BFS traversal with direction and depth control, returning `id`, `label`, `properties`, `depth`, and `path` columns. `GRAPH_DELETE_NODE` removes a vertex and all incident edges. `GRAPH_DELETE_EDGE` removes a single edge.
 
 `GENERATE_SERIES` produces integer or timestamp series.
 
@@ -1325,6 +1365,14 @@ SELECT * FROM cypher('MATCH (n) RETURN n.name') AS (name agtype);
 SELECT * FROM cypher('MATCH (n) RETURN n', 'my_graph') AS (n agtype);
 SELECT * FROM create_graph('social');
 SELECT * FROM drop_graph('social');
+
+-- Standalone property graph functions
+SELECT * FROM graph_create_node('social', 'Person', '{"name":"Alice"}');
+SELECT * FROM graph_create_edge('social', 'KNOWS', 1, 2, '{"since":2020}');
+SELECT * FROM graph_nodes('social', 'Person', '{"name":"Alice"}');
+SELECT * FROM graph_neighbors('social', 1, 'KNOWS', 'outgoing', 2);
+SELECT * FROM graph_delete_node('social', 2);
+SELECT * FROM graph_delete_edge('social', 1);
 ```
 
 See the USQL Language Reference for the full openCypher clause and pattern syntax.

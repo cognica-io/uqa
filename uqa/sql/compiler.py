@@ -5700,6 +5700,18 @@ class SQLCompiler:
             return self._build_graph_add_vertex(args)
         if name == "graph_add_edge":
             return self._build_graph_add_edge(args)
+        if name == "graph_create_node":
+            return self._build_graph_create_node(args)
+        if name == "graph_create_edge":
+            return self._build_graph_create_edge(args)
+        if name == "graph_nodes":
+            return self._build_graph_nodes(args)
+        if name == "graph_neighbors":
+            return self._build_graph_neighbors(args)
+        if name == "graph_delete_node":
+            return self._build_graph_delete_node(args)
+        if name == "graph_delete_edge":
+            return self._build_graph_delete_edge(args)
         if name == "build_grid_graph":
             return self._build_grid_graph(args)
         raise ValueError(f"Unknown table function: {name}")
@@ -6290,6 +6302,292 @@ class SQLCompiler:
         )
         self._engine._tables["_graph_add_edge"] = result_table
         self._expanded_views.append("_graph_add_edge")
+        return result_table, None
+
+    # -- Standalone property graph SQL functions -------------------------
+
+    def _build_graph_create_node(self, args: tuple) -> tuple[Table | None, Any]:
+        """Handle ``SELECT * FROM graph_create_node('graph', 'Label', '{"k":"v"}')``.
+
+        Creates an independent vertex in a named graph with auto-generated ID.
+        Properties are passed as a JSON string.
+        Returns a single row with the composite ID ``graph:Label:vertex_id``.
+        """
+        import json as json_mod
+
+        from uqa.core.types import Vertex
+        from uqa.sql.table import ColumnDef as SQLColumnDef
+
+        if len(args) < 2:
+            raise ValueError(
+                "graph_create_node('graph', 'label'[, '{\"key\":\"val\"}'])"
+            )
+        graph_name = self._extract_string_value(args[0])
+        label = self._extract_string_value(args[1])
+
+        props: dict[str, object] = {}
+        if len(args) > 2:
+            props_str = self._extract_string_value(args[2])
+            props = json_mod.loads(props_str)
+
+        gs = self._engine.get_graph(graph_name)
+        vid = gs.next_vertex_id()
+        gs.add_vertex(Vertex(vid, label, props), graph=graph_name)
+
+        composite_id = f"{graph_name}:{label}:{vid}"
+        result_table = Table(
+            "_graph_create_node",
+            [SQLColumnDef(name="id", type_name="text", python_type=str)],
+        )
+        result_table.insert({"id": composite_id})
+        self._engine._tables["_graph_create_node"] = result_table
+        self._expanded_views.append("_graph_create_node")
+        return result_table, None
+
+    def _build_graph_create_edge(self, args: tuple) -> tuple[Table | None, Any]:
+        """Handle ``SELECT * FROM graph_create_edge('graph', 'TYPE', src, tgt[, '{}'])``.
+
+        Creates an edge in a named graph with auto-generated ID.
+        Returns a single row with the composite ID ``graph:TYPE:edge_id``.
+        """
+        import json as json_mod
+
+        from uqa.core.types import Edge
+        from uqa.sql.table import ColumnDef as SQLColumnDef
+
+        if len(args) < 4:
+            raise ValueError(
+                "graph_create_edge('graph', 'type', source_id, target_id"
+                '[, \'{"key":"val"}\'])'
+            )
+        graph_name = self._extract_string_value(args[0])
+        edge_type = self._extract_string_value(args[1])
+        src = self._extract_int_value(args[2])
+        tgt = self._extract_int_value(args[3])
+
+        props: dict[str, object] = {}
+        if len(args) > 4:
+            props_str = self._extract_string_value(args[4])
+            props = json_mod.loads(props_str)
+
+        gs = self._engine.get_graph(graph_name)
+        eid = gs.next_edge_id()
+        gs.add_edge(Edge(eid, src, tgt, edge_type, props), graph=graph_name)
+
+        composite_id = f"{graph_name}:{edge_type}:{eid}"
+        result_table = Table(
+            "_graph_create_edge",
+            [SQLColumnDef(name="id", type_name="text", python_type=str)],
+        )
+        result_table.insert({"id": composite_id})
+        self._engine._tables["_graph_create_edge"] = result_table
+        self._expanded_views.append("_graph_create_edge")
+        return result_table, None
+
+    def _build_graph_nodes(self, args: tuple) -> tuple[Table | None, Any]:
+        """Handle ``SELECT * FROM graph_nodes('graph'[, 'Label'][, '{"filter"}'])``.
+
+        Returns all vertices in a named graph, optionally filtered by label
+        and/or JSON property predicates.
+
+        Columns: ``id``, ``label``, ``properties``.
+        """
+        import json as json_mod
+
+        from uqa.sql.table import ColumnDef as SQLColumnDef
+
+        if not args:
+            raise ValueError("graph_nodes('graph'[, 'label'][, '{\"filter\"}'])")
+        graph_name = self._extract_string_value(args[0])
+
+        label: str | None = None
+        if len(args) > 1:
+            label = self._extract_string_value(args[1])
+
+        filter_props: dict[str, object] = {}
+        if len(args) > 2:
+            filter_str = self._extract_string_value(args[2])
+            filter_props = json_mod.loads(filter_str)
+
+        gs = self._engine.get_graph(graph_name)
+        if label:
+            vertices = gs.vertices_by_label(label, graph=graph_name)
+        else:
+            vertices = gs.vertices_in_graph(graph_name)
+
+        # Apply property filter
+        if filter_props:
+            filtered = []
+            for v in vertices:
+                if all(v.properties.get(k) == val for k, val in filter_props.items()):
+                    filtered.append(v)
+            vertices = filtered
+
+        result_table = Table(
+            "_graph_nodes",
+            [
+                SQLColumnDef(name="id", type_name="integer", python_type=int),
+                SQLColumnDef(name="label", type_name="text", python_type=str),
+                SQLColumnDef(name="properties", type_name="text", python_type=str),
+            ],
+        )
+        for v in vertices:
+            result_table.insert(
+                {
+                    "id": v.vertex_id,
+                    "label": v.label,
+                    "properties": json_mod.dumps(v.properties),
+                }
+            )
+        self._engine._tables["_graph_nodes"] = result_table
+        self._expanded_views.append("_graph_nodes")
+        return result_table, None
+
+    def _build_graph_neighbors(self, args: tuple) -> tuple[Table | None, Any]:
+        """Handle ``SELECT * FROM graph_neighbors('graph', id[, 'TYPE'][, 'dir'][, depth])``.
+
+        Multi-hop BFS neighbor traversal on a named graph.
+
+        Parameters:
+          - graph: named graph
+          - id: start vertex ID
+          - TYPE: edge label filter (optional, NULL or '' for all)
+          - dir: 'outgoing'|'incoming'|'both' (default 'outgoing')
+          - depth: max hops (default 1)
+
+        Columns: ``id``, ``label``, ``properties``, ``depth``, ``path``.
+        """
+        import json as json_mod
+        from collections import deque
+
+        from uqa.sql.table import ColumnDef as SQLColumnDef
+
+        if len(args) < 2:
+            raise ValueError(
+                "graph_neighbors('graph', id[, 'type'][, 'direction'][, depth])"
+            )
+        graph_name = self._extract_string_value(args[0])
+        start_id = self._extract_int_value(args[1])
+
+        edge_label: str | None = None
+        if len(args) > 2:
+            raw = self._extract_string_value(args[2])
+            if raw:
+                edge_label = raw
+
+        direction = "outgoing"
+        if len(args) > 3:
+            direction = self._extract_string_value(args[3]).lower()
+
+        max_depth = 1
+        if len(args) > 4:
+            max_depth = self._extract_int_value(args[4])
+
+        gs = self._engine.get_graph(graph_name)
+
+        # BFS traversal
+        visited: dict[int, tuple[int, list[int]]] = {}  # vid -> (depth, path)
+        queue: deque[tuple[int, int, list[int]]] = deque()
+        queue.append((start_id, 0, [start_id]))
+
+        while queue:
+            vid, depth, path = queue.popleft()
+            if depth > 0 and vid not in visited:
+                visited[vid] = (depth, path)
+            if depth >= max_depth:
+                continue
+
+            neighbor_ids: list[int] = []
+            if direction in ("outgoing", "both"):
+                neighbor_ids.extend(
+                    gs.neighbors(
+                        vid, label=edge_label, direction="out", graph=graph_name
+                    )
+                )
+            if direction in ("incoming", "both"):
+                neighbor_ids.extend(
+                    gs.neighbors(
+                        vid, label=edge_label, direction="in", graph=graph_name
+                    )
+                )
+
+            for nid in neighbor_ids:
+                if nid not in visited and nid != start_id:
+                    queue.append((nid, depth + 1, [*path, nid]))
+
+        result_table = Table(
+            "_graph_neighbors",
+            [
+                SQLColumnDef(name="id", type_name="integer", python_type=int),
+                SQLColumnDef(name="label", type_name="text", python_type=str),
+                SQLColumnDef(name="properties", type_name="text", python_type=str),
+                SQLColumnDef(name="depth", type_name="integer", python_type=int),
+                SQLColumnDef(name="path", type_name="text", python_type=str),
+            ],
+        )
+        for vid, (depth, path) in sorted(
+            visited.items(), key=lambda x: (x[1][0], x[0])
+        ):
+            vertex = gs.get_vertex(vid)
+            result_table.insert(
+                {
+                    "id": vid,
+                    "label": vertex.label if vertex else "",
+                    "properties": json_mod.dumps(vertex.properties if vertex else {}),
+                    "depth": depth,
+                    "path": json_mod.dumps(path),
+                }
+            )
+        self._engine._tables["_graph_neighbors"] = result_table
+        self._expanded_views.append("_graph_neighbors")
+        return result_table, None
+
+    def _build_graph_delete_node(self, args: tuple) -> tuple[Table | None, Any]:
+        """Handle ``SELECT * FROM graph_delete_node('graph', id)``.
+
+        Removes a vertex and all its incident edges from a named graph.
+        """
+        from uqa.sql.table import ColumnDef as SQLColumnDef
+
+        if len(args) < 2:
+            raise ValueError("graph_delete_node('graph', vertex_id)")
+        graph_name = self._extract_string_value(args[0])
+        vid = self._extract_int_value(args[1])
+
+        gs = self._engine.get_graph(graph_name)
+        gs.remove_vertex(vid, graph=graph_name)
+
+        result_table = Table(
+            "_graph_delete_node",
+            [SQLColumnDef(name="result", type_name="text", python_type=str)],
+        )
+        result_table.insert({"result": f"vertex {vid} deleted from {graph_name}"})
+        self._engine._tables["_graph_delete_node"] = result_table
+        self._expanded_views.append("_graph_delete_node")
+        return result_table, None
+
+    def _build_graph_delete_edge(self, args: tuple) -> tuple[Table | None, Any]:
+        """Handle ``SELECT * FROM graph_delete_edge('graph', id)``.
+
+        Removes an edge from a named graph.
+        """
+        from uqa.sql.table import ColumnDef as SQLColumnDef
+
+        if len(args) < 2:
+            raise ValueError("graph_delete_edge('graph', edge_id)")
+        graph_name = self._extract_string_value(args[0])
+        eid = self._extract_int_value(args[1])
+
+        gs = self._engine.get_graph(graph_name)
+        gs.remove_edge(eid, graph=graph_name)
+
+        result_table = Table(
+            "_graph_delete_edge",
+            [SQLColumnDef(name="result", type_name="text", python_type=str)],
+        )
+        result_table.insert({"result": f"edge {eid} deleted from {graph_name}"})
+        self._engine._tables["_graph_delete_edge"] = result_table
+        self._expanded_views.append("_graph_delete_edge")
         return result_table, None
 
     def _build_grid_graph(self, args: tuple) -> tuple[Table | None, Any]:

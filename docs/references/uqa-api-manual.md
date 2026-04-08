@@ -116,6 +116,34 @@ SELECT * FROM hits(20, 'social');
 SELECT * FROM betweenness('social');
 ```
 
+### Standalone Graph SQL Functions
+
+Six FROM-clause functions allow creating, querying, traversing, and deleting graph nodes and edges entirely through SQL. Nodes are independent entities with auto-generated IDs and JSON properties, operating on named graphs:
+
+```sql
+-- Create nodes with JSON properties (auto-generated IDs)
+SELECT * FROM graph_create_node('social', 'Person', '{"name":"Alice","age":30}');
+-- returns: id = 'social:Person:1'
+
+-- Create edges between nodes
+SELECT * FROM graph_create_edge('social', 'KNOWS', 1, 2, '{"since":2020}');
+-- returns: id = 'social:KNOWS:1'
+
+-- Query nodes by label and/or property filter
+SELECT * FROM graph_nodes('social', 'Person', '{"name":"Alice"}');
+-- returns: id, label, properties (JSON)
+
+-- Multi-hop BFS neighbor traversal
+SELECT * FROM graph_neighbors('social', 1, 'KNOWS', 'outgoing', 2);
+-- returns: id, label, properties, depth, path (JSON array)
+
+-- Delete node (cascades to incident edges)
+SELECT * FROM graph_delete_node('social', 2);
+
+-- Delete edge
+SELECT * FROM graph_delete_edge('social', 1);
+```
+
 ### Analyzer Management
 
 ```python

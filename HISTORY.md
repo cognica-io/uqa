@@ -1,5 +1,23 @@
 # History
 
+## 0.25.5 (2026-04-08)
+
+Standalone property graph SQL functions. Six new FROM-clause functions allow creating, querying, traversing, and deleting graph nodes and edges entirely through SQL, without requiring Cypher or the Python API. Nodes are independent entities with auto-generated IDs and JSON properties, operating on named graphs. All 2918 tests pass across 85 test files.
+
+### Standalone Graph SQL Functions
+
+- **`graph_create_node('graph', 'Label', '{"props"}')`** (`sql/compiler.py`): Creates an independent vertex in a named graph with auto-generated ID via `GraphStore.next_vertex_id()`. Properties are passed as a JSON string. Returns a composite ID in the format `graph:Label:vertex_id`. The vertex is not bound to any SQL table.
+- **`graph_create_edge('graph', 'TYPE', src, tgt, '{"props"}')`** (`sql/compiler.py`): Creates a directed edge in a named graph with auto-generated ID via `GraphStore.next_edge_id()`. Properties are passed as a JSON string. Returns a composite ID in the format `graph:TYPE:edge_id`.
+- **`graph_nodes('graph'[, 'Label'][, '{"filter"}'])`** (`sql/compiler.py`): FROM-clause function returning all vertices in a named graph as rows with columns `id`, `label`, `properties`. Optionally filters by vertex label and/or JSON property predicates (exact match on each key-value pair).
+- **`graph_neighbors('graph', id[, 'TYPE'][, 'dir'][, depth])`** (`sql/compiler.py`): FROM-clause function performing multi-hop BFS traversal on a named graph. Returns rows with columns `id`, `label`, `properties`, `depth`, `path`. Supports edge label filtering, direction (`outgoing`/`incoming`/`both`), and configurable depth. Path is a JSON array of vertex IDs from start to destination.
+- **`graph_delete_node('graph', id)`** (`sql/compiler.py`): Removes a vertex and all its incident edges from a named graph via `GraphStore.remove_vertex()`. Persistence is handled automatically by the SQLite-backed graph store.
+- **`graph_delete_edge('graph', id)`** (`sql/compiler.py`): Removes an edge from a named graph via `GraphStore.remove_edge()`. Persistence is handled automatically by the SQLite-backed graph store.
+
+### Tests
+
+- **37 new tests** in `test_graph_standalone_sql.py`: Covers all 6 functions including auto-ID generation, JSON property round-tripping, label and property filtering, multi-hop BFS with depth and path tracking, direction options, deletion cascading, multi-graph isolation, and full lifecycle end-to-end workflow.
+- **Total**: 2918 tests across 85 test files.
+
 ## 0.25.4 (2026-04-07)
 
 Fix per-field analyzer resolution in all-field full-text search. When a GIN index covers multiple fields with different analyzers (e.g., `standard_cjk` on one field, `english_stem` on another), all-field search (no explicit field specified) was using only the index-level default analyzer. Fields with custom analyzers produced incorrect tokens at search time. All 2881 tests pass across 84 test files.

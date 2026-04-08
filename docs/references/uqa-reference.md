@@ -939,6 +939,113 @@ SELECT * FROM drop_graph('social');
 |-----------|------|-------------|
 | `name` | string | Graph namespace name |
 
+#### `graph_create_node(graph, label[, properties_json])` / `graph_create_edge(graph, type, src, tgt[, properties_json])`
+
+Standalone property graph node and edge creation. Creates independent vertices and edges in a named graph with auto-generated IDs. Properties are passed as a JSON string. Returns a composite ID in the format `graph:Label:id`.
+
+```sql
+-- Create standalone nodes with JSON properties
+SELECT * FROM graph_create_node('social', 'Person', '{"name":"Alice","age":30}');
+-- returns: id = 'social:Person:1'
+
+SELECT * FROM graph_create_node('social', 'Person', '{"name":"Bob","age":25}');
+-- returns: id = 'social:Person:2'
+
+-- Create edges between nodes
+SELECT * FROM graph_create_edge('social', 'KNOWS', 1, 2, '{"since":2020}');
+-- returns: id = 'social:KNOWS:1'
+
+-- Properties are optional
+SELECT * FROM graph_create_node('social', 'Tag');
+SELECT * FROM graph_create_edge('social', 'TAGGED', 1, 3);
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `graph` | string | Named graph (must be created with `create_graph`) |
+| `label` / `type` | string | Vertex label or edge type |
+| `src` | integer | Source vertex ID (edges only) |
+| `tgt` | integer | Target vertex ID (edges only) |
+| `properties_json` | string | Optional JSON object with properties |
+
+#### `graph_nodes(graph[, label][, filter_json])`
+
+Query vertices in a named graph as a virtual table. Optionally filter by label and/or JSON property predicates (exact match on each key-value pair).
+
+```sql
+-- All nodes in a graph
+SELECT * FROM graph_nodes('social');
+
+-- Filter by label
+SELECT * FROM graph_nodes('social', 'Person');
+
+-- Filter by label and properties
+SELECT * FROM graph_nodes('social', 'Person', '{"name":"Alice"}');
+```
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | integer | Vertex ID |
+| `label` | text | Vertex label |
+| `properties` | text | JSON string of vertex properties |
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `graph` | string | Named graph name |
+| `label` | string | Optional vertex label filter |
+| `filter_json` | string | Optional JSON object for property filtering |
+
+#### `graph_neighbors(graph, id[, type][, direction][, depth])`
+
+Multi-hop BFS neighbor traversal on a named graph. Returns reachable vertices with depth and path information.
+
+```sql
+-- 1-hop outgoing neighbors via KNOWS edges
+SELECT * FROM graph_neighbors('social', 1, 'KNOWS', 'outgoing', 1);
+
+-- 3-hop traversal in both directions
+SELECT * FROM graph_neighbors('social', 1, 'KNOWS', 'both', 3);
+
+-- All edge types, incoming, 2 hops
+SELECT * FROM graph_neighbors('social', 3, '', 'incoming', 2);
+
+-- Defaults: outgoing direction, depth 1
+SELECT * FROM graph_neighbors('social', 1, 'KNOWS');
+```
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | integer | Neighbor vertex ID |
+| `label` | text | Vertex label |
+| `properties` | text | JSON string of vertex properties |
+| `depth` | integer | Hop distance from start vertex |
+| `path` | text | JSON array of vertex IDs from start to this vertex |
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `graph` | string | Named graph name |
+| `id` | integer | Start vertex ID |
+| `type` | string | Edge label filter (empty string or omit for all) |
+| `direction` | string | `'outgoing'` (default), `'incoming'`, or `'both'` |
+| `depth` | integer | Maximum traversal hops (default 1) |
+
+#### `graph_delete_node(graph, id)` / `graph_delete_edge(graph, id)`
+
+Delete a vertex or edge from a named graph. Deleting a vertex also removes all its incident edges. Persistence is handled automatically by the SQLite-backed graph store.
+
+```sql
+-- Delete a node (cascades to incident edges)
+SELECT * FROM graph_delete_node('social', 2);
+
+-- Delete a specific edge
+SELECT * FROM graph_delete_edge('social', 1);
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `graph` | string | Named graph name |
+| `id` | integer | Vertex ID or edge ID to delete |
+
 #### `cypher(graph_name, query) AS (columns)`
 
 Apache AGE compatible openCypher query execution. Embeds a Cypher query in the SQL FROM clause, executing it against a named graph and returning results as a virtual table. Column names and types are specified in the `AS` clause.
