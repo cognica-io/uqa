@@ -9,8 +9,8 @@ authors:
     affiliation: "Cognica, Inc."
 repository-code: "https://github.com/cognica-io/uqa"
 license: AGPL-3.0-only
-version: 0.25.10
-date-released: "2026-04-08"
+version: 0.25.11
+date-released: "2026-04-09"
 abstract: >-
   A multi-paradigm database engine that unifies relational, text retrieval,
   vector search, graph query, and geospatial paradigms under a single
@@ -114,3 +114,6 @@ keywords:
   - graph-neighbor-traversal
   - lateral-correlated-graph-query
   - named-graph-persistence
+  - drop-table-cascade-cleanup
+  - create-index-if-not-exists
+  - drop-schema-cascade

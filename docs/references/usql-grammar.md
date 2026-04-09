@@ -147,14 +147,14 @@ drop_view_stmt
 
 ```ebnf
 create_index_stmt
-    = CREATE [ UNIQUE ] INDEX [ index_name ] ON table_name
+    = CREATE [ UNIQUE ] INDEX [ IF NOT EXISTS ] [ index_name ] ON table_name
       [ USING index_method ]
       '(' index_column { ',' index_column } ')'
       [ WITH '(' index_parameter { ',' index_parameter } ')' ]
     ;
 
 index_method
-    = 'btree' | 'hnsw' | 'rtree'
+    = 'btree' | 'gin' | 'hnsw' | 'ivf' | 'rtree'
     ;
 
 index_column
@@ -170,11 +170,29 @@ drop_index_stmt
     ;
 ```
 
-When `index_method` is `hnsw`, the column must be of type `VECTOR(n)`. Supported `index_parameter` names: `ef_construction` (default 200), `m` (default 16).
+When `index_method` is `gin`, the columns must be of type `TEXT`. Supported `index_parameter` names: `analyzer` (e.g., `'english_stem'`).
+
+When `index_method` is `hnsw` or `ivf`, the column must be of type `VECTOR(n)`. Supported `index_parameter` names: `ef_construction` (default 200), `m` (default 16), `nlist`, `nprobe`.
 
 When `index_method` is `rtree`, the column must be of type `POINT`. Creates an SQLite R*Tree virtual table for O(log N) spatial range queries. No additional parameters are supported.
 
-### 2.8 Sequences
+`DROP TABLE` cascades to all associated indexes and removes stale foreign key validators from parent tables.
+
+### 2.8 Schemas
+
+```ebnf
+create_schema_stmt
+    = CREATE SCHEMA [ IF NOT EXISTS ] schema_name
+    ;
+
+drop_schema_stmt
+    = DROP SCHEMA [ IF EXISTS ] schema_name [ CASCADE ]
+    ;
+```
+
+`DROP SCHEMA CASCADE` drops all tables in the schema, cascading to their indexes, foreign key validators, and catalog entries. Without `CASCADE`, the schema must be empty.
+
+### 2.9 Sequences
 
 ```ebnf
 create_sequence_stmt
@@ -198,7 +216,7 @@ drop_sequence_stmt
     ;
 ```
 
-### 2.9 Foreign Data Wrappers
+### 2.10 Foreign Data Wrappers
 
 ```ebnf
 create_foreign_server_stmt

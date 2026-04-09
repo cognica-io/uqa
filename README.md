@@ -365,7 +365,7 @@ uqa/
   search/         Search result highlighting, snippet extraction, FTS query term extraction
   sql/            SQL compiler (pglast), expression evaluator, FTS query parser, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          2945 tests across 85 test files
+  tests/          2959 tests across 85 test files
 benchmarks/       309 pytest-benchmark tests across 17 files (posting list, storage, compiler,
                   execution, planner, scoring, graph, graph centrality, end-to-end SQL,
                   calibration, multi-field, external prior, advanced scoring, advanced graph,
@@ -378,7 +378,7 @@ benchmarks/       309 pytest-benchmark tests across 17 files (posting list, stor
 
 | Category | Syntax |
 |----------|--------|
-| DDL | `CREATE TABLE [IF NOT EXISTS]`, `CREATE TEMPORARY TABLE`, `DROP TABLE [IF EXISTS]`, `CREATE TABLE AS SELECT`, `ALTER TABLE` (ADD/DROP/RENAME COLUMN, SET/DROP DEFAULT, SET/DROP NOT NULL, ALTER TYPE USING, ADD CONSTRAINT), `TRUNCATE TABLE`, `CREATE INDEX`, `DROP INDEX`, `CREATE SEQUENCE`/`NEXTVAL`/`CURRVAL`/`SETVAL`, `ALTER SEQUENCE`, `CREATE SCHEMA`/`DROP SCHEMA [CASCADE]`, `TABLE name` |
+| DDL | `CREATE TABLE [IF NOT EXISTS]`, `CREATE TEMPORARY TABLE`, `DROP TABLE [IF EXISTS]`, `CREATE TABLE AS SELECT`, `ALTER TABLE` (ADD/DROP/RENAME COLUMN, SET/DROP DEFAULT, SET/DROP NOT NULL, ALTER TYPE USING, ADD CONSTRAINT), `TRUNCATE TABLE`, `CREATE INDEX [IF NOT EXISTS]`, `DROP INDEX [IF EXISTS]`, `CREATE SEQUENCE`/`NEXTVAL`/`CURRVAL`/`SETVAL`, `ALTER SEQUENCE`, `CREATE SCHEMA`/`DROP SCHEMA [CASCADE]`, `TABLE name` |
 | FDW | `CREATE SERVER ... FOREIGN DATA WRAPPER`, `CREATE FOREIGN TABLE ... SERVER ... OPTIONS (...)`, `DROP SERVER`, `DROP FOREIGN TABLE`, Hive partitioning (`hive_partitioning` option), predicate pushdown (`=`, `!=`, `<`, `>`, `IN`, `LIKE`, `ILIKE`, `BETWEEN`), full query pushdown (JOINs, aggregates, window functions, subqueries), mixed foreign-local query optimization (local table shipping), DuckDB FDW (Parquet/CSV/JSON), Arrow Flight SQL FDW |
 | Constraints | `PRIMARY KEY`, `NOT NULL`, `DEFAULT` (literals and SQL functions like `CURRENT_TIMESTAMP`), `UNIQUE`, `CHECK`, `FOREIGN KEY` (with insert/update/delete validation) |
 | DML | `INSERT INTO ... VALUES`, `INSERT INTO ... SELECT`, `INSERT ... ON CONFLICT DO NOTHING/UPDATE`, `INSERT ... RETURNING`, `UPDATE ... SET ... WHERE [RETURNING]`, `UPDATE ... FROM` (join), `DELETE FROM ... WHERE [RETURNING]`, `DELETE ... USING` (join) |

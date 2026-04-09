@@ -122,6 +122,8 @@ ALTER TABLE name ALTER COLUMN col_name DROP NOT NULL;
 DROP TABLE [IF EXISTS] table_name [, ...];
 ```
 
+`DROP TABLE` cascades to all associated indexes (BTree, GIN, IVF, RTREE) and removes stale foreign key validators from parent tables.
+
 ### TRUNCATE
 
 ```sql
@@ -132,15 +134,20 @@ TRUNCATE [TABLE] table_name [RESTART IDENTITY];
 
 ```sql
 -- B-tree index (default)
-CREATE [UNIQUE] INDEX index_name ON table_name (col1 [ASC|DESC], ...);
+CREATE [UNIQUE] INDEX [IF NOT EXISTS] index_name ON table_name (col1 [ASC|DESC], ...);
+
+-- GIN full-text search index
+CREATE INDEX [IF NOT EXISTS] index_name ON table_name USING gin (text_col, ...);
+CREATE INDEX [IF NOT EXISTS] index_name ON table_name USING gin (text_col)
+    WITH (analyzer = 'english_stem');
 
 -- HNSW vector index
-CREATE INDEX index_name ON table_name USING hnsw (vector_col);
-CREATE INDEX index_name ON table_name USING hnsw (vector_col)
+CREATE INDEX [IF NOT EXISTS] index_name ON table_name USING hnsw (vector_col);
+CREATE INDEX [IF NOT EXISTS] index_name ON table_name USING hnsw (vector_col)
     WITH (ef_construction = 200, m = 16);
 
 -- R*Tree spatial index
-CREATE INDEX index_name ON table_name USING rtree (point_col);
+CREATE INDEX [IF NOT EXISTS] index_name ON table_name USING rtree (point_col);
 
 DROP INDEX [IF EXISTS] index_name;
 ```
@@ -163,6 +170,18 @@ CREATE SEQUENCE seq_name [START WITH n] [INCREMENT BY n] [CYCLE|NO CYCLE];
 ALTER SEQUENCE seq_name [START WITH n] [INCREMENT BY n];
 DROP SEQUENCE [IF EXISTS] seq_name;
 ```
+
+### Schemas
+
+```sql
+CREATE SCHEMA [IF NOT EXISTS] schema_name;
+DROP SCHEMA [IF EXISTS] schema_name [CASCADE];
+SET search_path TO 'schema1', 'schema2';
+```
+
+`DROP SCHEMA CASCADE` drops all tables within the schema and cascades to their indexes (BTree, GIN, IVF, RTREE), foreign key validators, and catalog entries. Without `CASCADE`, the schema must be empty.
+
+Tables in non-default schemas are accessed with qualified names (e.g., `myschema.table_name`). The `search_path` setting controls the order of unqualified name resolution.
 
 ### Foreign Data Wrappers
 

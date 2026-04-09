@@ -583,11 +583,30 @@ class SQLCompiler:
         cascade = stmt.behavior == DropBehavior.DROP_CASCADE
         for obj in stmt.objects:
             schema_name = obj.sval if hasattr(obj, "sval") else obj[-1].sval
-            self._engine._tables.drop_schema(
-                schema_name,
-                cascade=cascade,
-                if_exists=stmt.missing_ok,
-            )
+            store = self._engine._tables
+            if schema_name not in store.schemas:
+                if stmt.missing_ok:
+                    continue
+                raise ValueError(f"Schema '{schema_name}' does not exist")
+            if schema_name == "public":
+                raise ValueError("Cannot drop schema 'public'")
+
+            tables = store.tables_in_schema(schema_name)
+            if tables and not cascade:
+                raise ValueError(
+                    f"Schema '{schema_name}' is not empty, use CASCADE to drop"
+                )
+
+            # CASCADE: drop every table through the shared cleanup path
+            # so indexes, GIN, BTree metadata, FK validators, and
+            # catalog rows are all properly removed.
+            # Use qualified names so SchemaAwareTableStore.__delitem__
+            # resolves them correctly regardless of search_path.
+            for table_name in list(tables):
+                qualified = f"{schema_name}.{table_name}"
+                self._drop_table_by_name(qualified)
+
+            store.drop_schema(schema_name, cascade=True)
         return SQLResult([], [])
 
     # ==================================================================
@@ -1126,23 +1145,90 @@ class SQLCompiler:
         for obj in stmt.objects:
             table_name = obj[-1].sval
             if table_name in self._engine._tables:
-                index_manager = getattr(self._engine, "_index_manager", None)
-                if index_manager is not None:
-                    index_manager.drop_indexes_for_table(table_name)
-                # Clean up GIN indexes for this table.
-                gin_indexes = getattr(self._engine, "_gin_indexes", {})
-                to_remove = [
-                    name for name, (tbl, _) in gin_indexes.items() if tbl == table_name
-                ]
-                for name in to_remove:
-                    del gin_indexes[name]
-                del self._engine._tables[table_name]
-                self._engine._temp_tables.discard(table_name)
-                if self._engine._catalog is not None:
-                    self._engine._catalog.drop_table_schema(table_name)
+                self._drop_table_by_name(table_name)
             elif not stmt.missing_ok:
                 raise ValueError(f"Table '{table_name}' does not exist")
         return SQLResult([], [])
+
+    def _drop_table_by_name(self, table_name: str) -> None:
+        """Drop a single table and all associated in-memory and catalog state.
+
+        Shared by ``_compile_drop_table`` and ``_compile_drop_schema``
+        so that CASCADE cleanup is identical to individual DROP TABLE.
+        """
+        engine = self._engine
+
+        # -- IndexManager (BTree physical indexes) --
+        index_manager = getattr(engine, "_index_manager", None)
+        if index_manager is not None:
+            index_manager.drop_indexes_for_table(table_name)
+
+        # -- GIN indexes --
+        gin_indexes: dict[str, tuple[str, tuple[str, ...]]] = getattr(
+            engine, "_gin_indexes", {}
+        )
+        to_remove_gin = [
+            name for name, (tbl, _) in gin_indexes.items() if tbl == table_name
+        ]
+        for name in to_remove_gin:
+            del gin_indexes[name]
+
+        # -- In-memory BTree index metadata --
+        btree_indexes: dict[str, tuple[str, tuple[str, ...]]] = getattr(
+            engine, "_btree_indexes", {}
+        )
+        to_remove_btree = [
+            name for name, (tbl, _) in btree_indexes.items() if tbl == table_name
+        ]
+        for name in to_remove_btree:
+            del btree_indexes[name]
+
+        # -- FK validators on parent tables that reference this table --
+        self._remove_fk_validators_for_child(table_name)
+
+        # -- Remove from table store and temp set --
+        del engine._tables[table_name]
+        engine._temp_tables.discard(table_name)
+
+        # -- Catalog (SQLite physical tables and rows) --
+        if engine._catalog is not None:
+            engine._catalog.drop_table_schema(table_name)
+
+    def _remove_fk_validators_for_child(self, child_table: str) -> None:
+        """Remove FK delete/update validators that reference *child_table*.
+
+        When a child table with FOREIGN KEY constraints is dropped, the
+        parent tables still hold closure-based validators that check
+        referential integrity against the (now gone) child.  This method
+        walks all remaining tables and purges those stale validators.
+
+        The FK closures created in ``_register_fk_validators`` capture
+        ``_child_table`` as a default argument, so we inspect
+        ``__defaults__`` to identify validators belonging to the
+        dropped child.
+        """
+        engine = self._engine
+        for table in engine._tables.values():
+            table.fk_delete_validators = [
+                v
+                for v in table.fk_delete_validators
+                if not self._validator_references_table(v, child_table)
+            ]
+            table.fk_update_validators = [
+                v
+                for v in table.fk_update_validators
+                if not self._validator_references_table(v, child_table)
+            ]
+
+    @staticmethod
+    def _validator_references_table(validator: Any, table_name: str) -> bool:
+        """Check whether a FK validator closure captures *table_name*.
+
+        The FK closures bind ``_child_table`` as a default argument,
+        which appears in ``__defaults__``.
+        """
+        defaults = getattr(validator, "__defaults__", None) or ()
+        return table_name in defaults
 
     def _compile_drop_index(self, stmt: DropStmt) -> SQLResult:
         index_manager = getattr(self._engine, "_index_manager", None)
@@ -1568,11 +1654,27 @@ class SQLCompiler:
     # DDL: CREATE INDEX / DROP INDEX
     # ==================================================================
 
+    def _index_exists(self, name: str) -> bool:
+        """Return True if an index with *name* exists in any store."""
+        engine = self._engine
+        index_manager = getattr(engine, "_index_manager", None)
+        if index_manager is not None and index_manager.has_index(name):
+            return True
+        gin_indexes: dict[str, Any] = getattr(engine, "_gin_indexes", {})
+        if name in gin_indexes:
+            return True
+        btree_indexes: dict[str, Any] = getattr(engine, "_btree_indexes", {})
+        return name in btree_indexes
+
     def _compile_create_index(self, stmt: IndexStmt) -> SQLResult:
         from uqa.storage.index_types import IndexDef, IndexType
 
         index_name = stmt.idxname
         table_name = self._qualified_name(stmt.relation)
+
+        # IF NOT EXISTS: check all index stores before proceeding.
+        if stmt.if_not_exists and self._index_exists(index_name):
+            return SQLResult([], [])
 
         table = self._engine._tables.get(table_name)
         if table is None:

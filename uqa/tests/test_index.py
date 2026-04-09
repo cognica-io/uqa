@@ -521,3 +521,170 @@ class TestIndexManager:
 
             other_indexes = engine._index_manager.get_indexes_for_table("other")
             assert len(other_indexes) == 1
+
+
+# -- DROP TABLE cascading cleanup -------------------------------------------
+
+
+class TestDropTableCascadeCleanup:
+    """Verify DROP TABLE cleans all associated resources."""
+
+    def test_drop_table_cleans_btree_indexes_in_memory(self):
+        """In-memory engine: _btree_indexes entries are removed."""
+        engine = Engine()
+        engine.sql("CREATE TABLE t (id INTEGER, val TEXT)")
+        engine.sql("CREATE INDEX idx_val ON t (val)")
+        assert "idx_val" in engine._btree_indexes
+        engine.sql("DROP TABLE t")
+        assert "idx_val" not in engine._btree_indexes
+
+    def test_drop_table_cleans_btree_indexes_persistent(self, tmp_path):
+        """Persistent engine: IndexManager entries are removed."""
+        db = str(tmp_path / "test.db")
+        with _make_engine(db) as engine:
+            _setup_employees(engine)
+            engine.sql("CREATE INDEX idx_age ON employees (age)")
+            engine.sql("CREATE INDEX idx_salary ON employees (salary)")
+            assert engine._index_manager.has_index("idx_age")
+            assert engine._index_manager.has_index("idx_salary")
+            engine.sql("DROP TABLE employees")
+            assert not engine._index_manager.has_index("idx_age")
+            assert not engine._index_manager.has_index("idx_salary")
+
+    def test_drop_table_cleans_gin_indexes(self, tmp_path):
+        """GIN index entries are removed when the table is dropped."""
+        db = str(tmp_path / "test.db")
+        with _make_engine(db) as engine:
+            engine.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, body TEXT)")
+            engine.sql("INSERT INTO docs (body) VALUES ('hello world')")
+            engine.sql("CREATE INDEX idx_body ON docs USING gin (body)")
+            assert "idx_body" in engine._gin_indexes
+            engine.sql("DROP TABLE docs")
+            assert "idx_body" not in engine._gin_indexes
+
+    def test_drop_table_cleans_fk_validators_on_parent(self, tmp_path):
+        """Parent FK validators referencing the dropped child are removed."""
+        db = str(tmp_path / "test.db")
+        with _make_engine(db) as engine:
+            engine.sql("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
+            engine.sql("INSERT INTO parent (id) VALUES (1)")
+            engine.sql(
+                "CREATE TABLE child (id INTEGER PRIMARY KEY, "
+                "pid INTEGER REFERENCES parent(id))"
+            )
+            parent = engine._tables["parent"]
+            assert len(parent.fk_delete_validators) > 0
+
+            engine.sql("DROP TABLE child")
+            assert len(parent.fk_delete_validators) == 0
+            assert len(parent.fk_update_validators) == 0
+
+
+# -- DROP SCHEMA CASCADE cleanup --------------------------------------------
+
+
+class TestDropSchemaCascadeCleanup:
+    """Verify DROP SCHEMA CASCADE cleans all per-table resources."""
+
+    def test_drop_schema_cascade_cleans_btree_indexes(self):
+        """In-memory engine: _btree_indexes are removed on CASCADE."""
+        engine = Engine()
+        engine.sql("CREATE SCHEMA myschema")
+        engine.sql("CREATE TABLE myschema.t (id INTEGER, val INTEGER)")
+        engine.sql("INSERT INTO myschema.t (id, val) VALUES (1, 10)")
+        engine.sql("CREATE INDEX idx_val ON myschema.t (val)")
+        assert "idx_val" in engine._btree_indexes
+
+        engine.sql("DROP SCHEMA myschema CASCADE")
+        assert "idx_val" not in engine._btree_indexes
+        assert "myschema" not in engine._tables.schemas
+
+    def test_drop_schema_cascade_cleans_gin_indexes(self):
+        """In-memory engine: GIN indexes are removed on CASCADE."""
+        engine = Engine()
+        engine.sql("CREATE SCHEMA myschema")
+        engine.sql("CREATE TABLE myschema.docs (id INTEGER PRIMARY KEY, body TEXT)")
+        engine.sql("INSERT INTO myschema.docs (id, body) VALUES (1, 'hello')")
+        engine.sql("CREATE INDEX idx_body ON myschema.docs USING gin (body)")
+        assert "idx_body" in engine._gin_indexes
+
+        engine.sql("DROP SCHEMA myschema CASCADE")
+        assert "idx_body" not in engine._gin_indexes
+
+    def test_drop_schema_cascade_cleans_fk_validators(self):
+        """Parent FK validators for child in dropped schema are removed."""
+        engine = Engine()
+        engine.sql("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
+        engine.sql("INSERT INTO parent (id) VALUES (1)")
+        engine.sql("CREATE SCHEMA child_schema")
+        engine.sql(
+            "CREATE TABLE child_schema.child ("
+            "id INTEGER PRIMARY KEY, "
+            "pid INTEGER REFERENCES parent(id))"
+        )
+        parent = engine._tables["parent"]
+        assert len(parent.fk_delete_validators) > 0
+
+        engine.sql("DROP SCHEMA child_schema CASCADE")
+        assert len(parent.fk_delete_validators) == 0
+        assert len(parent.fk_update_validators) == 0
+
+    def test_drop_schema_not_empty_without_cascade(self):
+        engine = Engine()
+        engine.sql("CREATE SCHEMA myschema")
+        engine.sql("CREATE TABLE myschema.t (id INTEGER)")
+        with pytest.raises(ValueError, match="not empty"):
+            engine.sql("DROP SCHEMA myschema")
+
+    def test_drop_schema_if_exists(self):
+        engine = Engine()
+        # Should not raise
+        engine.sql("DROP SCHEMA IF EXISTS nonexistent")
+
+    def test_drop_schema_nonexistent_raises(self):
+        engine = Engine()
+        with pytest.raises(ValueError, match="does not exist"):
+            engine.sql("DROP SCHEMA nonexistent")
+
+
+# -- CREATE INDEX IF NOT EXISTS ---------------------------------------------
+
+
+class TestCreateIndexIfNotExists:
+    """Verify CREATE INDEX IF NOT EXISTS is a no-op for existing indexes."""
+
+    def test_btree_if_not_exists(self, tmp_path):
+        db = str(tmp_path / "test.db")
+        with _make_engine(db) as engine:
+            _setup_employees(engine)
+            engine.sql("CREATE INDEX idx_age ON employees (age)")
+            # Should not raise
+            engine.sql("CREATE INDEX IF NOT EXISTS idx_age ON employees (age)")
+            assert engine._index_manager.has_index("idx_age")
+
+    def test_gin_if_not_exists(self, tmp_path):
+        db = str(tmp_path / "test.db")
+        with _make_engine(db) as engine:
+            engine.sql("CREATE TABLE docs (id SERIAL PRIMARY KEY, body TEXT)")
+            engine.sql("INSERT INTO docs (body) VALUES ('hello world')")
+            engine.sql("CREATE INDEX idx_body ON docs USING gin (body)")
+            # Should not raise
+            engine.sql("CREATE INDEX IF NOT EXISTS idx_body ON docs USING gin (body)")
+            assert "idx_body" in engine._gin_indexes
+
+    def test_btree_in_memory_if_not_exists(self):
+        """In-memory engine: IF NOT EXISTS on _btree_indexes."""
+        engine = Engine()
+        engine.sql("CREATE TABLE t (id INTEGER, val TEXT)")
+        engine.sql("CREATE INDEX idx_val ON t (val)")
+        assert "idx_val" in engine._btree_indexes
+        # Should not raise
+        engine.sql("CREATE INDEX IF NOT EXISTS idx_val ON t (val)")
+
+    def test_without_if_not_exists_raises(self, tmp_path):
+        db = str(tmp_path / "test.db")
+        with _make_engine(db) as engine:
+            _setup_employees(engine)
+            engine.sql("CREATE INDEX idx_age ON employees (age)")
+            with pytest.raises(ValueError, match="already exists"):
+                engine.sql("CREATE INDEX idx_age ON employees (age)")

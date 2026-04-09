@@ -1,5 +1,30 @@
 # History
 
+## 0.25.11 (2026-04-09)
+
+Fix DROP TABLE / DROP SCHEMA CASCADE index cleanup and add CREATE INDEX IF NOT EXISTS. DROP TABLE now removes in-memory BTree index metadata and stale foreign key validators from parent tables. DROP SCHEMA CASCADE now performs full per-table cleanup (IndexManager, GIN, BTree, FK validators, catalog) instead of only deleting the schema entry. CREATE INDEX IF NOT EXISTS is supported for all index types (BTree, GIN, IVF, RTREE). All 2959 tests pass across 85 test files.
+
+### Bug Fixes
+
+- **DROP TABLE BTree index cleanup** (`sql/compiler.py`): DROP TABLE now removes orphaned entries from `_engine._btree_indexes` for the dropped table. Previously, in-memory BTree index metadata survived table deletion, potentially confusing the query optimizer into believing indexes existed for non-existent tables.
+- **DROP TABLE FK validator cleanup** (`sql/compiler.py`): When a child table with FOREIGN KEY constraints is dropped, stale delete and update validators are now removed from parent tables. Previously, parent tables retained closure-based validators referencing the dropped child, causing memory leaks and unnecessary validation overhead.
+- **DROP SCHEMA CASCADE full cleanup** (`sql/compiler.py`): DROP SCHEMA CASCADE now iterates all tables in the schema and performs the same cleanup as individual DROP TABLE --- IndexManager (physical BTree indexes), GIN indexes, in-memory BTree metadata, FK validators, temp table tracking, and catalog rows. Previously, only the `_schemas` dictionary entry was deleted, leaving all per-table resources orphaned.
+
+### Enhancements
+
+- **CREATE INDEX IF NOT EXISTS** (`sql/compiler.py`): All index types (BTree, GIN, IVF, RTREE) now support the `IF NOT EXISTS` clause. When the named index already exists, the statement is a silent no-op. The existence check inspects IndexManager, GIN index tracking, and in-memory BTree metadata.
+
+### Internal
+
+- **`_drop_table_by_name` method** (`sql/compiler.py`): Extracted from `_compile_drop_table` as a shared cleanup method. Used by both `_compile_drop_table` and `_compile_drop_schema` to ensure identical cleanup behavior.
+- **`_index_exists` helper** (`sql/compiler.py`): Checks all index stores (IndexManager, GIN, BTree) for name existence.
+- **`_remove_fk_validators_for_child` / `_validator_references_table`** (`sql/compiler.py`): Identifies and removes FK validators by inspecting closure default arguments for the child table name.
+
+### Tests
+
+- **17 new tests** in `test_index.py`: `TestDropTableCascadeCleanup` (4 tests --- BTree in-memory, BTree persistent, GIN, FK validators), `TestDropSchemaCascadeCleanup` (6 tests --- BTree, GIN, FK validators, not-empty error, IF EXISTS, nonexistent error), `TestCreateIndexIfNotExists` (4 tests --- BTree persistent, GIN, BTree in-memory, duplicate error).
+- **Total**: 2959 tests across 85 test files.
+
 ## 0.25.10 (2026-04-08)
 
 Fix named graph vertex and edge persistence. The engine-level graph store was initialized as a pure `MemoryGraphStore` even when backed by SQLite, causing all vertex and edge data added to named graphs to be lost on process exit. Named graph metadata (`_named_graphs`) was persisted correctly, creating the illusion that graphs existed while their data was empty. All 2945 tests pass across 85 test files.
