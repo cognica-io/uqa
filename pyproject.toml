@@ -140,9 +140,11 @@ reportMissingTypeStubs = false
 reportUnusedImport = false
 # pglast AST nodes type fields as Optional even when guaranteed present
 # in specific statement contexts. pyarrow.compute functions are not
-# fully typed in pyarrow's stubs. These rules produce false positives
-# at scale in AST-processing and Arrow-based execution code.
+# fully typed in pyarrow's stubs, and pyarrow.flight does not re-export
+# FlightClient / FlightDescriptor through its stubs. These rules produce
+# false positives at scale in AST-processing and Arrow-based execution code.
 reportOptionalSubscript = false
 reportOptionalMemberAccess = false
 reportOptionalIterable = false
 reportAttributeAccessIssue = false
+reportPrivateImportUsage = false
