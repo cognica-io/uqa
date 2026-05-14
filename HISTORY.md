@@ -1,5 +1,22 @@
 # History
 
+## 0.25.12 (2026-05-14)
+
+Fix UPDATE type coercion for JSON, BYTEA, TIMESTAMP, and NUMERIC columns. The UPDATE-family compilers applied only `python_type()` to SET values, bypassing the type-specific coercion that INSERT performs. `UPDATE ... SET json_col = ...` crashed with `TypeError: object() takes no arguments`; BYTEA and TIMESTAMP updates also crashed, and NUMERIC updates silently skipped scale rounding. INSERT and all UPDATE-family paths now share a single `ColumnDef.coerce()` helper, so they produce identical stored representations for every column type. All 2969 tests pass across 85 test files.
+
+### Bug Fixes
+
+- **UPDATE type coercion** (`sql/compiler.py`, `sql/table.py`): `_compile_update`, `_compile_update_from`, and `_do_conflict_update` (the `ON CONFLICT DO UPDATE` upsert branch) applied `col_def.python_type(value)` directly to every SET value, bypassing the JSON/BYTEA/array/NUMERIC/datetime/POINT coercion that `Table.insert()` performs. JSON columns (`python_type` is `object`) raised `TypeError: object() takes no arguments`; BYTEA raised `TypeError: string argument without an encoding`; TIMESTAMP raised an Arrow conversion error; NUMERIC silently skipped `Decimal` scale quantization. All three UPDATE-family paths now route SET values through the shared `ColumnDef.coerce()` helper.
+
+### Internal
+
+- **`ColumnDef.coerce()` method** (`sql/table.py`): Extracted the per-type coercion switch from `Table.insert()` into a pure method on `ColumnDef`. `Table.insert()` and all three UPDATE-family compiler paths now share it, eliminating the INSERT/UPDATE coercion divergence. The method returns the storage value only; vector and spatial index artifacts are still derived caller-side.
+
+### Tests
+
+- **10 new tests** in `test_update_delete.py`: `TestUpdateTypeCoercion` --- round-trip UPDATE coercion for JSON, JSONB, BYTEA, TIMESTAMP, DATE, and NUMERIC(scale), `UPDATE ... FROM` with a JSON column, `INSERT ... ON CONFLICT DO UPDATE` with a JSON column, plus TEXT[] and POINT regression checks.
+- **Total**: 2969 tests across 85 test files.
+
 ## 0.25.11 (2026-04-09)
 
 Fix DROP TABLE / DROP SCHEMA CASCADE index cleanup and add CREATE INDEX IF NOT EXISTS. DROP TABLE now removes in-memory BTree index metadata and stale foreign key validators from parent tables. DROP SCHEMA CASCADE now performs full per-table cleanup (IndexManager, GIN, BTree, FK validators, catalog) instead of only deleting the schema entry. CREATE INDEX IF NOT EXISTS is supported for all index types (BTree, GIN, IVF, RTREE). All 2959 tests pass across 85 test files.
