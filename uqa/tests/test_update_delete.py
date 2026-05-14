@@ -739,21 +739,16 @@ class TestDeleteUsing:
         assert r.rows[0]["total"] == 200
 
 
-# ==================================================================
-# UPDATE type coercion (I-001)
-# ==================================================================
-
-
 class TestUpdateTypeCoercion:
     """UPDATE must apply the same type coercion as INSERT (I-001)."""
 
     def test_update_json_string(self):
         e = Engine()
         e.sql("CREATE TABLE t (id INT PRIMARY KEY, data JSON)")
-        e.sql('INSERT INTO t VALUES (1, \'{"a": 1}\')')
-        e.sql('UPDATE t SET data = \'{"b": 2}\' WHERE id = 1')
+        e.sql("INSERT INTO t VALUES (1, '{\"a\": 1}')")
+        e.sql("UPDATE t SET data = '{\"b\": 2}' WHERE id = 1")
         # An UPDATE must produce the same stored value as an INSERT.
-        e.sql('INSERT INTO t VALUES (3, \'{"b": 2}\')')
+        e.sql("INSERT INTO t VALUES (3, '{\"b\": 2}')")
         rows = e.sql("SELECT id, data FROM t ORDER BY id").rows
         assert rows[0]["data"] == {"b": 2}
         assert isinstance(rows[0]["data"], dict)
@@ -762,8 +757,8 @@ class TestUpdateTypeCoercion:
     def test_update_jsonb_string(self):
         e = Engine()
         e.sql("CREATE TABLE t (id INT PRIMARY KEY, data JSONB)")
-        e.sql('INSERT INTO t VALUES (1, \'{"a": 1}\')')
-        e.sql('UPDATE t SET data = \'{"b": [1, 2, 3]}\' WHERE id = 1')
+        e.sql("INSERT INTO t VALUES (1, '{\"a\": 1}')")
+        e.sql("UPDATE t SET data = '{\"b\": [1, 2, 3]}' WHERE id = 1")
         rows = e.sql("SELECT data FROM t WHERE id = 1").rows
         assert rows[0]["data"] == {"b": [1, 2, 3]}
 
@@ -812,8 +807,8 @@ class TestUpdateTypeCoercion:
         e = Engine()
         e.sql("CREATE TABLE target (id INT PRIMARY KEY, data JSON)")
         e.sql("CREATE TABLE source (id INT PRIMARY KEY, payload JSON)")
-        e.sql('INSERT INTO target VALUES (1, \'{"old": true}\')')
-        e.sql('INSERT INTO source VALUES (1, \'{"new": 42}\')')
+        e.sql("INSERT INTO target VALUES (1, '{\"old\": true}')")
+        e.sql("INSERT INTO source VALUES (1, '{\"new\": 42}')")
         e.sql(
             "UPDATE target SET data = source.payload "
             "FROM source WHERE target.id = source.id"
@@ -841,9 +836,9 @@ class TestUpdateTypeCoercion:
         # INSERT ... ON CONFLICT DO UPDATE must coerce like INSERT/UPDATE.
         e = Engine()
         e.sql("CREATE TABLE t (id INT PRIMARY KEY, data JSON)")
-        e.sql('INSERT INTO t VALUES (1, \'{"a": 1}\')')
+        e.sql("INSERT INTO t VALUES (1, '{\"a\": 1}')")
         e.sql(
-            'INSERT INTO t VALUES (1, \'{"b": 2}\') '
+            "INSERT INTO t VALUES (1, '{\"b\": 2}') "
             "ON CONFLICT (id) DO UPDATE SET data = excluded.data"
         )
         rows = e.sql("SELECT data FROM t WHERE id = 1").rows
