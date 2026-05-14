@@ -2057,7 +2057,7 @@ class SQLCompiler:
             new_value = evaluator.evaluate(target.val, eval_row)
             col_def = table.columns.get(col_name)
             if new_value is not None and col_def is not None:
-                new_doc[col_name] = col_def.python_type(new_value)
+                new_doc[col_name] = col_def.coerce(new_value)
             elif new_value is None:
                 new_doc.pop(col_name, None)
 
@@ -2187,7 +2187,7 @@ class SQLCompiler:
                 new_value = evaluator.evaluate(val_node, old_doc)
                 col_def = table.columns[col_name]
                 if new_value is not None:
-                    new_doc[col_name] = col_def.python_type(new_value)
+                    new_doc[col_name] = col_def.coerce(new_value)
                 elif col_def.not_null:
                     raise ValueError(
                         f"NOT NULL constraint violated: "
@@ -2331,7 +2331,7 @@ class SQLCompiler:
                     new_value = evaluator.evaluate(val_node, merged)
                     col_def = table.columns[col_name]
                     if new_value is not None:
-                        new_doc[col_name] = col_def.python_type(new_value)
+                        new_doc[col_name] = col_def.coerce(new_value)
                     elif col_def.not_null:
                         raise ValueError(
                             f"NOT NULL constraint violated: "
