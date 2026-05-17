@@ -737,3 +737,110 @@ class TestDeleteUsing:
         assert len(r.rows) == 1
         assert r.rows[0]["customer_id"] == 20
         assert r.rows[0]["total"] == 200
+
+
+class TestUpdateTypeCoercion:
+    """UPDATE must apply the same type coercion as INSERT (I-001)."""
+
+    def test_update_json_string(self):
+        e = Engine()
+        e.sql("CREATE TABLE t (id INT PRIMARY KEY, data JSON)")
+        e.sql("INSERT INTO t VALUES (1, '{\"a\": 1}')")
+        e.sql("UPDATE t SET data = '{\"b\": 2}' WHERE id = 1")
+        # An UPDATE must produce the same stored value as an INSERT.
+        e.sql("INSERT INTO t VALUES (3, '{\"b\": 2}')")
+        rows = e.sql("SELECT id, data FROM t ORDER BY id").rows
+        assert rows[0]["data"] == {"b": 2}
+        assert isinstance(rows[0]["data"], dict)
+        assert rows[0]["data"] == rows[1]["data"]
+
+    def test_update_jsonb_string(self):
+        e = Engine()
+        e.sql("CREATE TABLE t (id INT PRIMARY KEY, data JSONB)")
+        e.sql("INSERT INTO t VALUES (1, '{\"a\": 1}')")
+        e.sql("UPDATE t SET data = '{\"b\": [1, 2, 3]}' WHERE id = 1")
+        rows = e.sql("SELECT data FROM t WHERE id = 1").rows
+        assert rows[0]["data"] == {"b": [1, 2, 3]}
+
+    def test_update_bytea(self):
+        e = Engine()
+        e.sql("CREATE TABLE t (id INT PRIMARY KEY, blob BYTEA)")
+        e.sql("INSERT INTO t VALUES (1, 'abc')")
+        e.sql("UPDATE t SET blob = 'xyz' WHERE id = 1")
+        e.sql("INSERT INTO t VALUES (3, 'xyz')")
+        rows = e.sql("SELECT id, blob FROM t ORDER BY id").rows
+        # An UPDATE must produce the same stored value as an INSERT.
+        assert rows[0]["blob"] == rows[1]["blob"]
+
+    def test_update_timestamp(self):
+        e = Engine()
+        e.sql("CREATE TABLE t (id INT PRIMARY KEY, ts TIMESTAMP)")
+        e.sql("INSERT INTO t VALUES (1, '2024-01-01 10:00:00')")
+        e.sql("UPDATE t SET ts = '2025-06-06 12:30:00' WHERE id = 1")
+        e.sql("INSERT INTO t VALUES (3, '2025-06-06 12:30:00')")
+        rows = e.sql("SELECT id, ts FROM t ORDER BY id").rows
+        assert rows[0]["ts"] == rows[1]["ts"]
+        assert type(rows[0]["ts"]) is type(rows[1]["ts"])
+
+    def test_update_date(self):
+        e = Engine()
+        e.sql("CREATE TABLE t (id INT PRIMARY KEY, d DATE)")
+        e.sql("INSERT INTO t VALUES (1, '2024-01-01')")
+        e.sql("UPDATE t SET d = '2025-06-06' WHERE id = 1")
+        e.sql("INSERT INTO t VALUES (3, '2025-06-06')")
+        rows = e.sql("SELECT id, d FROM t ORDER BY id").rows
+        assert rows[0]["d"] == rows[1]["d"]
+        assert type(rows[0]["d"]) is type(rows[1]["d"])
+
+    def test_update_numeric_applies_scale(self):
+        e = Engine()
+        e.sql("CREATE TABLE t (id INT PRIMARY KEY, amount NUMERIC(10, 2))")
+        e.sql("INSERT INTO t VALUES (1, 1.111)")
+        e.sql("UPDATE t SET amount = 2.999 WHERE id = 1")
+        e.sql("INSERT INTO t VALUES (3, 2.999)")
+        rows = e.sql("SELECT id, amount FROM t ORDER BY id").rows
+        # NUMERIC(10, 2): scale rounding must be applied -> 3.00.
+        assert rows[0]["amount"] == 3.00
+        assert rows[0]["amount"] == rows[1]["amount"]
+
+    def test_update_from_json(self):
+        e = Engine()
+        e.sql("CREATE TABLE target (id INT PRIMARY KEY, data JSON)")
+        e.sql("CREATE TABLE source (id INT PRIMARY KEY, payload JSON)")
+        e.sql("INSERT INTO target VALUES (1, '{\"old\": true}')")
+        e.sql("INSERT INTO source VALUES (1, '{\"new\": 42}')")
+        e.sql(
+            "UPDATE target SET data = source.payload "
+            "FROM source WHERE target.id = source.id"
+        )
+        rows = e.sql("SELECT data FROM target WHERE id = 1").rows
+        assert rows[0]["data"] == {"new": 42}
+
+    def test_update_text_array_still_works(self):
+        e = Engine()
+        e.sql("CREATE TABLE t (id INT PRIMARY KEY, tags TEXT[])")
+        e.sql("INSERT INTO t VALUES (1, ARRAY['a', 'b'])")
+        e.sql("UPDATE t SET tags = ARRAY['c', 'd'] WHERE id = 1")
+        rows = e.sql("SELECT tags FROM t WHERE id = 1").rows
+        assert rows[0]["tags"] == ["c", "d"]
+
+    def test_update_point_still_works(self):
+        e = Engine()
+        e.sql("CREATE TABLE t (id INT PRIMARY KEY, loc POINT)")
+        e.sql("INSERT INTO t VALUES (1, POINT(1.0, 2.0))")
+        e.sql("UPDATE t SET loc = POINT(5.0, 6.0) WHERE id = 1")
+        rows = e.sql("SELECT loc FROM t WHERE id = 1").rows
+        assert rows[0]["loc"] == [5.0, 6.0]
+
+    def test_upsert_json_coercion(self):
+        # INSERT ... ON CONFLICT DO UPDATE must coerce like INSERT/UPDATE.
+        e = Engine()
+        e.sql("CREATE TABLE t (id INT PRIMARY KEY, data JSON)")
+        e.sql("INSERT INTO t VALUES (1, '{\"a\": 1}')")
+        e.sql(
+            "INSERT INTO t VALUES (1, '{\"b\": 2}') "
+            "ON CONFLICT (id) DO UPDATE SET data = excluded.data"
+        )
+        rows = e.sql("SELECT data FROM t WHERE id = 1").rows
+        assert rows[0]["data"] == {"b": 2}
+        assert isinstance(rows[0]["data"], dict)

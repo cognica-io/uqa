@@ -155,6 +155,38 @@ class ColumnDef:
     numeric_precision: int | None = None
     numeric_scale: int | None = None
 
+    def coerce(self, value: Any) -> Any:
+        """Coerce a non-NULL value to this column's storage representation.
+
+        Routes *value* through the same type-specific conversion that
+        ``Table.insert()`` applies, so INSERT and UPDATE produce
+        identical stored values for every column type.
+
+        The caller must guarantee ``value is not None``; NULL handling
+        and index side effects (vector/spatial artifacts) stay
+        caller-side. This method returns the storage value only.
+        """
+        if self.vector_dimensions is not None:
+            return np.asarray(value, dtype=np.float32).tolist()
+        if self.type_name == "point":
+            if isinstance(value, list | tuple) and len(value) == 2:
+                return [float(value[0]), float(value[1])]
+            raise ValueError(
+                f"POINT column '{self.name}' requires "
+                f"[x, y] (2 elements), got {value!r}"
+            )
+        if self.type_name in ("json", "jsonb"):
+            return _coerce_json(value)
+        if self.type_name.endswith("[]"):
+            return _coerce_array(value)
+        if self.type_name == "bytea":
+            return _coerce_bytea(value)
+        if self.numeric_scale is not None:
+            return _coerce_numeric(value, self.numeric_scale)
+        if self.type_name in _DATETIME_TYPES:
+            return _coerce_datetime(value, self.type_name)
+        return self.python_type(value)
+
 
 @dataclass(slots=True)
 class ForeignKeyDef:
@@ -336,36 +368,15 @@ class Table:
         points: dict[str, tuple[float, float]] = {}
         for col_name, col_def in self.columns.items():
             if col_name in row and row[col_name] is not None:
+                value = col_def.coerce(row[col_name])
+                coerced[col_name] = value
+                # Derive index artifacts from the coerced storage value.
                 if col_def.vector_dimensions is not None:
-                    vec = np.asarray(row[col_name], dtype=np.float32)
-                    coerced[col_name] = vec.tolist()
-                    vectors[col_name] = vec
+                    # Re-wrap to ndarray; coerce() returns a list to stay
+                    # side-effect-free.
+                    vectors[col_name] = np.asarray(value, dtype=np.float32)
                 elif col_def.type_name == "point":
-                    pt = row[col_name]
-                    if isinstance(pt, list | tuple) and len(pt) == 2:
-                        coerced[col_name] = [float(pt[0]), float(pt[1])]
-                        points[col_name] = (float(pt[0]), float(pt[1]))
-                    else:
-                        raise ValueError(
-                            f"POINT column '{col_name}' requires "
-                            f"[x, y] (2 elements), got {pt!r}"
-                        )
-                elif col_def.type_name in ("json", "jsonb"):
-                    coerced[col_name] = _coerce_json(row[col_name])
-                elif col_def.type_name.endswith("[]"):
-                    coerced[col_name] = _coerce_array(row[col_name])
-                elif col_def.type_name == "bytea":
-                    coerced[col_name] = _coerce_bytea(row[col_name])
-                elif col_def.numeric_scale is not None:
-                    coerced[col_name] = _coerce_numeric(
-                        row[col_name], col_def.numeric_scale
-                    )
-                elif col_def.type_name in _DATETIME_TYPES:
-                    coerced[col_name] = _coerce_datetime(
-                        row[col_name], col_def.type_name
-                    )
-                else:
-                    coerced[col_name] = col_def.python_type(row[col_name])
+                    points[col_name] = (value[0], value[1])
             elif col_def.default is not None:
                 coerced[col_name] = _evaluate_default(col_def.default)
             # else: column absent -> not stored (sparse document)
