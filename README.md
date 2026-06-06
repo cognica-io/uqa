@@ -365,7 +365,7 @@ uqa/
   search/         Search result highlighting, snippet extraction, FTS query term extraction
   sql/            SQL compiler (pglast), expression evaluator, FTS query parser, table DDL/DML
   api/            Fluent QueryBuilder
-  tests/          2959 tests across 85 test files
+  tests/          2977 tests across 86 test files
 benchmarks/       309 pytest-benchmark tests across 17 files (posting list, storage, compiler,
                   execution, planner, scoring, graph, graph centrality, end-to-end SQL,
                   calibration, multi-field, external prior, advanced scoring, advanced graph,
@@ -381,7 +381,7 @@ benchmarks/       309 pytest-benchmark tests across 17 files (posting list, stor
 | DDL | `CREATE TABLE [IF NOT EXISTS]`, `CREATE TEMPORARY TABLE`, `DROP TABLE [IF EXISTS]`, `CREATE TABLE AS SELECT`, `ALTER TABLE` (ADD/DROP/RENAME COLUMN, SET/DROP DEFAULT, SET/DROP NOT NULL, ALTER TYPE USING, ADD CONSTRAINT), `TRUNCATE TABLE`, `CREATE INDEX [IF NOT EXISTS]`, `DROP INDEX [IF EXISTS]`, `CREATE SEQUENCE`/`NEXTVAL`/`CURRVAL`/`SETVAL`, `ALTER SEQUENCE`, `CREATE SCHEMA`/`DROP SCHEMA [CASCADE]`, `TABLE name` |
 | FDW | `CREATE SERVER ... FOREIGN DATA WRAPPER`, `CREATE FOREIGN TABLE ... SERVER ... OPTIONS (...)`, `DROP SERVER`, `DROP FOREIGN TABLE`, Hive partitioning (`hive_partitioning` option), predicate pushdown (`=`, `!=`, `<`, `>`, `IN`, `LIKE`, `ILIKE`, `BETWEEN`), full query pushdown (JOINs, aggregates, window functions, subqueries), mixed foreign-local query optimization (local table shipping), DuckDB FDW (Parquet/CSV/JSON), Arrow Flight SQL FDW |
 | Constraints | `PRIMARY KEY`, `NOT NULL`, `DEFAULT` (literals and SQL functions like `CURRENT_TIMESTAMP`), `UNIQUE`, `CHECK`, `FOREIGN KEY` (with insert/update/delete validation) |
-| DML | `INSERT INTO ... VALUES`, `INSERT INTO ... SELECT`, `INSERT ... ON CONFLICT DO NOTHING/UPDATE`, `INSERT ... RETURNING`, `UPDATE ... SET ... WHERE [RETURNING]`, `UPDATE ... FROM` (join), `DELETE FROM ... WHERE [RETURNING]`, `DELETE ... USING` (join) |
+| DML | `INSERT INTO ... VALUES`, `INSERT INTO ... SELECT`, `INSERT ... ON CONFLICT DO NOTHING/UPDATE`, `INSERT ... RETURNING`, `UPDATE ... SET ... WHERE [RETURNING]`, `UPDATE ... FROM` (join), `DELETE FROM ... WHERE [RETURNING]`, `DELETE ... USING` (join), `MERGE INTO ... USING ... WHEN MATCHED/NOT MATCHED` |
 | DQL | `SELECT [DISTINCT] ... FROM ... WHERE ... GROUP BY ... HAVING ... ORDER BY [NULLS FIRST/LAST] ... LIMIT ... OFFSET`, `FETCH FIRST n ROWS ONLY`, standalone `VALUES` |
 | Joins | `INNER JOIN`, `LEFT JOIN`, `RIGHT JOIN`, `FULL OUTER JOIN`, `CROSS JOIN` with equality and non-equality `ON` conditions, `LATERAL` subquery |
 | Set Ops | `UNION [ALL]`, `INTERSECT [ALL]`, `EXCEPT [ALL]` with chaining |
@@ -390,7 +390,7 @@ benchmarks/       309 pytest-benchmark tests across 17 files (posting list, stor
 | Views | `CREATE VIEW`, `DROP VIEW` |
 | Window | `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `NTILE`, `LAG`, `LEAD`, `NTH_VALUE`, `PERCENT_RANK`, `CUME_DIST`, aggregates `OVER (PARTITION BY ... ORDER BY ... ROWS/RANGE BETWEEN ...)`, `WINDOW w AS (...)`, `FILTER (WHERE ...)` on window aggregates |
 | Aggregates | `COUNT [DISTINCT]`, `SUM`, `AVG`, `MIN`, `MAX`, `STRING_AGG`, `ARRAY_AGG`, `BOOL_AND`/`EVERY`, `BOOL_OR`, `STDDEV`/`VARIANCE`, `PERCENTILE_CONT/DISC`, `MODE`, `JSON_OBJECT_AGG`, `CORR`, `COVAR_POP/SAMP`, `REGR_*` (10 functions), `deep_learn(...)`, `FILTER (WHERE ...)`, `ORDER BY` within aggregate |
-| Types | `INTEGER`, `BIGINT`, `SERIAL`, `TEXT`, `VARCHAR`, `REAL`, `FLOAT`, `DOUBLE PRECISION`, `NUMERIC(p,s)`, `BOOLEAN`, `DATE`, `TIME`, `TIMESTAMP`, `TIMESTAMPTZ`, `INTERVAL`, `JSON`/`JSONB`, `UUID`, `BYTEA`, `INTEGER[]` (arrays), `VECTOR(N)`, `POINT` |
+| Types | `INTEGER`, `BIGINT`, `SERIAL`, `TEXT`, `VARCHAR`, `REAL`, `FLOAT`, `DOUBLE PRECISION`, `NUMERIC(p,s)`, `BOOLEAN`, `DATE`, `TIME`, `TIME WITH TIME ZONE`, `TIMESTAMP`, `TIMESTAMPTZ`, `INTERVAL`, `JSON`/`JSONB`, `UUID`, `BYTEA`, `INTEGER[]` (arrays), `VECTOR(N)`, `TENSOR(N)`, `POINT` |
 | Date/Time | `EXTRACT`, `DATE_TRUNC`, `DATE_PART`, `NOW()`, `CURRENT_DATE`, `CURRENT_TIMESTAMP`, `CURRENT_TIME`, `CLOCK_TIMESTAMP`, `TIMEOFDAY`, `AGE`, `TO_CHAR`, `TO_DATE`, `TO_TIMESTAMP`, `MAKE_DATE`, `MAKE_TIMESTAMP`, `MAKE_INTERVAL`, `TO_NUMBER`, `OVERLAPS`, `ISFINITE` |
 | JSON | `->`, `->>`, `#>`, `#>>` operators, `@>` / `<@` containment, `?` / `?|` / `?&` key existence, `JSONB_SET`, `JSONB_STRIP_NULLS`, `JSON_BUILD_OBJECT`, `JSON_BUILD_ARRAY`, `JSON_OBJECT_KEYS`, `JSON_EXTRACT_PATH`, `JSON_TYPEOF`, `JSON_AGG`, `::jsonb` cast |
 | Table Funcs | `GENERATE_SERIES`, `UNNEST`, `REGEXP_SPLIT_TO_TABLE`, `JSON_EACH`/`JSON_EACH_TEXT`, `JSON_ARRAY_ELEMENTS`/`JSON_ARRAY_ELEMENTS_TEXT` |
@@ -523,20 +523,20 @@ Used inside `deep_fusion()` to compose neural network pipelines:
 
 ### Persistence
 
-All data is persisted to SQLite when an engine is created with `db_path`:
+All data is persisted to SQLite when an engine is created with `db_path`. Existing databases are opened through an idempotent migration path that creates the canonical catalog tables, migrates older metadata and per-table Python storage where needed, and then restores table/index state from the catalog.
 
 | Store | SQLite Table | Description |
 |-------|-------------|-------------|
-| Documents | `_data_{table}` | Typed columns per table |
-| Inverted Index | `_inverted_{table}_{field}` | Per-table per-field posting lists |
-| Field Stats | `_field_stats_{table}` | Per-table field-level statistics (BM25) |
-| Doc Lengths | `_doc_lengths_{table}` | Per-table per-document token lengths (BM25) |
-| Vectors | `_ivf_centroids_{table}_{field}`, `_ivf_lists_{table}_{field}` | IVF index via `CREATE INDEX ... USING hnsw` or `USING ivf`; centroids in memory, posting lists in SQLite |
+| Table Catalog | `_tables`, `_metadata`, `_catalog_indexes` | Table schemas, schema version, index definitions, FTS fields, vector fields |
+| Documents | `_documents`, `_document_blobs` | Canonical row bodies plus out-of-line binary values for `BYTEA` and large blobs |
+| Inverted Index | `_postings` | Shared term posting lists for indexed text fields |
+| Field Stats | `_field_stats` | Shared field-level statistics for BM25 |
+| Doc Lengths | `_doc_lengths` | Shared per-document token lengths for BM25 |
+| Vectors | `_vectors`, `_ivf_indexes`, `_ivf_centroids`, `_ivf_assignments` | Vector and tensor rows, IVF metadata, centroids, and vector-to-centroid assignments for `CREATE INDEX ... USING hnsw` or `USING ivf` |
 | Spatial | `_rtree_{table}_{field}` | R*Tree virtual table for POINT columns; created via `CREATE INDEX ... USING rtree` |
-| Graph | `_graph_vertices_{table}`, `_graph_edges_{table}` | Per-table adjacency-indexed graph with vertex labels |
-| Named Graphs | `_graph_catalog_{table}`, `_graph_membership_{table}` | Per-graph partitioned adjacency with catalog and membership tables |
+| Graph | `_graph_vertices`, `_graph_edges`, `_graph_membership`, `_named_graphs` | Persistent graph vertices, edges, graph membership, and named graph catalog |
 | GIN Indexes | Catalog entry + `fts_fields` | `CREATE INDEX ... USING gin`; controls which columns are indexed in the inverted index |
-| B-tree Indexes | SQLite indexes on `_data_{table}` | `CREATE INDEX` support |
+| B-tree Indexes | SQLite expression indexes on `_documents` | `CREATE INDEX` support over canonical document rows |
 | Analyzers | `_analyzers` | Custom text analyzer configurations |
 | Field Analyzers | `_table_field_analyzers` | Per-field index/search analyzer assignments |
 | Foreign Servers | `_foreign_servers` | FDW server definitions (type, connection options) |
