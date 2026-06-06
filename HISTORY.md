@@ -1,5 +1,28 @@
 # History
 
+## 0.25.13 (2026-06-06)
+
+Add canonical persistent storage and expand SQL coverage. Persistent databases now use shared catalog tables for table schemas, documents, postings, document lengths, field stats, vectors, IVF metadata, blobs, and typed values, with automatic open-time migration for older Python storage layouts. SQL support now includes `MERGE`, `TENSOR(N)`, timezone-aware temporal round-tripping, and correct backfill for `ALTER TABLE ADD COLUMN ... DEFAULT`. All 2977 tests pass across 86 test files.
+
+### Enhancements
+
+- **Canonical persistent storage** (`storage/catalog.py`, `storage/sqlite_document_store.py`, `storage/sqlite_inverted_index.py`, `storage/ivf_index.py`, `storage/btree_index.py`, `engine.py`): Persistent engines now store table metadata, documents, postings, field statistics, vector rows, IVF assignments, and document blobs in shared canonical catalog tables. Opening an existing database through `Engine(db_path=...)` automatically creates the canonical tables, migrates legacy metadata and old Python per-table storage where needed, and restores table/index state from the catalog.
+- **`TENSOR(N)` columns and vector indexing** (`sql/compiler.py`, `sql/table.py`, `storage/ivf_index.py`, `storage/sqlite_document_store.py`): SQL now accepts `TENSOR(N)` as a vector-indexable column type. Tensor values are stored as multiple vector ordinals per row, and IVF/KNN search scores each chunk so the best matching vector represents the document.
+- **SQL `MERGE`** (`sql/compiler.py`): Added core `MERGE INTO ... USING ... ON ...` support for matched `UPDATE`, matched `DELETE`, `DO NOTHING`, unmatched `INSERT`, optional clause predicates, and `RETURNING`, sharing the normal INSERT/UPDATE/DELETE constraint and index maintenance paths.
+- **Extended SQL type round-tripping** (`sql/table.py`, `sql/expr_evaluator.py`, `execution/batch.py`): Added `TIME`, `TIME WITH TIME ZONE`, `TIMESTAMP WITH TIME ZONE`, `BYTEA`, `VECTOR`, and `TENSOR` persistence/Arrow round-tripping improvements so stored values survive process restarts with their Python types intact.
+
+### Bug Fixes
+
+- **`ALTER TABLE ADD COLUMN ... DEFAULT` backfill** (`sql/compiler.py`, `storage/sqlite_document_store.py`): Existing rows now receive the declared default when a column is added, and `ALTER COLUMN ... SET NOT NULL` succeeds after a default-backed add. Persistent document stores now update their column metadata on ADD/DROP/RENAME COLUMN so subsequent writes preserve the changed schema.
+- **Analyzer spelling** (`analysis/token_filter.py`): The ASCII-folding analyzer token filter now uses the expected `a_s_c_i_i_folding` spelling.
+
+### Tests
+
+- **New storage feature coverage** in `test_storage_features.py`: canonical catalog metadata, typed value persistence, tensor vector ordinals, tensor catalog restoration, and direct canonical document/posting row restore.
+- **New SQL regression coverage** in `test_update_delete.py` and `test_ddl.py`: `MERGE` update/insert/delete/do-nothing behavior and default backfill for added columns.
+- **SQL surface audit**: Core SELECT/DML/DDL, tensor/IVF, indexes, views, schema/session/sequence statements, table functions, constraints/FK failures, `MERGE`, `RETURNING`, and prepared statements were exercised against the updated engine behavior.
+- **Total**: 2977 tests across 86 test files.
+
 ## 0.25.12 (2026-05-14)
 
 Fix UPDATE type coercion for JSON, BYTEA, TIMESTAMP, and NUMERIC columns. The UPDATE-family compilers applied only `python_type()` to SET values, bypassing the type-specific coercion that INSERT performs. `UPDATE ... SET json_col = ...` crashed with `TypeError: object() takes no arguments`; BYTEA and TIMESTAMP updates also crashed, and NUMERIC updates silently skipped scale rounding. INSERT and all UPDATE-family paths now share a single `ColumnDef.coerce()` helper, so they produce identical stored representations for every column type. All 2969 tests pass across 85 test files.
