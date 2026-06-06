@@ -21,7 +21,7 @@ from uqa.core.hierarchical import HierarchicalDocument
 from uqa.storage.abc.document_store import DocumentStore
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
 
     from uqa.core.types import DocId, FieldName, PathExpr
     from uqa.storage.managed_connection import SQLiteConnection
@@ -93,7 +93,7 @@ class SQLiteDocumentStore(DocumentStore):
         self,
         conn: SQLiteConnection,
         table_name: str,
-        columns: list[tuple[str, str] | tuple[str, str, int | None]],
+        columns: Sequence[tuple[str, str] | tuple[str, str, int | None]],
     ) -> None:
         self._conn = conn
         self._table_name = table_name
@@ -417,15 +417,17 @@ def _encode_value(value: Any) -> Any:
             return {"$uqa_type": "timestamp_tz", "micros": micros}
         epoch = dt.datetime(1970, 1, 1)
         delta = value.replace(tzinfo=None) - epoch
-        return {"$uqa_type": "timestamp", "micros": int(delta.total_seconds() * 1_000_000)}
+        return {
+            "$uqa_type": "timestamp",
+            "micros": int(delta.total_seconds() * 1_000_000),
+        }
     if isinstance(value, dt.date) and not isinstance(value, dt.datetime):
         days = (value - dt.date(1970, 1, 1)).days
         return {"$uqa_type": "date", "days": days}
     if isinstance(value, dt.time):
         micros = (
-            (value.hour * 3600 + value.minute * 60 + value.second) * 1_000_000
-            + value.microsecond
-        )
+            value.hour * 3600 + value.minute * 60 + value.second
+        ) * 1_000_000 + value.microsecond
         if value.tzinfo is not None and value.utcoffset() is not None:
             offset = int(value.utcoffset().total_seconds() // 60)
             return {"$uqa_type": "time_tz", "micros": micros, "offset_minutes": offset}
@@ -451,13 +453,9 @@ def _decode_value(value: Any) -> Any:
         offset = dt.timezone(dt.timedelta(minutes=int(value.get("offset_minutes", 0))))
         return _time_from_micros(int(value["micros"]), offset)
     if kind == "timestamp":
-        return dt.datetime(1970, 1, 1) + dt.timedelta(
-            microseconds=int(value["micros"])
-        )
+        return dt.datetime(1970, 1, 1) + dt.timedelta(microseconds=int(value["micros"]))
     if kind == "timestamp_tz":
-        return dt.datetime.fromtimestamp(
-            int(value["micros"]) / 1_000_000, tz=dt.UTC
-        )
+        return dt.datetime.fromtimestamp(int(value["micros"]) / 1_000_000, tz=dt.UTC)
     return {k: _decode_value(v) for k, v in value.items()}
 
 

@@ -35,6 +35,8 @@ from uqa.core.types import DocId, Payload, PostingEntry
 from uqa.storage.vector_index import VectorIndex
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from numpy.typing import NDArray
 
     from uqa.storage.managed_connection import SQLiteConnection
@@ -350,8 +352,7 @@ class IVFIndex(VectorIndex):
     def add(self, doc_id: DocId, vector: NDArray) -> None:
         raw_vectors = _coerce_vector_rows(vector, self.dimensions, self._field_name)
         self._conn.execute(
-            "DELETE FROM _vectors "
-            "WHERE table_name = ? AND field = ? AND doc_id = ?",
+            "DELETE FROM _vectors WHERE table_name = ? AND field = ? AND doc_id = ?",
             (self._table_name, self._field_name, doc_id),
         )
         self._conn.execute(
@@ -448,7 +449,9 @@ class IVFIndex(VectorIndex):
             "WHERE table_name = ? AND field = ? AND doc_id = ?",
             (self._table_name, self._field_name, doc_id),
         )
-        self._conn.execute(f'DELETE FROM "{self._lists_table}" WHERE doc_id = ?', (doc_id,))
+        self._conn.execute(
+            f'DELETE FROM "{self._lists_table}" WHERE doc_id = ?', (doc_id,)
+        )
         self._conn.commit()
         self._total_vectors = max(self._count_vectors(), 0)
         self._deletes_since_train += 1
@@ -672,7 +675,11 @@ class IVFIndex(VectorIndex):
         )
         if rows:
             return [
-                (int(centroid_id), int(doc_id), _normalize(np.frombuffer(blob, dtype=np.float32)))
+                (
+                    int(centroid_id),
+                    int(doc_id),
+                    _normalize(np.frombuffer(blob, dtype=np.float32)),
+                )
                 for centroid_id, doc_id, blob in rows
             ]
 
@@ -693,7 +700,7 @@ class IVFIndex(VectorIndex):
 
     def _rows_to_posting_list(
         self,
-        rows: list[tuple[int | None, int, NDArray]],
+        rows: Sequence[tuple[int | None, int, NDArray]],
         q: NDArray,
         *,
         limit: int | None = None,

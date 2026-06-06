@@ -118,7 +118,7 @@ def test_persistent_tables_round_trip_typed_values(tmp_path):
             "(flag, attrs, payload, day, clock, clock_tz, created, created_tz, emb) "
             "VALUES ("
             "TRUE, "
-            "'{\"kind\":\"doc\",\"n\":3}'::jsonb, "
+            '\'{"kind":"doc","n":3}\'::jsonb, '
             "'hello'::bytea, "
             "'2026-05-24'::date, "
             "'09:30:15'::time, "
@@ -145,8 +145,7 @@ def test_persistent_tables_round_trip_typed_values(tmp_path):
 
         body = json.loads(
             conn.execute(
-                "SELECT body FROM _documents "
-                "WHERE table_name = 'rich' AND doc_id = 1"
+                "SELECT body FROM _documents WHERE table_name = 'rich' AND doc_id = 1"
             ).fetchone()[0]
         )
         assert body["flag"] is True
@@ -188,10 +187,7 @@ def test_tensor_column_writes_vector_ordinals_and_searches_best_chunk(tmp_path):
 
     with Engine(db_path=db) as engine:
         engine.sql(
-            "CREATE TABLE docs ("
-            "id SERIAL PRIMARY KEY, "
-            "title TEXT, "
-            "chunks TENSOR(2))"
+            "CREATE TABLE docs (id SERIAL PRIMARY KEY, title TEXT, chunks TENSOR(2))"
         )
         engine.sql("CREATE INDEX idx_docs_chunks ON docs USING ivf (chunks)")
         engine.sql(
@@ -199,8 +195,7 @@ def test_tensor_column_writes_vector_ordinals_and_searches_best_chunk(tmp_path):
             "VALUES ('two chunks', ARRAY[ARRAY[0.0,1.0],ARRAY[1.0,0.0]])"
         )
         engine.sql(
-            "INSERT INTO docs (title, chunks) "
-            "VALUES ('weaker', ARRAY[ARRAY[0.8,0.6]])"
+            "INSERT INTO docs (title, chunks) VALUES ('weaker', ARRAY[ARRAY[0.8,0.6]])"
         )
         rows = engine.sql(
             "SELECT id FROM docs WHERE knn_match(chunks, ARRAY[1.0,0.0], 2)"
@@ -304,8 +299,7 @@ def test_engine_reads_canonical_document_and_posting_rows(tmp_path):
         ("docs", 7, "body", 2),
     )
     cat.conn.execute(
-        "INSERT INTO _field_stats (table_name, field, total_length) "
-        "VALUES (?, ?, ?)",
+        "INSERT INTO _field_stats (table_name, field, total_length) VALUES (?, ?, ?)",
         ("docs", "body", 2),
     )
     cat.conn.commit()

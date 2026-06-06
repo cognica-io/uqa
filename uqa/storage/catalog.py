@@ -78,7 +78,9 @@ def default_analyzer_json() -> str:
     )
 
 
-def vector_fields_from_python_columns(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def vector_fields_from_python_columns(
+    columns: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     fields: list[dict[str, Any]] = []
     for col in columns:
         dimensions = col.get("vector_dimensions")
@@ -1109,9 +1111,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         return json.loads(row[0]) if row else None
 
     def load_all_scoring_params(self) -> list[tuple[str, dict[str, Any]]]:
-        rows = self._conn.execute(
-            "SELECT name, params FROM _scoring_params"
-        ).fetchall()
+        rows = self._conn.execute("SELECT name, params FROM _scoring_params").fetchall()
         return [(name, json.loads(pjson)) for name, pjson in rows]
 
     def delete_scoring_params(self, name: str) -> None:

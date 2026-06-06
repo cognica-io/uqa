@@ -428,8 +428,7 @@ class SQLiteInvertedIndex(InvertedIndex):
 
         # Collect affected (field, term) pairs for skip pointer rebuild.
         affected_terms = self._fetchall(
-            "SELECT field, term FROM _postings "
-            "WHERE table_name = ? AND doc_id = ?",
+            "SELECT field, term FROM _postings WHERE table_name = ? AND doc_id = ?",
             (self._table_name, doc_id),
         )
 
@@ -471,9 +470,15 @@ class SQLiteInvertedIndex(InvertedIndex):
             bm_tbl = f"_blockmax_{self._table_name}_{field}"
             self._conn.execute(f'DROP TABLE IF EXISTS "{skip_tbl}"')
             self._conn.execute(f'DROP TABLE IF EXISTS "{bm_tbl}"')
-        self._conn.execute("DELETE FROM _postings WHERE table_name = ?", (self._table_name,))
-        self._conn.execute("DELETE FROM _field_stats WHERE table_name = ?", (self._table_name,))
-        self._conn.execute("DELETE FROM _doc_lengths WHERE table_name = ?", (self._table_name,))
+        self._conn.execute(
+            "DELETE FROM _postings WHERE table_name = ?", (self._table_name,)
+        )
+        self._conn.execute(
+            "DELETE FROM _field_stats WHERE table_name = ?", (self._table_name,)
+        )
+        self._conn.execute(
+            "DELETE FROM _doc_lengths WHERE table_name = ?", (self._table_name,)
+        )
         self._conn.execute(f'DELETE FROM "_field_stats_{self._table_name}"')
         self._conn.commit()
         self._cached_stats = None
@@ -576,8 +581,7 @@ class SQLiteInvertedIndex(InvertedIndex):
     def get_total_doc_length(self, doc_id: DocId) -> int:
         """Get total document length across all fields."""
         row = self._fetchone(
-            "SELECT SUM(length) FROM _doc_lengths "
-            "WHERE table_name = ? AND doc_id = ?",
+            "SELECT SUM(length) FROM _doc_lengths WHERE table_name = ? AND doc_id = ?",
             (self._table_name, doc_id),
         )
         return row[0] if row and row[0] is not None else 0
@@ -796,8 +800,7 @@ class SQLiteInvertedIndex(InvertedIndex):
         if field not in self._known_fields:
             return
         terms = self._fetchall(
-            "SELECT DISTINCT term FROM _postings "
-            "WHERE table_name = ? AND field = ?",
+            "SELECT DISTINCT term FROM _postings WHERE table_name = ? AND field = ?",
             (self._table_name, field),
         )
         for (term,) in terms:

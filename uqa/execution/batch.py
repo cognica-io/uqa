@@ -419,9 +419,8 @@ def _time_tz_to_arrow_value(value: Any) -> dict[str, int] | None:
         )
 
     micros = (
-        (value.hour * 3600 + value.minute * 60 + value.second) * 1_000_000
-        + value.microsecond
-    )
+        value.hour * 3600 + value.minute * 60 + value.second
+    ) * 1_000_000 + value.microsecond
     offset = value.utcoffset()
     offset_minutes = 0 if offset is None else int(offset.total_seconds() // 60)
     return {"micros": micros, "offset_minutes": offset_minutes}

@@ -510,13 +510,10 @@ class Engine:
                     if value is None:
                         continue
                     col_def = table.columns[col_name]
-                    if (
-                        isinstance(value, str)
-                        and (
-                            col_def.vector_dimensions is not None
-                            or col_def.type_name in {"json", "jsonb", "point"}
-                            or col_def.type_name.endswith("[]")
-                        )
+                    if isinstance(value, str) and (
+                        col_def.vector_dimensions is not None
+                        or col_def.type_name in {"json", "jsonb", "point"}
+                        or col_def.type_name.endswith("[]")
                     ):
                         import json
 

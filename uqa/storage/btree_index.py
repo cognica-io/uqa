@@ -72,10 +72,7 @@ class BTreeIndex(Index):
 
     def estimate_cardinality(self, predicate: Predicate) -> int:
         where_clause, params = self._predicate_to_sql(predicate)
-        sql = (
-            "SELECT COUNT(*) FROM _documents "
-            f"WHERE table_name = ? AND {where_clause}"
-        )
+        sql = f"SELECT COUNT(*) FROM _documents WHERE table_name = ? AND {where_clause}"
         row = self._conn.execute(sql, [self._table_name, *params]).fetchone()
         return row[0] if row else 0
 

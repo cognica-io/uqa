@@ -2453,14 +2453,18 @@ class SQLCompiler:
             )
             matched = target_match is not None
             merged_row = (
-                {**target_match[2], **source_row} if target_match is not None else source_row
+                {**target_match[2], **source_row}
+                if target_match is not None
+                else source_row
             )
 
             for clause in stmt.mergeWhenClauses:
                 if not self._merge_clause_matches(clause, matched):
                     continue
                 condition = getattr(clause, "condition", None)
-                if condition is not None and not evaluator.evaluate(condition, merged_row):
+                if condition is not None and not evaluator.evaluate(
+                    condition, merged_row
+                ):
                     continue
 
                 command = CmdType(clause.commandType)
@@ -2495,7 +2499,10 @@ class SQLCompiler:
                     if target_match is not None:
                         raise ValueError("MERGE INSERT requires no matched target row")
                     insert_row = self._merge_insert_row(
-                        clause.targetList or (), clause.values or (), merged_row, evaluator
+                        clause.targetList or (),
+                        clause.values or (),
+                        merged_row,
+                        evaluator,
                     )
                     doc_id, _ = table.insert(insert_row)
                     if stmt.returningList:
@@ -2576,7 +2583,9 @@ class SQLCompiler:
         for target in targets:
             col_name = target.name
             if col_name not in table.columns:
-                raise ValueError(f"Unknown column '{col_name}' for table '{table_name}'")
+                raise ValueError(
+                    f"Unknown column '{col_name}' for table '{table_name}'"
+                )
             new_value = evaluator.evaluate(target.val, row)
             col_def = table.columns[col_name]
             if new_value is not None:

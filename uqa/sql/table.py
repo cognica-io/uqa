@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import date as _date
 from datetime import datetime as _datetime
 from datetime import time as _time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -581,7 +581,7 @@ def _coerce_datetime(value: Any, type_name: str) -> _date | _datetime | _time:
     return _datetime.fromisoformat(s)
 
 
-def _coerce_vector_value(value: Any, name: str, dimensions: int) -> list:
+def _coerce_vector_value(value: Any, name: str, dimensions: int) -> list[Any]:
     arr = np.asarray(value, dtype=np.float32)
     if arr.ndim == 1:
         if arr.shape[0] != dimensions:
@@ -589,14 +589,14 @@ def _coerce_vector_value(value: Any, name: str, dimensions: int) -> list:
                 f"VECTOR/TENSOR column '{name}' requires {dimensions} dimensions, "
                 f"got {arr.shape[0]}"
             )
-        return arr.tolist()
+        return cast("list[Any]", arr.tolist())
     if arr.ndim == 2:
         if arr.shape[1] != dimensions:
             raise ValueError(
                 f"VECTOR/TENSOR column '{name}' requires row dimension "
                 f"{dimensions}, got {arr.shape[1]}"
             )
-        return arr.tolist()
+        return cast("list[Any]", arr.tolist())
     raise ValueError(
         f"VECTOR/TENSOR column '{name}' requires a 1-D vector or 2-D tensor, "
         f"got {arr.ndim}-D value"
