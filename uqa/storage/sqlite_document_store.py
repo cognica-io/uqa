@@ -13,6 +13,7 @@ SQLite affinity so that type round-tripping is preserved.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -56,6 +57,10 @@ _AFFINITY_MAP: dict[str, str] = {
     "bytes": "BLOB",
     "blob": "BLOB",
     "date": "TEXT",
+    "time": "TEXT",
+    "timetz": "TEXT",
+    "time without time zone": "TEXT",
+    "time with time zone": "TEXT",
     "timestamp": "TEXT",
     "timestamptz": "TEXT",
     "timestamp without time zone": "TEXT",
@@ -79,55 +84,83 @@ class SQLiteDocumentStore(DocumentStore):
         Logical table name.  The backing SQLite table is named
         ``_data_{table_name}``.
     columns:
-        Sequence of ``(column_name, sql_type_name)`` pairs that define
-        the schema.  Type names are resolved via ``_AFFINITY_MAP``.
+        Sequence of ``(column_name, sql_type_name)`` or
+        ``(column_name, sql_type_name, vector_dimensions)`` entries that
+        define the schema.
     """
 
     def __init__(
         self,
         conn: SQLiteConnection,
         table_name: str,
-        columns: list[tuple[str, str]],
+        columns: list[tuple[str, str] | tuple[str, str, int | None]],
     ) -> None:
         self._conn = conn
-        self._table = f"_data_{table_name}"
-        self._columns: list[str] = [name for name, _ in columns]
+        self._table_name = table_name
+        self._columns: list[str] = [col[0] for col in columns]
         self._col_set: frozenset[str] = frozenset(self._columns)
         self._has_atomic_fetch = hasattr(conn, "execute_fetchall")
         self._json_cols: frozenset[str] = frozenset(
             name
-            for name, type_name in columns
+            for name, type_name, *_rest in columns
             if type_name.lower() in ("json", "jsonb", "vector", "point")
             or type_name.lower().endswith("[]")
         )
-
-        # Build and execute CREATE TABLE IF NOT EXISTS
-        col_defs: list[str] = ["_rowid INTEGER PRIMARY KEY"]
-        for name, type_name in columns:
-            affinity = _AFFINITY_MAP.get(type_name.lower(), "TEXT")
-            col_defs.append(f"{name} {affinity}")
-
-        ddl = f"CREATE TABLE IF NOT EXISTS {self._table} ({', '.join(col_defs)})"
-        self._conn.execute(ddl)
-        self._conn.commit()
-
-        # Pre-build reusable SQL fragments
-        all_cols = ", ".join(self._columns)
-        placeholders = ", ".join(["?"] * (1 + len(self._columns)))
-        col_list = ", ".join(["_rowid", *self._columns])
-
-        self._sql_put = (
-            f"INSERT OR REPLACE INTO {self._table} ({col_list}) VALUES ({placeholders})"
+        self._vector_cols: frozenset[str] = frozenset(
+            name
+            for name, type_name, *_rest in columns
+            if type_name.lower() in ("vector", "tensor")
         )
-        self._sql_get = f"SELECT {all_cols} FROM {self._table} WHERE _rowid = ?"
-        self._sql_delete = f"DELETE FROM {self._table} WHERE _rowid = ?"
-        self._sql_ids = f"SELECT _rowid FROM {self._table}"
-        self._sql_count = f"SELECT COUNT(*) FROM {self._table}"
-        self._sql_max = f"SELECT MAX(_rowid) FROM {self._table}"
-        self._field_sql_cache: dict[str, str] = {}
-        self._sql_iter_all = (
-            f"SELECT _rowid, {all_cols} FROM {self._table} ORDER BY _rowid"
-        )
+        self._create_tables()
+
+    def add_column(self, name: str, type_name: str) -> None:
+        if name in self._col_set:
+            return
+        self._columns.append(name)
+        self._refresh_column_sets()
+        self._add_typed_column(name, type_name)
+
+    def drop_column(self, name: str) -> None:
+        if name not in self._col_set:
+            return
+        self._columns = [col for col in self._columns if col != name]
+        self._refresh_column_sets()
+
+    def rename_column(self, old: str, new: str) -> None:
+        self._columns = [new if col == old else col for col in self._columns]
+        json_cols = {new if col == old else col for col in self._json_cols}
+        vector_cols = {new if col == old else col for col in self._vector_cols}
+        self._refresh_column_sets(json_cols=json_cols, vector_cols=vector_cols)
+
+    def _add_typed_column(self, name: str, type_name: str) -> None:
+        lower = type_name.lower()
+        json_cols = set(self._json_cols)
+        vector_cols = set(self._vector_cols)
+        if lower in ("json", "jsonb", "vector", "point") or lower.endswith("[]"):
+            json_cols.add(name)
+        if lower in ("vector", "tensor"):
+            vector_cols.add(name)
+        self._refresh_column_sets(json_cols=json_cols, vector_cols=vector_cols)
+
+    def _refresh_column_sets(
+        self,
+        *,
+        json_cols: set[str] | None = None,
+        vector_cols: set[str] | None = None,
+    ) -> None:
+        self._col_set = frozenset(self._columns)
+        if json_cols is not None:
+            self._json_cols = frozenset(json_cols)
+        else:
+            self._json_cols = frozenset(
+                col for col in self._json_cols if col in self._col_set
+            )
+        if vector_cols is not None:
+            self._vector_cols = frozenset(vector_cols)
+        else:
+            self._vector_cols = frozenset(
+                col for col in self._vector_cols if col in self._col_set
+            )
 
     # -- Thread-safe query helpers -------------------------------------
 
@@ -141,61 +174,132 @@ class SQLiteDocumentStore(DocumentStore):
             return self._conn.execute_fetchone(sql, params)  # type: ignore[union-attr]
         return self._conn.execute(sql, params).fetchone()
 
+    def _create_tables(self) -> None:
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS _documents ("
+            "table_name TEXT NOT NULL, "
+            "doc_id INTEGER NOT NULL, "
+            "body TEXT NOT NULL, "
+            "PRIMARY KEY (table_name, doc_id))"
+        )
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS _document_blobs ("
+            "table_name TEXT NOT NULL, "
+            "doc_id INTEGER NOT NULL, "
+            "field_name TEXT NOT NULL, "
+            "bytes BLOB NOT NULL, "
+            "PRIMARY KEY (table_name, doc_id, field_name))"
+        )
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS _vectors ("
+            "table_name TEXT NOT NULL, "
+            "field TEXT NOT NULL, "
+            "doc_id INTEGER NOT NULL, "
+            "vector_ordinal INTEGER NOT NULL DEFAULT 0, "
+            "vector BLOB NOT NULL, "
+            "PRIMARY KEY (table_name, field, doc_id, vector_ordinal))"
+        )
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS _ivf_assignments ("
+            "table_name TEXT NOT NULL, "
+            "field TEXT NOT NULL, "
+            "doc_id INTEGER NOT NULL, "
+            "vector_ordinal INTEGER NOT NULL DEFAULT 0, "
+            "centroid_id INTEGER NOT NULL, "
+            "PRIMARY KEY (table_name, field, doc_id, vector_ordinal))"
+        )
+        self._conn.commit()
+
     # ------------------------------------------------------------------
     # Public API (mirrors DocumentStore)
     # ------------------------------------------------------------------
 
     def put(self, doc_id: DocId, document: dict) -> None:
         """Insert or replace a document (row) keyed by *doc_id*."""
-        values: list[Any] = [doc_id]
-        for c in self._columns:
-            v = document.get(c)
-            if v is not None and c in self._json_cols and isinstance(v, dict | list):
-                v = json.dumps(v, ensure_ascii=False)
-            values.append(v)
-        self._conn.execute(self._sql_put, values)
+        stored: dict[str, Any] = {}
+        blobs: list[tuple[str, bytes]] = []
+        for col in self._columns:
+            if col not in document or document[col] is None:
+                continue
+            encoded = _encode_value(document[col])
+            if isinstance(encoded, _BlobValue):
+                stored[col] = {
+                    "$uqa_type": "document_blob",
+                    "field": col,
+                }
+                blobs.append((col, encoded.data))
+            else:
+                stored[col] = encoded
+        self._conn.execute(
+            "DELETE FROM _document_blobs WHERE table_name = ? AND doc_id = ?",
+            (self._table_name, doc_id),
+        )
+        self._conn.execute(
+            "INSERT OR REPLACE INTO _documents (table_name, doc_id, body) "
+            "VALUES (?, ?, ?)",
+            (self._table_name, doc_id, json.dumps(stored, ensure_ascii=False)),
+        )
+        for field, data in blobs:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO _document_blobs "
+                "(table_name, doc_id, field_name, bytes) VALUES (?, ?, ?, ?)",
+                (self._table_name, doc_id, field, data),
+            )
+        self._persist_vectors(doc_id, document)
         self._conn.commit()
 
     def get(self, doc_id: DocId) -> dict | None:
         """Return the document as a dict, or ``None`` if absent."""
-        row = self._fetchone(self._sql_get, (doc_id,))
+        row = self._fetchone(
+            "SELECT body FROM _documents WHERE table_name = ? AND doc_id = ?",
+            (self._table_name, doc_id),
+        )
         if row is None:
             return None
-        result: dict = {}
-        for i, col in enumerate(self._columns):
-            v = row[i]
-            if v is None:
-                continue
-            if col in self._json_cols and isinstance(v, str):
-                v = json.loads(v)
-            result[col] = v
-        return result
+        return self._decode_body(doc_id, row[0])
 
     def delete(self, doc_id: DocId) -> None:
         """Delete a document.  No error if *doc_id* does not exist."""
-        self._conn.execute(self._sql_delete, (doc_id,))
+        self._conn.execute(
+            "DELETE FROM _documents WHERE table_name = ? AND doc_id = ?",
+            (self._table_name, doc_id),
+        )
+        self._conn.execute(
+            "DELETE FROM _document_blobs WHERE table_name = ? AND doc_id = ?",
+            (self._table_name, doc_id),
+        )
+        self._conn.execute(
+            "DELETE FROM _vectors WHERE table_name = ? AND doc_id = ?",
+            (self._table_name, doc_id),
+        )
+        self._conn.execute(
+            "DELETE FROM _ivf_assignments WHERE table_name = ? AND doc_id = ?",
+            (self._table_name, doc_id),
+        )
         self._conn.commit()
 
     def clear(self) -> None:
         """Remove all rows from the backing SQLite table."""
-        self._conn.execute(f"DELETE FROM {self._table}")
+        self._conn.execute(
+            "DELETE FROM _documents WHERE table_name = ?", (self._table_name,)
+        )
+        self._conn.execute(
+            "DELETE FROM _document_blobs WHERE table_name = ?", (self._table_name,)
+        )
+        self._conn.execute(
+            "DELETE FROM _vectors WHERE table_name = ?", (self._table_name,)
+        )
+        self._conn.execute(
+            "DELETE FROM _ivf_assignments WHERE table_name = ?", (self._table_name,)
+        )
         self._conn.commit()
 
     def get_field(self, doc_id: DocId, field: FieldName) -> Any:
         """Return a single field value, or ``None`` if absent."""
         if field not in self._col_set:
             return None
-        sql = self._field_sql_cache.get(field)
-        if sql is None:
-            sql = f"SELECT {field} FROM {self._table} WHERE _rowid = ?"
-            self._field_sql_cache[field] = sql
-        row = self._fetchone(sql, (doc_id,))
-        if row is None:
-            return None
-        v = row[0]
-        if v is not None and field in self._json_cols and isinstance(v, str):
-            v = json.loads(v)
-        return v
+        doc = self.get(doc_id)
+        return None if doc is None else doc.get(field)
 
     def get_fields_bulk(
         self, doc_ids: list[DocId], field: FieldName
@@ -203,31 +307,16 @@ class SQLiteDocumentStore(DocumentStore):
         """Return field values for multiple doc_ids in a single call."""
         if field not in self._col_set:
             return dict.fromkeys(doc_ids)
-        is_json = field in self._json_cols
         result: dict[DocId, Any] = dict.fromkeys(doc_ids)
-        for chunk_start in range(0, len(doc_ids), 500):
-            chunk = doc_ids[chunk_start : chunk_start + 500]
-            placeholders = ",".join("?" * len(chunk))
-            rows = self._fetchall(
-                f"SELECT _rowid, {field} FROM {self._table} "
-                f"WHERE _rowid IN ({placeholders})",
-                tuple(chunk),
-            )
-            for rowid, v in rows:
-                if v is not None and is_json and isinstance(v, str):
-                    v = json.loads(v)
-                result[rowid] = v
+        for doc_id in doc_ids:
+            result[doc_id] = self.get_field(doc_id, field)
         return result
 
     def has_value(self, field: FieldName, value: Any) -> bool:
         """Return True if any row has ``field == value``."""
         if field not in self._col_set:
             return False
-        row = self._fetchone(
-            f"SELECT 1 FROM {self._table} WHERE {field} = ? LIMIT 1",
-            (value,),
-        )
-        return row is not None
+        return any(doc.get(field) == value for _doc_id, doc in self.iter_all())
 
     def eval_path(self, doc_id: DocId, path: PathExpr) -> Any:
         """Evaluate a hierarchical path expression against a document.
@@ -248,30 +337,152 @@ class SQLiteDocumentStore(DocumentStore):
     @property
     def doc_ids(self) -> set[DocId]:
         """Return the set of all stored document IDs."""
-        return {row[0] for row in self._fetchall(self._sql_ids)}
+        rows = self._fetchall(
+            "SELECT doc_id FROM _documents WHERE table_name = ?", (self._table_name,)
+        )
+        return {row[0] for row in rows}
 
     def __len__(self) -> int:
-        row = self._fetchone(self._sql_count)
+        row = self._fetchone(
+            "SELECT COUNT(*) FROM _documents WHERE table_name = ?",
+            (self._table_name,),
+        )
         return row[0] if row else 0
 
     def max_doc_id(self) -> int:
         """Return the largest ``_rowid`` currently stored, or 0."""
-        row = self._fetchone(self._sql_max)
+        row = self._fetchone(
+            "SELECT MAX(doc_id) FROM _documents WHERE table_name = ?",
+            (self._table_name,),
+        )
         return row[0] if row is not None and row[0] is not None else 0
 
     def iter_all(self) -> Iterator[tuple[int, dict]]:
         """Yield all (doc_id, document) pairs in rowid order."""
-        rows = self._fetchall(self._sql_iter_all)
-        columns = self._columns
-        json_cols = self._json_cols
+        rows = self._fetchall(
+            "SELECT doc_id, body FROM _documents WHERE table_name = ? ORDER BY doc_id",
+            (self._table_name,),
+        )
         for row in rows:
             doc_id = row[0]
-            result: dict = {}
-            for i, col in enumerate(columns):
-                v = row[i + 1]
-                if v is None:
-                    continue
-                if col in json_cols and isinstance(v, str):
-                    v = json.loads(v)
-                result[col] = v
-            yield doc_id, result
+            yield doc_id, self._decode_body(doc_id, row[1])
+
+    def _decode_body(self, doc_id: int, body: str) -> dict[str, Any]:
+        raw = json.loads(body)
+        result: dict[str, Any] = {}
+        for key, value in raw.items():
+            decoded = _decode_value(value)
+            if _is_blob_marker(decoded):
+                blob = self._fetchone(
+                    "SELECT bytes FROM _document_blobs "
+                    "WHERE table_name = ? AND doc_id = ? AND field_name = ?",
+                    (self._table_name, doc_id, key),
+                )
+                if blob is not None:
+                    decoded = blob[0]
+            result[key] = decoded
+        return result
+
+    def _persist_vectors(self, doc_id: int, document: dict[str, Any]) -> None:
+        for field in self._vector_cols:
+            self._conn.execute(
+                "DELETE FROM _vectors "
+                "WHERE table_name = ? AND field = ? AND doc_id = ?",
+                (self._table_name, field, doc_id),
+            )
+            value = document.get(field)
+            if value is None:
+                continue
+            vectors = _coerce_vectors(value)
+            for ordinal, vector in enumerate(vectors):
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO _vectors "
+                    "(table_name, field, doc_id, vector_ordinal, vector) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (self._table_name, field, doc_id, ordinal, vector),
+                )
+
+
+class _BlobValue:
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+
+
+def _encode_value(value: Any) -> Any:
+    if isinstance(value, bytes | bytearray | memoryview):
+        return _BlobValue(bytes(value))
+    if isinstance(value, dt.datetime):
+        if value.tzinfo is not None and value.utcoffset() is not None:
+            micros = int(value.timestamp() * 1_000_000)
+            return {"$uqa_type": "timestamp_tz", "micros": micros}
+        epoch = dt.datetime(1970, 1, 1)
+        delta = value.replace(tzinfo=None) - epoch
+        return {"$uqa_type": "timestamp", "micros": int(delta.total_seconds() * 1_000_000)}
+    if isinstance(value, dt.date) and not isinstance(value, dt.datetime):
+        days = (value - dt.date(1970, 1, 1)).days
+        return {"$uqa_type": "date", "days": days}
+    if isinstance(value, dt.time):
+        micros = (
+            (value.hour * 3600 + value.minute * 60 + value.second) * 1_000_000
+            + value.microsecond
+        )
+        if value.tzinfo is not None and value.utcoffset() is not None:
+            offset = int(value.utcoffset().total_seconds() // 60)
+            return {"$uqa_type": "time_tz", "micros": micros, "offset_minutes": offset}
+        return {"$uqa_type": "time", "micros": micros}
+    if isinstance(value, dict):
+        return {k: _encode_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_encode_value(v) for v in value]
+    return value
+
+
+def _decode_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_decode_value(v) for v in value]
+    if not isinstance(value, dict):
+        return value
+    kind = value.get("$uqa_type")
+    if kind == "date":
+        return dt.date(1970, 1, 1) + dt.timedelta(days=int(value["days"]))
+    if kind == "time":
+        return _time_from_micros(int(value["micros"]))
+    if kind == "time_tz":
+        offset = dt.timezone(dt.timedelta(minutes=int(value.get("offset_minutes", 0))))
+        return _time_from_micros(int(value["micros"]), offset)
+    if kind == "timestamp":
+        return dt.datetime(1970, 1, 1) + dt.timedelta(
+            microseconds=int(value["micros"])
+        )
+    if kind == "timestamp_tz":
+        return dt.datetime.fromtimestamp(
+            int(value["micros"]) / 1_000_000, tz=dt.UTC
+        )
+    return {k: _decode_value(v) for k, v in value.items()}
+
+
+def _time_from_micros(micros: int, tzinfo: dt.tzinfo | None = None) -> dt.time:
+    micros %= 86_400 * 1_000_000
+    seconds, microsecond = divmod(micros, 1_000_000)
+    hour, rem = divmod(seconds, 3600)
+    minute, second = divmod(rem, 60)
+    return dt.time(hour, minute, second, microsecond, tzinfo=tzinfo)
+
+
+def _is_blob_marker(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("$uqa_type") == "document_blob"
+        and isinstance(value.get("field"), str)
+    )
+
+
+def _coerce_vectors(value: Any) -> list[bytes]:
+    import numpy as np
+
+    arr = np.asarray(value, dtype=np.float32)
+    if arr.ndim == 1:
+        return [arr.tobytes()]
+    if arr.ndim == 2:
+        return [arr[i].tobytes() for i in range(arr.shape[0])]
+    return []

@@ -18,6 +18,7 @@ access with automatic null handling and Python type conversion.
 
 from __future__ import annotations
 
+import datetime as dt
 import enum
 from typing import TYPE_CHECKING, Any
 
@@ -39,10 +40,19 @@ class DataType(enum.Enum):
     BOOLEAN = "boolean"
     BYTES = "bytes"
     TIMESTAMP = "timestamp"
+    TIMESTAMP_TZ = "timestamp_tz"
     DATE = "date"
     TIME = "time"
+    TIME_TZ = "time_tz"
     INTERVAL = "interval"
 
+
+_TIME_TZ_ARROW = pa.struct(
+    [
+        pa.field("micros", pa.int64()),
+        pa.field("offset_minutes", pa.int32()),
+    ]
+)
 
 # DataType -> Arrow type mapping.
 _DTYPE_TO_ARROW: dict[DataType, pa.DataType] = {
@@ -52,8 +62,10 @@ _DTYPE_TO_ARROW: dict[DataType, pa.DataType] = {
     DataType.BOOLEAN: pa.bool_(),
     DataType.BYTES: pa.binary(),
     DataType.TIMESTAMP: pa.timestamp("us"),
+    DataType.TIMESTAMP_TZ: pa.timestamp("us", tz="UTC"),
     DataType.DATE: pa.date32(),
     DataType.TIME: pa.time64("us"),
+    DataType.TIME_TZ: _TIME_TZ_ARROW,
     DataType.INTERVAL: pa.duration("us"),
 }
 
@@ -70,7 +82,11 @@ def _arrow_type_to_dtype(arrow_type: pa.DataType) -> DataType:
         return DataType.TEXT
     if pa.types.is_binary(arrow_type) or pa.types.is_large_binary(arrow_type):
         return DataType.BYTES
+    if _is_time_tz_arrow_type(arrow_type):
+        return DataType.TIME_TZ
     if pa.types.is_timestamp(arrow_type):
+        if getattr(arrow_type, "tz", None):
+            return DataType.TIMESTAMP_TZ
         return DataType.TIMESTAMP
     if pa.types.is_date(arrow_type):
         return DataType.DATE
@@ -107,15 +123,18 @@ _SQL_TO_DTYPE: dict[str, DataType] = {
     "decimal": DataType.FLOAT,
     "boolean": DataType.BOOLEAN,
     "bool": DataType.BOOLEAN,
+    "bytea": DataType.BYTES,
+    "bytes": DataType.BYTES,
+    "blob": DataType.BYTES,
     "date": DataType.DATE,
     "time": DataType.TIME,
-    "timetz": DataType.TIME,
+    "timetz": DataType.TIME_TZ,
     "time without time zone": DataType.TIME,
-    "time with time zone": DataType.TIME,
+    "time with time zone": DataType.TIME_TZ,
     "timestamp": DataType.TIMESTAMP,
-    "timestamptz": DataType.TIMESTAMP,
+    "timestamptz": DataType.TIMESTAMP_TZ,
     "timestamp without time zone": DataType.TIMESTAMP,
-    "timestamp with time zone": DataType.TIMESTAMP,
+    "timestamp with time zone": DataType.TIMESTAMP_TZ,
     "interval": DataType.INTERVAL,
 }
 
@@ -267,11 +286,7 @@ class Batch:
         if self.selection is not None:
             return self.compact().to_rows()
 
-        n = self.size
-        if n == 0:
-            return []
-
-        return self._rb.to_pylist()
+        return record_batch_to_rows(self._rb)
 
     @classmethod
     def from_rows(
@@ -317,7 +332,7 @@ class Batch:
         fields: list[pa.Field] = []
         for name in col_names:
             values = [row.get(name) for row in rows]
-            dtype = schema.get(name, DataType.TEXT)
+            dtype = _resolve_dtype(schema.get(name, DataType.TEXT), values)
             if _has_complex_values(values):
                 # Normalize mixed-type lists to homogeneous strings
                 # (matches PostgreSQL's type promotion to text).
@@ -330,10 +345,103 @@ class Batch:
                 arrow_type = _DTYPE_TO_ARROW[dtype]
                 if dtype == DataType.BOOLEAN:
                     values = [bool(v) if v is not None else None for v in values]
+                elif dtype == DataType.INTEGER:
+                    values = [int(v) if isinstance(v, bool) else v for v in values]
+                elif dtype == DataType.TIME_TZ:
+                    values = [_time_tz_to_arrow_value(v) for v in values]
                 arrays.append(pa.array(values, type=arrow_type))
                 fields.append(pa.field(name, arrow_type))
 
         return cls(pa.RecordBatch.from_arrays(arrays, schema=pa.schema(fields)))
+
+
+def _resolve_dtype(dtype: DataType, values: list[Any]) -> DataType:
+    non_null = [value for value in values if value is not None]
+    if (
+        dtype == DataType.INTEGER
+        and non_null
+        and all(isinstance(value, bool) for value in non_null)
+    ):
+        return DataType.BOOLEAN
+    if dtype == DataType.TIMESTAMP and any(_has_tzinfo(value) for value in non_null):
+        return DataType.TIMESTAMP_TZ
+    if dtype == DataType.TIME and any(_has_tzinfo(value) for value in non_null):
+        return DataType.TIME_TZ
+    return dtype
+
+
+def record_batch_to_rows(
+    rb: pa.RecordBatch, columns: list[str] | None = None
+) -> list[dict[str, Any]]:
+    if rb.num_rows == 0:
+        return []
+
+    pydict = rb.to_pydict()
+    field_by_name = {field.name: field for field in rb.schema}
+    names = columns if columns is not None else rb.schema.names
+    rows: list[dict[str, Any]] = []
+    for i in range(rb.num_rows):
+        row: dict[str, Any] = {}
+        for name in names:
+            if name not in pydict:
+                continue
+            field = field_by_name[name]
+            row[name] = _restore_arrow_value(field.type, pydict[name][i])
+        rows.append(row)
+    return rows
+
+
+def _is_time_tz_arrow_type(arrow_type: pa.DataType) -> bool:
+    return (
+        pa.types.is_struct(arrow_type)
+        and arrow_type.num_fields == 2
+        and arrow_type.field(0).name == "micros"
+        and arrow_type.field(1).name == "offset_minutes"
+    )
+
+
+def _restore_arrow_value(arrow_type: pa.DataType, value: Any) -> Any:
+    if value is None:
+        return None
+    if _is_time_tz_arrow_type(arrow_type):
+        return _time_tz_from_arrow_value(value)
+    return value
+
+
+def _time_tz_to_arrow_value(value: Any) -> dict[str, int] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = dt.time.fromisoformat(value)
+    if not isinstance(value, dt.time):
+        raise TypeError(
+            f"Expected time value for TIMETZ column, got {type(value).__name__}"
+        )
+
+    micros = (
+        (value.hour * 3600 + value.minute * 60 + value.second) * 1_000_000
+        + value.microsecond
+    )
+    offset = value.utcoffset()
+    offset_minutes = 0 if offset is None else int(offset.total_seconds() // 60)
+    return {"micros": micros, "offset_minutes": offset_minutes}
+
+
+def _time_tz_from_arrow_value(value: dict[str, Any]) -> dt.time:
+    micros = int(value["micros"]) % (86_400 * 1_000_000)
+    seconds, microsecond = divmod(micros, 1_000_000)
+    hour, rem = divmod(seconds, 3600)
+    minute, second = divmod(rem, 60)
+    tzinfo = dt.timezone(dt.timedelta(minutes=int(value["offset_minutes"])))
+    return dt.time(hour, minute, second, microsecond, tzinfo=tzinfo)
+
+
+def _has_tzinfo(value: Any) -> bool:
+    return (
+        isinstance(value, dt.datetime | dt.time)
+        and value.tzinfo is not None
+        and value.utcoffset() is not None
+    )
 
 
 def _has_complex_values(values: list[Any]) -> bool:

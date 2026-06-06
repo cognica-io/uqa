@@ -149,6 +149,7 @@ from pglast.ast import (
     IndexStmt,
     InsertStmt,
     JoinExpr,
+    MergeStmt,
     NamedArgExpr,
     NullTest,
     ParamRef,
@@ -183,7 +184,7 @@ from pglast.ast import (
 from pglast.ast import (
     String as PgString,
 )
-from pglast.enums.nodes import JoinType, OnConflictAction
+from pglast.enums.nodes import CmdType, JoinType, OnConflictAction
 from pglast.enums.parsenodes import (
     A_Expr_Kind,
     AlterTableType,
@@ -215,6 +216,7 @@ from uqa.sql.table import (
     ColumnDef,
     ForeignKeyDef,
     Table,
+    _evaluate_default,
     resolve_type,
 )
 
@@ -358,11 +360,10 @@ def _iter_batches(batches: list[Any], columns: list[str] | None = None):
     physical operators may have added (e.g. natural aggregate names
     alongside user aliases).
     """
+    from uqa.execution.batch import record_batch_to_rows
+
     for rb in batches:
-        pydict = rb.to_pydict()
-        names = columns if columns is not None else rb.schema.names
-        for i in range(rb.num_rows):
-            yield {name: pydict[name][i] for name in names if name in pydict}
+        yield from record_batch_to_rows(rb, columns)
 
 
 def _batches_to_rows(
@@ -509,6 +510,8 @@ class SQLCompiler:
             return self._compile_update(stmt)
         if isinstance(stmt, DeleteStmt):
             return self._compile_delete(stmt)
+        if isinstance(stmt, MergeStmt):
+            return self._compile_merge(stmt)
         if isinstance(stmt, DropStmt):
             return self._compile_drop(stmt)
         if isinstance(stmt, ViewStmt):
@@ -840,15 +843,16 @@ class SQLCompiler:
         type_names = node.typeName.names
         raw_type, python_type = resolve_type(type_names, node.typeName.arrayBounds)
 
-        # VECTOR(N) -- extract dimensions from type modifier
+        # VECTOR(N) / TENSOR(N) -- extract dimensions from type modifier.
         vector_dimensions: int | None = None
-        if raw_type == "vector":
+        if raw_type in ("vector", "tensor"):
             typmods = node.typeName.typmods
             if typmods and isinstance(typmods[0], A_Const):
                 vector_dimensions = self._extract_int_value(typmods[0])
             else:
                 raise ValueError(
-                    f"VECTOR column '{col_name}' requires dimensions, e.g. VECTOR(128)"
+                    f"{raw_type.upper()} column '{col_name}' requires dimensions, "
+                    f"e.g. {raw_type.upper()}(128)"
                 )
 
         primary_key = False
@@ -1415,6 +1419,9 @@ class SQLCompiler:
                         f"in table '{table_name}'"
                     )
                 table.columns[col_def.name] = col_def
+                add_column = getattr(table.document_store, "add_column", None)
+                if add_column is not None:
+                    add_column(col_def.name, col_def.type_name)
                 if check_expr is not None:
                     from uqa.sql.expr_evaluator import ExprEvaluator
 
@@ -1428,6 +1435,7 @@ class SQLCompiler:
                 if fk_def is not None:
                     table.foreign_keys.append(fk_def)
                     self._register_fk_validators(table, [fk_def])
+                self._backfill_added_column(table, col_def)
 
             elif at == AlterTableType.AT_DropColumn:
                 col_name = cmd.name
@@ -1440,6 +1448,9 @@ class SQLCompiler:
                 del table.columns[col_name]
                 if table.primary_key == col_name:
                     table.primary_key = None
+                drop_column = getattr(table.document_store, "drop_column", None)
+                if drop_column is not None:
+                    drop_column(col_name)
                 # Remove field from all documents
                 for doc_id in list(table.document_store.doc_ids):
                     doc = table.document_store.get(doc_id)
@@ -1564,6 +1575,25 @@ class SQLCompiler:
 
         return SQLResult([], [])
 
+    def _backfill_added_column(self, table: Table, col_def: ColumnDef) -> None:
+        has_default = col_def.default is not None
+        if not has_default and not col_def.not_null:
+            return
+
+        for doc_id in list(table.document_store.doc_ids):
+            doc = table.document_store.get(doc_id)
+            if doc is None or col_def.name in doc:
+                continue
+            if has_default:
+                value = col_def.coerce(_evaluate_default(col_def.default))
+                doc[col_def.name] = value
+            elif col_def.not_null:
+                raise ValueError(
+                    f"NOT NULL constraint violated: column '{col_def.name}' "
+                    f"in table '{table.name}'"
+                )
+            table.document_store.put(doc_id, doc)
+
     def _compile_rename(self, stmt: RenameStmt) -> SQLResult:
         rt = ObjectType(stmt.renameType)
 
@@ -1602,6 +1632,9 @@ class SQLCompiler:
             table.columns = new_columns
             if table.primary_key == old_col:
                 table.primary_key = new_col
+            rename_column = getattr(table.document_store, "rename_column", None)
+            if rename_column is not None:
+                rename_column(old_col, new_col)
             # Rename field in all documents
             for doc_id in list(table.document_store.doc_ids):
                 doc = table.document_store.get(doc_id)
@@ -1758,7 +1791,7 @@ class SQLCompiler:
             col_name = columns[0]
             col_def = table.columns[col_name]
             if col_def.vector_dimensions is None:
-                raise ValueError(f"Column '{col_name}' is not a VECTOR column")
+                raise ValueError(f"Column '{col_name}' is not vector-indexable")
 
             # Parse WITH parameters: nlist, nprobe
             # (ef_construction, m are silently ignored for backward compat)
@@ -2376,6 +2409,244 @@ class SQLCompiler:
             cols = self._returning_columns(stmt.returningList, table)
             return SQLResult(cols, returning_rows)
         return SQLResult(["updated"], [{"updated": updated}])
+
+    # ==================================================================
+    # DML: MERGE
+    # ==================================================================
+
+    def _compile_merge(self, stmt: MergeStmt) -> SQLResult:
+        from uqa.sql.expr_evaluator import ExprEvaluator
+
+        table_name = self._qualified_name(stmt.relation)
+        if table_name in self._engine._foreign_tables:
+            raise ValueError(f"Cannot MERGE into foreign table '{table_name}'")
+        table = self._engine._tables.get(table_name)
+        if table is None:
+            raise ValueError(f"Table '{table_name}' does not exist")
+
+        target_alias = (
+            stmt.relation.alias.aliasname
+            if stmt.relation.alias is not None
+            else table_name
+        )
+        source_table, _source_op, source_alias = self._resolve_from_single(
+            stmt.sourceRelation
+        )
+        if source_table is None:
+            raise ValueError("MERGE USING requires a table-like source")
+        source_alias = source_alias or source_table.name
+
+        evaluator = ExprEvaluator(
+            engine=self._engine,
+            subquery_executor=self._compile_select,
+            outer_row=getattr(self, "_correlated_outer_row", None),
+            params=self._params,
+        )
+
+        source_rows = self._merge_rows_for_table(source_table, source_alias)
+        returning_rows: list[dict[str, Any]] = []
+        affected = 0
+
+        for source_row in source_rows:
+            target_match = self._find_merge_target(
+                table, target_alias, source_row, stmt.joinCondition, evaluator
+            )
+            matched = target_match is not None
+            merged_row = (
+                {**target_match[2], **source_row} if target_match is not None else source_row
+            )
+
+            for clause in stmt.mergeWhenClauses:
+                if not self._merge_clause_matches(clause, matched):
+                    continue
+                condition = getattr(clause, "condition", None)
+                if condition is not None and not evaluator.evaluate(condition, merged_row):
+                    continue
+
+                command = CmdType(clause.commandType)
+                if command == CmdType.CMD_NOTHING:
+                    break
+                if command == CmdType.CMD_UPDATE:
+                    if target_match is None:
+                        raise ValueError("MERGE UPDATE requires a matched target row")
+                    doc_id, old_doc, _target_row = target_match
+                    new_doc = self._merge_update_doc(
+                        table, table_name, old_doc, clause.targetList or (), merged_row
+                    )
+                    self._replace_table_document(table, doc_id, old_doc, new_doc)
+                    if stmt.returningList:
+                        returning_rows.append(
+                            self._project_returning(new_doc, stmt.returningList, table)
+                        )
+                    affected += 1
+                    break
+                if command == CmdType.CMD_DELETE:
+                    if target_match is None:
+                        raise ValueError("MERGE DELETE requires a matched target row")
+                    doc_id, old_doc, _target_row = target_match
+                    if stmt.returningList:
+                        returning_rows.append(
+                            self._project_returning(old_doc, stmt.returningList, table)
+                        )
+                    self._delete_table_document(table, doc_id)
+                    affected += 1
+                    break
+                if command == CmdType.CMD_INSERT:
+                    if target_match is not None:
+                        raise ValueError("MERGE INSERT requires no matched target row")
+                    insert_row = self._merge_insert_row(
+                        clause.targetList or (), clause.values or (), merged_row, evaluator
+                    )
+                    doc_id, _ = table.insert(insert_row)
+                    if stmt.returningList:
+                        doc = table.document_store.get(doc_id)
+                        if doc is not None:
+                            returning_rows.append(
+                                self._project_returning(doc, stmt.returningList, table)
+                            )
+                    affected += 1
+                    break
+                raise ValueError(f"Unsupported MERGE command: {command.name}")
+
+        self._cleanup_expanded_from_items()
+
+        if stmt.returningList:
+            cols = self._returning_columns(stmt.returningList, table)
+            return SQLResult(cols, returning_rows)
+        return SQLResult(["merged"], [{"merged": affected}])
+
+    def _merge_rows_for_table(self, table: Table, alias: str) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for doc_id in sorted(table.document_store.doc_ids):
+            doc = table.document_store.get(doc_id)
+            if doc is None:
+                continue
+            row = dict(doc)
+            for col_name, value in doc.items():
+                row[f"{alias}.{col_name}"] = value
+            rows.append(row)
+        return rows
+
+    def _find_merge_target(
+        self,
+        table: Table,
+        alias: str,
+        source_row: dict[str, Any],
+        join_condition: Any,
+        evaluator: Any,
+    ) -> tuple[int, dict[str, Any], dict[str, Any]] | None:
+        for doc_id in sorted(table.document_store.doc_ids):
+            doc = table.document_store.get(doc_id)
+            if doc is None:
+                continue
+            target_row = dict(doc)
+            for col_name, value in doc.items():
+                target_row[f"{alias}.{col_name}"] = value
+            merged = {**target_row, **source_row}
+            if evaluator.evaluate(join_condition, merged):
+                return doc_id, doc, target_row
+        return None
+
+    @staticmethod
+    def _merge_clause_matches(clause: Any, matched: bool) -> bool:
+        match_kind = int(clause.matchKind)
+        if match_kind == 0:
+            return matched
+        if match_kind == 2:
+            return not matched
+        raise ValueError("MERGE WHEN NOT MATCHED BY SOURCE is not supported")
+
+    def _merge_update_doc(
+        self,
+        table: Table,
+        table_name: str,
+        old_doc: dict[str, Any],
+        targets: tuple,
+        row: dict[str, Any],
+    ) -> dict[str, Any]:
+        from uqa.sql.expr_evaluator import ExprEvaluator
+
+        evaluator = ExprEvaluator(
+            engine=self._engine,
+            subquery_executor=self._compile_select,
+            outer_row=getattr(self, "_correlated_outer_row", None),
+            params=self._params,
+        )
+        new_doc = dict(old_doc)
+        for target in targets:
+            col_name = target.name
+            if col_name not in table.columns:
+                raise ValueError(f"Unknown column '{col_name}' for table '{table_name}'")
+            new_value = evaluator.evaluate(target.val, row)
+            col_def = table.columns[col_name]
+            if new_value is not None:
+                new_doc[col_name] = col_def.coerce(new_value)
+            elif col_def.not_null:
+                raise ValueError(
+                    f"NOT NULL constraint violated: "
+                    f"column '{col_name}' in table '{table_name}'"
+                )
+            else:
+                new_doc.pop(col_name, None)
+        return new_doc
+
+    def _merge_insert_row(
+        self,
+        targets: tuple,
+        values: tuple,
+        row: dict[str, Any],
+        evaluator: Any,
+    ) -> dict[str, Any]:
+        if len(targets) != len(values):
+            raise ValueError("MERGE INSERT column count does not match value count")
+        out: dict[str, Any] = {}
+        for target, value_node in zip(targets, values, strict=True):
+            out[target.name] = evaluator.evaluate(value_node, row)
+        return out
+
+    def _replace_table_document(
+        self,
+        table: Table,
+        doc_id: int,
+        old_doc: dict[str, Any],
+        new_doc: dict[str, Any],
+    ) -> None:
+        for fk_validator in table.fk_update_validators:
+            fk_validator(old_doc, new_doc)
+        if table.fts_fields:
+            table.inverted_index.remove_document(doc_id)
+        table.remove_from_unique_indexes(doc_id)
+        table.document_store.put(doc_id, new_doc)
+        for col_name, uidx in table._unique_indexes.items():
+            val = new_doc.get(col_name)
+            if val is not None:
+                uidx[val] = doc_id
+        if table.fts_fields:
+            text_fields = {
+                k: v
+                for k, v in new_doc.items()
+                if k in table.fts_fields and isinstance(v, str)
+            }
+            if text_fields:
+                table.inverted_index.add_document(doc_id, text_fields)
+
+    def _delete_table_document(self, table: Table, doc_id: int) -> None:
+        for fk_validator in table.fk_delete_validators:
+            fk_validator(doc_id)
+        if table.fts_fields:
+            table.inverted_index.remove_document(doc_id)
+        for si in table.spatial_indexes.values():
+            si.delete(doc_id)
+        table.remove_from_unique_indexes(doc_id)
+        table.document_store.delete(doc_id)
+
+    def _cleanup_expanded_from_items(self) -> None:
+        for name in list(self._expanded_views):
+            if name in self._shadowed_tables:
+                self._engine._tables[name] = self._shadowed_tables.pop(name)
+            else:
+                self._engine._tables.pop(name, None)
+        self._expanded_views.clear()
 
     # ==================================================================
     # DML: DELETE
@@ -10271,7 +10542,7 @@ class SQLCompiler:
         if isinstance(node, A_ArrayExpr):
             if node.elements is None:
                 return []
-            return [self._extract_const_value(elem) for elem in node.elements]
+            return [self._extract_insert_value(elem) for elem in node.elements]
         if isinstance(node, TypeCast):
             from uqa.sql.expr_evaluator import _cast_value
 

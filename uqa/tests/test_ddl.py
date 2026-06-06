@@ -47,12 +47,24 @@ class TestAlterTableAddColumn:
         engine_with_table.sql(
             "ALTER TABLE users ADD COLUMN active BOOLEAN DEFAULT TRUE"
         )
+        existing = engine_with_table.sql(
+            "SELECT id, active FROM users ORDER BY id"
+        ).rows
+        assert [row["active"] for row in existing] == [True, True, True]
         # New inserts should get the default
         engine_with_table.sql(
             "INSERT INTO users (id, name, age) VALUES (4, 'Dave', 28)"
         )
         result = engine_with_table.sql("SELECT active FROM users WHERE id = 4")
         assert result.rows[0]["active"] is True
+
+    def test_add_not_null_column_with_default_backfills_existing_rows(
+        self, engine_with_table
+    ):
+        engine_with_table.sql("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'new'")
+        engine_with_table.sql("ALTER TABLE users ALTER COLUMN status SET NOT NULL")
+        result = engine_with_table.sql("SELECT status FROM users ORDER BY id")
+        assert [row["status"] for row in result.rows] == ["new", "new", "new"]
 
 
 # ==================================================================

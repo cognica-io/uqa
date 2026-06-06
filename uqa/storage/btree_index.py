@@ -12,6 +12,7 @@ index-backed scans on the underlying ``_data_{table}`` SQLite table.
 
 from __future__ import annotations
 
+import json
 import math
 from typing import TYPE_CHECKING
 
@@ -41,13 +42,17 @@ class BTreeIndex(Index):
 
     def __init__(self, index_def: IndexDef, conn: SQLiteConnection) -> None:
         super().__init__(index_def, conn)
-        self._data_table = f"_data_{index_def.table_name}"
+        self._table_name = index_def.table_name
 
     def build(self) -> None:
-        cols = ", ".join(f'"{c}"' for c in self._index_def.columns)
+        cols = ", ".join(
+            f"json_extract(body, {self._json_path_sql(c)})"
+            for c in self._index_def.columns
+        )
+        table_literal = self._sql_string(self._table_name)
         self._conn.execute(
             f'CREATE INDEX IF NOT EXISTS "{self._index_def.name}" '
-            f'ON "{self._data_table}" ({cols})'
+            f"ON _documents ({cols}) WHERE table_name = {table_literal}"
         )
         self._conn.commit()
 
@@ -58,17 +63,20 @@ class BTreeIndex(Index):
     def scan(self, predicate: Predicate) -> PostingList:
         where_clause, params = self._predicate_to_sql(predicate)
         sql = (
-            f'SELECT _rowid FROM "{self._data_table}" '
-            f"WHERE {where_clause} ORDER BY _rowid"
+            "SELECT doc_id FROM _documents "
+            f"WHERE table_name = ? AND {where_clause} ORDER BY doc_id"
         )
-        rows = self._conn.execute(sql, params).fetchall()
+        rows = self._conn.execute(sql, [self._table_name, *params]).fetchall()
         entries = [PostingEntry(row[0], Payload(score=0.0)) for row in rows]
         return PostingList.from_sorted(entries)
 
     def estimate_cardinality(self, predicate: Predicate) -> int:
         where_clause, params = self._predicate_to_sql(predicate)
-        sql = f'SELECT COUNT(*) FROM "{self._data_table}" WHERE {where_clause}'
-        row = self._conn.execute(sql, params).fetchone()
+        sql = (
+            "SELECT COUNT(*) FROM _documents "
+            f"WHERE table_name = ? AND {where_clause}"
+        )
+        row = self._conn.execute(sql, [self._table_name, *params]).fetchone()
         return row[0] if row else 0
 
     def scan_cost(self, predicate: Predicate) -> float:
@@ -80,12 +88,13 @@ class BTreeIndex(Index):
 
     def _total_rows(self) -> int:
         row = self._conn.execute(
-            f'SELECT COUNT(*) FROM "{self._data_table}"'
+            "SELECT COUNT(*) FROM _documents WHERE table_name = ?",
+            (self._table_name,),
         ).fetchone()
         return row[0] if row else 0
 
     def _predicate_to_sql(self, predicate: Predicate) -> tuple[str, list]:
-        col = f'"{self._index_def.columns[0]}"'
+        col = f"json_extract(body, {self._json_path_sql(self._index_def.columns[0])})"
 
         if isinstance(predicate, Equals):
             return f"{col} = ?", [predicate.target]
@@ -108,3 +117,11 @@ class BTreeIndex(Index):
         raise ValueError(
             f"BTreeIndex cannot handle predicate type: {type(predicate).__name__}"
         )
+
+    @staticmethod
+    def _json_path_sql(column_name: str) -> str:
+        return BTreeIndex._sql_string("$." + json.dumps(column_name))
+
+    @staticmethod
+    def _sql_string(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"

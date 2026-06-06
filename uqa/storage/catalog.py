@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import struct
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -38,23 +39,223 @@ if TYPE_CHECKING:
     from uqa.storage.managed_connection import SQLiteConnection
 
 
+def quote_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def positions_to_blob(positions: tuple[int, ...] | list[int]) -> bytes:
+    return struct.pack(f"<{len(positions)}I", *[int(p) for p in positions])
+
+
+def blob_to_positions(data: bytes | str) -> tuple[int, ...]:
+    if isinstance(data, str):
+        return tuple(json.loads(data))
+    return struct.unpack(f"<{len(data) // 4}I", data)
+
+
+def decode_legacy_positions(data: bytes | str) -> tuple[int, ...]:
+    if isinstance(data, str):
+        return tuple(json.loads(data))
+    little = struct.unpack(f"<{len(data) // 4}I", data)
+    if little and max(little) > 10_000_000:
+        return struct.unpack(f">{len(data) // 4}I", data)
+    return little
+
+
+def default_analyzer_json() -> str:
+    return json.dumps(
+        {
+            "tokenizer": {"type": "standard"},
+            "token_filters": [
+                {"type": "lowercase"},
+                {"type": "a_s_c_i_i_folding"},
+                {"type": "stop", "language": "english"},
+                {"type": "porter_stem"},
+            ],
+            "char_filters": [],
+        },
+        separators=(",", ":"),
+    )
+
+
+def vector_fields_from_python_columns(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    fields: list[dict[str, Any]] = []
+    for col in columns:
+        dimensions = col.get("vector_dimensions")
+        if dimensions is None and str(col.get("type_name", "")).lower() == "vector":
+            dimensions = 0
+        if dimensions is not None:
+            fields.append({"field": col["name"], "dimensions": int(dimensions)})
+    return fields
+
+
+def python_columns_to_catalog_columns(
+    columns: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    catalog_columns: list[dict[str, Any]] = []
+    for col in columns:
+        out = {
+            "name": col["name"],
+            "ty": python_type_to_catalog_type(col),
+            "type_name": str(col.get("type_name", "text")).lower(),
+            "primary_key": bool(col.get("primary_key", False)),
+            "not_null": bool(col.get("not_null", False)),
+            "auto_increment": bool(col.get("auto_increment", False)),
+            "unique": bool(col.get("unique", False)),
+        }
+        default = col.get("default")
+        if default is not None and isinstance(default, str | int | float | bool):
+            out["default"] = {"Literal": default}
+        catalog_columns.append(out)
+    return catalog_columns
+
+
+def python_type_to_catalog_type(col: dict[str, Any]) -> str | dict[str, Any]:
+    raw = str(col.get("type_name", "text")).lower()
+    if raw == "vector":
+        return {"Vector": int(col.get("vector_dimensions") or 0)}
+    if raw == "tensor":
+        return {"Tensor": int(col.get("vector_dimensions") or 0)}
+    if raw.endswith("[]") or raw in {"json", "jsonb", "point"}:
+        return "Json"
+    if raw in {"bytea", "bytes", "blob"}:
+        return "Bytea"
+    if raw == "date":
+        return "Date"
+    if raw in {"time", "time without time zone"}:
+        return "Time"
+    if raw in {"timetz", "time with time zone"}:
+        return "TimeTz"
+    if raw in {"timestamp", "datetime", "timestamp without time zone"}:
+        return "Timestamp"
+    if raw in {"timestamptz", "timestamp with time zone"}:
+        return "TimestampTz"
+    if raw in {"numeric", "decimal"}:
+        return {
+            "Numeric": {
+                "precision": col.get("numeric_precision"),
+                "scale": col.get("numeric_scale"),
+            }
+        }
+    if raw in {
+        "integer",
+        "int",
+        "int2",
+        "int4",
+        "int8",
+        "bigint",
+        "smallint",
+        "serial",
+        "bigserial",
+        "serial4",
+        "serial8",
+        "bool",
+        "boolean",
+    }:
+        return "Integer"
+    if raw in {"real", "float", "float4", "float8", "double", "double precision"}:
+        return "Real"
+    return "Text"
+
+
+def catalog_columns_to_python_columns(
+    columns: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    python_columns: list[dict[str, Any]] = []
+    for col in columns:
+        type_name, vector_dimensions, numeric_precision, numeric_scale = (
+            catalog_type_to_python(col.get("ty", "Text"))
+        )
+        auto_increment = bool(col.get("auto_increment", False))
+        if type_name == "integer" and auto_increment:
+            type_name = "serial"
+        original_type = col.get("type_name")
+        if isinstance(original_type, str) and original_type:
+            type_name = original_type.lower()
+        default = col.get("default")
+        if isinstance(default, dict) and set(default) == {"Literal"}:
+            default = default["Literal"]
+        else:
+            default = None
+        out = {
+            "name": col["name"],
+            "type_name": type_name,
+            "primary_key": bool(col.get("primary_key", False)),
+            "not_null": bool(col.get("not_null", False)),
+            "auto_increment": auto_increment,
+            "default": default,
+        }
+        if col.get("unique", False):
+            out["unique"] = True
+        if vector_dimensions is not None:
+            out["vector_dimensions"] = vector_dimensions
+        if numeric_precision is not None:
+            out["numeric_precision"] = numeric_precision
+        if numeric_scale is not None:
+            out["numeric_scale"] = numeric_scale
+        python_columns.append(out)
+    return python_columns
+
+
+def catalog_type_to_python(ty: Any) -> tuple[str, int | None, int | None, int | None]:
+    if isinstance(ty, str):
+        return {
+            "Integer": ("integer", None, None, None),
+            "Text": ("text", None, None, None),
+            "Real": ("real", None, None, None),
+            "Json": ("jsonb", None, None, None),
+            "Bytea": ("bytea", None, None, None),
+            "Date": ("date", None, None, None),
+            "Time": ("time", None, None, None),
+            "TimeTz": ("timetz", None, None, None),
+            "Timestamp": ("timestamp without time zone", None, None, None),
+            "TimestampTz": ("timestamp with time zone", None, None, None),
+        }.get(ty, ("text", None, None, None))
+    if isinstance(ty, dict):
+        if "Vector" in ty:
+            return ("vector", int(ty["Vector"]), None, None)
+        if "Tensor" in ty:
+            return ("tensor", int(ty["Tensor"]), None, None)
+        if "Numeric" in ty:
+            numeric = ty["Numeric"] or {}
+            return (
+                "numeric",
+                None,
+                numeric.get("precision"),
+                numeric.get("scale"),
+            )
+    return ("text", None, None, None)
+
+
 class Catalog:
     """SQLite-backed system catalog for persistent storage."""
+
+    CURRENT_SCHEMA_VERSION = 10
 
     _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS _metadata (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS _catalog_tables (
-    name         TEXT PRIMARY KEY,
-    columns_json TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS _tables (
+    name          TEXT PRIMARY KEY,
+    analyzer      TEXT NOT NULL,
+    fts_fields    TEXT NOT NULL,
+    vector_fields TEXT NOT NULL,
+    columns       TEXT
 );
 CREATE TABLE IF NOT EXISTS _documents (
     table_name TEXT    NOT NULL,
     doc_id     INTEGER NOT NULL,
-    data_json  TEXT    NOT NULL,
+    body       TEXT    NOT NULL,
     PRIMARY KEY (table_name, doc_id)
+);
+CREATE TABLE IF NOT EXISTS _document_blobs (
+    table_name TEXT    NOT NULL,
+    doc_id     INTEGER NOT NULL,
+    field_name TEXT    NOT NULL,
+    bytes      BLOB    NOT NULL,
+    PRIMARY KEY (table_name, doc_id, field_name)
 );
 CREATE TABLE IF NOT EXISTS _graph_vertices (
     vertex_id       INTEGER PRIMARY KEY,
@@ -68,24 +269,44 @@ CREATE TABLE IF NOT EXISTS _graph_edges (
     label           TEXT    NOT NULL,
     properties_json TEXT    NOT NULL
 );
+CREATE TABLE IF NOT EXISTS _graph_membership (
+    entity_type TEXT    NOT NULL,
+    entity_id   INTEGER NOT NULL,
+    graph_name  TEXT    NOT NULL,
+    PRIMARY KEY (entity_type, entity_id, graph_name)
+);
 CREATE TABLE IF NOT EXISTS _vectors (
-    doc_id     INTEGER PRIMARY KEY,
-    dimensions INTEGER NOT NULL,
-    embedding  BLOB    NOT NULL
+    table_name     TEXT    NOT NULL,
+    field          TEXT    NOT NULL,
+    doc_id         INTEGER NOT NULL,
+    vector_ordinal INTEGER NOT NULL DEFAULT 0,
+    vector         BLOB    NOT NULL,
+    PRIMARY KEY (table_name, field, doc_id, vector_ordinal)
 );
 CREATE TABLE IF NOT EXISTS _postings (
     table_name TEXT    NOT NULL,
     field      TEXT    NOT NULL,
     term       TEXT    NOT NULL,
     doc_id     INTEGER NOT NULL,
-    positions  TEXT    NOT NULL,
+    positions  BLOB    NOT NULL,
     PRIMARY KEY (table_name, field, term, doc_id)
 );
+CREATE INDEX IF NOT EXISTS _postings_term_idx
+    ON _postings (table_name, field, term);
+CREATE INDEX IF NOT EXISTS _postings_doc_idx
+    ON _postings (table_name, doc_id);
 CREATE TABLE IF NOT EXISTS _doc_lengths (
     table_name TEXT NOT NULL,
     doc_id     INTEGER NOT NULL,
-    lengths    TEXT NOT NULL,
-    PRIMARY KEY (table_name, doc_id)
+    field      TEXT NOT NULL,
+    length     INTEGER NOT NULL,
+    PRIMARY KEY (table_name, doc_id, field)
+);
+CREATE TABLE IF NOT EXISTS _field_stats (
+    table_name   TEXT NOT NULL,
+    field        TEXT NOT NULL,
+    total_length INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (table_name, field)
 );
 CREATE TABLE IF NOT EXISTS _column_stats (
     table_name      TEXT    NOT NULL,
@@ -102,7 +323,7 @@ CREATE TABLE IF NOT EXISTS _column_stats (
 );
 CREATE TABLE IF NOT EXISTS _scoring_params (
     name        TEXT PRIMARY KEY,
-    params_json TEXT NOT NULL
+    params      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS _catalog_indexes (
     name       TEXT PRIMARY KEY,
@@ -141,9 +362,39 @@ CREATE TABLE IF NOT EXISTS _path_indexes (
     label_sequences  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS _models (
-    model_name  TEXT PRIMARY KEY,
-    config_json TEXT NOT NULL
+    name TEXT PRIMARY KEY,
+    body TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS _ivf_indexes (
+    table_name          TEXT    NOT NULL,
+    field               TEXT    NOT NULL,
+    dimensions          INTEGER NOT NULL,
+    nlist               INTEGER NOT NULL,
+    nprobe              INTEGER NOT NULL,
+    train_threshold     INTEGER NOT NULL,
+    state               TEXT    NOT NULL,
+    trained_size        INTEGER NOT NULL,
+    deletes_since_train INTEGER NOT NULL,
+    vector_count        INTEGER NOT NULL,
+    PRIMARY KEY (table_name, field)
+);
+CREATE TABLE IF NOT EXISTS _ivf_centroids (
+    table_name  TEXT    NOT NULL,
+    field       TEXT    NOT NULL,
+    centroid_id INTEGER NOT NULL,
+    vector      BLOB    NOT NULL,
+    PRIMARY KEY (table_name, field, centroid_id)
+);
+CREATE TABLE IF NOT EXISTS _ivf_assignments (
+    table_name     TEXT    NOT NULL,
+    field          TEXT    NOT NULL,
+    doc_id         INTEGER NOT NULL,
+    vector_ordinal INTEGER NOT NULL DEFAULT 0,
+    centroid_id    INTEGER NOT NULL,
+    PRIMARY KEY (table_name, field, doc_id, vector_ordinal)
+);
+CREATE INDEX IF NOT EXISTS _ivf_assignments_centroid_idx
+    ON _ivf_assignments (table_name, field, centroid_id, doc_id, vector_ordinal);
 CREATE INDEX IF NOT EXISTS _graph_vertices_label ON _graph_vertices (label);
 CREATE INDEX IF NOT EXISTS _graph_edges_out ON _graph_edges (source_id, label);
 CREATE INDEX IF NOT EXISTS _graph_edges_in ON _graph_edges (target_id, label);
@@ -158,13 +409,215 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         raw.execute("PRAGMA cache_size=-8000")
         raw.execute("PRAGMA temp_store=MEMORY")
         raw.execute("PRAGMA mmap_size=268435456")
+        self._migrate_legacy_metadata(raw)
+        self._migrate_legacy_documents(raw)
+        self._migrate_legacy_postings(raw)
+        self._migrate_legacy_doc_lengths(raw)
+        self._migrate_legacy_models(raw)
+        self._migrate_legacy_scoring_params(raw)
+        self._migrate_legacy_vectors(raw)
         raw.executescript(self._SCHEMA_SQL)
+        self._migrate_legacy_tables(raw)
         self._migrate_column_stats(raw)
         self._migrate_table_field_analyzers(raw)
         self._migrate_models(raw)
+        raw.execute(
+            "INSERT OR REPLACE INTO _metadata (key, value) VALUES (?, ?)",
+            ("schema_version", str(self.CURRENT_SCHEMA_VERSION)),
+        )
         raw.commit()
         self._conn = ManagedConnection(raw, db_path=db_path)
         self._in_transaction = False
+
+    @staticmethod
+    def _table_names(conn: SQLiteConnection) -> set[str]:
+        return {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+
+    @staticmethod
+    def _table_columns(conn: SQLiteConnection, table_name: str) -> dict[str, str]:
+        if table_name not in Catalog._table_names(conn):
+            return {}
+        return {
+            row[1]: row[2]
+            for row in conn.execute(
+                f"PRAGMA table_info({quote_identifier(table_name)})"
+            ).fetchall()
+        }
+
+    @staticmethod
+    def _migrate_legacy_metadata(conn: SQLiteConnection) -> None:
+        tables = Catalog._table_names(conn)
+        if "_meta" in tables and "_metadata" not in tables:
+            conn.execute("ALTER TABLE _meta RENAME TO _metadata")
+
+    @staticmethod
+    def _migrate_legacy_documents(conn: SQLiteConnection) -> None:
+        cols = Catalog._table_columns(conn, "_documents")
+        if not cols or "body" in cols:
+            return
+        if "data_json" not in cols:
+            return
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS _documents_v10 ("
+            "table_name TEXT NOT NULL, "
+            "doc_id INTEGER NOT NULL, "
+            "body TEXT NOT NULL, "
+            "PRIMARY KEY (table_name, doc_id))"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO _documents_v10 (table_name, doc_id, body) "
+            "SELECT table_name, doc_id, data_json FROM _documents"
+        )
+        conn.execute("DROP TABLE _documents")
+        conn.execute("ALTER TABLE _documents_v10 RENAME TO _documents")
+
+    @staticmethod
+    def _migrate_legacy_postings(conn: SQLiteConnection) -> None:
+        cols = Catalog._table_columns(conn, "_postings")
+        if not cols:
+            return
+        positions_type = cols.get("positions", "")
+        if positions_type.upper() == "BLOB":
+            return
+        rows = conn.execute(
+            "SELECT table_name, field, term, doc_id, positions FROM _postings"
+        ).fetchall()
+        conn.execute("DROP TABLE _postings")
+        conn.execute(
+            "CREATE TABLE _postings ("
+            "table_name TEXT NOT NULL, "
+            "field TEXT NOT NULL, "
+            "term TEXT NOT NULL, "
+            "doc_id INTEGER NOT NULL, "
+            "positions BLOB NOT NULL, "
+            "PRIMARY KEY (table_name, field, term, doc_id))"
+        )
+        for table_name, field, term, doc_id, positions in rows:
+            conn.execute(
+                "INSERT OR REPLACE INTO _postings "
+                "(table_name, field, term, doc_id, positions) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    table_name,
+                    field,
+                    term,
+                    doc_id,
+                    positions_to_blob(decode_legacy_positions(positions)),
+                ),
+            )
+
+    @staticmethod
+    def _migrate_legacy_doc_lengths(conn: SQLiteConnection) -> None:
+        cols = Catalog._table_columns(conn, "_doc_lengths")
+        if not cols or "field" in cols:
+            return
+        if "lengths" not in cols:
+            return
+        rows = conn.execute(
+            "SELECT table_name, doc_id, lengths FROM _doc_lengths"
+        ).fetchall()
+        conn.execute("DROP TABLE _doc_lengths")
+        conn.execute(
+            "CREATE TABLE _doc_lengths ("
+            "table_name TEXT NOT NULL, "
+            "doc_id INTEGER NOT NULL, "
+            "field TEXT NOT NULL, "
+            "length INTEGER NOT NULL, "
+            "PRIMARY KEY (table_name, doc_id, field))"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS _field_stats ("
+            "table_name TEXT NOT NULL, "
+            "field TEXT NOT NULL, "
+            "total_length INTEGER NOT NULL DEFAULT 0, "
+            "PRIMARY KEY (table_name, field))"
+        )
+        for table_name, doc_id, lengths_json in rows:
+            lengths = json.loads(lengths_json)
+            for field, length in lengths.items():
+                conn.execute(
+                    "INSERT OR REPLACE INTO _doc_lengths "
+                    "(table_name, doc_id, field, length) VALUES (?, ?, ?, ?)",
+                    (table_name, doc_id, field, int(length)),
+                )
+                conn.execute(
+                    "INSERT INTO _field_stats "
+                    "(table_name, field, total_length) VALUES (?, ?, ?) "
+                    "ON CONFLICT(table_name, field) DO UPDATE "
+                    "SET total_length = total_length + excluded.total_length",
+                    (table_name, field, int(length)),
+                )
+
+    @staticmethod
+    def _migrate_legacy_models(conn: SQLiteConnection) -> None:
+        cols = Catalog._table_columns(conn, "_models")
+        if not cols or {"name", "body"}.issubset(cols):
+            return
+        if not {"model_name", "config_json"}.issubset(cols):
+            return
+        rows = conn.execute("SELECT model_name, config_json FROM _models").fetchall()
+        conn.execute("DROP TABLE _models")
+        conn.execute("CREATE TABLE _models (name TEXT PRIMARY KEY, body TEXT NOT NULL)")
+        conn.executemany(
+            "INSERT OR REPLACE INTO _models (name, body) VALUES (?, ?)", rows
+        )
+
+    @staticmethod
+    def _migrate_legacy_scoring_params(conn: SQLiteConnection) -> None:
+        cols = Catalog._table_columns(conn, "_scoring_params")
+        if not cols or "params" in cols:
+            return
+        if "params_json" not in cols:
+            return
+        rows = conn.execute("SELECT name, params_json FROM _scoring_params").fetchall()
+        conn.execute("DROP TABLE _scoring_params")
+        conn.execute(
+            "CREATE TABLE _scoring_params (name TEXT PRIMARY KEY, params TEXT NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT OR REPLACE INTO _scoring_params (name, params) VALUES (?, ?)",
+            rows,
+        )
+
+    @staticmethod
+    def _migrate_legacy_vectors(conn: SQLiteConnection) -> None:
+        cols = Catalog._table_columns(conn, "_vectors")
+        if not cols or "table_name" in cols:
+            return
+        conn.execute("DROP TABLE _vectors")
+
+    @staticmethod
+    def _migrate_legacy_tables(conn: SQLiteConnection) -> None:
+        tables = Catalog._table_names(conn)
+        if "_catalog_tables" not in tables:
+            return
+        existing = {
+            row[0] for row in conn.execute("SELECT name FROM _tables").fetchall()
+        }
+        rows = conn.execute(
+            "SELECT name, columns_json FROM _catalog_tables ORDER BY name"
+        ).fetchall()
+        for name, columns_json in rows:
+            if name in existing:
+                continue
+            columns = json.loads(columns_json)
+            conn.execute(
+                "INSERT OR REPLACE INTO _tables "
+                "(name, analyzer, fts_fields, vector_fields, columns) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    name,
+                    default_analyzer_json(),
+                    "[]",
+                    json.dumps(vector_fields_from_python_columns(columns)),
+                    json.dumps(python_columns_to_catalog_columns(columns)),
+                ),
+            )
 
     @staticmethod
     def _migrate_column_stats(conn: SQLiteConnection) -> None:
@@ -216,8 +669,8 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         if "_models" not in tables:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS _models ("
-                "    model_name  TEXT PRIMARY KEY,"
-                "    config_json TEXT NOT NULL"
+                "    name TEXT PRIMARY KEY,"
+                "    body TEXT NOT NULL"
                 ")"
             )
 
@@ -279,8 +732,19 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         primary_key, not_null, auto_increment, default.
         """
         self._conn.execute(
-            "INSERT INTO _catalog_tables (name, columns_json) VALUES (?, ?)",
-            (name, json.dumps(columns)),
+            "INSERT OR REPLACE INTO _tables "
+            "(name, analyzer, fts_fields, vector_fields, columns) "
+            "VALUES (?, COALESCE((SELECT analyzer FROM _tables WHERE name = ?), ?), "
+            "COALESCE((SELECT fts_fields FROM _tables WHERE name = ?), '[]'), "
+            "?, ?)",
+            (
+                name,
+                name,
+                default_analyzer_json(),
+                name,
+                json.dumps(vector_fields_from_python_columns(columns)),
+                json.dumps(python_columns_to_catalog_columns(columns)),
+            ),
         )
         self._auto_commit()
 
@@ -290,7 +754,9 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         Drops both per-table SQLite tables (new format) and rows in
         shared catalog tables (old format) for backward compatibility.
         """
-        self._conn.execute("DELETE FROM _catalog_tables WHERE name = ?", (name,))
+        self._conn.execute("DELETE FROM _tables WHERE name = ?", (name,))
+        if "_catalog_tables" in self._table_names(self._conn):
+            self._conn.execute("DELETE FROM _catalog_tables WHERE name = ?", (name,))
 
         # -- Drop per-table SQLite tables (new format) ---
         self._conn.execute(f'DROP TABLE IF EXISTS "_data_{name}"')
@@ -321,8 +787,14 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
 
         # -- Clean shared catalog tables (old format / backward compat) ---
         self._conn.execute("DELETE FROM _documents WHERE table_name = ?", (name,))
+        self._conn.execute("DELETE FROM _document_blobs WHERE table_name = ?", (name,))
         self._conn.execute("DELETE FROM _postings WHERE table_name = ?", (name,))
         self._conn.execute("DELETE FROM _doc_lengths WHERE table_name = ?", (name,))
+        self._conn.execute("DELETE FROM _field_stats WHERE table_name = ?", (name,))
+        self._conn.execute("DELETE FROM _vectors WHERE table_name = ?", (name,))
+        self._conn.execute("DELETE FROM _ivf_indexes WHERE table_name = ?", (name,))
+        self._conn.execute("DELETE FROM _ivf_centroids WHERE table_name = ?", (name,))
+        self._conn.execute("DELETE FROM _ivf_assignments WHERE table_name = ?", (name,))
         self._conn.execute("DELETE FROM _column_stats WHERE table_name = ?", (name,))
         self._conn.execute(
             "DELETE FROM _table_field_analyzers WHERE table_name = ?", (name,)
@@ -332,16 +804,32 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
     def load_table_schemas(self) -> list[tuple[str, list[dict[str, Any]]]]:
         """Return ``[(table_name, [column_dict, ...]), ...]``."""
         rows = self._conn.execute(
-            "SELECT name, columns_json FROM _catalog_tables"
+            "SELECT name, columns FROM _tables ORDER BY name"
         ).fetchall()
-        return [(name, json.loads(columns_json)) for name, columns_json in rows]
+        if rows:
+            return [
+                (name, catalog_columns_to_python_columns(json.loads(columns or "[]")))
+                for name, columns in rows
+            ]
+        tables = {
+            row[0]
+            for row in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "_catalog_tables" not in tables:
+            return []
+        legacy_rows = self._conn.execute(
+            "SELECT name, columns_json FROM _catalog_tables ORDER BY name"
+        ).fetchall()
+        return [(name, json.loads(columns_json)) for name, columns_json in legacy_rows]
 
     # -- Documents -----------------------------------------------------
 
     def save_document(self, table_name: str, doc_id: int, data: dict[str, Any]) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO _documents "
-            "(table_name, doc_id, data_json) VALUES (?, ?, ?)",
+            "(table_name, doc_id, body) VALUES (?, ?, ?)",
             (table_name, doc_id, json.dumps(data)),
         )
         self._auto_commit()
@@ -353,6 +841,10 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
             (table_name, doc_id),
         )
         self._conn.execute(
+            "DELETE FROM _document_blobs WHERE table_name = ? AND doc_id = ?",
+            (table_name, doc_id),
+        )
+        self._conn.execute(
             "DELETE FROM _postings WHERE table_name = ? AND doc_id = ?",
             (table_name, doc_id),
         )
@@ -360,14 +852,22 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
             "DELETE FROM _doc_lengths WHERE table_name = ? AND doc_id = ?",
             (table_name, doc_id),
         )
+        self._conn.execute(
+            "DELETE FROM _vectors WHERE table_name = ? AND doc_id = ?",
+            (table_name, doc_id),
+        )
+        self._conn.execute(
+            "DELETE FROM _ivf_assignments WHERE table_name = ? AND doc_id = ?",
+            (table_name, doc_id),
+        )
         self._auto_commit()
 
     def load_documents(self, table_name: str) -> list[tuple[int, dict[str, Any]]]:
         rows = self._conn.execute(
-            "SELECT doc_id, data_json FROM _documents WHERE table_name = ?",
+            "SELECT doc_id, body FROM _documents WHERE table_name = ? ORDER BY doc_id",
             (table_name,),
         ).fetchall()
-        return [(doc_id, json.loads(data_json)) for doc_id, data_json in rows]
+        return [(doc_id, json.loads(body)) for doc_id, body in rows]
 
     # -- Postings (inverted index entries) -----------------------------
 
@@ -379,18 +879,27 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         postings: dict[tuple[str, str], tuple[int, ...]],
     ) -> None:
         """Persist posting entries and per-field token lengths for one doc."""
+        self.delete_postings(table_name, doc_id)
         for (field, term), positions in postings.items():
             self._conn.execute(
                 "INSERT OR REPLACE INTO _postings "
                 "(table_name, field, term, doc_id, positions) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (table_name, field, term, doc_id, json.dumps(list(positions))),
+                (table_name, field, term, doc_id, positions_to_blob(positions)),
             )
-        self._conn.execute(
-            "INSERT OR REPLACE INTO _doc_lengths "
-            "(table_name, doc_id, lengths) VALUES (?, ?, ?)",
-            (table_name, doc_id, json.dumps(field_lengths)),
-        )
+        for field, length in field_lengths.items():
+            self._conn.execute(
+                "INSERT OR REPLACE INTO _doc_lengths "
+                "(table_name, doc_id, field, length) VALUES (?, ?, ?, ?)",
+                (table_name, doc_id, field, int(length)),
+            )
+            self._conn.execute(
+                "INSERT INTO _field_stats (table_name, field, total_length) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(table_name, field) DO UPDATE "
+                "SET total_length = total_length + excluded.total_length",
+                (table_name, field, int(length)),
+            )
         self._auto_commit()
 
     def delete_postings(self, table_name: str, doc_id: int) -> None:
@@ -399,6 +908,18 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
             "DELETE FROM _postings WHERE table_name = ? AND doc_id = ?",
             (table_name, doc_id),
         )
+        rows = self._conn.execute(
+            "SELECT field, length FROM _doc_lengths "
+            "WHERE table_name = ? AND doc_id = ?",
+            (table_name, doc_id),
+        ).fetchall()
+        for field, length in rows:
+            self._conn.execute(
+                "UPDATE _field_stats "
+                "SET total_length = MAX(0, total_length - ?) "
+                "WHERE table_name = ? AND field = ?",
+                (int(length), table_name, field),
+            )
         self._conn.execute(
             "DELETE FROM _doc_lengths WHERE table_name = ? AND doc_id = ?",
             (table_name, doc_id),
@@ -417,7 +938,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
             (table_name,),
         ).fetchall()
         return [
-            (field, term, doc_id, tuple(json.loads(positions)))
+            (field, term, doc_id, blob_to_positions(positions))
             for field, term, doc_id, positions in rows
         ]
 
@@ -427,10 +948,14 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         Returns ``[(doc_id, {field: length, ...}), ...]``.
         """
         rows = self._conn.execute(
-            "SELECT doc_id, lengths FROM _doc_lengths WHERE table_name = ?",
+            "SELECT doc_id, field, length FROM _doc_lengths "
+            "WHERE table_name = ? ORDER BY doc_id, field",
             (table_name,),
         ).fetchall()
-        return [(doc_id, json.loads(lengths)) for doc_id, lengths in rows]
+        by_doc: dict[int, dict[str, int]] = {}
+        for doc_id, field, length in rows:
+            by_doc.setdefault(doc_id, {})[field] = int(length)
+        return list(by_doc.items())
 
     # -- Graph vertices ------------------------------------------------
 
@@ -482,8 +1007,9 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
         blob = embedding.astype(np.float32).tobytes()
         self._conn.execute(
             "INSERT OR REPLACE INTO _vectors "
-            "(doc_id, dimensions, embedding) VALUES (?, ?, ?)",
-            (doc_id, len(embedding), blob),
+            "(table_name, field, doc_id, vector_ordinal, vector) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("", "", doc_id, 0, blob),
         )
         self._auto_commit()
 
@@ -493,10 +1019,10 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
 
     def load_vectors(self) -> list[tuple[int, NDArray]]:
         rows = self._conn.execute(
-            "SELECT doc_id, dimensions, embedding FROM _vectors"
+            "SELECT doc_id, vector FROM _vectors WHERE table_name = '' AND field = ''"
         ).fetchall()
         result: list[tuple[int, NDArray]] = []
-        for doc_id, _dims, blob in rows:
+        for doc_id, blob in rows:
             vec = np.frombuffer(blob, dtype=np.float32).copy()
             result.append((doc_id, vec))
         return result
@@ -570,21 +1096,21 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
     def save_scoring_params(self, name: str, params: dict[str, Any]) -> None:
         """Persist Bayesian calibration parameters for a named signal."""
         self._conn.execute(
-            "INSERT OR REPLACE INTO _scoring_params (name, params_json) VALUES (?, ?)",
+            "INSERT OR REPLACE INTO _scoring_params (name, params) VALUES (?, ?)",
             (name, json.dumps(params)),
         )
         self._auto_commit()
 
     def load_scoring_params(self, name: str) -> dict[str, Any] | None:
         row = self._conn.execute(
-            "SELECT params_json FROM _scoring_params WHERE name = ?",
+            "SELECT params FROM _scoring_params WHERE name = ?",
             (name,),
         ).fetchone()
         return json.loads(row[0]) if row else None
 
     def load_all_scoring_params(self) -> list[tuple[str, dict[str, Any]]]:
         rows = self._conn.execute(
-            "SELECT name, params_json FROM _scoring_params"
+            "SELECT name, params FROM _scoring_params"
         ).fetchall()
         return [(name, json.loads(pjson)) for name, pjson in rows]
 
@@ -607,6 +1133,11 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
                 json.dumps(list(index_def.columns)),
                 json.dumps(index_def.parameters),
             ),
+        )
+        self._sync_table_index_fields(
+            index_def.table_name,
+            index_def.index_type.value,
+            list(index_def.columns),
         )
         self._auto_commit()
 
@@ -642,6 +1173,41 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
             (name, idx_type, tbl, json.loads(cols), json.loads(params))
             for name, idx_type, tbl, cols, params in rows
         ]
+
+    def _sync_table_index_fields(
+        self, table_name: str, index_type: str, columns: list[str]
+    ) -> None:
+        row = self._conn.execute(
+            "SELECT fts_fields, vector_fields, columns FROM _tables WHERE name = ?",
+            (table_name,),
+        ).fetchone()
+        if row is None:
+            return
+        fts_fields = json.loads(row[0] or "[]")
+        vector_fields = json.loads(row[1] or "[]")
+        table_columns = catalog_columns_to_python_columns(json.loads(row[2] or "[]"))
+        by_name = {col["name"]: col for col in table_columns}
+        if index_type == "gin":
+            seen = set(fts_fields)
+            for col in columns:
+                if col not in seen:
+                    fts_fields.append(col)
+                    seen.add(col)
+        elif index_type in {"ivf", "hnsw"}:
+            by_field = {vf["field"]: vf for vf in vector_fields}
+            for col in columns:
+                col_def = by_name.get(col)
+                dimensions = (col_def or {}).get("vector_dimensions")
+                if dimensions is None:
+                    continue
+                by_field[col] = {"field": col, "dimensions": int(dimensions)}
+            vector_fields = list(by_field.values())
+        else:
+            return
+        self._conn.execute(
+            "UPDATE _tables SET fts_fields = ?, vector_fields = ? WHERE name = ?",
+            (json.dumps(fts_fields), json.dumps(vector_fields), table_name),
+        )
 
     # -- Named graphs --------------------------------------------------
 
@@ -699,7 +1265,7 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
     def save_model(self, model_name: str, config: dict[str, Any]) -> None:
         """Persist a trained model configuration."""
         self._conn.execute(
-            "INSERT OR REPLACE INTO _models (model_name, config_json) VALUES (?, ?)",
+            "INSERT OR REPLACE INTO _models (name, body) VALUES (?, ?)",
             (model_name, json.dumps(config)),
         )
         self._auto_commit()
@@ -707,14 +1273,14 @@ CREATE INDEX IF NOT EXISTS _graph_edges_label ON _graph_edges (label);
     def load_model(self, model_name: str) -> dict[str, Any] | None:
         """Load a trained model configuration by name."""
         row = self._conn.execute(
-            "SELECT config_json FROM _models WHERE model_name = ?",
+            "SELECT body FROM _models WHERE name = ?",
             (model_name,),
         ).fetchone()
         return json.loads(row[0]) if row else None
 
     def delete_model(self, model_name: str) -> None:
         """Remove a trained model from the catalog."""
-        self._conn.execute("DELETE FROM _models WHERE model_name = ?", (model_name,))
+        self._conn.execute("DELETE FROM _models WHERE name = ?", (model_name,))
         self._auto_commit()
 
     # -- Analyzers -----------------------------------------------------

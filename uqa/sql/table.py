@@ -60,6 +60,10 @@ _SQL_TYPE_MAP: dict[str, type] = {
     "boolean": bool,
     "bool": bool,
     "date": str,
+    "time": str,
+    "timetz": str,
+    "time without time zone": str,
+    "time with time zone": str,
     "timestamp": str,
     "timestamptz": str,
     "timestamp without time zone": str,
@@ -69,6 +73,7 @@ _SQL_TYPE_MAP: dict[str, type] = {
     "uuid": str,
     "bytea": bytes,
     "point": list,
+    "tensor": list,
 }
 
 _AUTO_INCREMENT_TYPES = frozenset({"serial", "bigserial"})
@@ -167,7 +172,7 @@ class ColumnDef:
         caller-side. This method returns the storage value only.
         """
         if self.vector_dimensions is not None:
-            return np.asarray(value, dtype=np.float32).tolist()
+            return _coerce_vector_value(value, self.name, self.vector_dimensions)
         if self.type_name == "point":
             if isinstance(value, list | tuple) and len(value) == 2:
                 return [float(value[0]), float(value[1])]
@@ -247,7 +252,9 @@ class Table:
         self.fk_update_validators: list[Any] = []
 
         if conn is not None:
-            col_pairs = [(col.name, col.type_name) for col in columns]
+            col_pairs = [
+                (col.name, col.type_name, col.vector_dimensions) for col in columns
+            ]
             self.document_store: DocumentStore = SQLiteDocumentStore(
                 conn, name, col_pairs
             )
@@ -574,6 +581,28 @@ def _coerce_datetime(value: Any, type_name: str) -> _date | _datetime | _time:
     return _datetime.fromisoformat(s)
 
 
+def _coerce_vector_value(value: Any, name: str, dimensions: int) -> list:
+    arr = np.asarray(value, dtype=np.float32)
+    if arr.ndim == 1:
+        if arr.shape[0] != dimensions:
+            raise ValueError(
+                f"VECTOR/TENSOR column '{name}' requires {dimensions} dimensions, "
+                f"got {arr.shape[0]}"
+            )
+        return arr.tolist()
+    if arr.ndim == 2:
+        if arr.shape[1] != dimensions:
+            raise ValueError(
+                f"VECTOR/TENSOR column '{name}' requires row dimension "
+                f"{dimensions}, got {arr.shape[1]}"
+            )
+        return arr.tolist()
+    raise ValueError(
+        f"VECTOR/TENSOR column '{name}' requires a 1-D vector or 2-D tensor, "
+        f"got {arr.ndim}-D value"
+    )
+
+
 def _coerce_json(value: Any) -> Any:
     """Coerce a value to native JSON representation (dict/list/scalar)."""
     import json as json_mod
@@ -621,7 +650,7 @@ def resolve_type(
     When *array_bounds* is set the column is an array type (e.g. TEXT[]).
     """
     raw = type_names[-1].sval.lower()
-    if raw == "vector":
+    if raw in {"vector", "tensor"}:
         return raw, list
     if raw == "point":
         return raw, list

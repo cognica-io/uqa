@@ -6,9 +6,8 @@
 
 """SQLite-backed inverted index -- drop-in replacement for InvertedIndex.
 
-Each (table_name, field_name) pair maps to its own SQLite table for postings.
-Per-document field lengths and per-field aggregate statistics are stored in
-additional shared tables scoped by table_name.
+Postings, document lengths, and aggregate field statistics use the UQA canonical
+shared-table format: ``_postings``, ``_doc_lengths``, and ``_field_stats``.
 
 Performance structures (Phase 2, Section 3.2.2):
     Skip pointers -- every Nth doc_id per term for fast forward-seeking
@@ -63,7 +62,42 @@ class SQLiteInvertedIndex(InvertedIndex):
         self._cached_stats: IndexStats | None = None
         self._dirty_terms: set[tuple[str, str]] = set()
 
-        # Create shared stats / doc-lengths tables eagerly.
+        # Create canonical shared FTS tables eagerly.
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS _postings ("
+            "    table_name TEXT NOT NULL,"
+            "    field      TEXT NOT NULL,"
+            "    term       TEXT NOT NULL,"
+            "    doc_id     INTEGER NOT NULL,"
+            "    positions  BLOB NOT NULL,"
+            "    PRIMARY KEY (table_name, field, term, doc_id)"
+            ")"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS _postings_term_idx "
+            "ON _postings (table_name, field, term)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS _postings_doc_idx "
+            "ON _postings (table_name, doc_id)"
+        )
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS _doc_lengths ("
+            "    table_name TEXT NOT NULL,"
+            "    doc_id     INTEGER NOT NULL,"
+            "    field      TEXT NOT NULL,"
+            "    length     INTEGER NOT NULL,"
+            "    PRIMARY KEY (table_name, doc_id, field)"
+            ")"
+        )
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS _field_stats ("
+            "    table_name   TEXT NOT NULL,"
+            "    field        TEXT NOT NULL,"
+            "    total_length INTEGER NOT NULL DEFAULT 0,"
+            "    PRIMARY KEY (table_name, field)"
+            ")"
+        )
         self._conn.execute(
             f'CREATE TABLE IF NOT EXISTS "_field_stats_{table_name}" ('
             "    field        TEXT PRIMARY KEY,"
@@ -71,18 +105,14 @@ class SQLiteInvertedIndex(InvertedIndex):
             "    total_length INTEGER NOT NULL DEFAULT 0"
             ")"
         )
-        self._conn.execute(
-            f'CREATE TABLE IF NOT EXISTS "_doc_lengths_{table_name}" ('
-            "    doc_id  INTEGER NOT NULL,"
-            "    field   TEXT    NOT NULL,"
-            "    length  INTEGER NOT NULL,"
-            "    PRIMARY KEY (doc_id, field)"
-            ")"
-        )
         self._conn.commit()
 
-        # Discover fields that already have inverted tables from a
-        # previous session so we do not attempt to re-create them.
+        # Discover fields already present in canonical or legacy storage.
+        for (field,) in self._fetchall(
+            "SELECT DISTINCT field FROM _doc_lengths WHERE table_name = ?",
+            (table_name,),
+        ):
+            self._known_fields.add(field)
         rows = self._fetchall(
             "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?",
             (f"_inverted_{table_name}_%",),
@@ -114,21 +144,9 @@ class SQLiteInvertedIndex(InvertedIndex):
     # -- Lazy table creation -------------------------------------------
 
     def _ensure_field_table(self, field: str) -> None:
-        """Create the per-field inverted, skip, and block-max tables."""
-        if field in self._known_fields:
-            return
-        tbl = self._inverted_table_name(field)
+        """Create the per-field skip and block-max auxiliary tables."""
         skip_tbl = self._skip_table_name(field)
         bm_tbl = self._blockmax_table_name(field)
-        self._conn.execute(
-            f'CREATE TABLE IF NOT EXISTS "{tbl}" ('
-            "    term    TEXT    NOT NULL,"
-            "    doc_id  INTEGER NOT NULL,"
-            "    tf      INTEGER NOT NULL,"
-            "    positions TEXT  NOT NULL,"
-            "    PRIMARY KEY (term, doc_id)"
-            ")"
-        )
         self._conn.execute(
             f'CREATE TABLE IF NOT EXISTS "{skip_tbl}" ('
             "    term        TEXT    NOT NULL,"
@@ -213,14 +231,17 @@ class SQLiteInvertedIndex(InvertedIndex):
 
     @staticmethod
     def _encode_positions(positions: tuple[int, ...] | list[int]) -> bytes:
-        """Encode positions as a compact binary blob (big-endian uint32)."""
-        return struct.pack(f">{len(positions)}I", *positions)
+        """Encode positions as canonical little-endian uint32 values."""
+        return struct.pack(f"<{len(positions)}I", *positions)
 
     @staticmethod
     def _decode_positions(data: str | bytes) -> tuple[int, ...]:
         """Decode positions from binary blob or legacy JSON text."""
         if isinstance(data, bytes):
-            return struct.unpack(f">{len(data) // 4}I", data)
+            little = struct.unpack(f"<{len(data) // 4}I", data)
+            if little and max(little) > 10_000_000:
+                return struct.unpack(f">{len(data) // 4}I", data)
+            return little
         # Legacy JSON-encoded positions (TEXT).
         return tuple(json.loads(data))
 
@@ -246,9 +267,29 @@ class SQLiteInvertedIndex(InvertedIndex):
         result_field_lengths: dict[str, int] = {}
         result_postings: dict[tuple[str, str], tuple[int, ...]] = {}
 
+        old_lengths = self._fetchall(
+            "SELECT field, length FROM _doc_lengths "
+            "WHERE table_name = ? AND doc_id = ?",
+            (self._table_name, doc_id),
+        )
+        for field, length in old_lengths:
+            self._conn.execute(
+                "UPDATE _field_stats "
+                "SET total_length = MAX(total_length - ?, 0) "
+                "WHERE table_name = ? AND field = ?",
+                (length, self._table_name, field),
+            )
+        self._conn.execute(
+            "DELETE FROM _postings WHERE table_name = ? AND doc_id = ?",
+            (self._table_name, doc_id),
+        )
+        self._conn.execute(
+            "DELETE FROM _doc_lengths WHERE table_name = ? AND doc_id = ?",
+            (self._table_name, doc_id),
+        )
+
         for field_name, text in fields.items():
             self._ensure_field_table(field_name)
-            tbl = self._inverted_table_name(field_name)
 
             tokens = self._tokenize(text, field_name)
             length = len(tokens)
@@ -260,34 +301,49 @@ class SQLiteInvertedIndex(InvertedIndex):
                 term_positions[token].append(pos)
 
             # Batch insert all term postings for this field at once.
-            batch_rows: list[tuple[str, int, int, bytes]] = []
+            batch_rows: list[tuple[str, str, str, int, bytes]] = []
             for term, positions in term_positions.items():
                 pos_tuple = tuple(positions)
-                tf = len(positions)
-                batch_rows.append((term, doc_id, tf, self._encode_positions(pos_tuple)))
+                batch_rows.append(
+                    (
+                        self._table_name,
+                        field_name,
+                        term,
+                        doc_id,
+                        self._encode_positions(pos_tuple),
+                    )
+                )
                 result_postings[(field_name, term)] = pos_tuple
 
             self._conn.executemany(
-                f'INSERT OR REPLACE INTO "{tbl}" '
-                "(term, doc_id, tf, positions) VALUES (?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO _postings "
+                "(table_name, field, term, doc_id, positions) "
+                "VALUES (?, ?, ?, ?, ?)",
                 batch_rows,
             )
 
             # Doc length
             self._conn.execute(
-                f'INSERT OR REPLACE INTO "_doc_lengths_{self._table_name}" '
-                "(doc_id, field, length) VALUES (?, ?, ?)",
-                (doc_id, field_name, length),
+                "INSERT OR REPLACE INTO _doc_lengths "
+                "(table_name, doc_id, field, length) VALUES (?, ?, ?, ?)",
+                (self._table_name, doc_id, field_name, length),
             )
 
-            # Field stats -- upsert doc_count and total_length.
+            # Field stats -- canonical total length only.
+            self._conn.execute(
+                "INSERT INTO _field_stats "
+                "(table_name, field, total_length) VALUES (?, ?, ?) "
+                "ON CONFLICT(table_name, field) DO UPDATE SET "
+                "total_length = total_length + excluded.total_length",
+                (self._table_name, field_name, length),
+            )
             self._conn.execute(
                 f'INSERT INTO "_field_stats_{self._table_name}" '
                 "(field, doc_count, total_length) VALUES (?, 1, ?) "
                 "ON CONFLICT(field) DO UPDATE SET "
                 "doc_count = doc_count + 1, "
-                "total_length = total_length + ?",
-                (field_name, length, length),
+                "total_length = total_length + excluded.total_length",
+                (field_name, length),
             )
 
         self._conn.commit()
@@ -304,13 +360,17 @@ class SQLiteInvertedIndex(InvertedIndex):
     def add_posting(self, field: str, term: str, entry: PostingEntry) -> None:
         """Add a single posting entry directly (for catalog restore)."""
         self._ensure_field_table(field)
-        tbl = self._inverted_table_name(field)
         positions = tuple(entry.payload.positions) if entry.payload.positions else ()
-        tf = len(positions)
         self._conn.execute(
-            f'INSERT OR REPLACE INTO "{tbl}" '
-            "(term, doc_id, tf, positions) VALUES (?, ?, ?, ?)",
-            (term, entry.doc_id, tf, self._encode_positions(positions)),
+            "INSERT OR REPLACE INTO _postings "
+            "(table_name, field, term, doc_id, positions) VALUES (?, ?, ?, ?, ?)",
+            (
+                self._table_name,
+                field,
+                term,
+                entry.doc_id,
+                self._encode_positions(positions),
+            ),
         )
         self._conn.commit()
 
@@ -318,18 +378,18 @@ class SQLiteInvertedIndex(InvertedIndex):
         """Set per-field token lengths for a document (for catalog restore)."""
         for field, length in lengths.items():
             self._conn.execute(
-                f'INSERT OR REPLACE INTO "_doc_lengths_{self._table_name}" '
-                "(doc_id, field, length) VALUES (?, ?, ?)",
-                (doc_id, field, length),
+                "INSERT OR REPLACE INTO _doc_lengths "
+                "(table_name, doc_id, field, length) VALUES (?, ?, ?, ?)",
+                (self._table_name, doc_id, field, length),
             )
         self._conn.commit()
 
     def set_doc_count(self, count: int) -> None:
         """Set the indexed document count (for catalog restore).
 
-        Applies the given count to every known field in the stats table.
-        If no rows exist yet, this is a no-op (the caller is expected to
-        call ``add_total_length`` first to create the rows).
+        Canonical storage derives document count from ``_doc_lengths`` rows.
+        This compatibility mirror is used only by old Python restore
+        callers that set stats before any document-length rows exist.
         """
         self._conn.execute(
             f'UPDATE "_field_stats_{self._table_name}" SET doc_count = ?',
@@ -340,11 +400,18 @@ class SQLiteInvertedIndex(InvertedIndex):
     def add_total_length(self, field: FieldName, length: int) -> None:
         """Accumulate total token length for a field (for catalog restore)."""
         self._conn.execute(
+            "INSERT INTO _field_stats (table_name, field, total_length) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(table_name, field) DO UPDATE SET "
+            "total_length = total_length + excluded.total_length",
+            (self._table_name, field, length),
+        )
+        self._conn.execute(
             f'INSERT INTO "_field_stats_{self._table_name}" '
             "(field, doc_count, total_length) VALUES (?, 0, ?) "
             "ON CONFLICT(field) DO UPDATE SET "
-            "total_length = total_length + ?",
-            (field, length, length),
+            "total_length = total_length + excluded.total_length",
+            (field, length),
         )
         self._conn.commit()
 
@@ -354,29 +421,26 @@ class SQLiteInvertedIndex(InvertedIndex):
         """Remove all entries for a document from the index."""
         # Collect per-field lengths so we can decrement field stats.
         rows = self._fetchall(
-            f'SELECT field, length FROM "_doc_lengths_{self._table_name}" '
-            "WHERE doc_id = ?",
-            (doc_id,),
+            "SELECT field, length FROM _doc_lengths "
+            "WHERE table_name = ? AND doc_id = ?",
+            (self._table_name, doc_id),
         )
 
         # Collect affected (field, term) pairs for skip pointer rebuild.
-        affected_terms: list[tuple[str, str]] = []
-        for field in self._known_fields:
-            tbl = self._inverted_table_name(field)
-            term_rows = self._fetchall(
-                f'SELECT term FROM "{tbl}" WHERE doc_id = ?',
-                (doc_id,),
-            )
-            for (term,) in term_rows:
-                affected_terms.append((field, term))
-
-            self._conn.execute(
-                f'DELETE FROM "{tbl}" WHERE doc_id = ?',
-                (doc_id,),
-            )
+        affected_terms = self._fetchall(
+            "SELECT field, term FROM _postings "
+            "WHERE table_name = ? AND doc_id = ?",
+            (self._table_name, doc_id),
+        )
 
         if rows:
             for field, length in rows:
+                self._conn.execute(
+                    "UPDATE _field_stats "
+                    "SET total_length = MAX(total_length - ?, 0) "
+                    "WHERE table_name = ? AND field = ?",
+                    (length, self._table_name, field),
+                )
                 self._conn.execute(
                     f'UPDATE "_field_stats_{self._table_name}" '
                     "SET doc_count = MAX(doc_count - 1, 0), "
@@ -385,9 +449,13 @@ class SQLiteInvertedIndex(InvertedIndex):
                     (length, field),
                 )
             self._conn.execute(
-                f'DELETE FROM "_doc_lengths_{self._table_name}" WHERE doc_id = ?',
-                (doc_id,),
+                "DELETE FROM _doc_lengths WHERE table_name = ? AND doc_id = ?",
+                (self._table_name, doc_id),
             )
+        self._conn.execute(
+            "DELETE FROM _postings WHERE table_name = ? AND doc_id = ?",
+            (self._table_name, doc_id),
+        )
 
         self._conn.commit()
         self._cached_stats = None
@@ -399,19 +467,18 @@ class SQLiteInvertedIndex(InvertedIndex):
     def clear(self) -> None:
         """Remove all indexed data from all backing tables."""
         for field in self._known_fields:
-            tbl = self._inverted_table_name(field)
-            self._conn.execute(f'DELETE FROM "{tbl}"')
             skip_tbl = f"_skip_{self._table_name}_{field}"
-            self._conn.execute(
-                f'DELETE FROM "{skip_tbl}" '
-                f"WHERE EXISTS (SELECT 1 FROM sqlite_master "
-                f"WHERE type='table' AND name='{skip_tbl}')"
-            )
+            bm_tbl = f"_blockmax_{self._table_name}_{field}"
+            self._conn.execute(f'DROP TABLE IF EXISTS "{skip_tbl}"')
+            self._conn.execute(f'DROP TABLE IF EXISTS "{bm_tbl}"')
+        self._conn.execute("DELETE FROM _postings WHERE table_name = ?", (self._table_name,))
+        self._conn.execute("DELETE FROM _field_stats WHERE table_name = ?", (self._table_name,))
+        self._conn.execute("DELETE FROM _doc_lengths WHERE table_name = ?", (self._table_name,))
         self._conn.execute(f'DELETE FROM "_field_stats_{self._table_name}"')
-        self._conn.execute(f'DELETE FROM "_doc_lengths_{self._table_name}"')
         self._conn.commit()
         self._cached_stats = None
         self._dirty_terms.clear()
+        self._known_fields.clear()
 
     # -- Query methods -------------------------------------------------
 
@@ -426,16 +493,16 @@ class SQLiteInvertedIndex(InvertedIndex):
         self._flush_term(field, term)
         if field not in self._known_fields:
             return PostingList()
-        tbl = self._inverted_table_name(field)
         rows = self._fetchall(
-            f'SELECT doc_id, tf, positions FROM "{tbl}" WHERE term = ? ORDER BY doc_id',
-            (term,),
+            "SELECT doc_id, positions FROM _postings "
+            "WHERE table_name = ? AND field = ? AND term = ? ORDER BY doc_id",
+            (self._table_name, field, term),
         )
         entries = [
             PostingEntry(
                 doc_id=row[0],
                 payload=Payload(
-                    positions=self._decode_positions(row[2]),
+                    positions=self._decode_positions(row[1]),
                     score=0.0,
                 ),
             )
@@ -450,11 +517,10 @@ class SQLiteInvertedIndex(InvertedIndex):
         all_entries: list[PostingEntry] = []
 
         for field in sorted(self._known_fields):
-            tbl = self._inverted_table_name(field)
             rows = self._fetchall(
-                f'SELECT doc_id, tf, positions FROM "{tbl}" '
-                "WHERE term = ? ORDER BY doc_id",
-                (term,),
+                "SELECT doc_id, positions FROM _postings "
+                "WHERE table_name = ? AND field = ? AND term = ? ORDER BY doc_id",
+                (self._table_name, field, term),
             )
             for row in rows:
                 doc_id = row[0]
@@ -464,7 +530,7 @@ class SQLiteInvertedIndex(InvertedIndex):
                         PostingEntry(
                             doc_id=doc_id,
                             payload=Payload(
-                                positions=self._decode_positions(row[2]),
+                                positions=self._decode_positions(row[1]),
                                 score=0.0,
                             ),
                         )
@@ -475,18 +541,18 @@ class SQLiteInvertedIndex(InvertedIndex):
     def doc_freq(self, field: str, term: str) -> int:
         if field not in self._known_fields:
             return 0
-        tbl = self._inverted_table_name(field)
         row = self._fetchone(
-            f'SELECT COUNT(*) FROM "{tbl}" WHERE term = ?',
-            (term,),
+            "SELECT COUNT(*) FROM _postings "
+            "WHERE table_name = ? AND field = ? AND term = ?",
+            (self._table_name, field, term),
         )
         return row[0] if row else 0
 
     def get_doc_length(self, doc_id: DocId, field: FieldName) -> int:
         row = self._fetchone(
-            f'SELECT length FROM "_doc_lengths_{self._table_name}" '
-            "WHERE doc_id = ? AND field = ?",
-            (doc_id, field),
+            "SELECT length FROM _doc_lengths "
+            "WHERE table_name = ? AND doc_id = ? AND field = ?",
+            (self._table_name, doc_id, field),
         )
         return row[0] if row else 0
 
@@ -499,9 +565,9 @@ class SQLiteInvertedIndex(InvertedIndex):
             chunk = doc_ids[chunk_start : chunk_start + 500]
             placeholders = ",".join("?" * len(chunk))
             rows = self._fetchall(
-                f'SELECT doc_id, length FROM "_doc_lengths_{self._table_name}" '
-                f"WHERE field = ? AND doc_id IN ({placeholders})",
-                (field, *chunk),
+                "SELECT doc_id, length FROM _doc_lengths "
+                f"WHERE table_name = ? AND field = ? AND doc_id IN ({placeholders})",
+                (self._table_name, field, *chunk),
             )
             for doc_id, length in rows:
                 result[doc_id] = length
@@ -510,9 +576,9 @@ class SQLiteInvertedIndex(InvertedIndex):
     def get_total_doc_length(self, doc_id: DocId) -> int:
         """Get total document length across all fields."""
         row = self._fetchone(
-            f'SELECT SUM(length) FROM "_doc_lengths_{self._table_name}" '
-            "WHERE doc_id = ?",
-            (doc_id,),
+            "SELECT SUM(length) FROM _doc_lengths "
+            "WHERE table_name = ? AND doc_id = ?",
+            (self._table_name, doc_id),
         )
         return row[0] if row and row[0] is not None else 0
 
@@ -520,12 +586,12 @@ class SQLiteInvertedIndex(InvertedIndex):
         """Get term frequency for a specific doc in a specific field."""
         if field not in self._known_fields:
             return 0
-        tbl = self._inverted_table_name(field)
         row = self._fetchone(
-            f'SELECT tf FROM "{tbl}" WHERE term = ? AND doc_id = ?',
-            (term, doc_id),
+            "SELECT positions FROM _postings "
+            "WHERE table_name = ? AND field = ? AND term = ? AND doc_id = ?",
+            (self._table_name, field, term, doc_id),
         )
-        return row[0] if row else 0
+        return len(self._decode_positions(row[0])) if row else 0
 
     def get_term_freqs_bulk(
         self, doc_ids: list[DocId], field: str, term: str
@@ -534,17 +600,17 @@ class SQLiteInvertedIndex(InvertedIndex):
         result: dict[DocId, int] = dict.fromkeys(doc_ids, 0)
         if field not in self._known_fields:
             return result
-        tbl = self._inverted_table_name(field)
         for chunk_start in range(0, len(doc_ids), 500):
             chunk = doc_ids[chunk_start : chunk_start + 500]
             placeholders = ",".join("?" * len(chunk))
             rows = self._fetchall(
-                f'SELECT doc_id, tf FROM "{tbl}" '
-                f"WHERE term = ? AND doc_id IN ({placeholders})",
-                (term, *chunk),
+                "SELECT doc_id, positions FROM _postings "
+                f"WHERE table_name = ? AND field = ? AND term = ? "
+                f"AND doc_id IN ({placeholders})",
+                (self._table_name, field, term, *chunk),
             )
-            for doc_id, tf in rows:
-                result[doc_id] = tf
+            for doc_id, positions in rows:
+                result[doc_id] = len(self._decode_positions(positions))
         return result
 
     def get_total_term_freq(self, doc_id: DocId, term: str) -> int:
@@ -554,12 +620,14 @@ class SQLiteInvertedIndex(InvertedIndex):
         parts = []
         params: list[Any] = []
         for field in self._known_fields:
-            tbl = self._inverted_table_name(field)
-            parts.append(f'SELECT tf FROM "{tbl}" WHERE term = ? AND doc_id = ?')
-            params.extend([term, doc_id])
+            parts.append(
+                "SELECT positions FROM _postings "
+                "WHERE table_name = ? AND field = ? AND term = ? AND doc_id = ?"
+            )
+            params.extend([self._table_name, field, term, doc_id])
         sql = " UNION ALL ".join(parts)
         rows = self._fetchall(sql, tuple(params))
-        return sum(r[0] for r in rows)
+        return sum(len(self._decode_positions(r[0])) for r in rows)
 
     def doc_freq_any_field(self, term: str) -> int:
         """Get document frequency across all fields."""
@@ -568,9 +636,11 @@ class SQLiteInvertedIndex(InvertedIndex):
         parts = []
         params: list[Any] = []
         for field in self._known_fields:
-            tbl = self._inverted_table_name(field)
-            parts.append(f'SELECT DISTINCT doc_id FROM "{tbl}" WHERE term = ?')
-            params.extend([term])
+            parts.append(
+                "SELECT DISTINCT doc_id FROM _postings "
+                "WHERE table_name = ? AND field = ? AND term = ?"
+            )
+            params.extend([self._table_name, field, term])
         sql = f"SELECT COUNT(DISTINCT doc_id) FROM ({' UNION ALL '.join(parts)})"
         row = self._fetchone(sql, tuple(params))
         return row[0] if row else 0
@@ -585,28 +655,35 @@ class SQLiteInvertedIndex(InvertedIndex):
         from uqa.core.types import IndexStats
 
         rows = self._fetchall(
-            f"SELECT field, doc_count, total_length "
-            f'FROM "_field_stats_{self._table_name}"',
+            "SELECT field, total_length FROM _field_stats WHERE table_name = ?",
+            (self._table_name,),
         )
 
         if not rows:
             return IndexStats(total_docs=0, avg_doc_length=0.0, _doc_freqs={})
 
-        # doc_count: maximum across fields (a single add_document increments
-        # each field individually, so the max is the actual document count).
-        total_docs = max(r[1] for r in rows)
-        total_length = sum(r[2] for r in rows)
+        total_docs_row = self._fetchone(
+            "SELECT COUNT(DISTINCT doc_id) FROM _doc_lengths WHERE table_name = ?",
+            (self._table_name,),
+        )
+        total_docs = total_docs_row[0] if total_docs_row else 0
+        if total_docs == 0:
+            compat_row = self._fetchone(
+                f'SELECT MAX(doc_count) FROM "_field_stats_{self._table_name}"'
+            )
+            total_docs = compat_row[0] if compat_row and compat_row[0] else 0
+        total_length = sum(r[1] for r in rows)
         avg_doc_length = total_length / total_docs if total_docs > 0 else 0.0
 
         # Build doc_freqs by scanning every inverted table.
         doc_freqs: dict[tuple[str, str], int] = {}
-        for field in self._known_fields:
-            tbl = self._inverted_table_name(field)
-            term_rows = self._fetchall(
-                f'SELECT term, COUNT(*) FROM "{tbl}" GROUP BY term',
-            )
-            for term, cnt in term_rows:
-                doc_freqs[(field, term)] = cnt
+        term_rows = self._fetchall(
+            "SELECT field, term, COUNT(*) FROM _postings "
+            "WHERE table_name = ? GROUP BY field, term",
+            (self._table_name,),
+        )
+        for field, term, cnt in term_rows:
+            doc_freqs[(field, term)] = cnt
 
         result = IndexStats(
             total_docs=total_docs,
@@ -624,16 +701,17 @@ class SQLiteInvertedIndex(InvertedIndex):
         Stores every ``BLOCK_SIZE``-th doc_id so intersection algorithms
         can forward-seek in O(log N) via the skip table.
         """
+        self._ensure_field_table(field)
         skip_tbl = self._skip_table_name(field)
-        inv_tbl = self._inverted_table_name(field)
 
         # Clear old skips for this term.
         self._conn.execute(f'DELETE FROM "{skip_tbl}" WHERE term = ?', (term,))
 
         # Fetch sorted doc_ids for this term.
         rows = self._fetchall(
-            f'SELECT doc_id FROM "{inv_tbl}" WHERE term = ? ORDER BY doc_id',
-            (term,),
+            "SELECT doc_id FROM _postings "
+            "WHERE table_name = ? AND field = ? AND term = ? ORDER BY doc_id",
+            (self._table_name, field, term),
         )
 
         # Insert skip entries every BLOCK_SIZE docs.
@@ -680,13 +758,14 @@ class SQLiteInvertedIndex(InvertedIndex):
         if field not in self._known_fields:
             return
 
-        inv_tbl = self._inverted_table_name(field)
+        self._ensure_field_table(field)
         bm_tbl = self._blockmax_table_name(field)
 
         # Fetch all entries for this term, sorted by doc_id.
         rows = self._fetchall(
-            f'SELECT doc_id, tf FROM "{inv_tbl}" WHERE term = ? ORDER BY doc_id',
-            (term,),
+            "SELECT doc_id, positions FROM _postings "
+            "WHERE table_name = ? AND field = ? AND term = ? ORDER BY doc_id",
+            (self._table_name, field, term),
         )
 
         doc_freq = len(rows)
@@ -699,8 +778,10 @@ class SQLiteInvertedIndex(InvertedIndex):
             block_end = min(block_start + self.BLOCK_SIZE, len(rows))
             max_score = 0.0
             for i in range(block_start, block_end):
-                tf = rows[i][1]
-                score = scorer.score(tf, tf, doc_freq)  # type: ignore[union-attr]
+                doc_id = rows[i][0]
+                tf = len(self._decode_positions(rows[i][1]))
+                doc_length = max(tf, self.get_doc_length(doc_id, field))
+                score = scorer.score(tf, doc_length, doc_freq)  # type: ignore[union-attr]
                 max_score = max(max_score, score)
             block_idx = block_start // self.BLOCK_SIZE
             self._conn.execute(
@@ -714,9 +795,10 @@ class SQLiteInvertedIndex(InvertedIndex):
         """Compute and persist block-max scores for all terms in a field."""
         if field not in self._known_fields:
             return
-        inv_tbl = self._inverted_table_name(field)
         terms = self._fetchall(
-            f'SELECT DISTINCT term FROM "{inv_tbl}"',
+            "SELECT DISTINCT term FROM _postings "
+            "WHERE table_name = ? AND field = ?",
+            (self._table_name, field),
         )
         for (term,) in terms:
             self.build_block_max_scores(field, term, scorer)

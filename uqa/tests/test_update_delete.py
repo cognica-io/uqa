@@ -844,3 +844,40 @@ class TestUpdateTypeCoercion:
         rows = e.sql("SELECT data FROM t WHERE id = 1").rows
         assert rows[0]["data"] == {"b": 2}
         assert isinstance(rows[0]["data"], dict)
+
+
+class TestMerge:
+    """SQL MERGE should share the normal INSERT/UPDATE/DELETE semantics."""
+
+    def test_merge_updates_matched_and_inserts_unmatched_rows(self):
+        e = Engine()
+        e.sql("CREATE TABLE target (id INTEGER PRIMARY KEY, v INTEGER)")
+        e.sql("CREATE TABLE source (id INTEGER PRIMARY KEY, v INTEGER)")
+        e.sql("INSERT INTO target (id, v) VALUES (1, 10)")
+        e.sql("INSERT INTO source (id, v) VALUES (1, 20), (2, 30)")
+        result = e.sql(
+            "MERGE INTO target USING source "
+            "ON target.id = source.id "
+            "WHEN MATCHED THEN UPDATE SET v = source.v "
+            "WHEN NOT MATCHED THEN INSERT (id, v) VALUES (source.id, source.v)"
+        )
+        assert result.rows == [{"merged": 2}]
+        rows = e.sql("SELECT id, v FROM target ORDER BY id").rows
+        assert rows == [{"id": 1, "v": 20}, {"id": 2, "v": 30}]
+
+    def test_merge_delete_and_do_nothing(self):
+        e = Engine()
+        e.sql("CREATE TABLE target (id INTEGER PRIMARY KEY, v INTEGER)")
+        e.sql("CREATE TABLE source (id INTEGER PRIMARY KEY, v INTEGER)")
+        e.sql("INSERT INTO target (id, v) VALUES (1, 10), (2, 20)")
+        e.sql("INSERT INTO source (id, v) VALUES (1, -1), (2, 99), (3, 30)")
+        result = e.sql(
+            "MERGE INTO target USING source "
+            "ON target.id = source.id "
+            "WHEN MATCHED AND source.v < 0 THEN DELETE "
+            "WHEN MATCHED THEN DO NOTHING "
+            "WHEN NOT MATCHED THEN INSERT (id, v) VALUES (source.id, source.v)"
+        )
+        assert result.rows == [{"merged": 2}]
+        rows = e.sql("SELECT id, v FROM target ORDER BY id").rows
+        assert rows == [{"id": 2, "v": 20}, {"id": 3, "v": 30}]

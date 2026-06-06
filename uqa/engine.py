@@ -22,7 +22,7 @@ from uqa.core.types import DocId, Edge, Payload, PostingEntry, Vertex
 from uqa.graph.store import GraphStore, MemoryGraphStore
 from uqa.planner.parallel import ParallelExecutor
 from uqa.sql.table import _SQL_TYPE_MAP, ColumnDef, ColumnStats, Table
-from uqa.storage.catalog import Catalog
+from uqa.storage.catalog import Catalog, quote_identifier
 from uqa.storage.index_manager import IndexManager
 from uqa.storage.sqlite_graph_store import SQLiteGraphStore
 from uqa.storage.transaction import InMemoryTransaction, Transaction
@@ -294,9 +294,10 @@ class Engine:
                 )
             table = Table(name, columns, conn=catalog.conn)
 
-            # Migrate old-format databases: if documents exist in the
-            # shared _documents table but not in per-table SQLite tables,
-            # copy them over.
+            # Migrate truly old Python databases that used per-table
+            # ``_data_*`` / ``_inverted_*`` storage into the shared
+            # canonical catalog tables.  Canonical rows are left
+            # in place and never treated as disposable migration input.
             self._migrate_old_format_table(catalog, name, table)
 
             # Restore _next_id from SQLite
@@ -430,9 +431,11 @@ class Engine:
             tbl.vector_indexes[col_name] = IVFIndex(**ivf_kwargs)
 
         # -- R*Tree spatial indexes ------------------------------------
-        # R*Tree virtual table data persists in SQLite, so we only need
-        # to reconstruct the SpatialIndex wrapper and attach it to the
-        # table.  The R*Tree data is already populated.
+        # Reconstruct the SpatialIndex wrapper and replay canonical
+        # document rows into the R*Tree.  This is idempotent because
+        # SpatialIndex.add uses INSERT OR REPLACE, and it covers old
+        # databases where the index definition existed before the final
+        # point rows were flushed.
         from uqa.storage.spatial_index import SpatialIndex
 
         for _name, idx_type, tbl_name, cols, _params in catalog.load_indexes():
@@ -444,7 +447,17 @@ class Engine:
             col_name = cols[0] if cols else None
             if col_name is None:
                 continue
+            if col_name in tbl.columns:
+                tbl.columns[col_name].type_name = "point"
+                tbl.columns[col_name].python_type = list
             sp_idx = SpatialIndex(tbl_name, col_name, conn=catalog.conn)
+            for doc_id in tbl.document_store.doc_ids:
+                doc = tbl.document_store.get(doc_id)
+                if doc is None or col_name not in doc:
+                    continue
+                point = doc[col_name]
+                if isinstance(point, list | tuple) and len(point) == 2:
+                    sp_idx.add(doc_id, float(point[0]), float(point[1]))
             tbl.spatial_indexes[col_name] = sp_idx
 
         # -- GIN full-text indexes ----------------------------------------
@@ -466,53 +479,93 @@ class Engine:
     def _migrate_old_format_table(
         catalog: Catalog, table_name: str, table: Any
     ) -> None:
-        """Migrate old-format data into per-table SQLite tables.
+        """Migrate old per-table Python storage into shared catalog tables."""
+        conn = catalog.conn
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
 
-        Old databases stored documents in the shared ``_documents`` table
-        and postings in ``_postings``.  This method copies them into the
-        new per-table SQLite tables (``_data_{name}``,
-        ``_inverted_{name}_{field}``) and removes the old rows.
-        """
-        old_docs = catalog.load_documents(table_name)
-        if not old_docs:
-            return
+        data_table = f"_data_{table_name}"
+        if data_table in tables:
+            existing_ids = table.document_store.doc_ids
+            col_names = list(table.columns)
+            if col_names:
+                select_cols = ", ".join(quote_identifier(c) for c in col_names)
+                rows = conn.execute(
+                    f"SELECT _rowid, {select_cols} FROM {quote_identifier(data_table)}"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT _rowid FROM {quote_identifier(data_table)}"
+                ).fetchall()
+            for row in rows:
+                doc_id = int(row[0])
+                if doc_id in existing_ids:
+                    continue
+                data: dict[str, Any] = {}
+                for col_name, value in zip(col_names, row[1:]):
+                    if value is None:
+                        continue
+                    col_def = table.columns[col_name]
+                    if (
+                        isinstance(value, str)
+                        and (
+                            col_def.vector_dimensions is not None
+                            or col_def.type_name in {"json", "jsonb", "point"}
+                            or col_def.type_name.endswith("[]")
+                        )
+                    ):
+                        import json
 
-        # Copy documents into SQLiteDocumentStore
-        for doc_id, data in old_docs:
-            coerced: dict[str, Any] = {}
-            for col_name, col_def in table.columns.items():
-                if col_name in data and data[col_name] is not None:
-                    coerced[col_name] = col_def.python_type(data[col_name])
-            table.document_store.put(doc_id, coerced)
+                        try:
+                            value = json.loads(value)
+                        except json.JSONDecodeError:
+                            pass
+                    data[col_name] = value
+                table.document_store.put(doc_id, data)
 
-        # Copy postings into SQLiteInvertedIndex
-        old_postings = catalog.load_postings(table_name)
-        for field, term, doc_id, positions in old_postings:
-            entry = PostingEntry(doc_id, Payload(positions=positions, score=0.0))
-            table.inverted_index.add_posting(field, term, entry)
+        posting_count = conn.execute(
+            "SELECT COUNT(*) FROM _postings WHERE table_name = ?", (table_name,)
+        ).fetchone()
+        if posting_count is not None and int(posting_count[0]) == 0:
+            prefix = f"_inverted_{table_name}_"
+            for legacy_table in sorted(t for t in tables if t.startswith(prefix)):
+                field = legacy_table[len(prefix) :]
+                rows = conn.execute(
+                    f"SELECT term, doc_id, positions FROM {quote_identifier(legacy_table)}"
+                ).fetchall()
+                for term, doc_id, positions in rows:
+                    decoded = table.inverted_index._decode_positions(positions)
+                    entry = PostingEntry(
+                        int(doc_id),
+                        Payload(positions=decoded, score=0.0),
+                    )
+                    table.inverted_index.add_posting(field, term, entry)
 
-        # Copy doc lengths
-        for doc_id, lengths in catalog.load_doc_lengths(table_name):
-            table.inverted_index.set_doc_length(doc_id, lengths)
-            for field, length in lengths.items():
-                table.inverted_index.add_total_length(field, length)
-
-        # Set doc count from number of unique docs with lengths
-        doc_length_entries = catalog.load_doc_lengths(table_name)
-        if doc_length_entries:
-            table.inverted_index.set_doc_count(len(doc_length_entries))
-
-        # Remove old-format rows
-        catalog.conn.execute(
-            "DELETE FROM _documents WHERE table_name = ?", (table_name,)
-        )
-        catalog.conn.execute(
-            "DELETE FROM _postings WHERE table_name = ?", (table_name,)
-        )
-        catalog.conn.execute(
-            "DELETE FROM _doc_lengths WHERE table_name = ?", (table_name,)
-        )
-        catalog.conn.commit()
+        doc_lengths_table = f"_doc_lengths_{table_name}"
+        length_count = conn.execute(
+            "SELECT COUNT(*) FROM _doc_lengths WHERE table_name = ?", (table_name,)
+        ).fetchone()
+        if (
+            doc_lengths_table in tables
+            and length_count is not None
+            and int(length_count[0]) == 0
+        ):
+            rows = conn.execute(
+                f"SELECT doc_id, field, length FROM {quote_identifier(doc_lengths_table)}"
+            ).fetchall()
+            lengths_by_doc: dict[int, dict[str, int]] = {}
+            total_by_field: dict[str, int] = {}
+            for doc_id, field, length in rows:
+                lengths_by_doc.setdefault(int(doc_id), {})[field] = int(length)
+                total_by_field[field] = total_by_field.get(field, 0) + int(length)
+            for doc_id, lengths in lengths_by_doc.items():
+                table.inverted_index.set_doc_length(doc_id, lengths)
+            for field, total_length in total_by_field.items():
+                table.inverted_index.add_total_length(field, total_length)
 
     # -- Public API ----------------------------------------------------
 

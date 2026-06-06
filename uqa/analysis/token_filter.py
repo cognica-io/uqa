@@ -36,6 +36,7 @@ class TokenFilter(ABC):
             "lowercase": LowerCaseFilter,
             "stop": StopWordFilter,
             "porter_stem": PorterStemFilter,
+            "a_s_c_i_i_folding": ASCIIFoldingFilter,
             "ascii_folding": ASCIIFoldingFilter,
             "synonym": SynonymFilter,
             "ngram": NGramFilter,
@@ -421,7 +422,7 @@ class ASCIIFoldingFilter(TokenFilter):
         return "".join(result)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": "ascii_folding"}
+        return {"type": "a_s_c_i_i_folding"}
 
     @classmethod
     def _from_dict(cls, d: dict[str, Any]) -> ASCIIFoldingFilter:
