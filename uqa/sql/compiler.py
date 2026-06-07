@@ -3682,9 +3682,12 @@ class SQLCompiler:
         if isinstance(val, FuncCall):
             fn = val.funcname[-1].sval.lower()
             if fn in _AGG_FUNC_NAMES:
-                arg_col = (
-                    None if val.agg_star else (self._extract_column_name(val.args[0]))
-                )
+                if val.agg_star or not val.args:
+                    arg_col = None
+                elif isinstance(val.args[0], ColumnRef):
+                    arg_col = self._extract_column_name(val.args[0])
+                else:
+                    arg_col = None
                 return fn if arg_col is None else f"{fn}_{arg_col}"
             if fn in ("text_match", "bayesian_match", "bayesian_match_with_prior"):
                 return "_score"
@@ -4647,17 +4650,6 @@ class SQLCompiler:
         self._uqa_function_cache[cache_key] = False
         return False
 
-    @staticmethod
-    def _contains_sublink(node: Any) -> bool:
-        if node is None:
-            return False
-        if isinstance(node, SubLink):
-            return True
-        for child in SQLCompiler._iter_ast_children(node):
-            if SQLCompiler._contains_sublink(child):
-                return True
-        return False
-
     def _split_uqa_conjuncts(self, where_node: Any) -> tuple[Any, Any]:
         """Split a WHERE node into UQA function parts and scalar parts.
 
@@ -5561,17 +5553,11 @@ class SQLCompiler:
             return None
         if stmt.targetList is None:
             return None
-        if getattr(self, "_correlated_outer_row", None) is not None:
-            return None
         if stmt.whereClause is not None and self._contains_uqa_function(
             stmt.whereClause
         ):
             return None
         if self._contains_uqa_function(stmt.targetList):
-            return None
-        if self._contains_sublink(stmt.targetList) or self._contains_sublink(
-            stmt.whereClause
-        ):
             return None
         target_key = id(stmt.targetList)
         has_window = self._target_window_cache.get(target_key)
@@ -5581,8 +5567,6 @@ class SQLCompiler:
         if has_window:
             return None
         has_aggregates = self._has_aggregates(stmt.targetList)
-        if has_group or has_aggregates:
-            return None
         for target in stmt.targetList:
             if self._target_contains_star(target):
                 return None
@@ -5735,15 +5719,43 @@ class SQLCompiler:
             sort_keys.append((col_name, is_desc, nulls_first))
         return sort_keys
 
+    def _resolve_row_group_nodes(self, stmt: SelectStmt) -> list[Any] | None:
+        group_clause = stmt.groupClause or ()
+        if not group_clause:
+            return []
+
+        alias_map: dict[str, Any] = {}
+        target_list = list(stmt.targetList or ())
+        for target in target_list:
+            if target.name:
+                alias_map[target.name] = target.val
+
+        resolved: list[Any] = []
+        for node in group_clause:
+            if isinstance(node, A_Const) and isinstance(node.val, PgInteger):
+                ordinal = node.val.ival
+                if ordinal < 1 or ordinal > len(target_list):
+                    return None
+                resolved.append(target_list[ordinal - 1].val)
+                continue
+            if isinstance(node, ColumnRef) and len(node.fields) == 1:
+                field = node.fields[0]
+                if hasattr(field, "sval") and field.sval in alias_map:
+                    resolved.append(alias_map[field.sval])
+                    continue
+            resolved.append(node)
+        return resolved
+
     def _try_compile_row_group_select(
         self,
         stmt: SelectStmt,
         rows: list[dict[str, Any]],
         evaluator: Any,
     ) -> SQLResult | None:
-        group_fns = [
-            self._compile_row_expr(node, evaluator) for node in (stmt.groupClause or ())
-        ]
+        group_nodes = self._resolve_row_group_nodes(stmt)
+        if group_nodes is None:
+            return None
+        group_fns = [self._compile_row_expr(node, evaluator) for node in group_nodes]
         columns: list[str] = []
         target_specs: list[tuple] = []
 
@@ -5975,10 +5987,12 @@ class SQLCompiler:
 
             def column_ref(row: dict[str, Any]) -> Any:
                 if qualified is not None:
-                    try:
+                    if qualified in row:
                         return row[qualified]
-                    except KeyError:
-                        pass
+                    outer_row = getattr(self, "_correlated_outer_row", None)
+                    if outer_row is not None and qualified in outer_row:
+                        return outer_row[qualified]
+                    return None
                 return row.get(col_name)
 
             return column_ref
