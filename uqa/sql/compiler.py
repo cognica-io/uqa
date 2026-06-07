@@ -4589,8 +4589,8 @@ class SQLCompiler:
             return result
         return [node]
 
-    # UQA-specific WHERE functions that produce posting lists and cannot
-    # be evaluated as scalar expressions by ExprEvaluator.
+    # UQA-specific functions that produce posting lists or special result
+    # sets and cannot be evaluated as scalar expressions by ExprEvaluator.
     _UQA_WHERE_FUNCTIONS: frozenset[str] = frozenset(
         {
             "text_match",
@@ -4621,6 +4621,7 @@ class SQLCompiler:
             "weighted_rpq",
             "progressive_fusion",
             "deep_fusion",
+            "uqa_facets",
         }
     )
 
@@ -4644,6 +4645,17 @@ class SQLCompiler:
                 self._uqa_function_cache[cache_key] = True
                 return True
         self._uqa_function_cache[cache_key] = False
+        return False
+
+    @staticmethod
+    def _contains_sublink(node: Any) -> bool:
+        if node is None:
+            return False
+        if isinstance(node, SubLink):
+            return True
+        for child in SQLCompiler._iter_ast_children(node):
+            if SQLCompiler._contains_sublink(child):
+                return True
         return False
 
     def _split_uqa_conjuncts(self, where_node: Any) -> tuple[Any, Any]:
@@ -4896,9 +4908,10 @@ class SQLCompiler:
         #    predicates into the subquery before materialization.
         stmt = self._try_predicate_pushdown(stmt)
 
-        row_result = self._try_compile_simple_row_select(stmt)
-        if row_result is not None:
-            return row_result
+        if not explain:
+            row_result = self._try_compile_simple_row_select(stmt)
+            if row_result is not None:
+                return row_result
 
         # 3. Resolve FROM clause -> (table | None, source_op | None)
         table, source_op = self._resolve_from(
@@ -5548,7 +5561,15 @@ class SQLCompiler:
             return None
         if stmt.targetList is None:
             return None
+        if getattr(self, "_correlated_outer_row", None) is not None:
+            return None
         if stmt.whereClause is not None and self._contains_uqa_function(
+            stmt.whereClause
+        ):
+            return None
+        if self._contains_uqa_function(stmt.targetList):
+            return None
+        if self._contains_sublink(stmt.targetList) or self._contains_sublink(
             stmt.whereClause
         ):
             return None
@@ -5560,6 +5581,8 @@ class SQLCompiler:
         if has_window:
             return None
         has_aggregates = self._has_aggregates(stmt.targetList)
+        if has_group or has_aggregates:
+            return None
         for target in stmt.targetList:
             if self._target_contains_star(target):
                 return None
@@ -6062,6 +6085,7 @@ class SQLCompiler:
             if op in ("+", "-", "*", "/", "=", "<>", "!=", "<", "<=", ">", ">="):
                 left_fn = self._compile_row_expr(node.lexpr, evaluator)
                 right_fn = self._compile_row_expr(node.rexpr, evaluator)
+                from uqa.sql.expr_evaluator import _compare
 
                 def a_expr(row: dict[str, Any]) -> Any:
                     left = left_fn(row)
@@ -6086,17 +6110,17 @@ class SQLCompiler:
                             return math.trunc(left / right)
                         return left / right
                     if op == "=":
-                        return left == right
+                        return _compare(op, left, right)
                     if op in ("<>", "!="):
-                        return left != right
+                        return _compare(op, left, right)
                     if op == "<":
-                        return left < right
+                        return _compare(op, left, right)
                     if op == "<=":
-                        return left <= right
+                        return _compare(op, left, right)
                     if op == ">":
-                        return left > right
+                        return _compare(op, left, right)
                     if op == ">=":
-                        return left >= right
+                        return _compare(op, left, right)
                     return evaluator.evaluate(node, row)
 
                 return a_expr

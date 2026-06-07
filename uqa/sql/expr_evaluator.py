@@ -1243,6 +1243,7 @@ def _arithmetic(op: str, left: Any, right: Any) -> Any:
 
 
 def _compare(op: str, left: Any, right: Any) -> bool:
+    left, right = _coerce_comparable_values(left, right)
     if op == "=":
         return left == right
     if op in ("!=", "<>"):
@@ -1256,6 +1257,26 @@ def _compare(op: str, left: Any, right: Any) -> bool:
     if op == ">=":
         return left >= right
     raise ValueError(f"Unknown comparison operator: {op}")
+
+
+def _coerce_comparable_values(left: Any, right: Any) -> tuple[Any, Any]:
+    if isinstance(left, datetime) and isinstance(right, str):
+        return left, datetime.fromisoformat(right)
+    if isinstance(right, datetime) and isinstance(left, str):
+        return datetime.fromisoformat(left), right
+    if (
+        isinstance(left, date)
+        and not isinstance(left, datetime)
+        and isinstance(right, str)
+    ):
+        return left, date.fromisoformat(right)
+    if (
+        isinstance(right, date)
+        and not isinstance(right, datetime)
+        and isinstance(left, str)
+    ):
+        return date.fromisoformat(left), right
+    return left, right
 
 
 _CAST_MAP: dict[str, type] = {

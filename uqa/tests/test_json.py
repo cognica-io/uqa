@@ -147,13 +147,12 @@ class TestJSONFunctions:
 
     def test_json_build_array_mixed_types(self, engine):
         result = engine.sql("SELECT json_build_array(1, 2, 3, 'four') AS arr")
-        assert result.rows[0]["arr"] == ["1", "2", "3", "four"]
+        assert result.rows[0]["arr"] == [1, 2, 3, "four"]
 
     def test_json_build_array_mixed_int_float_str_bool(self, engine):
         result = engine.sql("SELECT json_build_array(1, 2.5, 'hello', true) AS arr")
         arr = result.rows[0]["arr"]
-        assert len(arr) == 4
-        assert all(isinstance(x, str) for x in arr)
+        assert arr == [1, 2.5, "hello", True]
 
     def test_json_build_array_empty(self, engine):
         result = engine.sql("SELECT json_build_array() AS arr")

@@ -266,7 +266,10 @@ class SQLiteDocumentStore(DocumentStore):
             )
         self._persist_vectors(doc_id, document)
         self._conn.commit()
-        self._doc_cache[int(doc_id)] = dict(document)
+        cached_doc = {key: _decode_value(value) for key, value in stored.items()}
+        for field, data in blobs:
+            cached_doc[field] = data
+        self._doc_cache[int(doc_id)] = cached_doc
         self._doc_ids_cache = None
 
     def get(self, doc_id: DocId) -> dict | None:
