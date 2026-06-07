@@ -108,6 +108,19 @@ class TestDefaultExpressions:
         result = engine.sql("SELECT v FROM t")
         assert result.rows[0]["v"] == 5
 
+    def test_default_nextval_expression(self, engine):
+        engine.sql("CREATE SEQUENCE s START 10")
+        engine.sql("CREATE TABLE t(id INT DEFAULT nextval('s'), name TEXT)")
+
+        engine.sql("INSERT INTO t (name) VALUES ('a')")
+        engine.sql("INSERT INTO t (name) VALUES ('b')")
+        result = engine.sql("SELECT id, name FROM t ORDER BY id")
+
+        assert result.rows == [
+            {"id": 10, "name": "a"},
+            {"id": 11, "name": "b"},
+        ]
+
 
 # ==================================================================
 # INSERT expression semantics
@@ -290,6 +303,20 @@ class TestExpressionEqualityJoin:
             {"y": 0, "value": "hit"},
             {"y": 1, "value": None},
         ]
+
+    def test_left_join_expression_hash_empty_right_uses_nulls(self, engine):
+        engine.sql("CREATE TABLE left_rows(id INT, value TEXT)")
+        engine.sql("CREATE TABLE right_rows(id INT, value TEXT)")
+        engine.sql("INSERT INTO left_rows VALUES (1, 'left')")
+
+        result = engine.sql(
+            "SELECT l.value AS left_value, r.value AS right_value "
+            "FROM left_rows l "
+            "LEFT JOIN right_rows r ON r.id = l.id + 1 "
+            "ORDER BY random()"
+        )
+
+        assert result.rows == [{"left_value": "left", "right_value": None}]
 
 
 # ==================================================================
@@ -1044,6 +1071,23 @@ class TestRowModePostgreSQLSemantics:
         result = engine.sql("SELECT -x AS neg_x FROM vals")
 
         assert result.rows == [{"neg_x": -2.5}]
+
+    def test_null_scalar_functions_return_null(self, engine):
+        engine.sql("CREATE TABLE vals(x DOUBLE PRECISION, s TEXT)")
+        engine.sql("INSERT INTO vals VALUES (NULL, NULL)")
+
+        result = engine.sql(
+            "SELECT "
+            "LENGTH(s) AS len_s, "
+            "ROUND(x) AS round_x, "
+            "SQRT(x) AS sqrt_x, "
+            "COS(x) AS cos_x "
+            "FROM vals"
+        )
+
+        assert result.rows == [
+            {"len_s": None, "round_x": None, "sqrt_x": None, "cos_x": None}
+        ]
 
 
 # ==================================================================

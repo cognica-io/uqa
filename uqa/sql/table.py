@@ -95,7 +95,12 @@ _DATETIME_TYPES = frozenset(
 )
 
 
-def _evaluate_default(default: Any) -> Any:
+def _evaluate_default(
+    default: Any,
+    *,
+    engine: Any = None,
+    sequences: dict[str, dict[str, int]] | None = None,
+) -> Any:
     """Evaluate a column DEFAULT value.
 
     Literal defaults (int, str, etc.) are returned as-is. Expression
@@ -110,13 +115,13 @@ def _evaluate_default(default: Any) -> Any:
 
             sql = str(default["Expression"])
             expr = _parse_default_expression(sql)
-            evaluator = ExprEvaluator()
+            evaluator = ExprEvaluator(engine=engine, sequences=sequences)
             return evaluator.evaluate(expr, {})
     mod = type(default).__module__ or ""
     if mod.startswith("pglast"):
         from uqa.sql.expr_evaluator import ExprEvaluator
 
-        evaluator = ExprEvaluator()
+        evaluator = ExprEvaluator(engine=engine, sequences=sequences)
         return evaluator.evaluate(default, {})
     return default
 
@@ -303,6 +308,24 @@ class Table:
         self._stats: dict[str, ColumnStats] = {}
         self._unique_indexes: dict[str, dict[Any, int]] = {}
         self._unique_indexes_built = False
+        self._default_engine: Any = None
+        self._default_sequences: dict[str, dict[str, int]] | None = None
+
+    def bind_default_context(
+        self,
+        *,
+        engine: Any = None,
+        sequences: dict[str, dict[str, int]] | None = None,
+    ) -> None:
+        self._default_engine = engine
+        self._default_sequences = sequences
+
+    def _evaluate_column_default(self, default: Any) -> Any:
+        return _evaluate_default(
+            default,
+            engine=self._default_engine,
+            sequences=self._default_sequences,
+        )
 
     def insert(self, row: dict[str, Any]) -> tuple[int, IndexedTerms | None]:
         """Insert a row and return (doc_id, indexed_terms).
@@ -342,7 +365,7 @@ class Table:
         # -- DEFAULT value application ----------------------------------
         for col_name, col_def in self.columns.items():
             if col_def.default is not None and row.get(col_name) is None:
-                row[col_name] = _evaluate_default(col_def.default)
+                row[col_name] = self._evaluate_column_default(col_def.default)
 
         # -- NOT NULL validation --------------------------------------
         for col_name, col_def in self.columns.items():
@@ -405,7 +428,7 @@ class Table:
                 elif col_def.type_name == "point":
                     points[col_name] = (value[0], value[1])
             elif col_def.default is not None:
-                coerced[col_name] = _evaluate_default(col_def.default)
+                coerced[col_name] = self._evaluate_column_default(col_def.default)
             # else: column absent -> not stored (sparse document)
 
         # -- persist ---------------------------------------------------

@@ -220,7 +220,6 @@ from uqa.sql.table import (
     ColumnDef,
     ForeignKeyDef,
     Table,
-    _evaluate_default,
     resolve_type,
 )
 
@@ -604,6 +603,36 @@ class SQLCompiler:
             raise ValueError(f"Table '{table_name}' does not exist")
         return table
 
+    def _bind_table_default_context(self, table: Table) -> None:
+        table.bind_default_context(
+            engine=self._engine,
+            sequences=self._engine._sequences,
+        )
+
+    @staticmethod
+    def _catalog_column_dicts(table: Table) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": col.name,
+                "type_name": col.type_name,
+                "primary_key": col.primary_key,
+                "not_null": col.not_null,
+                "auto_increment": col.auto_increment,
+                "default": col.default,
+                "vector_dimensions": col.vector_dimensions,
+                "unique": col.unique,
+            }
+            for col in table.columns.values()
+        ]
+
+    def _persist_table_schema(self, table_name: str, table: Table) -> None:
+        if self._engine._catalog is None or table_name in self._engine._temp_tables:
+            return
+        self._engine._catalog.save_table_schema(
+            table_name,
+            self._catalog_column_dicts(table),
+        )
+
     # ==================================================================
     # DDL: CREATE SCHEMA / DROP SCHEMA
     # ==================================================================
@@ -699,6 +728,7 @@ class SQLCompiler:
             conn = catalog.conn if catalog is not None else None
 
         table = Table(table_name, columns, conn=conn)
+        self._bind_table_default_context(table)
 
         # Register CHECK constraints with ExprEvaluator closures
         if check_exprs:
@@ -719,23 +749,8 @@ class SQLCompiler:
 
         if is_temp:
             self._engine._temp_tables.add(table_name)
-        elif self._engine._catalog is not None:
-            self._engine._catalog.save_table_schema(
-                table_name,
-                [
-                    {
-                        "name": col.name,
-                        "type_name": col.type_name,
-                        "primary_key": col.primary_key,
-                        "not_null": col.not_null,
-                        "auto_increment": col.auto_increment,
-                        "default": col.default,
-                        "vector_dimensions": col.vector_dimensions,
-                        "unique": col.unique,
-                    }
-                    for col in columns
-                ],
-            )
+        else:
+            self._persist_table_schema(table_name, table)
 
         return SQLResult([], [])
 
@@ -787,27 +802,13 @@ class SQLCompiler:
             conn = catalog.conn if catalog is not None else None
 
         table = Table(table_name, columns, conn=conn)
+        self._bind_table_default_context(table)
         self._engine._tables[table_name] = table
 
         if is_temp:
             self._engine._temp_tables.add(table_name)
-        elif self._engine._catalog is not None:
-            self._engine._catalog.save_table_schema(
-                table_name,
-                [
-                    {
-                        "name": col.name,
-                        "type_name": col.type_name,
-                        "primary_key": col.primary_key,
-                        "not_null": col.not_null,
-                        "auto_increment": col.auto_increment,
-                        "default": col.default,
-                        "vector_dimensions": col.vector_dimensions,
-                        "unique": col.unique,
-                    }
-                    for col in columns
-                ],
-            )
+        else:
+            self._persist_table_schema(table_name, table)
 
         # Insert result rows (use only declared columns)
         inserted = 0
@@ -1612,6 +1613,7 @@ class SQLCompiler:
             else:
                 raise ValueError(f"Unsupported ALTER TABLE subcommand: {at.name}")
 
+        self._persist_table_schema(table_name, table)
         return SQLResult([], [])
 
     def _backfill_added_column(self, table: Table, col_def: ColumnDef) -> None:
@@ -1624,7 +1626,7 @@ class SQLCompiler:
             if doc is None or col_def.name in doc:
                 continue
             if has_default:
-                value = col_def.coerce(_evaluate_default(col_def.default))
+                value = col_def.coerce(table._evaluate_column_default(col_def.default))
                 doc[col_def.name] = value
             elif col_def.not_null:
                 raise ValueError(
@@ -3413,11 +3415,12 @@ class SQLCompiler:
                 # after the sort so the sort keys are still available.
                 defer_proj = False
                 sort_expr_targets = self._build_sort_expr_targets(stmt.sortClause)
-                if sort_expr_targets and table is not None:
-                    passthrough = [
-                        (col, ColumnRef(fields=(PgString(sval=col),)))
-                        for col in table.columns
-                    ]
+                if sort_expr_targets:
+                    passthrough = self._build_sort_passthrough_targets(
+                        table,
+                        join_source,
+                        stmt.fromClause,
+                    )
                     physical = ExprProjectOp(
                         physical,
                         passthrough + sort_expr_targets,
@@ -3432,7 +3435,7 @@ class SQLCompiler:
                         stmt.sortClause,
                         stmt.targetList,
                     )
-                    defer_proj = self._sort_needs_extra_cols(
+                    defer_proj = defer_proj or self._sort_needs_extra_cols(
                         sort_keys_pre,
                         stmt.targetList,
                     )
@@ -3785,6 +3788,42 @@ class SQLCompiler:
             if isinstance(node, ColumnRef):
                 continue
             targets.append((f"__sort_expr_{index}", node))
+        return targets
+
+    def _build_sort_passthrough_targets(
+        self,
+        table: Table | None,
+        join_source: bool,
+        from_clause: tuple | None,
+    ) -> list[tuple[str, Any]]:
+        targets: list[tuple[str, Any]] = []
+        seen: set[str] = set()
+
+        def add(name: str, node: ColumnRef) -> None:
+            if name in seen:
+                return
+            seen.add(name)
+            targets.append((name, node))
+
+        if join_source:
+            for alias, cols in self._collect_join_tables(from_clause):
+                for col in cols:
+                    add(
+                        f"{alias}.{col}",
+                        ColumnRef(
+                            fields=(
+                                PgString(sval=alias),
+                                PgString(sval=col),
+                            )
+                        ),
+                    )
+                    add(col, ColumnRef(fields=(PgString(sval=col),)))
+            return targets
+
+        if table is None:
+            return targets
+        for col in table.columns:
+            add(col, ColumnRef(fields=(PgString(sval=col),)))
         return targets
 
     @staticmethod
@@ -6223,7 +6262,14 @@ class SQLCompiler:
                 return lambda _row: math.pi
             if func_name == "length" and len(args) == 1:
                 arg_fn = self._compile_row_expr(args[0], evaluator)
-                return lambda row: len(str(arg_fn(row) or ""))
+
+                def length_fn(row: dict[str, Any]) -> Any:
+                    value = arg_fn(row)
+                    if value is None:
+                        return None
+                    return len(str(value))
+
+                return length_fn
             if func_name == "repeat" and len(args) == 2:
                 text_fn = self._compile_row_expr(args[0], evaluator)
                 count_fn = self._compile_row_expr(args[1], evaluator)
@@ -6266,7 +6312,14 @@ class SQLCompiler:
                 return rpad_fn
             if func_name == "round" and len(args) == 1:
                 arg_fn = self._compile_row_expr(args[0], evaluator)
-                return lambda row: round(arg_fn(row))
+
+                def round_fn(row: dict[str, Any]) -> Any:
+                    value = arg_fn(row)
+                    if value is None:
+                        return None
+                    return round(value)
+
+                return round_fn
             if func_name in ("cos", "sin", "tan", "sqrt", "floor", "ceil", "ceiling"):
                 if len(args) != 1:
                     return lambda row: evaluator.evaluate(node, row)
@@ -6276,6 +6329,8 @@ class SQLCompiler:
 
                     def cos_fn(row: dict[str, Any]) -> Any:
                         value = arg_fn(row)
+                        if value is None:
+                            return None
                         if value in cache:
                             return cache[value]
                         result = math.cos(value)
@@ -6288,6 +6343,8 @@ class SQLCompiler:
 
                     def sin_fn(row: dict[str, Any]) -> Any:
                         value = arg_fn(row)
+                        if value is None:
+                            return None
                         if value in cache:
                             return cache[value]
                         result = math.sin(value)
@@ -6300,6 +6357,8 @@ class SQLCompiler:
 
                     def tan_fn(row: dict[str, Any]) -> Any:
                         value = arg_fn(row)
+                        if value is None:
+                            return None
                         if value in cache:
                             return cache[value]
                         result = math.tan(value)
@@ -6308,10 +6367,31 @@ class SQLCompiler:
 
                     return tan_fn
                 if func_name == "sqrt":
-                    return lambda row: math.sqrt(arg_fn(row))
+
+                    def sqrt_fn(row: dict[str, Any]) -> Any:
+                        value = arg_fn(row)
+                        if value is None:
+                            return None
+                        return math.sqrt(value)
+
+                    return sqrt_fn
                 if func_name == "floor":
-                    return lambda row: math.floor(arg_fn(row))
-                return lambda row: math.ceil(arg_fn(row))
+
+                    def floor_fn(row: dict[str, Any]) -> Any:
+                        value = arg_fn(row)
+                        if value is None:
+                            return None
+                        return math.floor(value)
+
+                    return floor_fn
+
+                def ceil_fn(row: dict[str, Any]) -> Any:
+                    value = arg_fn(row)
+                    if value is None:
+                        return None
+                    return math.ceil(value)
+
+                return ceil_fn
 
         return lambda row: evaluator.evaluate(node, row)
 
@@ -7861,6 +7941,7 @@ class SQLCompiler:
             op,
             JoinOperator
             | CrossJoinOperator
+            | _ExprHashJoinOperator
             | _ExprJoinOperator
             | _LateralJoinOperator
             | _LateralFunctionJoinOperator,
@@ -9494,10 +9575,14 @@ class SQLCompiler:
         if jt == JoinType.JOIN_INNER and quals is None:
             return table, CrossJoinOperator(left_op, right_op)
 
-        # Simple equality ON: use efficient hash join
+        # Simple column equality ON: use efficient hash join
         if isinstance(quals, A_Expr):
             op_name = quals.name[-1].sval if quals.name else None
-            if op_name == "=":
+            if (
+                op_name == "="
+                and isinstance(quals.lexpr, ColumnRef)
+                and isinstance(quals.rexpr, ColumnRef)
+            ):
                 left_field, right_field = self._resolve_join_on_fields(
                     quals.lexpr,
                     quals.rexpr,
@@ -12974,6 +13059,8 @@ class _ExprHashJoinOperator:
         right_field_names: set[str] = set()
         if right_entries:
             right_field_names.update(right_entries[0].payload.fields.keys())
+        else:
+            right_field_names.update(self._source_field_names(self._right))
 
         right_index: dict[tuple[Any, ...], list[Any]] = {}
         for right in right_entries:
@@ -13027,6 +13114,19 @@ class _ExprHashJoinOperator:
                 )
 
         return GeneralizedPostingList.from_sorted(result)
+
+    @staticmethod
+    def _source_field_names(source: Any) -> set[str]:
+        table = getattr(source, "_table", None)
+        if table is None:
+            return set()
+        base_fields = {"_doc_id", "_id"}
+        base_fields.update(table.columns)
+        alias = getattr(source, "_alias", None)
+        if alias is None:
+            return base_fields
+        qualified_fields = {f"{alias}.{field}" for field in base_fields}
+        return base_fields | qualified_fields
 
     @classmethod
     def _compile_key_func(cls, key_nodes: list[Any]) -> Any:

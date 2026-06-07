@@ -293,6 +293,7 @@ class Engine:
                     )
                 )
             table = Table(name, columns, conn=catalog.conn)
+            table.bind_default_context(engine=self, sequences=self._sequences)
 
             # Migrate truly old Python databases that used per-table
             # ``_data_*`` / ``_inverted_*`` storage into the shared

@@ -591,6 +591,28 @@ class TestEnginePersistenceSQL:
             result = engine.sql("SELECT v FROM t")
             assert result.rows == [{"v": 5}]
 
+    def test_alter_column_default_persists_after_restart(self, tmp_path):
+        db = str(tmp_path / "test.db")
+        with Engine(db_path=db) as engine:
+            engine.sql("CREATE TABLE t(id INT, v INT)")
+            engine.sql("ALTER TABLE t ALTER COLUMN v SET DEFAULT (2 + 3)::int")
+
+        with Engine(db_path=db) as engine:
+            engine.sql("INSERT INTO t (id) VALUES (1)")
+            result = engine.sql("SELECT id, v FROM t")
+            assert result.rows == [{"id": 1, "v": 5}]
+
+    def test_add_column_default_persists_after_restart(self, tmp_path):
+        db = str(tmp_path / "test.db")
+        with Engine(db_path=db) as engine:
+            engine.sql("CREATE TABLE t(id INT)")
+            engine.sql("ALTER TABLE t ADD COLUMN v INT DEFAULT 5")
+
+        with Engine(db_path=db) as engine:
+            engine.sql("INSERT INTO t (id) VALUES (1)")
+            result = engine.sql("SELECT id, v FROM t")
+            assert result.rows == [{"id": 1, "v": 5}]
+
     def test_text_search_works_after_restart(self, tmp_path):
         db = str(tmp_path / "test.db")
         with Engine(db_path=db) as engine:

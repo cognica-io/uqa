@@ -1,5 +1,21 @@
 # History
 
+## 0.25.15 (2026-06-07)
+
+Fix release regressions in the PostgreSQL compatibility and row-mode execution paths introduced in 0.25.14. This release preserves PostgreSQL NULL behavior for row-mode scalar functions, restores persistent ALTER TABLE schema metadata, keeps expression DEFAULT evaluation connected to the active engine context, and corrects expression-hash LEFT JOIN handling for empty right inputs and ORDER BY expression projection.
+
+### Bug Fixes
+
+- **Expression DEFAULT context** (`sql/table.py`, `sql/compiler.py`, `engine.py`): DEFAULT expressions now evaluate with the active engine and sequence store, so defaults such as `nextval(...)` work when a column is omitted during INSERT.
+- **Persistent ALTER TABLE metadata** (`sql/compiler.py`): `ALTER TABLE ADD COLUMN` and `ALTER TABLE ALTER COLUMN ... SET DEFAULT` now persist updated table schemas to the catalog, so reopened persistent engines retain new columns and defaults for subsequent writes.
+- **Row-mode scalar NULL semantics** (`sql/compiler.py`): Row-mode fast paths for `LENGTH`, `ROUND`, `SQRT`, `COS`, `SIN`, `TAN`, `FLOOR`, `CEIL`, and `CEILING` now return NULL for NULL inputs instead of returning incorrect values or raising Python exceptions.
+- **Expression-hash LEFT JOIN projection** (`sql/compiler.py`): Expression equality joins are routed through the expression-aware hash join only when needed, the hash join is treated as a join source, unmatched right-side fields are explicitly NULL-extended, and ORDER BY expression projection preserves qualified join fields.
+
+### Tests
+
+- **New regression coverage** in `test_pg_compat_bugs.py` and `test_catalog.py`: sequence-backed DEFAULT expressions, persistent ALTER COLUMN defaults, persistent ADD COLUMN defaults, row-mode scalar NULL behavior, and expression-hash LEFT JOIN empty-right handling with ORDER BY expressions.
+- **Total**: 3017 tests pass across the full `uqa/tests` suite.
+
 ## 0.25.14 (2026-06-07)
 
 Improve PostgreSQL compatibility and row-mode execution for embedded SQL workloads. This release expands PostgreSQL semantics for CTEs, table functions, window expressions, `DISTINCT ON`, defaults, identity columns, `INSERT` expressions, and persisted catalog state, while reducing Python overhead in recursive CTEs, joins, temporary rows, and ordered string aggregation. The focused PostgreSQL compatibility regression suite passes with 258 tests.
