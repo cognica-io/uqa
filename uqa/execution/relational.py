@@ -17,6 +17,7 @@ limit are *streaming* operators that process one batch at a time.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -360,12 +361,24 @@ class ExprProjectOp(PhysicalOperator):
         node type is not supported for vectorized evaluation."""
         import pyarrow as pa
         import pyarrow.compute as pc
-        from pglast.ast import A_Const, A_Expr, ColumnRef
+        from pglast.ast import (
+            A_Const,
+            A_Expr,
+            BoolExpr,
+            CaseExpr,
+            CoalesceExpr,
+            ColumnRef,
+            FuncCall,
+            MinMaxExpr,
+            NullTest,
+            TypeCast,
+        )
         from pglast.ast import Boolean as PgBoolean
         from pglast.ast import Float as PgFloat
         from pglast.ast import Integer as PgInteger
         from pglast.ast import String as PgString
         from pglast.enums.parsenodes import A_Expr_Kind
+        from pglast.enums.primnodes import BoolExprType, MinMaxOp, NullTestType
 
         if isinstance(node, ColumnRef):
             fields_list: list[Any] = list(node.fields or ())
@@ -394,7 +407,20 @@ class ExprProjectOp(PhysicalOperator):
 
         if isinstance(node, A_Expr) and A_Expr_Kind(node.kind) == A_Expr_Kind.AEXPR_OP:
             op = node.name[0].sval if node.name else None
-            if op not in ("+", "-", "*", "/"):
+            if op not in (
+                "+",
+                "-",
+                "*",
+                "/",
+                "=",
+                "<>",
+                "!=",
+                "<",
+                "<=",
+                ">",
+                ">=",
+                "||",
+            ):
                 return None
             left = self._vectorize_node(node.lexpr, rb, n)
             right = self._vectorize_node(node.rexpr, rb, n)
@@ -413,6 +439,239 @@ class ExprProjectOp(PhysicalOperator):
                     safe_right = pc.if_else(zero_mask, 1, right)
                     result = pc.divide(left, safe_right)
                     return pc.if_else(zero_mask, None, result)
+                if op == "=":
+                    return pc.equal(left, right)
+                if op in ("<>", "!="):
+                    return pc.not_equal(left, right)
+                if op == "<":
+                    return pc.less(left, right)
+                if op == "<=":
+                    return pc.less_equal(left, right)
+                if op == ">":
+                    return pc.greater(left, right)
+                if op == ">=":
+                    return pc.greater_equal(left, right)
+                if op == "||":
+                    return pc.binary_join_element_wise(
+                        pc.cast(left, pa.utf8(), safe=False),
+                        pc.cast(right, pa.utf8(), safe=False),
+                        "",
+                    )
+            except (
+                pa.ArrowInvalid,
+                pa.ArrowTypeError,
+                pa.ArrowNotImplementedError,
+            ):
+                return None
+
+        if isinstance(node, BoolExpr):
+            args = [self._vectorize_node(arg, rb, n) for arg in (node.args or ())]
+            if not args or any(arg is None for arg in args):
+                return None
+            try:
+                boolop = BoolExprType(node.boolop)
+                if boolop == BoolExprType.AND_EXPR:
+                    result = args[0]
+                    for arg in args[1:]:
+                        result = pc.and_kleene(result, arg)
+                    return result
+                if boolop == BoolExprType.OR_EXPR:
+                    result = args[0]
+                    for arg in args[1:]:
+                        result = pc.or_kleene(result, arg)
+                    return result
+                if boolop == BoolExprType.NOT_EXPR and len(args) == 1:
+                    return pc.invert(args[0])
+            except (
+                pa.ArrowInvalid,
+                pa.ArrowTypeError,
+                pa.ArrowNotImplementedError,
+            ):
+                return None
+
+        if isinstance(node, NullTest):
+            arg = self._vectorize_node(node.arg, rb, n)
+            if arg is None:
+                return None
+            try:
+                if NullTestType(node.nulltesttype) == NullTestType.IS_NULL:
+                    return pc.is_null(arg)
+                return pc.is_valid(arg)
+            except (
+                pa.ArrowInvalid,
+                pa.ArrowTypeError,
+                pa.ArrowNotImplementedError,
+            ):
+                return None
+
+        if isinstance(node, FuncCall):
+            func_name = node.funcname[-1].sval.lower()
+            args = list(node.args or ())
+            if func_name == "pi" and not args:
+                return pa.array([math.pi] * n, type=pa.float64())
+            if func_name == "repeat" and len(args) == 2:
+                value = self._vectorize_node(args[0], rb, n)
+                count = self._vectorize_node(args[1], rb, n)
+                if value is None or count is None:
+                    return None
+                try:
+                    return pc.binary_repeat(
+                        pc.cast(value, pa.utf8(), safe=False),
+                        pc.cast(count, pa.int64(), safe=False),
+                    )
+                except (
+                    pa.ArrowInvalid,
+                    pa.ArrowTypeError,
+                    pa.ArrowNotImplementedError,
+                ):
+                    return None
+            if func_name == "rpad" and len(args) in (2, 3):
+                value = self._vectorize_node(args[0], rb, n)
+                width = self._vectorize_node(args[1], rb, n)
+                fill = (
+                    self._vectorize_node(args[2], rb, n)
+                    if len(args) == 3
+                    else pa.array([" "] * n, type=pa.utf8())
+                )
+                if value is None or width is None or fill is None:
+                    return None
+                try:
+                    width_value = self._constant_array_value(width)
+                    fill_value = self._constant_array_value(fill)
+                    if width_value is None or fill_value is None:
+                        return None
+                    return pc.utf8_rpad(
+                        pc.cast(value, pa.utf8(), safe=False),
+                        int(width_value),
+                        str(fill_value),
+                    )
+                except (
+                    pa.ArrowInvalid,
+                    pa.ArrowTypeError,
+                    pa.ArrowNotImplementedError,
+                    TypeError,
+                    ValueError,
+                ):
+                    return None
+            if len(args) != 1:
+                return None
+            arg = self._vectorize_node(args[0], rb, n)
+            if arg is None:
+                return None
+            try:
+                if func_name == "cos":
+                    return pc.cos(arg)
+                if func_name == "sin":
+                    return pc.sin(arg)
+                if func_name == "tan":
+                    return pc.tan(arg)
+                if func_name == "sqrt":
+                    return pc.sqrt(arg)
+                if func_name == "abs":
+                    return pc.abs(arg)
+                if func_name == "floor":
+                    return pc.floor(arg)
+                if func_name in ("ceil", "ceiling"):
+                    return pc.ceil(arg)
+                if func_name == "round":
+                    return pc.round(arg)
+                if func_name == "length":
+                    return pc.utf8_length(pc.cast(arg, pa.utf8(), safe=False))
+            except (
+                pa.ArrowInvalid,
+                pa.ArrowTypeError,
+                pa.ArrowNotImplementedError,
+            ):
+                return None
+
+        if isinstance(node, CoalesceExpr):
+            args = [self._vectorize_node(arg, rb, n) for arg in (node.args or ())]
+            if not args or any(arg is None for arg in args):
+                return None
+            try:
+                return pc.coalesce(*args)
+            except (
+                pa.ArrowInvalid,
+                pa.ArrowTypeError,
+                pa.ArrowNotImplementedError,
+            ):
+                return None
+
+        if isinstance(node, MinMaxExpr):
+            args = [self._vectorize_node(arg, rb, n) for arg in (node.args or ())]
+            if not args or any(arg is None for arg in args):
+                return None
+            try:
+                if MinMaxOp(node.op) == MinMaxOp.IS_GREATEST:
+                    return pc.max_element_wise(*args)
+                if MinMaxOp(node.op) == MinMaxOp.IS_LEAST:
+                    return pc.min_element_wise(*args)
+            except (
+                pa.ArrowInvalid,
+                pa.ArrowTypeError,
+                pa.ArrowNotImplementedError,
+            ):
+                return None
+
+        if isinstance(node, CaseExpr):
+            result = (
+                self._vectorize_node(node.defresult, rb, n)
+                if node.defresult is not None
+                else pa.nulls(n)
+            )
+            if result is None:
+                return None
+            for when in reversed(node.args or ()):
+                condition = self._vectorize_node(when.expr, rb, n)
+                value = self._vectorize_node(when.result, rb, n)
+                if condition is None or value is None:
+                    return None
+                try:
+                    result = pc.if_else(condition, value, result)
+                except (
+                    pa.ArrowInvalid,
+                    pa.ArrowTypeError,
+                    pa.ArrowNotImplementedError,
+                ):
+                    return None
+            return result
+
+        if isinstance(node, TypeCast):
+            arg = self._vectorize_node(node.arg, rb, n)
+            if arg is None:
+                return None
+            type_name = " ".join(part.sval.lower() for part in node.typeName.names)
+            try:
+                if type_name in (
+                    "int",
+                    "int2",
+                    "int4",
+                    "int8",
+                    "integer",
+                    "smallint",
+                    "bigint",
+                ):
+                    return pc.cast(arg, pa.int64(), safe=False)
+                if type_name in (
+                    "float",
+                    "float4",
+                    "float8",
+                    "real",
+                    "double",
+                    "double precision",
+                    "numeric",
+                    "decimal",
+                ):
+                    return pc.cast(arg, pa.float64(), safe=False)
+                if type_name in (
+                    "text",
+                    "varchar",
+                    "character varying",
+                    "bpchar",
+                    "char",
+                    "character",
+                ):
+                    return pc.cast(arg, pa.utf8(), safe=False)
             except (
                 pa.ArrowInvalid,
                 pa.ArrowTypeError,
@@ -421,6 +680,17 @@ class ExprProjectOp(PhysicalOperator):
                 return None
 
         return None
+
+    @staticmethod
+    def _constant_array_value(array: Any) -> Any:
+        values = array.to_pylist()
+        if not values:
+            return None
+        first = values[0]
+        for value in values[1:]:
+            if value != first:
+                return None
+        return first
 
     def close(self) -> None:
         self._child.close()
@@ -793,12 +1063,12 @@ class HashAggOp(PhysicalOperator):
                         acc[0] += 1
                         acc[1] += val
                 elif func_name == "min":
-                    if isinstance(val, int | float):
+                    if val is not None:
                         acc[0] += 1
                         if acc[2] is None or val < acc[2]:
                             acc[2] = val
                 elif func_name == "max":
-                    if isinstance(val, int | float):
+                    if val is not None:
                         acc[0] += 1
                         if acc[3] is None or val > acc[3]:
                             acc[3] = val

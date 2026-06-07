@@ -30,6 +30,7 @@ class ExecutionContext:
 
     document_store: DocumentStore | None = None
     inverted_index: InvertedIndex | None = None
+    temp_rows: list[dict[str, Any]] | None = None
     vector_indexes: dict[str, VectorIndex] = field(default_factory=dict)
     spatial_indexes: dict[str, SpatialIndex] = field(default_factory=dict)
     graph_store: Any = None

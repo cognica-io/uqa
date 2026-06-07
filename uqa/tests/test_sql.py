@@ -72,6 +72,18 @@ class TestDDL:
         assert table.columns["id"].auto_increment is True
         assert table.columns["name"].not_null is True
 
+    def test_create_identity_column(self) -> None:
+        e = Engine()
+        e.sql(
+            "CREATE TABLE users ("
+            "id INT PRIMARY KEY GENERATED ALWAYS AS IDENTITY, "
+            "name TEXT NOT NULL"
+            ")"
+        )
+        table = e._tables["users"]
+        assert table.columns["id"].auto_increment is True
+        assert table.columns["id"].not_null is True
+
     def test_create_table_duplicate_raises(self, engine: Engine) -> None:
         with pytest.raises(ValueError, match="already exists"):
             engine.sql("CREATE TABLE papers (id SERIAL PRIMARY KEY)")
@@ -122,6 +134,19 @@ class TestInsert:
         r = e.sql("SELECT id, name FROM t ORDER BY id")
         assert r.rows[0]["id"] == 1
         assert r.rows[1]["id"] == 2
+
+    def test_insert_identity_auto_increment(self) -> None:
+        e = Engine()
+        e.sql(
+            "CREATE TABLE t (id INT PRIMARY KEY GENERATED ALWAYS AS IDENTITY, name TEXT)"
+        )
+        e.sql("INSERT INTO t (name) VALUES ('a')")
+        e.sql("INSERT INTO t (name) VALUES ('b')")
+        r = e.sql("SELECT id, name FROM t ORDER BY id")
+        assert r.rows == [
+            {"id": 1, "name": "a"},
+            {"id": 2, "name": "b"},
+        ]
 
     def test_insert_missing_table_raises(self) -> None:
         e = Engine()

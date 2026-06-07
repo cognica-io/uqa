@@ -63,6 +63,334 @@ class TestCTASSelectStar:
 
 
 # ==================================================================
+# Derived table column aliases
+# ==================================================================
+
+
+class TestDerivedTableAliases:
+    """FROM (VALUES ...) AS alias(col, ...) must expose alias columns."""
+
+    def test_values_alias_columns(self, engine):
+        result = engine.sql(
+            "SELECT sy, line FROM "
+            "(VALUES (0, 'a'), (1, 'b')) AS v(sy, line) "
+            "ORDER BY sy"
+        )
+        assert result.rows == [
+            {"sy": 0, "line": "a"},
+            {"sy": 1, "line": "b"},
+        ]
+
+
+# ==================================================================
+# DEFAULT expression semantics
+# ==================================================================
+
+
+class TestDefaultExpressions:
+    """Non-literal DEFAULT expressions are evaluated at INSERT time."""
+
+    def test_default_typecast_expression(self, engine):
+        engine.sql(
+            "CREATE TABLE players("
+            "id INT, "
+            "last_seen INT DEFAULT EXTRACT(EPOCH FROM (now()))::int"
+            ")"
+        )
+        engine.sql("INSERT INTO players (id) VALUES (1)")
+        result = engine.sql("SELECT last_seen FROM players")
+        assert isinstance(result.rows[0]["last_seen"], int)
+        assert result.rows[0]["last_seen"] > 0
+
+    def test_default_arithmetic_expression(self, engine):
+        engine.sql("CREATE TABLE t(id INT, v INT DEFAULT (2 + 3)::int)")
+        engine.sql("INSERT INTO t (id) VALUES (1)")
+        result = engine.sql("SELECT v FROM t")
+        assert result.rows[0]["v"] == 5
+
+
+# ==================================================================
+# INSERT expression semantics
+# ==================================================================
+
+
+class TestInsertExpressions:
+    """INSERT ... VALUES entries may be scalar SQL expressions."""
+
+    def test_insert_function_and_arithmetic_expression(self, engine):
+        engine.sql("CREATE TABLE settings(fov DOUBLE PRECISION, w INT)")
+        engine.sql("INSERT INTO settings VALUES (PI()/3, 64)")
+        result = engine.sql("SELECT fov, w FROM settings")
+        assert result.rows[0]["fov"] > 1.0
+        assert result.rows[0]["w"] == 64
+
+    def test_insert_scalar_subquery_expression(self, engine):
+        engine.sql("CREATE TABLE t(v INT)")
+        engine.sql("INSERT INTO t VALUES ((SELECT 2 + 3))")
+        result = engine.sql("SELECT v FROM t")
+        assert result.rows == [{"v": 5}]
+
+    def test_insert_select_with_cte(self, engine):
+        engine.sql("CREATE TABLE t(v INT)")
+        engine.sql(
+            "WITH vals AS (SELECT 1 AS v UNION ALL SELECT 2 AS v) "
+            "INSERT INTO t(v) SELECT v FROM vals"
+        )
+        result = engine.sql("SELECT v FROM t ORDER BY v")
+        assert result.rows == [{"v": 1}, {"v": 2}]
+
+
+# ==================================================================
+# CTEs inside correlated subqueries
+# ==================================================================
+
+
+class TestCTEInCorrelatedSubquery:
+    """A CTE referenced from a correlated SubLink is evaluated once."""
+
+    def test_single_reference_cte_in_exists_is_materialized_once(self, engine):
+        engine.sql("CREATE SEQUENCE cte_seq START 1")
+        engine.sql("CREATE TABLE ids(id INT)")
+        engine.sql("INSERT INTO ids VALUES (1), (2), (3)")
+
+        result = engine.sql(
+            "WITH vals AS (SELECT nextval('cte_seq') AS v) "
+            "SELECT id FROM ids i "
+            "WHERE EXISTS (SELECT 1 FROM vals WHERE vals.v = i.id) "
+            "ORDER BY id"
+        )
+
+        assert result.rows == [{"id": 1}]
+
+    def test_expression_exists_uses_correlated_cte_semantics(self, engine):
+        engine.sql("CREATE SEQUENCE expr_cte_seq START 1")
+        engine.sql("CREATE TABLE ids(id INT)")
+        engine.sql("INSERT INTO ids VALUES (1), (2), (3)")
+
+        result = engine.sql(
+            "WITH vals AS (SELECT nextval('expr_cte_seq') AS v) "
+            "SELECT id, "
+            "CASE WHEN EXISTS (SELECT 1 FROM vals WHERE vals.v = i.id) "
+            "THEN 'hit' ELSE 'miss' END AS marker "
+            "FROM ids i "
+            "ORDER BY id"
+        )
+
+        assert result.rows == [
+            {"id": 1, "marker": "hit"},
+            {"id": 2, "marker": "miss"},
+            {"id": 3, "marker": "miss"},
+        ]
+
+    def test_expression_exists_supports_multi_column_correlation(self, engine):
+        engine.sql("CREATE TABLE outer_rows(a INT, b INT)")
+        engine.sql("INSERT INTO outer_rows VALUES (1, 1), (1, 2), (2, 2)")
+
+        result = engine.sql(
+            "WITH pairs AS ("
+            "  SELECT * FROM (VALUES (1, 1), (2, 2)) AS p(a, b)"
+            ") "
+            "SELECT a, b, "
+            "CASE WHEN EXISTS ("
+            "  SELECT 1 FROM pairs p "
+            "  WHERE p.a = o.a AND p.b = o.b"
+            ") THEN 'hit' ELSE 'miss' END AS marker "
+            "FROM outer_rows o "
+            "ORDER BY a, b"
+        )
+
+        assert result.rows == [
+            {"a": 1, "b": 1, "marker": "hit"},
+            {"a": 1, "b": 2, "marker": "miss"},
+            {"a": 2, "b": 2, "marker": "hit"},
+        ]
+
+    def test_expression_not_exists_supports_outer_key_expressions(self, engine):
+        engine.sql("CREATE TABLE outer_rows(x DOUBLE PRECISION, y DOUBLE PRECISION)")
+        engine.sql("INSERT INTO outer_rows VALUES (1.2, 1.7), (2.2, 2.7)")
+        engine.sql("CREATE TABLE blocked(x INT, y INT, tile CHAR)")
+        engine.sql("INSERT INTO blocked VALUES (1, 1, '#'), (2, 2, '.')")
+
+        result = engine.sql(
+            "SELECT x, y, "
+            "CASE WHEN NOT EXISTS ("
+            "  SELECT 1 FROM blocked b "
+            "  WHERE b.x = CAST(o.x AS INT) "
+            "    AND b.y = CAST(o.y AS INT) "
+            "    AND b.tile = '#'"
+            ") THEN 'open' ELSE 'blocked' END AS state "
+            "FROM outer_rows o "
+            "ORDER BY x"
+        )
+
+        assert result.rows == [
+            {"x": 1.2, "y": 1.7, "state": "blocked"},
+            {"x": 2.2, "y": 2.7, "state": "open"},
+        ]
+
+    def test_inlined_cte_survives_join_planning(self, engine):
+        result = engine.sql(
+            "WITH "
+            "c AS (SELECT 1 AS id), "
+            "d AS (SELECT 1 AS id), "
+            "e AS (SELECT 1 AS id), "
+            "joined AS ("
+            "  SELECT c.id "
+            "  FROM c "
+            "  JOIN d ON d.id = c.id "
+            "  JOIN e ON e.id = c.id"
+            ") "
+            "SELECT id FROM joined"
+        )
+
+        assert result.rows == [{"id": 1}]
+
+
+# ==================================================================
+# Expression equality joins
+# ==================================================================
+
+
+class TestExpressionEqualityJoin:
+    """Equality joins with SQL expressions should use PostgreSQL semantics."""
+
+    def test_inner_join_on_cast_expression_and_column(self, engine):
+        engine.sql("CREATE TABLE samples(fx DOUBLE PRECISION, fy DOUBLE PRECISION)")
+        engine.sql("INSERT INTO samples VALUES (1.2, 1.7), (2.2, 2.7), (9.1, 9.1)")
+        engine.sql("CREATE TABLE cells(x INT, y INT, label TEXT)")
+        engine.sql("INSERT INTO cells VALUES (1, 1, 'a'), (2, 2, 'b')")
+
+        result = engine.sql(
+            "SELECT c.label "
+            "FROM samples s "
+            "JOIN cells c "
+            "  ON c.x = CAST(s.fx AS INT) "
+            " AND c.y = CAST(s.fy AS INT) "
+            "ORDER BY c.label"
+        )
+
+        assert result.rows == [{"label": "a"}, {"label": "b"}]
+
+    def test_left_join_on_compound_expression_keys(self, engine):
+        engine.sql("CREATE TABLE left_rows(player_id INT, y INT)")
+        engine.sql("CREATE TABLE right_rows(player_id INT, y INT, value TEXT)")
+        engine.sql("INSERT INTO left_rows VALUES (1, -1), (1, 0), (1, 1)")
+        engine.sql("INSERT INTO right_rows VALUES (1, 0, 'hit')")
+
+        result = engine.sql(
+            "SELECT l.y, r.value "
+            "FROM left_rows l "
+            "LEFT JOIN right_rows r "
+            "  ON r.player_id = l.player_id AND r.y = l.y "
+            "ORDER BY l.y"
+        )
+
+        assert result.rows == [
+            {"y": -1, "value": None},
+            {"y": 0, "value": "hit"},
+            {"y": 1, "value": None},
+        ]
+
+
+# ==================================================================
+# Aggregate expression arguments
+# ==================================================================
+
+
+class TestAggregateExpressionArguments:
+    """Aggregate-only queries must precompute expression arguments."""
+
+    def test_max_length_expression_argument(self, engine):
+        engine.sql("CREATE TABLE lines(row TEXT)")
+        engine.sql("INSERT INTO lines VALUES ('abc'), ('abcdef')")
+
+        result = engine.sql("SELECT MAX(LENGTH(row)) AS width FROM lines")
+
+        assert result.rows == [{"width": 6}]
+
+
+# ==================================================================
+# SQL script execution
+# ==================================================================
+
+
+class TestSQLScriptExecution:
+    """Engine exposes multi-statement SQL script execution."""
+
+    def test_sql_script_runs_multiple_statements(self, engine):
+        result = engine.sql_script(
+            "CREATE TABLE t(id INT); "
+            "INSERT INTO t VALUES (1), (2); "
+            "SELECT COUNT(*) AS n FROM t;"
+        )
+
+        assert result.rows == [{"n": 2}]
+
+
+# ==================================================================
+# UPDATE with CTE
+# ==================================================================
+
+
+class TestUpdateWithCTE:
+    """WITH CTEs are visible to UPDATE ... FROM."""
+
+    def test_update_from_cte(self, engine):
+        engine.sql("CREATE TABLE items(id INT PRIMARY KEY, val INT)")
+        engine.sql("INSERT INTO items VALUES (1, 10), (2, 20)")
+
+        engine.sql(
+            "WITH delta AS (SELECT 1 AS id, 5 AS inc) "
+            "UPDATE items i "
+            "SET val = i.val + d.inc "
+            "FROM delta d "
+            "WHERE i.id = d.id"
+        )
+        result = engine.sql("SELECT id, val FROM items ORDER BY id")
+
+        assert result.rows == [{"id": 1, "val": 15}, {"id": 2, "val": 20}]
+
+
+# ==================================================================
+# CTE name shadowing
+# ==================================================================
+
+
+class TestCTEShadowing:
+    """CTEs shadow tables only inside the statement scope."""
+
+    def test_cte_shadowing_restores_real_table(self, engine):
+        engine.sql("CREATE TABLE config(value INT)")
+        engine.sql("INSERT INTO config VALUES (10)")
+
+        result = engine.sql(
+            "WITH config AS (SELECT 1 AS value) SELECT value FROM config"
+        )
+        after = engine.sql("SELECT value FROM config")
+
+        assert result.rows == [{"value": 1}]
+        assert after.rows == [{"value": 10}]
+
+
+# ==================================================================
+# ORDER BY expressions
+# ==================================================================
+
+
+class TestOrderByExpressions:
+    """ORDER BY accepts expressions that are not SELECT targets."""
+
+    def test_order_by_random_not_selected(self, engine):
+        engine.sql("CREATE TABLE spawn_points(x INT, y INT)")
+        engine.sql("INSERT INTO spawn_points VALUES (1, 1), (2, 2), (3, 3)")
+
+        result = engine.sql("SELECT x, y FROM spawn_points ORDER BY random() LIMIT 1")
+
+        assert result.columns == ["x", "y"]
+        assert len(result.rows) == 1
+
+
+# ==================================================================
 # SELECT * after DELETE ... USING
 # ==================================================================
 
@@ -616,6 +944,22 @@ class TestSelectStarNoInternalColumns:
         assert "_doc_id" not in result.columns
         assert result.rows[0]["id"] == 1
 
+    def test_cte_select_star_in_union_no_internal_id(self, engine):
+        engine.sql("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)")
+        engine.sql("INSERT INTO t VALUES (1, 'a')")
+        result = engine.sql(
+            "WITH lines AS (SELECT id, val FROM t), "
+            "framed AS ("
+            "  SELECT 0 AS id, 'z' AS val "
+            "  UNION ALL "
+            "  SELECT * FROM lines"
+            ") "
+            "SELECT * FROM framed ORDER BY id"
+        )
+
+        assert result.columns == ["id", "val"]
+        assert result.rows == [{"id": 0, "val": "z"}, {"id": 1, "val": "a"}]
+
 
 # ==================================================================
 # Aggregate results must not have duplicate columns
@@ -656,6 +1000,50 @@ class TestAggregateDuplicateColumns:
         result = engine.sql("SELECT COUNT(*) FROM t")
         assert result.columns == ["count"]
         assert result.rows[0]["count"] == 3
+
+
+# ==================================================================
+# Row-mode PostgreSQL expression semantics
+# ==================================================================
+
+
+class TestRowModePostgreSQLSemantics:
+    """Row-mode fast paths must keep PostgreSQL SELECT semantics."""
+
+    def test_distinct_on_keeps_first_ordered_row(self, engine):
+        engine.sql(
+            "CREATE TABLE pixels("
+            "player_id INT, px INT, py INT, ch TEXT, depth DOUBLE PRECISION)"
+        )
+        engine.sql(
+            "INSERT INTO pixels VALUES "
+            "(1, 0, 0, 'far', 3.0), "
+            "(1, 0, 0, 'near', 1.0), "
+            "(1, 1, 0, 'only', 2.0)"
+        )
+
+        result = engine.sql(
+            "WITH visible_sprite_pixels AS ("
+            "  SELECT player_id, px, py, ch, depth FROM pixels"
+            ") "
+            "SELECT DISTINCT ON (player_id, px, py) "
+            "player_id, px, py, ch, depth "
+            "FROM visible_sprite_pixels "
+            "ORDER BY player_id, px, py, depth ASC"
+        )
+
+        assert result.rows == [
+            {"player_id": 1, "px": 0, "py": 0, "ch": "near", "depth": 1.0},
+            {"player_id": 1, "px": 1, "py": 0, "ch": "only", "depth": 2.0},
+        ]
+
+    def test_unary_minus_projection(self, engine):
+        engine.sql("CREATE TABLE vals(x DOUBLE PRECISION)")
+        engine.sql("INSERT INTO vals VALUES (2.5)")
+
+        result = engine.sql("SELECT -x AS neg_x FROM vals")
+
+        assert result.rows == [{"neg_x": -2.5}]
 
 
 # ==================================================================

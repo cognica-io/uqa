@@ -105,11 +105,31 @@ def python_columns_to_catalog_columns(
             "auto_increment": bool(col.get("auto_increment", False)),
             "unique": bool(col.get("unique", False)),
         }
-        default = col.get("default")
-        if default is not None and isinstance(default, str | int | float | bool):
-            out["default"] = {"Literal": default}
+        default = python_default_to_catalog_default(col.get("default"))
+        if default is not None:
+            out["default"] = default
         catalog_columns.append(out)
     return catalog_columns
+
+
+def python_default_to_catalog_default(default: Any) -> dict[str, Any] | None:
+    if default is None:
+        return None
+    if isinstance(default, str | int | float | bool):
+        return {"Literal": default}
+    if isinstance(default, dict) and set(default) == {"Expression"}:
+        return {"Expression": str(default["Expression"])}
+    raise ValueError(f"Unsupported DEFAULT value type: {type(default).__name__}")
+
+
+def catalog_default_to_python_default(default: Any) -> Any:
+    if isinstance(default, dict) and set(default) == {"Literal"}:
+        return default["Literal"]
+    if isinstance(default, dict) and set(default) == {"Expression"}:
+        return {"Expression": str(default["Expression"])}
+    if default is None:
+        return None
+    raise ValueError("Unsupported DEFAULT value in catalog")
 
 
 def python_type_to_catalog_type(col: dict[str, Any]) -> str | dict[str, Any]:
@@ -174,11 +194,7 @@ def catalog_columns_to_python_columns(
         original_type = col.get("type_name")
         if isinstance(original_type, str) and original_type:
             type_name = original_type.lower()
-        default = col.get("default")
-        if isinstance(default, dict) and set(default) == {"Literal"}:
-            default = default["Literal"]
-        else:
-            default = None
+        default = catalog_default_to_python_default(col.get("default"))
         out = {
             "name": col["name"],
             "type_name": type_name,

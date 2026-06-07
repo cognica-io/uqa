@@ -111,6 +111,7 @@ _SQL_TO_DTYPE: dict[str, DataType] = {
     "text": DataType.TEXT,
     "varchar": DataType.TEXT,
     "character varying": DataType.TEXT,
+    "bpchar": DataType.TEXT,
     "char": DataType.TEXT,
     "character": DataType.TEXT,
     "name": DataType.TEXT,
@@ -333,7 +334,7 @@ class Batch:
         for name in col_names:
             values = [row.get(name) for row in rows]
             dtype = _resolve_dtype(schema.get(name, DataType.TEXT), values)
-            if _has_complex_values(values):
+            if dtype == DataType.TEXT and _has_complex_values(values):
                 # Normalize mixed-type lists to homogeneous strings
                 # (matches PostgreSQL's type promotion to text).
                 values = _normalize_complex_values(values)
@@ -375,18 +376,32 @@ def record_batch_to_rows(
 ) -> list[dict[str, Any]]:
     if rb.num_rows == 0:
         return []
+    if columns is None and not any(
+        _is_time_tz_arrow_type(field.type) for field in rb.schema
+    ):
+        return rb.to_pylist()
 
     pydict = rb.to_pydict()
     field_by_name = {field.name: field for field in rb.schema}
     names = columns if columns is not None else rb.schema.names
+    selected: list[tuple[str, list[Any], bool]] = []
+    for name in names:
+        values = pydict.get(name)
+        if values is None:
+            continue
+        field = field_by_name[name]
+        selected.append((name, values, _is_time_tz_arrow_type(field.type)))
+
     rows: list[dict[str, Any]] = []
     for i in range(rb.num_rows):
         row: dict[str, Any] = {}
-        for name in names:
-            if name not in pydict:
-                continue
-            field = field_by_name[name]
-            row[name] = _restore_arrow_value(field.type, pydict[name][i])
+        for name, values, is_time_tz in selected:
+            value = values[i]
+            row[name] = (
+                _time_tz_from_arrow_value(value)
+                if is_time_tz and value is not None
+                else value
+            )
         rows.append(row)
     return rows
 
@@ -445,7 +460,7 @@ def _has_tzinfo(value: Any) -> bool:
 
 def _has_complex_values(values: list[Any]) -> bool:
     """Check if any non-null value is a list or dict."""
-    return any(isinstance(v, list | dict) for v in values)
+    return any(isinstance(value, list | dict) for value in values)
 
 
 def _normalize_complex_values(values: list[Any]) -> list[Any]:

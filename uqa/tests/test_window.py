@@ -72,6 +72,14 @@ class TestRowNumber:
         assert rows_by_rn[1] == "Dave"  # lowest salary
         assert rows_by_rn[6] == "Eve"  # highest salary
 
+    def test_row_number_inside_arithmetic_expression(self, engine):
+        r = engine.sql(
+            "SELECT name, ROW_NUMBER() OVER (ORDER BY salary) - 1 AS y FROM employees"
+        )
+        rows_by_y = {row["y"]: row["name"] for row in r.rows}
+        assert rows_by_y[0] == "Dave"
+        assert rows_by_y[5] == "Eve"
+
 
 # ==================================================================
 # RANK / DENSE_RANK

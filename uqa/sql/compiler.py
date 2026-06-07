@@ -117,6 +117,7 @@ FROM-clause table functions:
 
 from __future__ import annotations
 
+import math
 from collections import OrderedDict
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
@@ -127,6 +128,7 @@ from pglast.ast import (
     A_Const,
     A_Expr,
     A_Star,
+    Alias,
     AlterSeqStmt,
     AlterTableStmt,
     BoolExpr,
@@ -150,6 +152,7 @@ from pglast.ast import (
     InsertStmt,
     JoinExpr,
     MergeStmt,
+    MinMaxExpr,
     NamedArgExpr,
     NullTest,
     ParamRef,
@@ -159,6 +162,7 @@ from pglast.ast import (
     RangeVar,
     RenameStmt,
     SelectStmt,
+    SQLValueFunction,
     SubLink,
     TransactionStmt,
     TruncateStmt,
@@ -194,7 +198,7 @@ from pglast.enums.parsenodes import (
     SortByDir,
     SortByNulls,
 )
-from pglast.enums.primnodes import BoolExprType, NullTestType, SubLinkType
+from pglast.enums.primnodes import BoolExprType, MinMaxOp, NullTestType, SubLinkType
 
 from uqa.core.posting_list import PostingList
 from uqa.core.types import (
@@ -418,7 +422,8 @@ def _infer_arrow_type(values: list[Any]) -> pa.DataType:
 # Compiler
 # ======================================================================
 
-_INTERNAL_COLUMNS = frozenset({"_doc_id", "_score"})
+_INTERNAL_COLUMNS = frozenset({"_doc_id", "_id", "_score"})
+_MISSING = object()
 
 _AGG_FUNC_NAMES = frozenset(
     {
@@ -484,8 +489,37 @@ class SQLCompiler:
         self._engine = engine
         self._params: list[Any] = []
         self._expanded_views: list[str] = []
+        self._view_cache: dict[str, Table] = {}
         self._shadowed_tables: dict[str, Table] = {}
+        self._scoped_table_names: set[str] = set()
+        self._expr_subquery_cache: dict[Any, Any] = {}
         self._inlined_ctes: dict[str, SelectStmt] = {}
+        self._active_recursive_ctes: set[str] = set()
+        self._row_mode_range_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self._recursive_working_rows: dict[
+            str, tuple[list[str], list[dict[str, Any]]]
+        ] = {}
+        self._recursive_row_mode_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self._row_mode_function_cache: dict[int, list[dict[str, Any]] | None] = {}
+        self._row_mode_join_plan_cache: dict[int, tuple] = {}
+        self._row_mode_join_index_cache: dict[tuple[int, str], dict] = {}
+        self._row_select_plan_cache: dict[
+            int,
+            tuple[
+                Any,
+                list[tuple[str, Any]],
+                list[str],
+            ],
+        ] = {}
+        self._cte_ref_count_cache: dict[tuple[str, int], int] = {}
+        self._cte_ref_sublink_cache: dict[tuple[str, int, bool], bool] = {}
+        self._rangevar_stats_cache: dict[
+            tuple[int, bool], tuple[dict[str, int], set[str]]
+        ] = {}
+        self._uqa_function_cache: dict[int, bool] = {}
+        self._target_window_cache: dict[int, bool] = {}
+        self._from_alias_cache: dict[int, set[str]] = {}
+        self._volatile_function_cache: dict[int, bool] = {}
         self._current_graph_name: str = ""
 
     def execute(self, sql: str, params: list[Any] | None = None) -> SQLResult:
@@ -859,6 +893,7 @@ class SQLCompiler:
         not_null = False
         default = None
         unique = False
+        identity = False
         check_expr = None
         fk_def: ForeignKeyDef | None = None
 
@@ -871,15 +906,10 @@ class SQLCompiler:
                 elif ct == ConstrType.CONSTR_NOTNULL:
                     not_null = True
                 elif ct == ConstrType.CONSTR_DEFAULT:
-                    from pglast.ast import SQLValueFunction
-
-                    raw = constraint.raw_expr
-                    if isinstance(raw, (SQLValueFunction, FuncCall)):
-                        # Deferred default: store AST node, evaluate
-                        # at insert time via ExprEvaluator.
-                        default = raw
-                    else:
-                        default = self._extract_const_value(raw)
+                    default = self._parse_default_value(constraint.raw_expr)
+                elif ct == ConstrType.CONSTR_IDENTITY:
+                    identity = True
+                    not_null = True
                 elif ct == ConstrType.CONSTR_UNIQUE:
                     unique = True
                 elif ct == ConstrType.CONSTR_CHECK:
@@ -896,7 +926,7 @@ class SQLCompiler:
                             ref_column=ref_col,
                         )
 
-        auto_increment = raw_type in _AUTO_INCREMENT_TYPES
+        auto_increment = raw_type in _AUTO_INCREMENT_TYPES or identity
 
         # NUMERIC(precision, scale) -- extract from type modifiers
         numeric_precision: int | None = None
@@ -927,6 +957,19 @@ class SQLCompiler:
             check_expr,
             fk_def,
         )
+
+    def _parse_default_value(self, raw: Any) -> Any:
+        """Parse a DEFAULT expression.
+
+        PostgreSQL evaluates non-literal DEFAULT expressions at INSERT time.
+        Store those expressions as language-neutral SQL text so catalog
+        state is not tied to this implementation's parser objects.
+        """
+        if isinstance(raw, A_Const):
+            return self._extract_const_value(raw)
+        from pglast.stream import RawStream
+
+        return {"Expression": RawStream()(raw)}
 
     def _register_fk_validators(
         self,
@@ -1465,13 +1508,9 @@ class SQLCompiler:
                         f"Column '{col_name}' does not exist in table '{table_name}'"
                     )
                 if cmd.def_ is not None:
-                    from pglast.ast import SQLValueFunction
-
-                    raw = cmd.def_
-                    if isinstance(raw, (SQLValueFunction, FuncCall)):
-                        table.columns[col_name].default = raw
-                    else:
-                        table.columns[col_name].default = self._extract_const_value(raw)
+                    table.columns[col_name].default = self._parse_default_value(
+                        cmd.def_
+                    )
                 else:
                     table.columns[col_name].default = None
 
@@ -1935,6 +1974,11 @@ class SQLCompiler:
         values_stmt = stmt.selectStmt
         if values_stmt is None:
             raise ValueError("INSERT requires VALUES or SELECT clause")
+        if stmt.withClause is not None and isinstance(values_stmt, SelectStmt):
+            import copy
+
+            values_stmt = copy.copy(values_stmt)
+            values_stmt.withClause = stmt.withClause
 
         # Collect source rows
         source_rows: list[dict[str, Any]] = []
@@ -2161,6 +2205,23 @@ class SQLCompiler:
     # ==================================================================
 
     def _compile_update(self, stmt: UpdateStmt) -> SQLResult:
+        if stmt.withClause is not None:
+            cte_names = self._materialize_ctes(
+                stmt.withClause.ctes,
+                recursive=bool(stmt.withClause.recursive),
+                main_query=stmt,
+            )
+            try:
+                kwargs = {}
+                for slot in stmt.__slots__:
+                    kwargs[slot] = getattr(stmt, slot, None)
+                kwargs["withClause"] = None
+                return self._compile_update(UpdateStmt(**kwargs))
+            finally:
+                for name in cte_names:
+                    self._inlined_ctes.pop(name, None)
+                    self._cleanup_scoped_table(name)
+
         table_name = self._qualified_name(stmt.relation)
         if table_name in self._engine._foreign_tables:
             raise ValueError(f"Cannot UPDATE foreign table '{table_name}'")
@@ -3165,6 +3226,7 @@ class SQLCompiler:
             ctx.document_store,
             schema,
             graph_store=ctx.graph_store,
+            payload_fields_complete=ctx.temp_rows is not None,
         )
 
         # Apply deferred WHERE filters (for graph-sourced queries)
@@ -3179,27 +3241,32 @@ class SQLCompiler:
 
         if has_window:
             # Window functions: compute window values, then project
-            win_specs = self._extract_window_specs(stmt.targetList, stmt.windowClause)
+            window_calls = self._collect_window_calls(stmt.targetList)
+            window_aliases = {id(func): alias for func, alias in window_calls}
+            win_specs = self._extract_window_specs(
+                stmt.targetList,
+                stmt.windowClause,
+                window_calls=window_calls,
+            )
             physical = WindowOp(
                 physical,
                 win_specs,
                 spill_threshold=self._engine.spill_threshold,
             )
 
-            # Build expected columns: non-window columns + window aliases
-            expected_cols = []
-            for target in stmt.targetList:
-                val = target.val
-                if isinstance(val, FuncCall) and val.over is not None:
-                    alias = target.name or val.funcname[-1].sval.lower()
-                    expected_cols.append(alias)
-                elif isinstance(val, ColumnRef):
-                    expected_cols.append(target.name or self._extract_column_name(val))
-                else:
-                    expected_cols.append(target.name or self._infer_target_name(target))
-
-            # Project to expected columns
-            physical = ProjectOp(physical, expected_cols)
+            targets = self._build_window_expr_targets(
+                stmt.targetList,
+                window_aliases,
+            )
+            physical = ExprProjectOp(
+                physical,
+                targets,
+                subquery_executor=self._compile_select,
+                sequences=self._engine._sequences,
+                engine=self._engine,
+                params=self._params,
+            )
+            expected_cols = [name for name, _ in targets]
 
         elif is_grouped:
             group_cols = self._resolve_group_by_cols(stmt.groupClause, stmt.targetList)
@@ -3268,6 +3335,15 @@ class SQLCompiler:
 
         elif is_agg_only:
             agg_specs = self._extract_agg_specs(stmt.targetList)
+            pre_targets = self._build_pre_agg_targets(None, [], agg_specs, table)
+            if pre_targets:
+                physical = ExprProjectOp(
+                    physical,
+                    pre_targets,
+                    subquery_executor=self._compile_select,
+                    engine=self._engine,
+                    params=self._params,
+                )
             physical = HashAggOp(
                 physical,
                 [],
@@ -3336,6 +3412,21 @@ class SQLCompiler:
                 # the SELECT list.  If so, defer projection until
                 # after the sort so the sort keys are still available.
                 defer_proj = False
+                sort_expr_targets = self._build_sort_expr_targets(stmt.sortClause)
+                if sort_expr_targets and table is not None:
+                    passthrough = [
+                        (col, ColumnRef(fields=(PgString(sval=col),)))
+                        for col in table.columns
+                    ]
+                    physical = ExprProjectOp(
+                        physical,
+                        passthrough + sort_expr_targets,
+                        subquery_executor=self._compile_select,
+                        sequences=self._engine._sequences,
+                        engine=self._engine,
+                        params=self._params,
+                    )
+                    defer_proj = True
                 if stmt.sortClause is not None:
                     sort_keys_pre = self._build_sort_keys(
                         stmt.sortClause,
@@ -3665,14 +3756,33 @@ class SQLCompiler:
                         f"ORDER BY position {ordinal} is not in select list"
                     )
             else:
-                col = self._extract_column_name(s.node)
-                # If col is already an alias, use as-is.
-                # If col is an original column that was aliased, use alias.
-                if col not in alias_names and col in original_to_alias:
-                    col = original_to_alias[col]
+                if isinstance(s.node, ColumnRef):
+                    col = self._extract_column_name(s.node)
+                    # If col is already an alias, use as-is.
+                    # If col is an original column that was aliased, use alias.
+                    if col not in alias_names and col in original_to_alias:
+                        col = original_to_alias[col]
+                else:
+                    col = f"__sort_expr_{len(sort_keys)}"
 
             sort_keys.append((col, is_desc, nulls_first))
         return sort_keys
+
+    @staticmethod
+    def _build_sort_expr_targets(
+        sort_clause: tuple | None,
+    ) -> list[tuple[str, Any]]:
+        if sort_clause is None:
+            return []
+        targets: list[tuple[str, Any]] = []
+        for index, sort_by in enumerate(sort_clause):
+            node = sort_by.node
+            if isinstance(node, A_Const) and isinstance(node.val, PgInteger):
+                continue
+            if isinstance(node, ColumnRef):
+                continue
+            targets.append((f"__sort_expr_{index}", node))
+        return targets
 
     @staticmethod
     def _sort_needs_extra_cols(
@@ -3823,7 +3933,7 @@ class SQLCompiler:
 
     def _build_pre_agg_targets(
         self,
-        group_clause: tuple,
+        group_clause: tuple | None,
         group_cols: list[str],
         agg_specs: list[tuple],
         table: Any,
@@ -3840,9 +3950,10 @@ class SQLCompiler:
         expr_targets: list[tuple[str, Any]] = []
 
         # GROUP BY computed expressions
-        for idx, g in enumerate(group_clause):
-            if isinstance(g, FuncCall):
-                expr_targets.append((group_cols[idx], g))
+        if group_clause is not None:
+            for idx, g in enumerate(group_clause):
+                if isinstance(g, FuncCall):
+                    expr_targets.append((group_cols[idx], g))
 
         # Aggregate expression args (8th element of spec tuple)
         for spec in agg_specs:
@@ -4008,6 +4119,11 @@ class SQLCompiler:
                 recursive=bool(stmt.withClause.recursive),
                 main_query=stmt,
             )
+            kwargs = {}
+            for slot in stmt.__slots__:
+                kwargs[slot] = getattr(stmt, slot, None)
+            kwargs["withClause"] = None
+            stmt = SelectStmt(**kwargs)
 
         # Save and set correlated outer row context for this subquery.
         prev_outer_row = getattr(self, "_correlated_outer_row", None)
@@ -4026,7 +4142,7 @@ class SQLCompiler:
             self._inlined_ctes = prev_inlined
             # Clean up CTE temporary tables
             for name in cte_names:
-                self._engine._tables.pop(name, None)
+                self._cleanup_scoped_table(name)
             # Clean up materialized view / derived tables
             for name in self._expanded_views:
                 if name in self._shadowed_tables:
@@ -4452,7 +4568,8 @@ class SQLCompiler:
 
         for conj in conjuncts:
             aliases = self._collect_conjunct_aliases(conj)
-            if len(aliases) == 1:
+            has_unqualified = self._has_unqualified_column_ref(conj)
+            if len(aliases) == 1 and not has_unqualified:
                 alias = next(iter(aliases))
                 if alias in scan_aliases:
                     pushable.setdefault(alias, []).append(conj)
@@ -4507,27 +4624,26 @@ class SQLCompiler:
         }
     )
 
-    @staticmethod
-    def _contains_uqa_function(node: Any) -> bool:
+    def _contains_uqa_function(self, node: Any) -> bool:
         """Check if an AST subtree contains any UQA posting-list functions."""
+        cache_key = id(node)
+        if cache_key in self._uqa_function_cache:
+            return self._uqa_function_cache[cache_key]
         if isinstance(node, FuncCall):
             name = node.funcname[-1].sval.lower()
             if name in SQLCompiler._UQA_WHERE_FUNCTIONS:
+                self._uqa_function_cache[cache_key] = True
                 return True
         if isinstance(node, A_Expr) and node.name:
             op_name = node.name[0].sval if hasattr(node.name[0], "sval") else ""
             if op_name == "@@":
+                self._uqa_function_cache[cache_key] = True
                 return True
-        for attr in ("lexpr", "rexpr", "args", "arg"):
-            child = getattr(node, attr, None)
-            if child is None:
-                continue
-            if isinstance(child, list | tuple):
-                for c in child:
-                    if c is not None and SQLCompiler._contains_uqa_function(c):
-                        return True
-            elif SQLCompiler._contains_uqa_function(child):
+        for child in self._iter_ast_children(node):
+            if self._contains_uqa_function(child):
+                self._uqa_function_cache[cache_key] = True
                 return True
+        self._uqa_function_cache[cache_key] = False
         return False
 
     def _split_uqa_conjuncts(self, where_node: Any) -> tuple[Any, Any]:
@@ -4557,6 +4673,15 @@ class SQLCompiler:
         return aliases
 
     @staticmethod
+    def _has_unqualified_column_ref(node: Any) -> bool:
+        if isinstance(node, ColumnRef):
+            return len(node.fields) == 1 and hasattr(node.fields[0], "sval")
+        for child in SQLCompiler._iter_ast_children(node):
+            if SQLCompiler._has_unqualified_column_ref(child):
+                return True
+        return False
+
+    @staticmethod
     def _walk_for_column_aliases(node: Any, aliases: set[str]) -> None:
         """Recursively walk AST, extracting alias prefixes from ColumnRef."""
         if isinstance(node, ColumnRef):
@@ -4566,17 +4691,28 @@ class SQLCompiler:
                 aliases.add(alias)
             return
 
-        # Recurse into common AST node attributes
-        for attr in ("lexpr", "rexpr", "args", "arg", "xpr", "val"):
-            child = getattr(node, attr, None)
+        for child in SQLCompiler._iter_ast_children(node):
+            SQLCompiler._walk_for_column_aliases(child, aliases)
+
+    @staticmethod
+    def _iter_ast_children(node: Any) -> list[Any]:
+        if node is None or isinstance(node, str | int | float | bool | bytes):
+            return []
+        if isinstance(node, list | tuple):
+            return [item for item in node if item is not None]
+        slots = getattr(node, "__slots__", None)
+        if slots is None:
+            return []
+        children: list[Any] = []
+        for slot in slots:
+            child = getattr(node, slot, None)
             if child is None:
                 continue
             if isinstance(child, list | tuple):
-                for c in child:
-                    if c is not None:
-                        SQLCompiler._walk_for_column_aliases(c, aliases)
+                children.extend(item for item in child if item is not None)
             else:
-                SQLCompiler._walk_for_column_aliases(child, aliases)
+                children.append(child)
+        return children
 
     @staticmethod
     def _collect_inner_join_scan_aliases(op: Any) -> set[str]:
@@ -4759,6 +4895,10 @@ class SQLCompiler:
         #    If FROM is a single view or derived table, push safe WHERE
         #    predicates into the subquery before materialization.
         stmt = self._try_predicate_pushdown(stmt)
+
+        row_result = self._try_compile_simple_row_select(stmt)
+        if row_result is not None:
+            return row_result
 
         # 3. Resolve FROM clause -> (table | None, source_op | None)
         table, source_op = self._resolve_from(
@@ -5095,19 +5235,77 @@ class SQLCompiler:
 
     def _count_cte_refs(self, name: str, node: Any) -> int:
         """Count references to a CTE name in an AST tree."""
+        cache_key = (name, id(node))
+        if cache_key in self._cte_ref_count_cache:
+            return self._cte_ref_count_cache[cache_key]
         if isinstance(node, RangeVar):
-            return 1 if node.relname == name else 0
+            count = 1 if node.relname == name else 0
+            self._cte_ref_count_cache[cache_key] = count
+            return count
         count = 0
         if isinstance(node, tuple | list):
             for item in node:
                 count += self._count_cte_refs(name, item)
+            self._cte_ref_count_cache[cache_key] = count
             return count
         if hasattr(node, "__slots__") and isinstance(node.__slots__, dict):
             for slot in node.__slots__:
                 val = getattr(node, slot, None)
                 if val is not None:
                     count += self._count_cte_refs(name, val)
+        self._cte_ref_count_cache[cache_key] = count
         return count
+
+    def _cte_ref_inside_sublink(
+        self, name: str, node: Any, *, inside_sublink: bool = False
+    ) -> bool:
+        """Return whether a CTE reference appears inside a SubLink subtree."""
+        cache_key = (name, id(node), inside_sublink)
+        if cache_key in self._cte_ref_sublink_cache:
+            return self._cte_ref_sublink_cache[cache_key]
+        if isinstance(node, RangeVar):
+            result = inside_sublink and node.relname == name
+            self._cte_ref_sublink_cache[cache_key] = result
+            return result
+        next_inside = inside_sublink or isinstance(node, SubLink)
+        for child in self._iter_ast_children(node):
+            if self._cte_ref_inside_sublink(name, child, inside_sublink=next_inside):
+                self._cte_ref_sublink_cache[cache_key] = True
+                return True
+        self._cte_ref_sublink_cache[cache_key] = False
+        return False
+
+    def _rangevar_stats(
+        self,
+        node: Any,
+        *,
+        inside_sublink: bool = False,
+    ) -> tuple[dict[str, int], set[str]]:
+        cache_key = (id(node), inside_sublink)
+        cached = self._rangevar_stats_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        counts: dict[str, int] = {}
+        sublink_refs: set[str] = set()
+        if isinstance(node, RangeVar):
+            counts[node.relname] = 1
+            if inside_sublink:
+                sublink_refs.add(node.relname)
+        else:
+            next_inside = inside_sublink or isinstance(node, SubLink)
+            for child in self._iter_ast_children(node):
+                child_counts, child_sublink_refs = self._rangevar_stats(
+                    child,
+                    inside_sublink=next_inside,
+                )
+                for name, count in child_counts.items():
+                    counts[name] = counts.get(name, 0) + count
+                sublink_refs.update(child_sublink_refs)
+
+        result = (counts, sublink_refs)
+        self._rangevar_stats_cache[cache_key] = result
+        return result
 
     def _materialize_ctes(
         self,
@@ -5127,6 +5325,14 @@ class SQLCompiler:
         Returns the list of CTE names for cleanup after the main query.
         """
         cte_names: list[str] = []
+        main_ref_counts: dict[str, int] = {}
+        main_sublink_refs: set[str] = set()
+        if main_query is not None:
+            cte_name_set = {cte.ctename for cte in ctes}
+            main_ref_counts, main_sublink_refs = self._cte_reference_stats(
+                cte_name_set,
+                main_query,
+            )
         for cte in ctes:
             name = cte.ctename
             query = cte.ctequery
@@ -5141,19 +5347,81 @@ class SQLCompiler:
                 self._materialize_recursive_cte(cte)
             else:
                 # Inline single-reference non-recursive CTEs as derived
-                # tables instead of materializing them.
+                # tables instead of materializing them.  A single reference
+                # inside a SubLink is not actually single-execution: correlated
+                # subqueries evaluate per outer row, so keep PostgreSQL CTE
+                # semantics by materializing those CTEs once.
                 if (
                     main_query is not None
-                    and self._count_cte_refs(name, main_query) == 1
+                    and main_ref_counts.get(name, 0) == 1
+                    and name not in main_sublink_refs
                 ):
                     self._inlined_ctes[name] = query
                 else:
                     result = self._compile_select(query)
                     table = self._result_to_table(name, result)
-                    self._engine._tables[name] = table
+                    self._register_scoped_table(name, table)
             cte_names.append(name)
 
         return cte_names
+
+    def _cte_reference_stats(
+        self,
+        names: set[str],
+        node: Any,
+    ) -> tuple[dict[str, int], set[str]]:
+        counts: dict[str, int] = {}
+        sublink_refs: set[str] = set()
+        self._collect_cte_reference_stats(
+            names,
+            node,
+            counts,
+            sublink_refs,
+            inside_sublink=False,
+        )
+        return counts, sublink_refs
+
+    def _collect_cte_reference_stats(
+        self,
+        names: set[str],
+        node: Any,
+        counts: dict[str, int],
+        sublink_refs: set[str],
+        *,
+        inside_sublink: bool,
+    ) -> None:
+        if isinstance(node, RangeVar):
+            name = node.relname
+            if name in names:
+                counts[name] = counts.get(name, 0) + 1
+                if inside_sublink:
+                    sublink_refs.add(name)
+            return
+
+        next_inside = inside_sublink or isinstance(node, SubLink)
+        for child in self._iter_ast_children(node):
+            self._collect_cte_reference_stats(
+                names,
+                child,
+                counts,
+                sublink_refs,
+                inside_sublink=next_inside,
+            )
+
+    def _register_scoped_table(self, name: str, table: Table) -> None:
+        if name in self._engine._tables and name not in self._shadowed_tables:
+            self._shadowed_tables[name] = self._engine._tables[name]
+        self._scoped_table_names.add(name)
+        self._engine._tables[name] = table
+
+    def _cleanup_scoped_table(self, name: str) -> None:
+        if name not in self._scoped_table_names and name not in self._shadowed_tables:
+            return
+        if name in self._shadowed_tables:
+            self._engine._tables[name] = self._shadowed_tables.pop(name)
+        else:
+            self._engine._tables.pop(name, None)
+        self._scoped_table_names.discard(name)
 
     def _materialize_recursive_cte(self, cte: Any) -> None:
         """Iterative fixpoint computation for recursive CTEs.
@@ -5204,50 +5472,1295 @@ class SQLCompiler:
         # Register working table
         working_rows = list(all_rows)
 
-        for _depth in range(self._MAX_RECURSIVE_DEPTH):
-            # Build temporary table from working rows
-            result = SQLResult(columns, working_rows)
-            table = self._result_to_table(name, result)
-            self._engine._tables[name] = table
+        self._active_recursive_ctes.add(name)
+        try:
+            for _depth in range(self._MAX_RECURSIVE_DEPTH):
+                # Execute recursive case
+                self._recursive_working_rows[name] = (columns, working_rows)
+                self._recursive_row_mode_cache.clear()
+                rec_result = self._try_compile_simple_row_select(query.rarg)
+                if rec_result is None:
+                    # Build temporary table from working rows for recursive
+                    # terms that need the full relational executor.
+                    result = SQLResult(columns, working_rows)
+                    table = self._result_to_table(name, result)
+                    self._engine._tables[name] = table
+                    rec_result = self._compile_select(query.rarg)
 
-            # Execute recursive case
-            rec_result = self._compile_select(query.rarg)
+                # Remap recursive result columns to match base case columns.
+                # alias_cols takes priority; otherwise remap positionally
+                # to the base case column names (handles cases like
+                # ``t.depth + 1`` producing ``?column?`` instead of ``depth``).
+                target_cols = alias_cols or columns
+                new_rows = []
+                for row in rec_result.rows:
+                    remapped = {}
+                    for i, tcol in enumerate(target_cols):
+                        if i < len(rec_result.columns):
+                            remapped[tcol] = row.get(rec_result.columns[i])
+                    new_rows.append(remapped)
 
-            # Remap recursive result columns to match base case columns.
-            # alias_cols takes priority; otherwise remap positionally
-            # to the base case column names (handles cases like
-            # ``t.depth + 1`` producing ``?column?`` instead of ``depth``).
-            target_cols = alias_cols or columns
-            new_rows = []
-            for row in rec_result.rows:
-                remapped = {}
-                for i, tcol in enumerate(target_cols):
-                    if i < len(rec_result.columns):
-                        remapped[tcol] = row.get(rec_result.columns[i])
-                new_rows.append(remapped)
-
-            if not new_rows:
-                break
-
-            # Deduplicate for UNION (not ALL)
-            if seen is not None:
-                filtered = []
-                for row in new_rows:
-                    key = tuple(row.get(c) for c in columns)
-                    if key not in seen:
-                        seen.add(key)
-                        filtered.append(row)
-                new_rows = filtered
                 if not new_rows:
                     break
 
-            all_rows.extend(new_rows)
-            working_rows = new_rows
+                # Deduplicate for UNION (not ALL)
+                if seen is not None:
+                    filtered = []
+                    for row in new_rows:
+                        key = tuple(row.get(c) for c in columns)
+                        if key not in seen:
+                            seen.add(key)
+                            filtered.append(row)
+                    new_rows = filtered
+                    if not new_rows:
+                        break
+
+                all_rows.extend(new_rows)
+                working_rows = new_rows
+        finally:
+            self._active_recursive_ctes.discard(name)
+            self._recursive_working_rows.pop(name, None)
+            self._recursive_row_mode_cache.clear()
 
         # Final table with all accumulated rows
         result = SQLResult(columns, all_rows)
         table = self._result_to_table(name, result)
-        self._engine._tables[name] = table
+        self._register_scoped_table(name, table)
+
+    def _try_compile_simple_row_select(self, stmt: SelectStmt) -> SQLResult | None:
+        """Evaluate simple SELECTs directly over Python rows.
+
+        This is used as a fast path for recursive CTE terms whose shape
+        is limited to INNER/CROSS JOINs, WHERE, and scalar projection.
+        Unsupported constructs fall back to the normal SQL executor.
+        """
+        if stmt.withClause is not None:
+            return None
+        if stmt.op is not None and stmt.op != SetOperation.SETOP_NONE:
+            return None
+        has_group = stmt.groupClause is not None
+        if (
+            stmt.havingClause is not None
+            or stmt.windowClause is not None
+            or stmt.valuesLists is not None
+            or stmt.intoClause is not None
+        ):
+            return None
+        if stmt.targetList is None:
+            return None
+        if stmt.whereClause is not None and self._contains_uqa_function(
+            stmt.whereClause
+        ):
+            return None
+        target_key = id(stmt.targetList)
+        has_window = self._target_window_cache.get(target_key)
+        if has_window is None:
+            has_window = self._has_window_functions(stmt.targetList)
+            self._target_window_cache[target_key] = has_window
+        if has_window:
+            return None
+        has_aggregates = self._has_aggregates(stmt.targetList)
+        for target in stmt.targetList:
+            if self._target_contains_star(target):
+                return None
+
+        rows = self._row_mode_from_rows(stmt.fromClause)
+        if rows is None:
+            return None
+
+        plan_key = id(stmt)
+        plan = self._row_select_plan_cache.get(plan_key)
+        evaluator = None
+        if plan is None or has_group or has_aggregates:
+            from uqa.sql.expr_evaluator import ExprEvaluator
+
+            evaluator = ExprEvaluator(
+                subquery_executor=self._compile_select,
+                sequences=self._engine._sequences,
+                outer_row=getattr(self, "_correlated_outer_row", None),
+                engine=self._engine,
+                params=self._params,
+            )
+
+        if plan is None:
+            where_fn = (
+                self._compile_row_expr(stmt.whereClause, evaluator)
+                if stmt.whereClause is not None
+                else None
+            )
+            targets = self._build_expr_targets(stmt.targetList)
+            target_fns = [
+                (output_name, self._compile_row_expr(node, evaluator))
+                for output_name, node in targets
+            ]
+            output_columns = [name for name, _fn in target_fns]
+            plan = (where_fn, target_fns, output_columns)
+            self._row_select_plan_cache[plan_key] = plan
+
+        where_fn, target_fns, output_columns = plan
+
+        if where_fn is not None:
+            rows = [row for row in rows if where_fn(row)]
+
+        if has_group or has_aggregates:
+            grouped = self._try_compile_row_group_select(stmt, rows, evaluator)
+            if grouped is not None:
+                return self._finish_row_result(stmt, grouped)
+            return None
+
+        output_rows: list[dict[str, Any]] = []
+        for row in rows:
+            output_rows.append(
+                {output_name: target_fn(row) for output_name, target_fn in target_fns}
+            )
+        return self._finish_row_result(stmt, SQLResult(output_columns, output_rows))
+
+    def _finish_row_result(
+        self,
+        stmt: SelectStmt,
+        result: SQLResult,
+    ) -> SQLResult | None:
+        rows = result.rows
+        if stmt.sortClause is not None:
+            sort_keys = self._row_sort_keys(stmt.sortClause, result.columns)
+            if sort_keys is None:
+                return None
+            from uqa.execution.relational import SortOp
+
+            SortOp._sort_rows(rows, sort_keys)
+
+        if stmt.distinctClause:
+            rows = self._apply_row_distinct(stmt.distinctClause, result.columns, rows)
+            if rows is None:
+                return None
+
+        if stmt.limitOffset is not None:
+            offset = self._extract_int_value(stmt.limitOffset)
+        else:
+            offset = 0
+        if stmt.limitCount is not None:
+            limit = self._extract_int_value(stmt.limitCount)
+            rows = rows[offset : offset + limit]
+        elif offset:
+            rows = rows[offset:]
+
+        if rows is result.rows:
+            return result
+        return SQLResult(result.columns, rows)
+
+    def _apply_row_distinct(
+        self,
+        distinct_clause: tuple,
+        columns: list[str],
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]] | None:
+        if len(distinct_clause) == 1 and distinct_clause[0] is None:
+            distinct_columns = columns
+        else:
+            distinct_columns = []
+            for node in distinct_clause:
+                if not isinstance(node, ColumnRef):
+                    return None
+                field = node.fields[-1]
+                if not hasattr(field, "sval"):
+                    return None
+                col_name = field.sval
+                if col_name not in columns:
+                    return None
+                distinct_columns.append(col_name)
+
+        seen: set[tuple[Any, ...]] = set()
+        distinct_rows: list[dict[str, Any]] = []
+        for row in rows:
+            key = tuple(row.get(col_name) for col_name in distinct_columns)
+            if key in seen:
+                continue
+            seen.add(key)
+            distinct_rows.append(row)
+        return distinct_rows
+
+    def _row_sort_keys(
+        self,
+        sort_clause: tuple,
+        columns: list[str],
+    ) -> list[tuple[str, bool, bool]] | None:
+        sort_keys: list[tuple[str, bool, bool]] = []
+        for sort_by in sort_clause:
+            node = sort_by.node
+            if isinstance(node, A_Const) and isinstance(node.val, PgInteger):
+                ordinal = node.val.ival
+                if ordinal < 1 or ordinal > len(columns):
+                    return None
+                col_name = columns[ordinal - 1]
+            elif isinstance(node, ColumnRef):
+                field = node.fields[-1]
+                if not hasattr(field, "sval"):
+                    return None
+                col_name = field.sval
+                if col_name not in columns:
+                    return None
+            else:
+                return None
+
+            is_desc = sort_by.sortby_dir == SortByDir.SORTBY_DESC
+            if sort_by.sortby_nulls == SortByNulls.SORTBY_NULLS_FIRST:
+                nulls_first = True
+            elif sort_by.sortby_nulls == SortByNulls.SORTBY_NULLS_LAST:
+                nulls_first = False
+            else:
+                nulls_first = is_desc
+            sort_keys.append((col_name, is_desc, nulls_first))
+        return sort_keys
+
+    def _try_compile_row_group_select(
+        self,
+        stmt: SelectStmt,
+        rows: list[dict[str, Any]],
+        evaluator: Any,
+    ) -> SQLResult | None:
+        group_fns = [
+            self._compile_row_expr(node, evaluator) for node in (stmt.groupClause or ())
+        ]
+        columns: list[str] = []
+        target_specs: list[tuple] = []
+
+        for target in stmt.targetList or ():
+            output_name = self._infer_target_name(target)
+            node = target.val
+            if isinstance(node, FuncCall):
+                func_name = node.funcname[-1].sval.lower()
+                if func_name in _AGG_FUNC_NAMES and node.over is None:
+                    if func_name not in (
+                        "count",
+                        "sum",
+                        "avg",
+                        "min",
+                        "max",
+                        "string_agg",
+                    ):
+                        return None
+                    if node.agg_distinct or node.agg_filter:
+                        return None
+                    if func_name == "string_agg":
+                        if not node.args or len(node.args) < 2:
+                            return None
+                        arg_fn = self._compile_row_expr(node.args[0], evaluator)
+                        delimiter_fn = self._compile_row_expr(node.args[1], evaluator)
+                        order_fns = [
+                            self._compile_row_expr(sort_by.node, evaluator)
+                            for sort_by in (node.agg_order or ())
+                        ]
+                        order_descs = [
+                            sort_by.sortby_dir == SortByDir.SORTBY_DESC
+                            for sort_by in (node.agg_order or ())
+                        ]
+                        fast_single_asc_order = (
+                            len(order_fns) == 1
+                            and len(order_descs) == 1
+                            and not order_descs[0]
+                        )
+                        target_specs.append(
+                            (
+                                "agg",
+                                output_name,
+                                func_name,
+                                arg_fn,
+                                delimiter_fn,
+                                order_fns,
+                                order_descs,
+                                fast_single_asc_order,
+                            )
+                        )
+                        columns.append(output_name)
+                        continue
+                    if node.agg_order:
+                        return None
+                    if node.agg_star or not node.args:
+                        arg_fn = None
+                    else:
+                        arg_fn = self._compile_row_expr(node.args[0], evaluator)
+                    target_specs.append(
+                        ("agg", output_name, func_name, arg_fn, None, None, None)
+                    )
+                    columns.append(output_name)
+                    continue
+            target_specs.append(
+                ("expr", output_name, self._compile_row_expr(node, evaluator))
+            )
+            columns.append(output_name)
+
+        agg_indexes = [
+            index for index, spec in enumerate(target_specs) if spec[0] == "agg"
+        ]
+        if not group_fns and not agg_indexes:
+            return None
+        if agg_indexes and not group_fns:
+            for spec in target_specs:
+                if spec[0] == "expr":
+                    return None
+
+        def make_accs() -> list[list[Any]]:
+            return [
+                [] if target_specs[index][2] == "string_agg" else [0, 0.0, None, None]
+                for index in agg_indexes
+            ]
+
+        groups: dict[tuple[Any, ...], tuple[dict[str, Any], list[list[Any]]]] = {}
+        group_order: list[tuple[Any, ...]] = []
+        if not rows and agg_indexes and not group_fns:
+            groups[()] = ({}, make_accs())
+            group_order.append(())
+
+        for row in rows:
+            key = tuple(group_fn(row) for group_fn in group_fns)
+            group = groups.get(key)
+            if group is None:
+                accs = make_accs()
+                group = (row, accs)
+                groups[key] = group
+                group_order.append(key)
+            _first_row, accs = group
+            for acc_index, target_index in enumerate(agg_indexes):
+                spec = target_specs[target_index]
+                func_name = spec[2]
+                arg_fn = spec[3]
+                acc = accs[acc_index]
+                if func_name == "string_agg":
+                    value = arg_fn(row) if arg_fn is not None else None
+                    if value is None:
+                        continue
+                    delimiter_fn = spec[4]
+                    delimiter = delimiter_fn(row) if delimiter_fn is not None else ""
+                    order_fns = spec[5] or []
+                    delimiter_text = "" if delimiter is None else str(delimiter)
+                    if len(spec) > 7 and spec[7]:
+                        acc.append(
+                            (
+                                order_fns[0](row),
+                                str(value),
+                                delimiter_text,
+                            )
+                        )
+                    else:
+                        order_values = tuple(order_fn(row) for order_fn in order_fns)
+                        acc.append(
+                            (
+                                order_values,
+                                spec[6] or [],
+                                str(value),
+                                delimiter_text,
+                            )
+                        )
+                    continue
+                if func_name == "count" and arg_fn is None:
+                    acc[0] += 1
+                    continue
+                value = arg_fn(row) if arg_fn is not None else None
+                if func_name == "count":
+                    if value is not None:
+                        acc[0] += 1
+                elif func_name in ("sum", "avg"):
+                    if isinstance(value, int | float):
+                        acc[0] += 1
+                        acc[1] += value
+                elif func_name == "min":
+                    if value is not None:
+                        acc[0] += 1
+                        if acc[2] is None or value < acc[2]:
+                            acc[2] = value
+                elif func_name == "max" and value is not None:
+                    acc[0] += 1
+                    if acc[3] is None or value > acc[3]:
+                        acc[3] = value
+
+        output_rows: list[dict[str, Any]] = []
+        for key in group_order:
+            first_row, accs = groups[key]
+            acc_cursor = 0
+            output_row: dict[str, Any] = {}
+            for spec in target_specs:
+                if spec[0] == "expr":
+                    output_row[spec[1]] = spec[2](first_row)
+                    continue
+                func_name = spec[2]
+                acc = accs[acc_cursor]
+                acc_cursor += 1
+                if func_name == "string_agg":
+                    items = acc
+                    if items:
+                        fast_single_asc_order = len(spec) > 7 and spec[7]
+                        if fast_single_asc_order:
+                            previous_key = None
+                            already_ordered = True
+                            for item in items:
+                                current_key = (item[0] is None, item[0])
+                                if (
+                                    previous_key is not None
+                                    and current_key < previous_key
+                                ):
+                                    already_ordered = False
+                                    break
+                                previous_key = current_key
+                            if not already_ordered:
+                                items.sort(key=lambda item: (item[0] is None, item[0]))
+                        else:
+                            descs = items[0][1]
+                            for index, desc in reversed(list(enumerate(descs))):
+                                items.sort(
+                                    key=lambda item, i=index: (
+                                        item[0][i] is None,
+                                        item[0][i],
+                                    ),
+                                    reverse=desc,
+                                )
+                        parts: list[str] = []
+                        for item_index, item in enumerate(items):
+                            if item_index > 0:
+                                parts.append(
+                                    item[2] if fast_single_asc_order else item[3]
+                                )
+                            parts.append(item[1] if fast_single_asc_order else item[2])
+                        value = "".join(parts)
+                    else:
+                        value = None
+                else:
+                    count = acc[0]
+                    if func_name == "count":
+                        value = count
+                    elif func_name == "sum":
+                        value = acc[1] if count > 0 else None
+                    elif func_name == "avg":
+                        value = acc[1] / count if count > 0 else None
+                    elif func_name == "min":
+                        value = acc[2]
+                    elif func_name == "max":
+                        value = acc[3]
+                    else:
+                        return None
+                output_row[spec[1]] = value
+            output_rows.append(output_row)
+
+        return SQLResult(columns, output_rows)
+
+    def _compile_row_expr(self, node: Any, evaluator: Any) -> Any:
+        if isinstance(node, ColumnRef):
+            fields = node.fields
+            qualified = None
+            if len(fields) >= 2 and hasattr(fields[0], "sval"):
+                qualified = f"{fields[0].sval}.{fields[-1].sval}"
+            col_name = fields[-1].sval
+
+            def column_ref(row: dict[str, Any]) -> Any:
+                if qualified is not None:
+                    try:
+                        return row[qualified]
+                    except KeyError:
+                        pass
+                return row.get(col_name)
+
+            return column_ref
+
+        if isinstance(node, A_Const):
+            value = evaluator.evaluate(node, {})
+            return lambda _row: value
+
+        if isinstance(node, ParamRef):
+            index = node.number - 1
+            return lambda _row: self._params[index]
+
+        if isinstance(node, BoolExpr):
+            if node.boolop == BoolExprType.AND_EXPR:
+                parts = [self._compile_row_expr(arg, evaluator) for arg in node.args]
+
+                def and_expr(row: dict[str, Any]) -> bool:
+                    return all(part(row) for part in parts)
+
+                return and_expr
+            if node.boolop == BoolExprType.OR_EXPR:
+                parts = [self._compile_row_expr(arg, evaluator) for arg in node.args]
+
+                def or_expr(row: dict[str, Any]) -> bool:
+                    return any(part(row) for part in parts)
+
+                return or_expr
+            if node.boolop == BoolExprType.NOT_EXPR:
+                part = self._compile_row_expr(node.args[0], evaluator)
+                return lambda row: not part(row)
+
+        if isinstance(node, NullTest):
+            arg_fn = self._compile_row_expr(node.arg, evaluator)
+            if NullTestType(node.nulltesttype) == NullTestType.IS_NULL:
+                return lambda row: arg_fn(row) is None
+            return lambda row: arg_fn(row) is not None
+
+        if isinstance(node, CoalesceExpr):
+            arg_fns = [self._compile_row_expr(arg, evaluator) for arg in node.args]
+
+            def coalesce_expr(row: dict[str, Any]) -> Any:
+                for arg_fn in arg_fns:
+                    value = arg_fn(row)
+                    if value is not None:
+                        return value
+                return None
+
+            return coalesce_expr
+
+        if isinstance(node, CaseExpr):
+            when_fns = [
+                (
+                    self._compile_row_expr(when_node.expr, evaluator),
+                    self._compile_row_expr(when_node.result, evaluator),
+                )
+                for when_node in (node.args or ())
+            ]
+            default_fn = (
+                self._compile_row_expr(node.defresult, evaluator)
+                if node.defresult is not None
+                else None
+            )
+
+            def case_expr(row: dict[str, Any]) -> Any:
+                for condition_fn, result_fn in when_fns:
+                    if condition_fn(row):
+                        return result_fn(row)
+                if default_fn is not None:
+                    return default_fn(row)
+                return None
+
+            return case_expr
+
+        if isinstance(node, MinMaxExpr):
+            arg_fns = [self._compile_row_expr(arg, evaluator) for arg in node.args]
+            is_greatest = MinMaxOp(node.op) == MinMaxOp.IS_GREATEST
+
+            def min_max_expr(row: dict[str, Any]) -> Any:
+                values = []
+                for arg_fn in arg_fns:
+                    value = arg_fn(row)
+                    if value is not None:
+                        values.append(value)
+                if not values:
+                    return None
+                return max(values) if is_greatest else min(values)
+
+            return min_max_expr
+
+        if isinstance(node, A_Expr) and A_Expr_Kind(node.kind) == A_Expr_Kind.AEXPR_OP:
+            op = node.name[0].sval if node.name else None
+            if op in ("+", "-") and node.lexpr is None:
+                right_fn = self._compile_row_expr(node.rexpr, evaluator)
+
+                def unary_expr(row: dict[str, Any]) -> Any:
+                    value = right_fn(row)
+                    if value is None:
+                        return None
+                    if op == "-":
+                        return -value
+                    return value
+
+                return unary_expr
+            if op in ("+", "-", "*", "/", "=", "<>", "!=", "<", "<=", ">", ">="):
+                left_fn = self._compile_row_expr(node.lexpr, evaluator)
+                right_fn = self._compile_row_expr(node.rexpr, evaluator)
+
+                def a_expr(row: dict[str, Any]) -> Any:
+                    left = left_fn(row)
+                    right = right_fn(row)
+                    if left is None or right is None:
+                        return None
+                    if op == "+":
+                        return left + right
+                    if op == "-":
+                        return left - right
+                    if op == "*":
+                        return left * right
+                    if op == "/":
+                        if right == 0:
+                            return None
+                        if (
+                            isinstance(left, int)
+                            and not isinstance(left, bool)
+                            and isinstance(right, int)
+                            and not isinstance(right, bool)
+                        ):
+                            return math.trunc(left / right)
+                        return left / right
+                    if op == "=":
+                        return left == right
+                    if op in ("<>", "!="):
+                        return left != right
+                    if op == "<":
+                        return left < right
+                    if op == "<=":
+                        return left <= right
+                    if op == ">":
+                        return left > right
+                    if op == ">=":
+                        return left >= right
+                    return evaluator.evaluate(node, row)
+
+                return a_expr
+
+        if (
+            isinstance(node, SubLink)
+            and SubLinkType(node.subLinkType) == SubLinkType.EXISTS_SUBLINK
+        ):
+            lookup_cache: list[Any] = [None]
+            outer_ref_fn_cache: list[Any] = [None]
+            unsupported = object()
+
+            def exists_sublink(row: dict[str, Any]) -> Any:
+                lookup = lookup_cache[0]
+                if lookup is not unsupported:
+                    if lookup is None:
+                        lookup = evaluator._get_exists_lookup(node.subselect)
+                        lookup_cache[0] = lookup if lookup is not None else unsupported
+                    if lookup is not None:
+                        outer_refs, inner_columns, value_set = lookup
+                        outer_ref_fns = outer_ref_fn_cache[0]
+                        if outer_ref_fns is None:
+                            outer_ref_fns = [
+                                self._compile_row_expr(outer_ref, evaluator)
+                                for outer_ref in outer_refs
+                            ]
+                            outer_ref_fn_cache[0] = outer_ref_fns
+                        key = []
+                        for outer_ref_fn in outer_ref_fns:
+                            value = outer_ref_fn(row)
+                            if value is None:
+                                return False
+                            key.append(value)
+                        if not inner_columns:
+                            return bool(value_set)
+                        return tuple(key) in value_set
+                return evaluator.evaluate(node, row)
+
+            return exists_sublink
+
+        if isinstance(node, TypeCast):
+            arg_fn = self._compile_row_expr(node.arg, evaluator)
+            is_array_cast = node.typeName.arrayBounds is not None
+            type_name = node.typeName.names[-1].sval.lower()
+
+            def type_cast(row: dict[str, Any]) -> Any:
+                value = arg_fn(row)
+                if is_array_cast:
+                    if value is None:
+                        return None
+                    return value if isinstance(value, list) else [value]
+                if value is None:
+                    return None
+                if type_name in (
+                    "int",
+                    "int2",
+                    "int4",
+                    "int8",
+                    "integer",
+                    "smallint",
+                    "bigint",
+                ):
+                    return int(value)
+                if type_name in (
+                    "float",
+                    "float4",
+                    "float8",
+                    "real",
+                    "double",
+                    "numeric",
+                    "decimal",
+                ):
+                    return float(value)
+                if type_name in ("text", "varchar", "bpchar", "char"):
+                    return str(value)
+                from uqa.sql.expr_evaluator import _cast_value
+
+                return _cast_value(value, type_name)
+
+            return type_cast
+
+        if isinstance(node, FuncCall):
+            func_name = node.funcname[-1].sval.lower()
+            args = list(node.args or ())
+            if func_name == "pi" and not args:
+                return lambda _row: math.pi
+            if func_name == "length" and len(args) == 1:
+                arg_fn = self._compile_row_expr(args[0], evaluator)
+                return lambda row: len(str(arg_fn(row) or ""))
+            if func_name == "repeat" and len(args) == 2:
+                text_fn = self._compile_row_expr(args[0], evaluator)
+                count_fn = self._compile_row_expr(args[1], evaluator)
+
+                def repeat_fn(row: dict[str, Any]) -> Any:
+                    text = text_fn(row)
+                    count = count_fn(row)
+                    if text is None or count is None:
+                        return None
+                    return str(text) * max(0, int(count))
+
+                return repeat_fn
+            if func_name == "rpad" and len(args) in (2, 3):
+                text_fn = self._compile_row_expr(args[0], evaluator)
+                length_fn = self._compile_row_expr(args[1], evaluator)
+                fill_fn = (
+                    self._compile_row_expr(args[2], evaluator)
+                    if len(args) == 3
+                    else None
+                )
+
+                def rpad_fn(row: dict[str, Any]) -> Any:
+                    text_value = text_fn(row)
+                    length_value = length_fn(row)
+                    if text_value is None or length_value is None:
+                        return None
+                    text = str(text_value)
+                    target = int(length_value)
+                    if target <= 0:
+                        return ""
+                    if len(text) >= target:
+                        return text[:target]
+                    fill_value = fill_fn(row) if fill_fn is not None else " "
+                    fill = str(fill_value if fill_value is not None else " ")
+                    if not fill:
+                        return text
+                    needed = target - len(text)
+                    return text + (fill * ((needed // len(fill)) + 1))[:needed]
+
+                return rpad_fn
+            if func_name == "round" and len(args) == 1:
+                arg_fn = self._compile_row_expr(args[0], evaluator)
+                return lambda row: round(arg_fn(row))
+            if func_name in ("cos", "sin", "tan", "sqrt", "floor", "ceil", "ceiling"):
+                if len(args) != 1:
+                    return lambda row: evaluator.evaluate(node, row)
+                arg_fn = self._compile_row_expr(args[0], evaluator)
+                if func_name == "cos":
+                    cache: dict[Any, Any] = {}
+
+                    def cos_fn(row: dict[str, Any]) -> Any:
+                        value = arg_fn(row)
+                        if value in cache:
+                            return cache[value]
+                        result = math.cos(value)
+                        cache[value] = result
+                        return result
+
+                    return cos_fn
+                if func_name == "sin":
+                    cache = {}
+
+                    def sin_fn(row: dict[str, Any]) -> Any:
+                        value = arg_fn(row)
+                        if value in cache:
+                            return cache[value]
+                        result = math.sin(value)
+                        cache[value] = result
+                        return result
+
+                    return sin_fn
+                if func_name == "tan":
+                    cache = {}
+
+                    def tan_fn(row: dict[str, Any]) -> Any:
+                        value = arg_fn(row)
+                        if value in cache:
+                            return cache[value]
+                        result = math.tan(value)
+                        cache[value] = result
+                        return result
+
+                    return tan_fn
+                if func_name == "sqrt":
+                    return lambda row: math.sqrt(arg_fn(row))
+                if func_name == "floor":
+                    return lambda row: math.floor(arg_fn(row))
+                return lambda row: math.ceil(arg_fn(row))
+
+        return lambda row: evaluator.evaluate(node, row)
+
+    @staticmethod
+    def _target_contains_star(target: Any) -> bool:
+        val = getattr(target, "val", None)
+        if isinstance(val, ColumnRef):
+            return any(isinstance(field, A_Star) for field in val.fields)
+        return False
+
+    def _row_mode_from_rows(
+        self,
+        from_clause: tuple | None,
+    ) -> list[dict[str, Any]] | None:
+        if from_clause is None:
+            return [{}]
+        rows: list[dict[str, Any]] = [{}]
+        rows_are_identity = True
+        for node in from_clause:
+            if isinstance(node, RangeFunction) and self._range_function_needs_lateral(
+                node
+            ):
+                if rows_are_identity:
+                    return None
+                combined_rows: list[dict[str, Any]] = []
+                for left in rows:
+                    right_rows = self._row_mode_function_rows(node, left)
+                    if right_rows is None:
+                        return None
+                    combined_rows.extend({**left, **right} for right in right_rows)
+                rows = combined_rows
+                continue
+            right_rows = self._row_mode_node_rows(node)
+            if right_rows is None:
+                return None
+            if rows_are_identity:
+                rows = list(right_rows)
+                rows_are_identity = False
+            elif len(right_rows) == 1 and not right_rows[0]:
+                rows = list(rows)
+            else:
+                rows = [{**left, **right} for left in rows for right in right_rows]
+        return rows
+
+    def _row_mode_node_rows(self, node: Any) -> list[dict[str, Any]] | None:
+        if isinstance(node, RangeVar):
+            return self._row_mode_range_rows(node)
+        if isinstance(node, RangeFunction):
+            return self._row_mode_function_rows(node, None)
+        if isinstance(node, JoinExpr):
+            return self._row_mode_join_rows(node)
+        return None
+
+    def _row_mode_function_rows(
+        self,
+        node: RangeFunction,
+        outer_row: dict[str, Any] | None,
+    ) -> list[dict[str, Any]] | None:
+        cache_key = id(node)
+        if outer_row is None and cache_key in self._row_mode_function_cache:
+            return self._row_mode_function_cache[cache_key]
+        try:
+            table, op = self._compile_from_function(
+                node,
+                outer_row=outer_row,
+                register=False,
+            )
+        except ValueError:
+            if outer_row is None:
+                self._row_mode_function_cache[cache_key] = None
+            return None
+        if op is not None or table is None:
+            if outer_row is None:
+                self._row_mode_function_cache[cache_key] = None
+            return None
+        rows = self._row_mode_table_rows(table, table.name)
+        if outer_row is None:
+            self._row_mode_function_cache[cache_key] = rows
+        return rows
+
+    def _row_mode_table_rows(
+        self,
+        table: Table,
+        alias: str,
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        temp_rows = getattr(table, "_uqa_temp_rows", None)
+        col_names = tuple(table.columns)
+        if temp_rows is not None:
+            iterator = enumerate(temp_rows, 1)
+        else:
+            store = table.document_store
+            if hasattr(store, "_documents"):
+                iterator = store._documents.items()
+            elif hasattr(store, "iter_all"):
+                iterator = store.iter_all()
+            else:
+                iterator = (
+                    (doc_id, store.get(doc_id)) for doc_id in sorted(store.doc_ids)
+                )
+        alias_prefix = f"{alias}."
+        for doc_id, document in iterator:
+            if document is None:
+                continue
+            fields = dict(document)
+            fields["_doc_id"] = doc_id
+            if temp_rows is None:
+                for col_name in col_names:
+                    fields.setdefault(col_name, None)
+            row = dict(fields)
+            for key, value in fields.items():
+                row[f"{alias_prefix}{key}"] = value
+            rows.append(row)
+        return rows
+
+    def _row_mode_range_rows(self, node: RangeVar) -> list[dict[str, Any]] | None:
+        table_name = self._qualified_name(node)
+        alias = node.alias.aliasname if node.alias is not None else node.relname
+        cache_key = (table_name, alias)
+        inlined_query = self._inlined_ctes.get(table_name)
+        if inlined_query is not None:
+            cached = self._row_mode_range_cache.get(cache_key)
+            if cached is not None:
+                return cached
+            result = self._compile_select(inlined_query)
+            table = self._result_to_table(table_name, result)
+            rows = self._row_mode_table_rows(table, alias)
+            self._row_mode_range_cache[cache_key] = rows
+            return rows
+        working = self._recursive_working_rows.get(table_name)
+        if working is not None:
+            cached = self._recursive_row_mode_cache.get(cache_key)
+            if cached is not None:
+                return cached
+            _columns, source_rows = working
+            rows: list[dict[str, Any]] = []
+            alias_prefix = f"{alias}."
+            for doc_id, document in enumerate(source_rows, 1):
+                fields = dict(document)
+                fields["_doc_id"] = doc_id
+                row = dict(fields)
+                for key, value in fields.items():
+                    row[f"{alias_prefix}{key}"] = value
+                rows.append(row)
+            self._recursive_row_mode_cache[cache_key] = rows
+            return rows
+
+        table = self._engine._tables.get(table_name)
+        if table is None:
+            return None
+        if table_name not in self._active_recursive_ctes:
+            cached = self._row_mode_range_cache.get(cache_key)
+            if cached is not None:
+                return cached
+        rows = self._row_mode_table_rows(table, alias)
+        if table_name not in self._active_recursive_ctes:
+            self._row_mode_range_cache[cache_key] = rows
+        return rows
+
+    def _row_mode_join_rows(self, node: JoinExpr) -> list[dict[str, Any]] | None:
+        join_type = JoinType(node.jointype)
+        if join_type not in (JoinType.JOIN_INNER, JoinType.JOIN_LEFT):
+            return None
+        is_left_join = join_type == JoinType.JOIN_LEFT
+        left_rows = self._row_mode_node_rows(node.larg)
+        if left_rows is None:
+            return None
+        if isinstance(node.rarg, RangeFunction) and self._range_function_needs_lateral(
+            node.rarg
+        ):
+            from uqa.sql.expr_evaluator import ExprEvaluator
+
+            evaluator = ExprEvaluator(
+                subquery_executor=self._compile_select,
+                sequences=self._engine._sequences,
+                outer_row=getattr(self, "_correlated_outer_row", None),
+                engine=self._engine,
+                params=self._params,
+            )
+            qual_fn = (
+                self._compile_row_expr(node.quals, evaluator)
+                if node.quals is not None
+                else None
+            )
+            rows: list[dict[str, Any]] = []
+            for left in left_rows:
+                right_rows = self._row_mode_function_rows(node.rarg, left)
+                if right_rows is None:
+                    return None
+                emitted = False
+                for right in right_rows:
+                    row = {**left, **right}
+                    if qual_fn is not None and not qual_fn(row):
+                        continue
+                    emitted = True
+                    rows.append(row)
+                if is_left_join and not emitted:
+                    right_field_names = self._row_mode_right_field_names(
+                        node.rarg,
+                        right_rows,
+                    )
+                    if right_field_names is None:
+                        return None
+                    null_template = self._null_extension_template(
+                        [left],
+                        right_field_names,
+                    )
+                    rows.append(self._null_extend_row(left, null_template))
+            return rows
+        right_rows = self._row_mode_node_rows(node.rarg)
+        if right_rows is None:
+            return None
+        right_field_names: set[str] | None = None
+        if is_left_join:
+            right_field_names = self._row_mode_right_field_names(node.rarg, right_rows)
+            if right_field_names is None:
+                return None
+
+        from uqa.sql.expr_evaluator import ExprEvaluator
+
+        if node.quals is None:
+            if right_rows:
+                return [{**left, **right} for left in left_rows for right in right_rows]
+            if is_left_join and right_field_names is not None:
+                null_template = self._null_extension_template(
+                    left_rows,
+                    right_field_names,
+                )
+                return [
+                    self._null_extend_row(left, null_template) for left in left_rows
+                ]
+            return []
+
+        evaluator = ExprEvaluator(
+            subquery_executor=self._compile_select,
+            sequences=self._engine._sequences,
+            outer_row=getattr(self, "_correlated_outer_row", None),
+            engine=self._engine,
+            params=self._params,
+        )
+
+        plan = self._row_mode_join_plan_cache.get(id(node))
+        if plan is None:
+            left_aliases = self._collect_from_aliases(node.larg)
+            right_aliases = self._collect_from_aliases(node.rarg)
+            left_key_nodes: list[Any] = []
+            right_key_nodes: list[Any] = []
+            residual_nodes: list[Any] = []
+            for conjunct in self._flatten_bool_and(node.quals):
+                parsed = self._parse_expr_join_key(
+                    conjunct,
+                    left_aliases,
+                    right_aliases,
+                )
+                if parsed is None:
+                    residual_nodes.append(conjunct)
+                    continue
+                left_key, right_key = parsed
+                left_key_nodes.append(left_key)
+                right_key_nodes.append(right_key)
+
+            if left_key_nodes:
+                left_key_fns = [
+                    self._compile_row_expr(key_node, evaluator)
+                    for key_node in left_key_nodes
+                ]
+                right_key_fns = [
+                    self._compile_row_expr(key_node, evaluator)
+                    for key_node in right_key_nodes
+                ]
+                residual_fn = (
+                    self._compile_row_expr(self._rebuild_and(residual_nodes), evaluator)
+                    if residual_nodes
+                    else None
+                )
+                plan = ("hash", left_key_fns, right_key_fns, residual_fn)
+            else:
+                plan = ("qual", self._compile_row_expr(node.quals, evaluator))
+            self._row_mode_join_plan_cache[id(node)] = plan
+
+        if plan[0] == "hash":
+            left_key_fns = plan[1]
+            right_key_fns = plan[2]
+            residual_fn = plan[3]
+
+            if len(left_key_fns) == 1 and len(right_key_fns) == 1:
+                left_key_fn = left_key_fns[0]
+                right_key_fn = right_key_fns[0]
+
+                def make_single_left_key(row: dict[str, Any]) -> Any | None:
+                    value = left_key_fn(row)
+                    if value is None:
+                        return None
+                    return value
+
+                def make_single_right_key(row: dict[str, Any]) -> Any | None:
+                    value = right_key_fn(row)
+                    if value is None:
+                        return None
+                    return value
+
+                make_left_key = make_single_left_key
+                make_right_key = make_single_right_key
+
+            else:
+
+                def make_tuple_left_key(row: dict[str, Any]) -> tuple[Any, ...] | None:
+                    values = []
+                    for key_fn in left_key_fns:
+                        value = key_fn(row)
+                        if value is None:
+                            return None
+                        values.append(value)
+                    return tuple(values)
+
+                def make_tuple_right_key(row: dict[str, Any]) -> tuple[Any, ...] | None:
+                    values = []
+                    for key_fn in right_key_fns:
+                        value = key_fn(row)
+                        if value is None:
+                            return None
+                        values.append(value)
+                    return tuple(values)
+
+                make_left_key = make_tuple_left_key
+                make_right_key = make_tuple_right_key
+
+            rows: list[dict[str, Any]] = []
+            if is_left_join:
+                right_index = {}
+                for right in right_rows:
+                    key = make_right_key(right)
+                    if key is not None:
+                        right_index.setdefault(key, []).append(right)
+                null_template = self._null_extension_template(
+                    left_rows,
+                    right_field_names or set(),
+                )
+                if not right_index:
+                    return [
+                        self._null_extend_row(left, null_template) for left in left_rows
+                    ]
+                for left in left_rows:
+                    key = make_left_key(left)
+                    matches = right_index.get(key, []) if key is not None else []
+                    emitted = False
+                    for right in matches:
+                        row = {**left, **right}
+                        if residual_fn is not None and not residual_fn(row):
+                            continue
+                        emitted = True
+                        rows.append(row)
+                    if not emitted:
+                        rows.append(self._null_extend_row(left, null_template))
+                return rows
+
+            if len(right_rows) <= len(left_rows):
+                index_cache_key = (id(node), "right")
+                right_index = (
+                    self._row_mode_join_index_cache.get(index_cache_key)
+                    if not self._references_active_recursive_cte(node.rarg)
+                    else None
+                )
+                if right_index is None:
+                    right_index = {}
+                    for right in right_rows:
+                        key = make_right_key(right)
+                        if key is not None:
+                            right_index.setdefault(key, []).append(right)
+                    if not self._references_active_recursive_cte(node.rarg):
+                        self._row_mode_join_index_cache[index_cache_key] = right_index
+                for left in left_rows:
+                    key = make_left_key(left)
+                    if key is None:
+                        continue
+                    for right in right_index.get(key, []):
+                        row = {**left, **right}
+                        if residual_fn is not None and not residual_fn(row):
+                            continue
+                        rows.append(row)
+            else:
+                index_cache_key = (id(node), "left")
+                left_index = (
+                    self._row_mode_join_index_cache.get(index_cache_key)
+                    if not self._references_active_recursive_cte(node.larg)
+                    else None
+                )
+                if left_index is None:
+                    left_index = {}
+                    for left in left_rows:
+                        key = make_left_key(left)
+                        if key is not None:
+                            left_index.setdefault(key, []).append(left)
+                    if not self._references_active_recursive_cte(node.larg):
+                        self._row_mode_join_index_cache[index_cache_key] = left_index
+                for right in right_rows:
+                    key = make_right_key(right)
+                    if key is None:
+                        continue
+                    for left in left_index.get(key, []):
+                        row = {**left, **right}
+                        if residual_fn is not None and not residual_fn(row):
+                            continue
+                        rows.append(row)
+            return rows
+
+        qual_fn = plan[1]
+
+        rows: list[dict[str, Any]] = []
+        null_template = (
+            self._null_extension_template(left_rows, right_field_names or set())
+            if is_left_join
+            else {}
+        )
+        if is_left_join and not right_rows:
+            return [self._null_extend_row(left, null_template) for left in left_rows]
+        for left in left_rows:
+            emitted = False
+            for right in right_rows:
+                row = {**left, **right}
+                if not qual_fn(row):
+                    continue
+                emitted = True
+                rows.append(row)
+            if is_left_join and not emitted:
+                rows.append(self._null_extend_row(left, null_template))
+        return rows
+
+    def _row_mode_right_field_names(
+        self,
+        node: Any,
+        rows: list[dict[str, Any]],
+    ) -> set[str] | None:
+        if rows:
+            fields: set[str] = set()
+            for row in rows:
+                fields.update(row)
+            return fields
+        return self._row_mode_node_field_names(node)
+
+    def _row_mode_node_field_names(self, node: Any) -> set[str] | None:
+        if isinstance(node, RangeVar):
+            table_name = self._qualified_name(node)
+            alias = node.alias.aliasname if node.alias is not None else node.relname
+            working = self._recursive_working_rows.get(table_name)
+            if working is not None:
+                columns = working[0]
+            else:
+                table = self._engine._tables.get(table_name)
+                if table is None:
+                    return None
+                columns = list(table.columns)
+                temp_columns = getattr(table, "_uqa_temp_columns", None)
+                if temp_columns is not None:
+                    columns = list(dict.fromkeys([*columns, *temp_columns]))
+            fields = {"_doc_id", "_id"}
+            fields.update(columns)
+            qualified_fields = {f"{alias}.{field}" for field in fields}
+            return fields | qualified_fields
+        if isinstance(node, JoinExpr):
+            left_fields = self._row_mode_node_field_names(node.larg)
+            right_fields = self._row_mode_node_field_names(node.rarg)
+            if left_fields is None or right_fields is None:
+                return None
+            return set(left_fields) | set(right_fields)
+        return None
+
+    @staticmethod
+    def _null_extension_template(
+        left_rows: list[dict[str, Any]],
+        right_field_names: set[str],
+    ) -> dict[str, None]:
+        if not left_rows:
+            return dict.fromkeys(right_field_names)
+        first_left = left_rows[0]
+        return {name: None for name in right_field_names if name not in first_left}
+
+    @staticmethod
+    def _null_extend_row(
+        left: dict[str, Any],
+        null_template: dict[str, None],
+    ) -> dict[str, Any]:
+        row = dict(left)
+        for name, value in null_template.items():
+            if name not in row:
+                row[name] = value
+        return row
 
     # -- View expansion ------------------------------------------------
 
@@ -5266,13 +6779,41 @@ class SQLCompiler:
         When *pushed_where* is provided, it is AND-merged into the
         subquery's WHERE clause before compilation (predicate pushdown).
         """
+        cacheable = pushed_where is None and not self._contains_volatile_function(query)
+        if cacheable and view_name in self._view_cache:
+            table = self._view_cache[view_name]
+            self._engine._tables[view_name] = table
+            if view_name not in self._expanded_views:
+                self._expanded_views.append(view_name)
+            return table, None
+
         if pushed_where is not None:
             query = self._inject_where(query, pushed_where)
         result = self._compile_select(query)
         table = self._result_to_table(view_name, result)
+        if cacheable:
+            self._view_cache[view_name] = table
         self._engine._tables[view_name] = table
         self._expanded_views.append(view_name)
         return table, None
+
+    def _contains_volatile_function(self, node: Any) -> bool:
+        cache_key = id(node)
+        cached = self._volatile_function_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        volatile = {"nextval", "random", "setval"}
+        if isinstance(node, FuncCall):
+            name = node.funcname[-1].sval.lower()
+            if name in volatile:
+                self._volatile_function_cache[cache_key] = True
+                return True
+        for child in self._iter_ast_children(node):
+            if self._contains_volatile_function(child):
+                self._volatile_function_cache[cache_key] = True
+                return True
+        self._volatile_function_cache[cache_key] = False
+        return False
 
     # -- Derived table (subquery in FROM) ------------------------------
 
@@ -5285,6 +6826,7 @@ class SQLCompiler:
         if pushed_where is not None:
             subquery = self._inject_where(subquery, pushed_where)
         result = self._compile_select(subquery)
+        result = self._apply_derived_column_aliases(result, node.alias)
         table = self._result_to_table(alias, result)
         # Save the original table entry if the alias shadows a real table,
         # so it can be restored during cleanup.
@@ -5293,6 +6835,25 @@ class SQLCompiler:
         self._engine._tables[alias] = table
         self._expanded_views.append(alias)
         return table, None
+
+    @staticmethod
+    def _apply_derived_column_aliases(result: SQLResult, alias: Any) -> SQLResult:
+        """Apply FROM-subquery column aliases to the materialized result."""
+        if alias is None or not alias.colnames:
+            return result
+        alias_cols = [col.sval for col in alias.colnames]
+        if len(alias_cols) > len(result.columns):
+            raise ValueError("Derived table alias has too many column names")
+        columns = list(result.columns)
+        columns[: len(alias_cols)] = alias_cols
+        rows: list[dict[str, Any]] = []
+        for row in result.rows:
+            remapped: dict[str, Any] = {}
+            for index, new_name in enumerate(columns):
+                old_name = result.columns[index]
+                remapped[new_name] = row.get(old_name)
+            rows.append(remapped)
+        return SQLResult(columns, rows)
 
     def _try_predicate_pushdown(self, stmt: SelectStmt) -> SelectStmt:
         """Push safe WHERE predicates into a view or derived table subquery.
@@ -5373,11 +6934,21 @@ class SQLCompiler:
         )
 
         if isinstance(from_node, RangeVar):
-            view_query = self._engine._views.get(from_node.relname)
+            table_name = self._qualified_name(from_node)
+            view_query = self._engine._views.get(table_name)
             if view_query is not None:
-                self._engine._views[from_node.relname] = self._inject_where(
-                    view_query, pushed_pred
+                alias = from_node.alias or Alias(aliasname=from_node.relname)
+                new_from_node = RangeSubselect(
+                    lateral=False,
+                    subquery=self._inject_where(view_query, pushed_pred),
+                    alias=alias,
                 )
+                stmt_kwargs = {}
+                for slot in stmt.__slots__:
+                    stmt_kwargs[slot] = getattr(stmt, slot, None)
+                stmt_kwargs["fromClause"] = (new_from_node,)
+                stmt_kwargs["whereClause"] = remaining
+                return SelectStmt(**stmt_kwargs)
             elif from_node.relname in self._inlined_ctes:
                 self._inlined_ctes[from_node.relname] = self._inject_where(
                     self._inlined_ctes[from_node.relname], pushed_pred
@@ -5492,19 +7063,26 @@ class SQLCompiler:
         to avoid unnecessary overhead during query execution.
         """
         _type_map = {int: "integer", float: "real", str: "text"}
+        rows = result.rows
+        py_types: dict[str, type] = dict.fromkeys(result.columns, str)
+        unresolved = set(result.columns)
+        for row in rows:
+            if not unresolved:
+                break
+            for col_name in tuple(unresolved):
+                sample = row.get(col_name)
+                if sample is None:
+                    continue
+                if isinstance(sample, bool):
+                    py_types[col_name] = str  # bool before int (bool is subclass)
+                elif isinstance(sample, int):
+                    py_types[col_name] = int
+                elif isinstance(sample, float):
+                    py_types[col_name] = float
+                unresolved.remove(col_name)
         col_defs: list[ColumnDef] = []
         for col_name in result.columns:
-            py_type: type = str
-            for row in result.rows:
-                sample = row.get(col_name)
-                if sample is not None:
-                    if isinstance(sample, bool):
-                        py_type = str  # bool before int (bool is subclass)
-                    elif isinstance(sample, int):
-                        py_type = int
-                    elif isinstance(sample, float):
-                        py_type = float
-                    break
+            py_type = py_types[col_name]
             col_defs.append(
                 ColumnDef(
                     name=col_name,
@@ -5514,11 +7092,17 @@ class SQLCompiler:
             )
 
         table = Table(name=name, columns=col_defs)
-        for i, row in enumerate(result.rows):
-            doc_id = i + 1
-            doc = {"_id": doc_id}
-            doc.update(row)
-            table.document_store.put(doc_id, doc)
+        documents = {
+            index + 1: {"_id": index + 1, **row} for index, row in enumerate(rows)
+        }
+        table._uqa_temp_rows = [documents[index + 1] for index in range(len(rows))]
+        table._uqa_temp_columns = list(result.columns)
+        if hasattr(table.document_store, "_documents"):
+            table.document_store._documents = documents
+        else:
+            for doc_id, doc in documents.items():
+                table.document_store.put(doc_id, doc)
+        table._next_id = len(rows) + 1
 
         return table
 
@@ -5794,7 +7378,12 @@ class SQLCompiler:
         # Multiple FROM sources: try DPccp join reordering when there
         # are 3+ base relations and equijoin predicates in WHERE.
         has_lateral = any(
-            isinstance(node, RangeSubselect) and node.lateral for node in from_clause
+            (isinstance(node, RangeSubselect) and node.lateral)
+            or (
+                isinstance(node, RangeFunction)
+                and self._range_function_needs_lateral(node)
+            )
+            for node in from_clause
         )
         if not has_lateral and len(from_clause) >= 3 and where_clause is not None:
             result = self._try_implicit_join_reorder(from_clause, where_clause)
@@ -5813,6 +7402,12 @@ class SQLCompiler:
             if isinstance(node, RangeSubselect) and node.lateral:
                 lateral_alias = node.alias.aliasname if node.alias else "_lateral"
                 op = _LateralJoinOperator(op, node.subquery, lateral_alias, self)
+                continue
+
+            if isinstance(node, RangeFunction) and self._range_function_needs_lateral(
+                node
+            ):
+                op = _LateralFunctionJoinOperator(op, node, self)
                 continue
 
             right_table, right_op, right_alias = self._resolve_from_single(node)
@@ -5951,16 +7546,14 @@ class SQLCompiler:
                 tbl, op = self._build_pg_catalog_table(node.relname)
                 return tbl, op, alias
             table_name = self._qualified_name(node)
+            inlined_query = self._inlined_ctes.get(node.relname)
+            if inlined_query is not None:
+                result = self._compile_select(inlined_query)
+                table = self._result_to_table(table_name, result)
+                self._register_scoped_table(table_name, table)
+                return table, None, alias
             table = self._engine._tables.get(table_name)
             if table is None:
-                # Inline CTE: compile on demand instead of materializing
-                inlined_query = self._inlined_ctes.pop(node.relname, None)
-                if inlined_query is not None:
-                    result = self._compile_select(inlined_query)
-                    table = self._result_to_table(table_name, result)
-                    self._engine._tables[table_name] = table
-                    self._expanded_views.append(table_name)
-                    return table, None, alias
                 # Check foreign tables
                 ft = self._engine._foreign_tables.get(table_name)
                 if ft is not None:
@@ -5983,7 +7576,10 @@ class SQLCompiler:
 
         if isinstance(node, RangeFunction):
             tbl, op = self._compile_from_function(node)
-            return tbl, op, None
+            alias = node.alias.aliasname if node.alias is not None else None
+            if alias is None and tbl is not None:
+                alias = tbl.name
+            return tbl, op, alias
 
         if isinstance(node, JoinExpr):
             tbl, op = self._resolve_join(node)
@@ -6017,6 +7613,7 @@ class SQLCompiler:
         return ExecutionContext(
             document_store=table.document_store,
             inverted_index=table.inverted_index,
+            temp_rows=getattr(table, "_uqa_temp_rows", None),
             vector_indexes=table.vector_indexes,
             spatial_indexes=table.spatial_indexes,
             graph_store=table.graph_store,
@@ -6025,7 +7622,13 @@ class SQLCompiler:
             parallel_executor=parallel_executor,
         )
 
-    def _compile_from_function(self, node: RangeFunction) -> tuple[Table | None, Any]:
+    def _compile_from_function(
+        self,
+        node: RangeFunction,
+        outer_row: dict[str, Any] | None = None,
+        *,
+        register: bool = True,
+    ) -> tuple[Table | None, Any]:
         """Return (table_or_none, operator) for a FROM-clause function."""
         func_call = node.functions[0][0]
         if not isinstance(func_call, FuncCall):
@@ -6054,9 +7657,19 @@ class SQLCompiler:
         if name == "text_search":
             return self._build_text_search_from(args)
         if name == "generate_series":
-            return self._build_generate_series(node, args)
+            return self._build_generate_series(
+                node,
+                args,
+                outer_row=outer_row,
+                register=register,
+            )
         if name == "unnest":
-            return self._build_unnest(node, args)
+            return self._build_unnest(
+                node,
+                args,
+                outer_row=outer_row,
+                register=register,
+            )
         if name in ("json_each", "jsonb_each", "json_each_text", "jsonb_each_text"):
             return self._build_json_each(node, args, as_text=name.endswith("_text"))
         if name in (
@@ -6102,6 +7715,72 @@ class SQLCompiler:
             return self._build_grid_graph(args)
         raise ValueError(f"Unknown table function: {name}")
 
+    def _eval_table_function_arg(
+        self,
+        arg: Any,
+        outer_row: dict[str, Any] | None = None,
+    ) -> Any:
+        """Evaluate a table-function argument under FROM-row scope."""
+        from uqa.sql.expr_evaluator import ExprEvaluator
+
+        row = outer_row or {}
+        evaluator = ExprEvaluator(
+            engine=self._engine,
+            subquery_executor=self._compile_select,
+            outer_row=outer_row,
+            params=self._params,
+        )
+        return evaluator.evaluate(arg, row)
+
+    @staticmethod
+    def _range_function_column_names(
+        node: RangeFunction,
+        default_column: str,
+    ) -> tuple[str, str | None, str]:
+        """Return value column, ordinality column, and relation alias."""
+        alias_name = node.alias.aliasname if node.alias else default_column
+        colnames = (
+            list(node.alias.colnames) if node.alias and node.alias.colnames else []
+        )
+        if colnames:
+            value_column = colnames[0].sval
+        elif node.alias is not None:
+            value_column = alias_name
+        else:
+            value_column = default_column
+        ordinality_column: str | None = None
+        if bool(getattr(node, "ordinality", False)):
+            ordinality_column = colnames[1].sval if len(colnames) > 1 else "ordinality"
+        return value_column, ordinality_column, alias_name
+
+    def _range_function_needs_lateral(self, node: RangeFunction) -> bool:
+        """Return True for explicit or implicit LATERAL table functions."""
+        if bool(getattr(node, "lateral", False)):
+            return True
+        return any(self._contains_column_ref(func) for func, _cols in node.functions)
+
+    @staticmethod
+    def _contains_column_ref(node: Any) -> bool:
+        """Return True when an AST subtree contains a ColumnRef."""
+        if node is None:
+            return False
+        if isinstance(node, ColumnRef):
+            return True
+        for child in SQLCompiler._iter_ast_children(node):
+            if SQLCompiler._contains_column_ref(child):
+                return True
+        return False
+
+    @staticmethod
+    def _is_true_qual(quals: Any) -> bool:
+        """Return True when a JOIN qual is the literal SQL boolean true."""
+        return (
+            isinstance(quals, A_Const)
+            and not quals.isnull
+            and isinstance(quals.val, PgBoolean)
+            and quals.val.boolval is True
+        )
+
     @staticmethod
     def _is_graph_operator(op: Any) -> bool:
         """Return True if op is a graph traversal, RPQ, centrality, or Cypher operator."""
@@ -6142,7 +7821,11 @@ class SQLCompiler:
 
         return isinstance(
             op,
-            JoinOperator | CrossJoinOperator | _ExprJoinOperator | _LateralJoinOperator,
+            JoinOperator
+            | CrossJoinOperator
+            | _ExprJoinOperator
+            | _LateralJoinOperator
+            | _LateralFunctionJoinOperator,
         )
 
     def _collect_join_tables(
@@ -6178,6 +7861,20 @@ class SQLCompiler:
         elif isinstance(node, RangeSubselect):
             alias = node.alias.aliasname if node.alias else "_subquery"
             out.append((alias, []))
+        elif isinstance(node, RangeFunction):
+            func_call = node.functions[0][0]
+            if isinstance(func_call, FuncCall):
+                func_name = func_call.funcname[-1].sval.lower()
+            else:
+                func_name = "function"
+            col_name, ord_col, alias = self._range_function_column_names(
+                node,
+                func_name,
+            )
+            cols = [col_name]
+            if ord_col is not None:
+                cols.append(ord_col)
+            out.append((alias, cols))
 
     def _build_traverse_from(self, args: tuple) -> tuple[Table | None, Any]:
         """Build traverse() FROM-clause.
@@ -7363,16 +9060,25 @@ class SQLCompiler:
         return table, op
 
     def _build_generate_series(
-        self, node: RangeFunction, args: tuple
+        self,
+        node: RangeFunction,
+        args: tuple,
+        *,
+        outer_row: dict[str, Any] | None = None,
+        register: bool = True,
     ) -> tuple[Table | None, Any]:
         """Build generate_series(start, stop [, step]) as a table function."""
         if len(args) < 2:
             raise ValueError("generate_series requires at least 2 arguments")
-        start = self._extract_const_value(args[0])
-        stop = self._extract_const_value(args[1])
-        step = self._extract_const_value(args[2]) if len(args) > 2 else 1
+        start = self._eval_table_function_arg(args[0], outer_row)
+        stop = self._eval_table_function_arg(args[1], outer_row)
+        step = self._eval_table_function_arg(args[2], outer_row) if len(args) > 2 else 1
 
         if not isinstance(start, int | float):
+            raise ValueError("generate_series currently supports numeric ranges")
+        if not isinstance(stop, int | float):
+            raise ValueError("generate_series currently supports numeric ranges")
+        if not isinstance(step, int | float):
             raise ValueError("generate_series currently supports numeric ranges")
         if step == 0:
             raise ValueError("generate_series step cannot be zero")
@@ -7388,55 +9094,71 @@ class SQLCompiler:
                 values.append(current)
                 current += step
 
-        # Determine column name from alias (AS t(n)) or default
-        col_name = "generate_series"
-        if node.alias is not None:
-            if node.alias.colnames:
-                col_name = node.alias.colnames[0].sval
-            alias_name = node.alias.aliasname
-        else:
-            alias_name = "generate_series"
+        col_name, ordinality_name, alias_name = self._range_function_column_names(
+            node,
+            "generate_series",
+        )
 
         from uqa.sql.table import ColumnDef as SQLColumnDef
 
         col_type = "integer" if all(isinstance(v, int) for v in values) else "real"
         python_type = int if col_type == "integer" else float
-        col = SQLColumnDef(
-            name=col_name,
-            type_name=col_type,
-            python_type=python_type,
-        )
-        table = Table(alias_name, [col])
+        columns = [
+            SQLColumnDef(
+                name=col_name,
+                type_name=col_type,
+                python_type=python_type,
+            )
+        ]
+        if ordinality_name is not None:
+            columns.append(
+                SQLColumnDef(
+                    name=ordinality_name,
+                    type_name="integer",
+                    python_type=int,
+                )
+            )
+        table = Table(alias_name, columns)
+        documents: dict[int, dict[str, Any]] = {}
         for _i, val in enumerate(values, 1):
-            table.insert({col_name: val})
+            row = {col_name: val}
+            if ordinality_name is not None:
+                row[ordinality_name] = _i
+            documents[_i] = {"_id": _i, **row}
+        if hasattr(table.document_store, "_documents"):
+            table.document_store._documents = documents
+        else:
+            for doc_id, doc in documents.items():
+                table.document_store.put(doc_id, doc)
+        table._next_id = len(documents) + 1
 
-        self._engine._tables[alias_name] = table
-        self._expanded_views.append(alias_name)
+        if register:
+            self._engine._tables[alias_name] = table
+            self._expanded_views.append(alias_name)
         return table, None
 
     def _build_unnest(
-        self, node: RangeFunction, args: tuple
+        self,
+        node: RangeFunction,
+        args: tuple,
+        *,
+        outer_row: dict[str, Any] | None = None,
+        register: bool = True,
     ) -> tuple[Table | None, Any]:
         """Build unnest(array) as a table function."""
-        from uqa.sql.expr_evaluator import ExprEvaluator
         from uqa.sql.table import ColumnDef as SQLColumnDef
 
         if not args:
             raise ValueError("unnest requires at least 1 argument")
 
-        evaluator = ExprEvaluator(engine=self._engine)
-        arr = evaluator.evaluate(args[0], {})
+        arr = self._eval_table_function_arg(args[0], outer_row)
         if not isinstance(arr, list):
             arr = [arr]
 
-        # Determine column name from alias
-        col_name = "unnest"
-        if node.alias is not None:
-            if node.alias.colnames:
-                col_name = node.alias.colnames[0].sval
-            alias_name = node.alias.aliasname
-        else:
-            alias_name = "unnest"
+        col_name, ordinality_name, alias_name = self._range_function_column_names(
+            node,
+            "unnest",
+        )
 
         col_type = "text"
         python_type: type = str
@@ -7447,17 +9169,31 @@ class SQLCompiler:
             col_type = "real"
             python_type = float
 
-        col = SQLColumnDef(
-            name=col_name,
-            type_name=col_type,
-            python_type=python_type,
-        )
-        table = Table(alias_name, [col])
-        for val in arr:
-            table.insert({col_name: val})
+        columns = [
+            SQLColumnDef(
+                name=col_name,
+                type_name=col_type,
+                python_type=python_type,
+            )
+        ]
+        if ordinality_name is not None:
+            columns.append(
+                SQLColumnDef(
+                    name=ordinality_name,
+                    type_name="integer",
+                    python_type=int,
+                )
+            )
+        table = Table(alias_name, columns)
+        for index, val in enumerate(arr, 1):
+            row = {col_name: val}
+            if ordinality_name is not None:
+                row[ordinality_name] = index
+            table.insert(row)
 
-        self._engine._tables[alias_name] = table
-        self._expanded_views.append(alias_name)
+        if register:
+            self._engine._tables[alias_name] = table
+            self._expanded_views.append(alias_name)
         return table, None
 
     def _build_regexp_split_to_table(
@@ -7616,11 +9352,48 @@ class SQLCompiler:
 
     def _resolve_join(self, node: JoinExpr) -> tuple[Table | None, Any]:
         # Try DPccp optimization for chains of 3+ INNER JOINs
-        result = self._try_dpccp_optimize(node)
-        if result is not None:
-            return result
+        relation_count = self._count_inner_join_relations(node)
+        if (
+            relation_count is not None
+            and relation_count >= 3
+            and not self._references_active_recursive_cte(node)
+        ):
+            result = self._try_dpccp_optimize(node)
+            if result is not None:
+                return result
 
         return self._resolve_join_pair(node)
+
+    def _count_inner_join_relations(self, node: Any) -> int | None:
+        if not isinstance(node, JoinExpr):
+            if isinstance(node, RangeFunction) and self._range_function_needs_lateral(
+                node
+            ):
+                return None
+            return 1
+        if node.jointype != JoinType.JOIN_INNER:
+            return None
+        if isinstance(node.rarg, RangeSubselect) and node.rarg.lateral:
+            return None
+        if isinstance(node.rarg, RangeFunction) and self._range_function_needs_lateral(
+            node.rarg
+        ):
+            return None
+        left_count = self._count_inner_join_relations(node.larg)
+        right_count = self._count_inner_join_relations(node.rarg)
+        if left_count is None or right_count is None:
+            return None
+        return left_count + right_count
+
+    def _references_active_recursive_cte(self, node: Any) -> bool:
+        if not self._active_recursive_ctes:
+            return False
+        if isinstance(node, RangeVar) and node.relname in self._active_recursive_ctes:
+            return True
+        return any(
+            self._references_active_recursive_cte(child)
+            for child in self._iter_ast_children(node)
+        )
 
     def _resolve_join_pair(self, node: JoinExpr) -> tuple[Table | None, Any]:
         """Resolve a single two-way JOIN expression."""
@@ -7644,6 +9417,22 @@ class SQLCompiler:
             lateral_alias = node.rarg.alias.aliasname if node.rarg.alias else "_lateral"
             lateral_op = _LateralJoinOperator(
                 left_op, node.rarg.subquery, lateral_alias, self
+            )
+            return left_table, lateral_op
+
+        if isinstance(node.rarg, RangeFunction) and self._range_function_needs_lateral(
+            node.rarg
+        ):
+            if left_op is None and left_table is not None:
+                left_op = _TableScanOperator(left_table, alias=left_alias)
+            elif left_op is None:
+                left_op = _ScanOperator()
+            lateral_op = _LateralFunctionJoinOperator(
+                left_op,
+                node.rarg,
+                self,
+                quals=node.quals,
+                join_type=node.jointype,
             )
             return left_table, lateral_op
 
@@ -7676,6 +9465,8 @@ class SQLCompiler:
                     quals.rexpr,
                     left_alias,
                     right_alias,
+                    self._collect_from_aliases(node.larg),
+                    self._collect_from_aliases(node.rarg),
                 )
                 condition = JoinCondition(left_field, right_field)
 
@@ -7688,6 +9479,17 @@ class SQLCompiler:
                 if jt == JoinType.JOIN_FULL:
                     return table, FullOuterJoinOperator(left_op, right_op, condition)
 
+        expr_hash = self._try_expr_hash_join(
+            left_op,
+            right_op,
+            quals,
+            jt,
+            self._collect_from_aliases(node.larg),
+            self._collect_from_aliases(node.rarg),
+        )
+        if expr_hash is not None:
+            return table, expr_hash
+
         # Complex ON (compound conditions, non-equality):
         # use nested-loop join with expression evaluation
         if quals is None:
@@ -7695,6 +9497,99 @@ class SQLCompiler:
         return table, _ExprJoinOperator(
             left_op, right_op, quals, jt, params=self._params
         )
+
+    def _try_expr_hash_join(
+        self,
+        left_op: Any,
+        right_op: Any,
+        quals: Any,
+        join_type: int,
+        left_aliases: set[str],
+        right_aliases: set[str],
+    ) -> Any | None:
+        if join_type not in (JoinType.JOIN_INNER, JoinType.JOIN_LEFT) or quals is None:
+            return None
+
+        left_keys: list[Any] = []
+        right_keys: list[Any] = []
+        residual: list[Any] = []
+
+        for conjunct in self._flatten_bool_and(quals):
+            parsed = self._parse_expr_join_key(conjunct, left_aliases, right_aliases)
+            if parsed is None:
+                residual.append(conjunct)
+                continue
+            left_key, right_key = parsed
+            left_keys.append(left_key)
+            right_keys.append(right_key)
+
+        if not left_keys:
+            return None
+
+        residual_node = self._rebuild_and(residual) if residual else None
+        return _ExprHashJoinOperator(
+            left_op,
+            right_op,
+            left_keys,
+            right_keys,
+            residual_node,
+            join_type=join_type,
+            params=self._params,
+        )
+
+    def _parse_expr_join_key(
+        self,
+        node: Any,
+        left_aliases: set[str],
+        right_aliases: set[str],
+    ) -> tuple[Any, Any] | None:
+        if not isinstance(node, A_Expr):
+            return None
+        if A_Expr_Kind(node.kind) != A_Expr_Kind.AEXPR_OP:
+            return None
+        if not node.name or not hasattr(node.name[0], "sval"):
+            return None
+        if node.name[0].sval != "=":
+            return None
+
+        left_refs = self._collect_conjunct_aliases(node.lexpr)
+        right_refs = self._collect_conjunct_aliases(node.rexpr)
+        if not left_refs or not right_refs:
+            return None
+
+        left_expr_uses_left = left_refs <= left_aliases
+        right_expr_uses_right = right_refs <= right_aliases
+        left_expr_uses_right = left_refs <= right_aliases
+        right_expr_uses_left = right_refs <= left_aliases
+
+        if left_expr_uses_left and right_expr_uses_right:
+            return node.lexpr, node.rexpr
+        if left_expr_uses_right and right_expr_uses_left:
+            return node.rexpr, node.lexpr
+        return None
+
+    def _collect_from_aliases(self, node: Any) -> set[str]:
+        cache_key = id(node)
+        cached = self._from_alias_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        aliases: set[str] = set()
+
+        def visit(current: Any) -> None:
+            if isinstance(current, RangeVar):
+                aliases.add(current.relname)
+                if current.alias is not None:
+                    aliases.add(current.alias.aliasname)
+            else:
+                alias = getattr(current, "alias", None)
+                if alias is not None:
+                    aliases.add(alias.aliasname)
+            for child in self._iter_ast_children(current):
+                visit(child)
+
+        visit(node)
+        self._from_alias_cache[cache_key] = aliases
+        return aliases
 
     # -- DPccp join order optimization ------------------------------------
 
@@ -7711,8 +9606,8 @@ class SQLCompiler:
         if not self._flatten_inner_joins(node, relations, predicates):
             return None
 
-        # DPccp is worthwhile for 2+ relations (determines build side)
-        if len(relations) < 2:
+        # DPccp is only worthwhile once there is real join-order choice.
+        if len(relations) < 3:
             return None
 
         from uqa.planner.join_order import JoinOrderOptimizer
@@ -7734,6 +9629,10 @@ class SQLCompiler:
         LATERAL, non-equality predicate, subquery).
         """
         if not isinstance(node, JoinExpr):
+            if isinstance(node, RangeFunction) and self._range_function_needs_lateral(
+                node
+            ):
+                return False
             # Base relation
             table, op, alias = self._resolve_from_single(node)
             if op is None and table is not None:
@@ -7764,6 +9663,10 @@ class SQLCompiler:
 
         # LATERAL subqueries cannot be reordered
         if isinstance(node.rarg, RangeSubselect) and node.rarg.lateral:
+            return False
+        if isinstance(node.rarg, RangeFunction) and self._range_function_needs_lateral(
+            node.rarg
+        ):
             return False
 
         # CROSS JOIN (no quals) is OK but has no predicate
@@ -7875,6 +9778,8 @@ class SQLCompiler:
         rexpr: Any,
         left_alias: str | None,
         right_alias: str | None,
+        left_aliases: set[str] | None = None,
+        right_aliases: set[str] | None = None,
     ) -> tuple[str, str]:
         """Map ON clause operands to (left_field, right_field).
 
@@ -7896,6 +9801,18 @@ class SQLCompiler:
             if isinstance(rexpr, ColumnRef) and len(rexpr.fields) >= 2
             else None
         )
+
+        def key(expr: Any, col: str) -> str:
+            if isinstance(expr, ColumnRef) and len(expr.fields) >= 2:
+                qualifier = expr.fields[0].sval
+                return f"{qualifier}.{col}"
+            return col
+
+        if left_aliases is not None and right_aliases is not None:
+            if l_qual in left_aliases and r_qual in right_aliases:
+                return key(lexpr, l_col), key(rexpr, r_col)
+            if l_qual in right_aliases and r_qual in left_aliases:
+                return key(rexpr, r_col), key(lexpr, l_col)
 
         # Match qualifiers to table aliases to determine correct order
         if l_qual == right_alias and r_qual == left_alias:
@@ -9995,14 +11912,37 @@ class SQLCompiler:
 
     @staticmethod
     def _has_window_functions(target_list: tuple | None) -> bool:
+        return bool(SQLCompiler._collect_window_calls(target_list))
+
+    @staticmethod
+    def _collect_window_calls(
+        target_list: tuple | None,
+    ) -> list[tuple[FuncCall, str]]:
         if target_list is None:
-            return False
-        return any(
-            isinstance(t.val, FuncCall) and t.val.over is not None for t in target_list
-        )
+            return []
+
+        calls: list[tuple[FuncCall, str]] = []
+
+        def visit(node: Any, target: Any, top_level: bool = False) -> None:
+            if isinstance(node, FuncCall) and node.over is not None:
+                func_name = node.funcname[-1].sval.lower()
+                alias = (
+                    target.name or func_name if top_level else f"__window_{len(calls)}"
+                )
+                calls.append((node, alias))
+                return
+            for child in SQLCompiler._iter_ast_children(node):
+                visit(child, target, False)
+
+        for target in target_list:
+            visit(target.val, target, True)
+        return calls
 
     def _extract_window_specs(
-        self, target_list: tuple, window_clause: tuple | None = None
+        self,
+        target_list: tuple,
+        window_clause: tuple | None = None,
+        window_calls: list[tuple[FuncCall, str]] | None = None,
     ) -> list[WindowSpec]:
         """Extract window function specs from the target list."""
         from uqa.execution.relational import WindowSpec
@@ -10015,13 +11955,8 @@ class SQLCompiler:
                 named_windows[wdef.name] = wdef
 
         specs: list[WindowSpec] = []
-        for target in target_list:
-            val = target.val
-            if not isinstance(val, FuncCall) or val.over is None:
-                continue
-
+        for val, alias in window_calls or self._collect_window_calls(target_list):
             func_name = val.funcname[-1].sval.lower()
-            alias = target.name or func_name
             win = val.over
 
             # Resolve named window reference (OVER (w))
@@ -10143,6 +12078,47 @@ class SQLCompiler:
 
         return specs
 
+    def _build_window_expr_targets(
+        self,
+        target_list: tuple,
+        window_aliases: dict[int, str],
+    ) -> list[tuple[str, Any]]:
+        targets: list[tuple[str, Any]] = []
+        for target in target_list:
+            output_name = self._infer_target_name(target)
+            value = self._replace_window_calls(target.val, window_aliases)
+            targets.append((output_name, value))
+        return targets
+
+    def _replace_window_calls(self, node: Any, window_aliases: dict[int, str]) -> Any:
+        alias = window_aliases.get(id(node))
+        if alias is not None:
+            return ColumnRef(fields=(PgString(sval=alias),))
+        if node is None or isinstance(node, str | int | float | bool | bytes):
+            return node
+        if isinstance(node, tuple):
+            return tuple(
+                self._replace_window_calls(item, window_aliases) for item in node
+            )
+        if isinstance(node, list):
+            return [self._replace_window_calls(item, window_aliases) for item in node]
+        slots = getattr(node, "__slots__", None)
+        if slots is None:
+            return node
+        kwargs = {}
+        changed = False
+        for slot in slots:
+            value = getattr(node, slot, None)
+            new_value = self._replace_window_calls(value, window_aliases)
+            kwargs[slot] = new_value
+            changed = changed or new_value is not value
+        if not changed:
+            return node
+        try:
+            return node.__class__(**kwargs)
+        except TypeError:
+            return node
+
     @staticmethod
     def _parse_frame_bound(
         frame_options: int, side: str, offset_node: Any
@@ -10191,6 +12167,19 @@ class SQLCompiler:
             # No FROM clause (e.g. SELECT 1 AS val): produce a single
             # dummy row so that expression projection yields one result.
             return PostingList([PostingEntry(0, Payload(score=0.0))])
+        if ctx.temp_rows is not None:
+            rows = ctx.temp_rows
+            if limit is not None and limit < len(rows):
+                rows = rows[:limit]
+            return PostingList.from_sorted(
+                [
+                    PostingEntry(
+                        index,
+                        Payload(score=0.0, fields=row),
+                    )
+                    for index, row in enumerate(rows, 1)
+                ]
+            )
         all_ids = sorted(ctx.document_store.doc_ids)
         if limit is not None and limit < len(all_ids):
             all_ids = all_ids[:limit]
@@ -10546,8 +12535,7 @@ class SQLCompiler:
                 x = float(self._extract_const_value(pt_args[0]))
                 y = float(self._extract_const_value(pt_args[1]))
                 return [x, y]
-            # Other function calls in INSERT VALUES: evaluate as scalar.
-            return self._extract_const_value(node)
+            return self._evaluate_insert_expression(node)
         if isinstance(node, A_ArrayExpr):
             if node.elements is None:
                 return []
@@ -10560,7 +12548,19 @@ class SQLCompiler:
             if node.typeName.arrayBounds is not None:
                 return value if isinstance(value, list) else [value]
             return _cast_value(value, type_name)
+        if isinstance(node, A_Expr | SQLValueFunction | SubLink):
+            return self._evaluate_insert_expression(node)
         return self._extract_const_value(node)
+
+    def _evaluate_insert_expression(self, node: Any) -> Any:
+        from uqa.sql.expr_evaluator import ExprEvaluator
+
+        evaluator = ExprEvaluator(
+            engine=self._engine,
+            subquery_executor=self._compile_select,
+            params=self._params,
+        )
+        return evaluator.evaluate(node, {})
 
 
 class _ScanOperator:
@@ -10601,9 +12601,17 @@ class _TableScanOperator:
         # The document store may omit NULL values; for JOIN semantics
         # we need them to prevent unqualified fallback to the wrong table.
         col_names = list(self._table.columns.keys()) if self._table.columns else []
-        for doc_id in sorted(self._table.document_store.doc_ids):
-            doc = self._table.document_store.get(doc_id)
+        temp_rows = getattr(self._table, "_uqa_temp_rows", None)
+        if temp_rows is not None:
+            iterator = enumerate(temp_rows, 1)
+        else:
+            iterator = (
+                (doc_id, self._table.document_store.get(doc_id))
+                for doc_id in sorted(self._table.document_store.doc_ids)
+            )
+        for doc_id, doc in iterator:
             fields = dict(doc) if doc else {}
+            fields["_doc_id"] = doc_id
             for col_name in col_names:
                 if col_name not in fields:
                     fields[col_name] = None
@@ -10821,6 +12829,256 @@ def _get_join_entries(source: object, context: object) -> list:
         pl = source.execute(context)
         return list(pl)
     return list(source)
+
+
+class _ExprHashJoinOperator:
+    """Hash join for equality keys that are SQL expressions."""
+
+    def __init__(
+        self,
+        left: object,
+        right: object,
+        left_keys: list[Any],
+        right_keys: list[Any],
+        residual: Any = None,
+        join_type: int = JoinType.JOIN_INNER,
+        params: list[Any] | None = None,
+    ) -> None:
+        self._left = left
+        self._right = right
+        self._left_keys = left_keys
+        self._right_keys = right_keys
+        self._residual = residual
+        self._join_type = join_type
+        self._params = params
+        self._left_key_fn = self._compile_key_func(left_keys)
+        self._right_key_fn = self._compile_key_func(right_keys)
+
+    def execute(self, context: object) -> Any:
+        from uqa.core.posting_list import GeneralizedPostingList
+        from uqa.core.types import GeneralizedPostingEntry, Payload
+        from uqa.sql.expr_evaluator import ExprEvaluator
+
+        left_entries = _get_join_entries(self._left, context)
+        right_entries = _get_join_entries(self._right, context)
+        evaluator = ExprEvaluator(engine=None, params=self._params)
+
+        if self._join_type == JoinType.JOIN_LEFT:
+            return self._left_outer(evaluator, left_entries, right_entries)
+
+        if len(left_entries) <= len(right_entries):
+            build_entries = left_entries
+            probe_entries = right_entries
+            build_key_fn = self._left_key_fn
+            probe_key_fn = self._right_key_fn
+            build_is_left = True
+        else:
+            build_entries = right_entries
+            probe_entries = left_entries
+            build_key_fn = self._right_key_fn
+            probe_key_fn = self._left_key_fn
+            build_is_left = False
+
+        build_index: dict[tuple[Any, ...], list[Any]] = {}
+        for entry in build_entries:
+            key = build_key_fn(evaluator, entry.payload.fields)
+            if key is None:
+                continue
+            build_index.setdefault(key, []).append(entry)
+
+        result: list[Any] = []
+        for probe_entry in probe_entries:
+            key = probe_key_fn(evaluator, probe_entry.payload.fields)
+            if key is None:
+                continue
+            for build_entry in build_index.get(key, []):
+                left_entry = build_entry if build_is_left else probe_entry
+                right_entry = probe_entry if build_is_left else build_entry
+                left_fields = left_entry.payload.fields
+                right_fields = right_entry.payload.fields
+                if not left_fields:
+                    merged = dict(right_fields)
+                elif not right_fields:
+                    merged = dict(left_fields)
+                else:
+                    merged = dict(left_fields)
+                    merged.update(right_fields)
+                if self._residual is not None and not evaluator.evaluate(
+                    self._residual, merged
+                ):
+                    continue
+                result.append(
+                    GeneralizedPostingEntry(
+                        doc_ids=(
+                            _entry_doc_id(left_entry),
+                            _entry_doc_id(right_entry),
+                        ),
+                        payload=Payload(
+                            score=left_entry.payload.score + right_entry.payload.score,
+                            fields=merged,
+                        ),
+                    )
+                )
+
+        if not build_is_left:
+            return GeneralizedPostingList.from_sorted(result)
+        return GeneralizedPostingList(result)
+
+    def _left_outer(
+        self,
+        evaluator: Any,
+        left_entries: list[Any],
+        right_entries: list[Any],
+    ) -> Any:
+        from uqa.core.posting_list import GeneralizedPostingList
+        from uqa.core.types import GeneralizedPostingEntry, Payload
+
+        right_field_names: set[str] = set()
+        if right_entries:
+            right_field_names.update(right_entries[0].payload.fields.keys())
+
+        right_index: dict[tuple[Any, ...], list[Any]] = {}
+        for right in right_entries:
+            key = self._right_key_fn(evaluator, right.payload.fields)
+            if key is None:
+                continue
+            right_index.setdefault(key, []).append(right)
+
+        result: list[Any] = []
+        for left in left_entries:
+            key = self._left_key_fn(evaluator, left.payload.fields)
+            matches = right_index.get(key, []) if key is not None else []
+            emitted = False
+            for right in matches:
+                left_fields = left.payload.fields
+                right_fields = right.payload.fields
+                if not left_fields:
+                    merged = dict(right_fields)
+                elif not right_fields:
+                    merged = dict(left_fields)
+                else:
+                    merged = dict(left_fields)
+                    merged.update(right_fields)
+                if self._residual is not None and not evaluator.evaluate(
+                    self._residual, merged
+                ):
+                    continue
+                emitted = True
+                result.append(
+                    GeneralizedPostingEntry(
+                        doc_ids=(
+                            _entry_doc_id(left),
+                            _entry_doc_id(right),
+                        ),
+                        payload=Payload(
+                            score=left.payload.score + right.payload.score,
+                            fields=merged,
+                        ),
+                    )
+                )
+            if not emitted:
+                fields = dict(left.payload.fields)
+                for name in right_field_names:
+                    if name not in fields:
+                        fields[name] = None
+                result.append(
+                    GeneralizedPostingEntry(
+                        doc_ids=(_entry_doc_id(left),),
+                        payload=Payload(score=left.payload.score, fields=fields),
+                    )
+                )
+
+        return GeneralizedPostingList.from_sorted(result)
+
+    @classmethod
+    def _compile_key_func(cls, key_nodes: list[Any]) -> Any:
+        getters = [cls._compile_key_getter(node) for node in key_nodes]
+        if len(getters) == 1:
+            getter = getters[0]
+
+            def single_entry_key(
+                evaluator: Any, fields: dict[str, Any]
+            ) -> tuple[Any] | None:
+                value = getter(evaluator, fields)
+                if value is None:
+                    return None
+                return (value,)
+
+            return single_entry_key
+
+        def entry_key(evaluator: Any, fields: dict[str, Any]) -> tuple[Any, ...] | None:
+            values: list[Any] = []
+            for getter in getters:
+                value = getter(evaluator, fields)
+                if value is None:
+                    return None
+                values.append(value)
+            return tuple(values)
+
+        return entry_key
+
+    @classmethod
+    def _compile_key_getter(cls, node: Any) -> Any:
+        if isinstance(node, ColumnRef):
+            keys = cls._column_ref_keys(node)
+            return lambda _evaluator, fields: cls._lookup_field(fields, keys)
+        if isinstance(node, TypeCast) and isinstance(node.arg, ColumnRef):
+            keys = cls._column_ref_keys(node.arg)
+            type_name = node.typeName.names[-1].sval.lower()
+
+            def cast_column(_evaluator: Any, fields: dict[str, Any]) -> Any:
+                value = cls._lookup_field(fields, keys)
+                if value is None:
+                    return None
+                if type_name in (
+                    "int",
+                    "int2",
+                    "int4",
+                    "int8",
+                    "integer",
+                    "smallint",
+                    "bigint",
+                ):
+                    return int(value)
+                if type_name in (
+                    "float",
+                    "float4",
+                    "float8",
+                    "real",
+                    "double",
+                    "numeric",
+                    "decimal",
+                ):
+                    return float(value)
+                if type_name in ("text", "varchar", "bpchar", "char"):
+                    return str(value)
+                from uqa.sql.expr_evaluator import _cast_value
+
+                return _cast_value(value, type_name)
+
+            return cast_column
+        return lambda evaluator, fields: evaluator.evaluate(node, fields)
+
+    @staticmethod
+    def _column_ref_keys(node: ColumnRef) -> tuple[str | None, str]:
+        fields = node.fields
+        qualified = None
+        if len(fields) >= 2 and hasattr(fields[0], "sval"):
+            qualified = f"{fields[0].sval}.{fields[-1].sval}"
+        return qualified, fields[-1].sval
+
+    @staticmethod
+    def _lookup_field(fields: dict[str, Any], keys: tuple[str | None, str]) -> Any:
+        qualified, name = keys
+        if qualified is not None:
+            try:
+                return fields[qualified]
+            except KeyError:
+                pass
+        return fields.get(name)
+
+    def cost_estimate(self, stats: Any) -> float:
+        return float(stats.total_docs)
 
 
 class _ExprJoinOperator:
@@ -11135,6 +13393,119 @@ class _LateralJoinOperator:
         outer_row: dict[str, Any] = dict(left_fields)
 
         return self._compiler._compile_select(self._subquery, outer_row=outer_row)
+
+    def cost_estimate(self, stats: Any) -> float:
+        return 1000.0
+
+
+class _LateralFunctionJoinOperator:
+    """LATERAL table-function join operator.
+
+    PostgreSQL treats table functions in FROM as implicitly LATERAL when
+    their arguments reference columns from earlier FROM items.  This
+    operator evaluates the table function once per left row with that row
+    available to ExprEvaluator.
+    """
+
+    def __init__(
+        self,
+        left: object,
+        range_function: RangeFunction,
+        compiler: SQLCompiler,
+        quals: Any = None,
+        join_type: int = JoinType.JOIN_INNER,
+    ) -> None:
+        self._left = left
+        self._range_function = range_function
+        self._compiler = compiler
+        self._quals = quals
+        self._join_type = join_type
+
+    def execute(self, context: object) -> Any:
+        from uqa.core.posting_list import GeneralizedPostingList
+        from uqa.core.types import GeneralizedPostingEntry, Payload
+        from uqa.sql.expr_evaluator import ExprEvaluator
+
+        if self._join_type not in (JoinType.JOIN_INNER, JoinType.JOIN_LEFT):
+            raise ValueError("LATERAL table functions support INNER and LEFT JOIN")
+
+        left_entries = _get_join_entries(self._left, context)
+        evaluator = ExprEvaluator(
+            engine=None,
+            subquery_executor=self._compiler._compile_select,
+            params=self._compiler._params,
+        )
+        result: list = []
+
+        for left_entry in left_entries:
+            left_fields = dict(left_entry.payload.fields)
+            table, right_op = self._compiler._compile_from_function(
+                self._range_function,
+                outer_row=left_fields,
+                register=False,
+            )
+            alias = table.name if table is not None else None
+            if right_op is None and table is not None:
+                right_op = _TableScanOperator(table, alias=alias)
+            elif right_op is None:
+                right_op = _ScanOperator()
+
+            right_entries = _get_join_entries(right_op, context)
+            matched = False
+            for right_entry in right_entries:
+                merged = {
+                    **left_fields,
+                    **right_entry.payload.fields,
+                }
+                if self._qualifies(evaluator, merged):
+                    matched = True
+                    result.append(
+                        GeneralizedPostingEntry(
+                            doc_ids=(
+                                _entry_doc_id(left_entry),
+                                _entry_doc_id(right_entry),
+                            ),
+                            payload=Payload(
+                                score=left_entry.payload.score
+                                + right_entry.payload.score,
+                                fields=merged,
+                            ),
+                        )
+                    )
+            if (
+                not matched
+                and self._join_type == JoinType.JOIN_LEFT
+                and table is not None
+            ):
+                fields = {
+                    **left_fields,
+                    **self._null_right_fields(table, alias),
+                }
+                result.append(
+                    GeneralizedPostingEntry(
+                        doc_ids=(_entry_doc_id(left_entry),),
+                        payload=Payload(
+                            score=left_entry.payload.score,
+                            fields=fields,
+                        ),
+                    )
+                )
+
+        return GeneralizedPostingList(result)
+
+    def _qualifies(self, evaluator: Any, row: dict[str, Any]) -> bool:
+        if self._quals is None or SQLCompiler._is_true_qual(self._quals):
+            return True
+        return bool(evaluator.evaluate(self._quals, row))
+
+    @staticmethod
+    def _null_right_fields(table: Table, alias: str | None) -> dict[str, Any]:
+        fields: dict[str, Any] = {}
+        for col in table.columns:
+            fields[col] = None
+            if alias is not None:
+                fields[f"{alias}.{col}"] = None
+        return fields
 
     def cost_estimate(self, stats: Any) -> float:
         return 1000.0

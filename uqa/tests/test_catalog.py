@@ -76,6 +76,33 @@ class TestCatalogTableSchemas:
         assert loaded_cols == cols
         cat.close()
 
+    def test_expression_default_round_trip(self, tmp_path):
+        db = str(tmp_path / "test.db")
+        cat = Catalog(db)
+        cols = [
+            {
+                "name": "id",
+                "type_name": "int",
+                "primary_key": False,
+                "not_null": False,
+                "auto_increment": False,
+                "default": None,
+            },
+            {
+                "name": "v",
+                "type_name": "int",
+                "primary_key": False,
+                "not_null": False,
+                "auto_increment": False,
+                "default": {"Expression": "(2 + 3)::integer"},
+            },
+        ]
+        cat.save_table_schema("defaults", cols)
+        schemas = cat.load_table_schemas()
+        assert len(schemas) == 1
+        assert schemas[0][1] == cols
+        cat.close()
+
     def test_drop_removes_schema_and_documents(self, tmp_path):
         db = str(tmp_path / "test.db")
         cat = Catalog(db)
@@ -553,6 +580,16 @@ class TestEnginePersistenceSQL:
             assert len(result.rows) == 3
             ids = [r["id"] for r in result.rows]
             assert ids == [1, 2, 3]
+
+    def test_expression_default_persists_after_restart(self, tmp_path):
+        db = str(tmp_path / "test.db")
+        with Engine(db_path=db) as engine:
+            engine.sql("CREATE TABLE t(id INT, v INT DEFAULT (2 + 3)::int)")
+
+        with Engine(db_path=db) as engine:
+            engine.sql("INSERT INTO t (id) VALUES (1)")
+            result = engine.sql("SELECT v FROM t")
+            assert result.rows == [{"v": 5}]
 
     def test_text_search_works_after_restart(self, tmp_path):
         db = str(tmp_path / "test.db")

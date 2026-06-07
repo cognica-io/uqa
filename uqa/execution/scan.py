@@ -99,12 +99,14 @@ class PostingListScanOp(PhysicalOperator):
         schema: dict[str, DataType] | None = None,
         graph_store: Any = None,
         batch_size: int = DEFAULT_BATCH_SIZE,
+        payload_fields_complete: bool = False,
     ) -> None:
         self._pl = posting_list
         self._doc_store = document_store
         self._graph_store = graph_store
         self._schema = schema
         self._batch_size = batch_size
+        self._payload_fields_complete = payload_fields_complete
         self._offset = 0
 
     def open(self) -> None:
@@ -126,6 +128,16 @@ class PostingListScanOp(PhysicalOperator):
             # GeneralizedPostingEntry (from joins) has doc_ids tuple,
             # PostingEntry has doc_id scalar.
             doc_id = entry.doc_ids[0] if hasattr(entry, "doc_ids") else entry.doc_id
+            if entry.payload.fields and (
+                self._payload_fields_complete or hasattr(entry, "doc_ids")
+            ):
+                row = {
+                    "_doc_id": doc_id,
+                    "_score": entry.payload.score,
+                    **entry.payload.fields,
+                }
+                rows.append(row)
+                continue
             row: dict[str, Any] = {
                 "_doc_id": doc_id,
                 "_score": entry.payload.score,

@@ -208,6 +208,15 @@ class GeneralizedPostingList:
     def __init__(self, entries: list[GeneralizedPostingEntry] | None = None):
         self._entries = sorted(entries or [], key=lambda e: e.doc_ids)
 
+    @classmethod
+    def from_sorted(
+        cls, entries: list[GeneralizedPostingEntry]
+    ) -> GeneralizedPostingList:
+        """Create a generalized posting list from entries already in tuple order."""
+        gpl = cls.__new__(cls)
+        gpl._entries = entries
+        return gpl
+
     @property
     def entries(self) -> list[GeneralizedPostingEntry]:
         return list(self._entries)

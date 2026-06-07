@@ -1,5 +1,32 @@
 # History
 
+## 0.25.14 (2026-06-07)
+
+Improve PostgreSQL compatibility and row-mode execution for embedded SQL workloads. This release expands PostgreSQL semantics for CTEs, table functions, window expressions, `DISTINCT ON`, defaults, identity columns, `INSERT` expressions, and persisted catalog state, while reducing Python overhead in recursive CTEs, joins, temporary rows, and ordered string aggregation. The focused PostgreSQL compatibility regression suite passes with 258 tests.
+
+### Enhancements
+
+- **PostgreSQL SELECT semantics** (`sql/compiler.py`, `sql/expr_evaluator.py`, `execution/relational.py`): Added row-mode support for recursive CTE terms, LEFT JOINs, `ORDER BY`/`LIMIT`, aggregate-only SELECTs, `DISTINCT ON`, unary arithmetic, `CASE`, `COALESCE`, `GREATEST`/`LEAST`, scalar math/string functions, and PostgreSQL integer division behavior.
+- **Table function and CTE handling** (`sql/compiler.py`): Added implicit LATERAL table-function handling in row-mode and improved CTE reference analysis so single-reference CTEs can be inlined without scanning unrelated RangeVar names.
+- **Window and sort expression projection** (`sql/compiler.py`, `execution/relational.py`): Window targets can now be projected through expression evaluation after window computation, and ORDER BY expressions outside the SELECT list are preserved for sorting before final projection.
+- **Persistent catalog and typed storage parity** (`storage/catalog.py`, `storage/sqlite_document_store.py`, `sql/table.py`): Catalog persistence now carries more PostgreSQL table metadata and typed values across reopen paths, including identity/default behavior and updated column metadata.
+
+### Bug Fixes
+
+- **Language-neutral defaults** (`sql/compiler.py`, `sql/table.py`): Non-literal DEFAULT expressions are stored as SQL expression text instead of parser objects and are evaluated at INSERT time.
+- **INSERT expression support** (`sql/compiler.py`, `sql/expr_evaluator.py`): INSERT values now accept scalar SQL expressions, casts, SQL value functions, and scalar subqueries.
+- **Temporary row execution** (`sql/compiler.py`, `execution/scan.py`, `operators/base.py`): Temporary CTE/view rows avoid unnecessary document-store lookups when their payload already contains complete row fields.
+- **PostgreSQL qualified lookup** (`sql/compiler.py`, `sql/expr_evaluator.py`): Qualified column references preserve PostgreSQL lookup behavior while retaining the fallback needed by existing unqualified expressions.
+
+### Performance
+
+- **Row-mode execution** (`sql/compiler.py`, `execution/scan.py`, `joins/cross.py`, `core/posting_list.py`): Row-mode joins, recursive working rows, CTE materialization, ordered `string_agg`, and generalized posting-list construction were optimized for SQL-heavy embedded rendering and simulation workloads.
+
+### Tests
+
+- **New PostgreSQL compatibility coverage** in `test_pg_compat_bugs.py`, `test_table_functions.py`, `test_types.py`, `test_catalog.py`, `test_sql.py`, and `test_window.py`: CTE visibility, correlated SubLinks, row-mode `DISTINCT ON`, unary arithmetic, table functions, DEFAULT/identity metadata, typed persistence, and window projection regressions.
+- **Focused regression suite**: 258 tests passed across the PostgreSQL compatibility, table-function, type, catalog, DDL, and row-number window suites.
+
 ## 0.25.13 (2026-06-06)
 
 Add canonical persistent storage and expand SQL coverage. Persistent databases now use shared catalog tables for table schemas, documents, postings, document lengths, field stats, vectors, IVF metadata, blobs, and typed values, with automatic open-time migration for older Python storage layouts. SQL support now includes `MERGE`, `TENSOR(N)`, timezone-aware temporal round-tripping, and correct backfill for `ALTER TABLE ADD COLUMN ... DEFAULT`. All 2977 tests pass across 86 test files.

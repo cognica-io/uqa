@@ -43,27 +43,40 @@ class CrossJoinOperator:
     def execute(self, context: object) -> GeneralizedPostingList:
         left_entries = self._get_entries(self.left, context)
         right_entries = self._get_entries(self.right, context)
+        left_items = [
+            (_entry_doc_id(entry), entry.payload.fields, entry.payload.score)
+            for entry in left_entries
+        ]
+        right_items = [
+            (_entry_doc_id(entry), entry.payload.fields, entry.payload.score)
+            for entry in right_entries
+        ]
 
         result: list[GeneralizedPostingEntry] = []
-        for left_entry in left_entries:
+        for left_id, left_fields, left_score in left_items:
             self.check_cancelled()
-            for right_entry in right_entries:
-                merged_fields = {
-                    **left_entry.payload.fields,
-                    **right_entry.payload.fields,
-                }
-                merged_score = left_entry.payload.score + right_entry.payload.score
+            for right_id, right_fields, right_score in right_items:
+                if not left_fields:
+                    merged_fields = dict(right_fields)
+                elif not right_fields:
+                    merged_fields = dict(left_fields)
+                else:
+                    merged_fields = dict(left_fields)
+                    merged_fields.update(right_fields)
                 result.append(
                     GeneralizedPostingEntry(
                         doc_ids=(
-                            _entry_doc_id(left_entry),
-                            _entry_doc_id(right_entry),
+                            left_id,
+                            right_id,
                         ),
-                        payload=Payload(score=merged_score, fields=merged_fields),
+                        payload=Payload(
+                            score=left_score + right_score,
+                            fields=merged_fields,
+                        ),
                     )
                 )
 
-        return GeneralizedPostingList(result)
+        return GeneralizedPostingList.from_sorted(result)
 
     @staticmethod
     def _get_entries(source: object, context: object) -> list:

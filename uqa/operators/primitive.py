@@ -7,11 +7,11 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
-from uqa.core.posting_list import PostingList
+from uqa.core.posting_list import GeneralizedPostingList, PostingList
 from uqa.core.types import IndexStats, Payload, PostingEntry, Predicate
 from uqa.operators.base import ExecutionContext, Operator
 
@@ -283,6 +283,17 @@ class FilterOperator(Operator):
         if self.source is not None:
             source_pl = self.source.execute(context)
             source_entries = list(source_pl)
+            if any(hasattr(entry, "doc_ids") for entry in source_entries):
+                generalized_entries: list[Any] = []
+                for entry in source_entries:
+                    value = entry.payload.fields.get(self.field)
+                    if null_aware:
+                        matched = self.predicate.evaluate(value)
+                    else:
+                        matched = value is not None and self.predicate.evaluate(value)
+                    if matched:
+                        generalized_entries.append(entry)
+                return cast("PostingList", GeneralizedPostingList(generalized_entries))
             if has_bulk and len(source_entries) > 1:
                 doc_ids = [e.doc_id for e in source_entries]
                 value_map = doc_store.get_fields_bulk(doc_ids, self.field)

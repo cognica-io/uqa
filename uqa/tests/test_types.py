@@ -154,3 +154,22 @@ class TestBytea:
     def test_cast_to_bytea(self, engine_with_table):
         result = engine_with_table.sql("SELECT 'hello'::bytea AS v FROM t WHERE id = 1")
         assert result.rows[0]["v"] == b"hello"
+
+
+# ==================================================================
+# CHARACTER aliases
+# ==================================================================
+
+
+class TestCharacterAliases:
+    def test_char_and_character_columns(self, engine):
+        engine.sql("CREATE TABLE char_test(tile CHAR, action CHARACTER)")
+        engine.sql("INSERT INTO char_test VALUES ('#', 'w')")
+        result = engine.sql("SELECT tile, action FROM char_test")
+        assert result.rows == [{"tile": "#", "action": "w"}]
+
+    def test_character_cast(self, engine_with_table):
+        result = engine_with_table.sql(
+            "SELECT 'x'::CHAR AS c, 'y'::CHARACTER AS d FROM t WHERE id = 1"
+        )
+        assert result.rows[0] == {"c": "x", "d": "y"}

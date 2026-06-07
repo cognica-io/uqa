@@ -100,6 +100,9 @@ class SQLiteDocumentStore(DocumentStore):
         self._columns: list[str] = [col[0] for col in columns]
         self._col_set: frozenset[str] = frozenset(self._columns)
         self._has_atomic_fetch = hasattr(conn, "execute_fetchall")
+        self._doc_cache: dict[int, dict[str, Any]] = {}
+        self._doc_ids_cache: set[int] | None = None
+        self._data_version: int | None = None
         self._json_cols: frozenset[str] = frozenset(
             name
             for name, type_name, *_rest in columns
@@ -112,6 +115,22 @@ class SQLiteDocumentStore(DocumentStore):
             if type_name.lower() in ("vector", "tensor")
         )
         self._create_tables()
+        self._data_version = self._read_data_version()
+
+    def clear_read_cache(self) -> None:
+        """Discard decoded row caches when another connection changed data."""
+        current = self._read_data_version()
+        if self._data_version is not None and current == self._data_version:
+            return
+        self._doc_cache.clear()
+        self._doc_ids_cache = None
+        self._data_version = current
+
+    def _read_data_version(self) -> int | None:
+        row = self._fetchone("PRAGMA data_version")
+        if row is None:
+            return None
+        return int(row[0])
 
     def add_column(self, name: str, type_name: str) -> None:
         if name in self._col_set:
@@ -247,16 +266,23 @@ class SQLiteDocumentStore(DocumentStore):
             )
         self._persist_vectors(doc_id, document)
         self._conn.commit()
+        self._doc_cache[int(doc_id)] = dict(document)
+        self._doc_ids_cache = None
 
     def get(self, doc_id: DocId) -> dict | None:
         """Return the document as a dict, or ``None`` if absent."""
+        cached = self._doc_cache.get(int(doc_id))
+        if cached is not None:
+            return dict(cached)
         row = self._fetchone(
             "SELECT body FROM _documents WHERE table_name = ? AND doc_id = ?",
             (self._table_name, doc_id),
         )
         if row is None:
             return None
-        return self._decode_body(doc_id, row[0])
+        decoded = self._decode_body(doc_id, row[0])
+        self._doc_cache[int(doc_id)] = decoded
+        return dict(decoded)
 
     def delete(self, doc_id: DocId) -> None:
         """Delete a document.  No error if *doc_id* does not exist."""
@@ -277,6 +303,8 @@ class SQLiteDocumentStore(DocumentStore):
             (self._table_name, doc_id),
         )
         self._conn.commit()
+        self._doc_cache.pop(int(doc_id), None)
+        self._doc_ids_cache = None
 
     def clear(self) -> None:
         """Remove all rows from the backing SQLite table."""
@@ -293,11 +321,16 @@ class SQLiteDocumentStore(DocumentStore):
             "DELETE FROM _ivf_assignments WHERE table_name = ?", (self._table_name,)
         )
         self._conn.commit()
+        self._doc_cache.clear()
+        self._doc_ids_cache = None
 
     def get_field(self, doc_id: DocId, field: FieldName) -> Any:
         """Return a single field value, or ``None`` if absent."""
         if field not in self._col_set:
             return None
+        cached = self._doc_cache.get(int(doc_id))
+        if cached is not None:
+            return cached.get(field)
         doc = self.get(doc_id)
         return None if doc is None else doc.get(field)
 
@@ -337,10 +370,14 @@ class SQLiteDocumentStore(DocumentStore):
     @property
     def doc_ids(self) -> set[DocId]:
         """Return the set of all stored document IDs."""
+        if self._doc_ids_cache is not None:
+            return set(self._doc_ids_cache)
         rows = self._fetchall(
             "SELECT doc_id FROM _documents WHERE table_name = ?", (self._table_name,)
         )
-        return {row[0] for row in rows}
+        ids = {row[0] for row in rows}
+        self._doc_ids_cache = set(ids)
+        return ids
 
     def __len__(self) -> int:
         row = self._fetchone(
@@ -365,7 +402,11 @@ class SQLiteDocumentStore(DocumentStore):
         )
         for row in rows:
             doc_id = row[0]
-            yield doc_id, self._decode_body(doc_id, row[1])
+            cached = self._doc_cache.get(int(doc_id))
+            if cached is None:
+                cached = self._decode_body(doc_id, row[1])
+                self._doc_cache[int(doc_id)] = cached
+            yield doc_id, dict(cached)
 
     def _decode_body(self, doc_id: int, body: str) -> dict[str, Any]:
         raw = json.loads(body)

@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from datetime import date as _date
 from datetime import datetime as _datetime
 from datetime import time as _time
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
@@ -47,6 +48,7 @@ _SQL_TYPE_MAP: dict[str, type] = {
     "text": str,
     "varchar": str,
     "character varying": str,
+    "bpchar": str,
     "char": str,
     "character": str,
     "name": str,
@@ -96,10 +98,20 @@ _DATETIME_TYPES = frozenset(
 def _evaluate_default(default: Any) -> Any:
     """Evaluate a column DEFAULT value.
 
-    Literal defaults (int, str, etc.) are returned as-is.  AST nodes
-    (SQLValueFunction, FuncCall) are evaluated via ExprEvaluator to
-    support ``DEFAULT CURRENT_TIMESTAMP`` and similar expressions.
+    Literal defaults (int, str, etc.) are returned as-is. Expression
+    defaults are stored as language-neutral SQL text and parsed only by
+    the active implementation when a row is inserted.
     """
+    if isinstance(default, dict):
+        if set(default) == {"Literal"}:
+            return default["Literal"]
+        if set(default) == {"Expression"}:
+            from uqa.sql.expr_evaluator import ExprEvaluator
+
+            sql = str(default["Expression"])
+            expr = _parse_default_expression(sql)
+            evaluator = ExprEvaluator()
+            return evaluator.evaluate(expr, {})
     mod = type(default).__module__ or ""
     if mod.startswith("pglast"):
         from uqa.sql.expr_evaluator import ExprEvaluator
@@ -107,6 +119,14 @@ def _evaluate_default(default: Any) -> Any:
         evaluator = ExprEvaluator()
         return evaluator.evaluate(default, {})
     return default
+
+
+@lru_cache(maxsize=1024)
+def _parse_default_expression(sql: str) -> Any:
+    from pglast import parse_sql as _parse_sql_raw
+
+    stmt = _parse_sql_raw(f"SELECT {sql}")[0].stmt
+    return stmt.targetList[0].val
 
 
 @dataclass(slots=True)

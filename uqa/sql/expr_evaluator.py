@@ -45,6 +45,7 @@ from pglast.ast import (
     NullTest,
     ParamRef,
     RangeVar,
+    ResTarget,
     SelectStmt,
     SQLValueFunction,
     SubLink,
@@ -70,6 +71,8 @@ from pglast.enums.primnodes import (
     SQLValueFunctionOp,
     SubLinkType,
 )
+
+_EXISTS_LOOKUP_UNSUPPORTED = object()
 
 
 class ExprEvaluator:
@@ -112,7 +115,11 @@ class ExprEvaluator:
     ) -> None:
         self._subquery_executor = subquery_executor
         self._sequences = sequences
-        self._subquery_cache: dict[int, Any] = {}
+        compiler = getattr(subquery_executor, "__self__", None)
+        shared_cache = getattr(compiler, "_expr_subquery_cache", None)
+        self._subquery_cache: dict[Any, Any] = (
+            shared_cache if isinstance(shared_cache, dict) else {}
+        )
         self._outer_row = outer_row
         self._engine = engine
         self._params: list[Any] = params if params is not None else []
@@ -139,16 +146,23 @@ class ExprEvaluator:
     # -- Leaf nodes ----------------------------------------------------
 
     def _eval_column_ref(self, node: ColumnRef, row: dict[str, Any]) -> Any:
-        fields = node.fields
+        cache_key = ("column_ref", id(node))
+        cached = self._subquery_cache.get(cache_key)
+        if cached is None:
+            fields = node.fields
+            qualified = None
+            if len(fields) >= 2 and hasattr(fields[0], "sval"):
+                qualified = f"{fields[0].sval}.{fields[-1].sval}"
+            cached = (qualified, fields[-1].sval)
+            self._subquery_cache[cache_key] = cached
+        qualified, col_name = cached
         # Handle qualified references like excluded.col or table.col
-        if len(fields) >= 2 and hasattr(fields[0], "sval"):
-            qualified = f"{fields[0].sval}.{fields[-1].sval}"
+        if qualified is not None:
             if qualified in row:
                 return row[qualified]
             # Correlated reference: resolve from outer row
             if self._outer_row is not None and qualified in self._outer_row:
                 return self._outer_row[qualified]
-        col_name = fields[-1].sval
         return row.get(col_name)
 
     @staticmethod
@@ -313,14 +327,22 @@ class ExprEvaluator:
 
     def _eval_type_cast(self, node: TypeCast, row: dict[str, Any]) -> Any:
         value = self.evaluate(node.arg, row)
+        cache_key = ("typecast", id(node))
+        cached = self._subquery_cache.get(cache_key)
+        if cached is None:
+            cached = (
+                node.typeName.arrayBounds is not None,
+                node.typeName.names[-1].sval.lower(),
+            )
+            self._subquery_cache[cache_key] = cached
+        is_array_cast, type_name = cached
         # Array type cast (e.g. ARRAY[]::integer[])
-        if node.typeName.arrayBounds is not None:
+        if is_array_cast:
             if value is None:
                 return None
             return value if isinstance(value, list) else [value]
         if value is None:
             return None
-        type_name = node.typeName.names[-1].sval.lower()
         return _cast_value(value, type_name)
 
     # -- COALESCE ------------------------------------------------------
@@ -336,41 +358,56 @@ class ExprEvaluator:
 
     def _is_correlated(self, node: Any) -> bool:
         """Check if a subquery contains correlated references."""
-        inner_tables: set[str] = set()
+        cache_key = ("correlated", id(node))
+        cached = self._subquery_cache.get(cache_key)
+        if isinstance(cached, bool):
+            return cached
         if isinstance(node, SelectStmt) and node.fromClause:
-            for from_item in node.fromClause:
-                if isinstance(from_item, RangeVar):
-                    if from_item.alias:
-                        inner_tables.add(from_item.alias.aliasname)
-                    inner_tables.add(from_item.relname)
-        return self._has_correlated_ref(node, inner_tables)
+            inner_tables = self._collect_inner_tables(node.fromClause)
+        else:
+            inner_tables: set[str] = set()
+        correlated = self._has_correlated_ref(node, inner_tables)
+        self._subquery_cache[cache_key] = correlated
+        return correlated
 
     def _has_correlated_ref(self, node: Any, inner_tables: set[str]) -> bool:
         """Recursively check if an AST node contains correlated ColumnRefs."""
         if isinstance(node, ColumnRef):
-            if len(node.fields) >= 2:
+            if len(node.fields) >= 2 and hasattr(node.fields[0], "sval"):
                 qualifier = node.fields[0].sval
                 if qualifier not in inner_tables:
                     return True
             return False
-        if isinstance(node, tuple | list):
-            return any(self._has_correlated_ref(item, inner_tables) for item in node)
-        if hasattr(node, "__slots__") and isinstance(node.__slots__, dict):
-            for slot in node.__slots__:
-                val = getattr(node, slot, None)
-                if val is not None and self._has_correlated_ref(val, inner_tables):
-                    return True
+        for child in self._iter_ast_children(node):
+            if self._has_correlated_ref(child, inner_tables):
+                return True
         return False
 
     def _eval_sublink(self, node: SubLink, row: dict[str, Any]) -> Any:
         if self._subquery_executor is None:
             raise ValueError("Subquery in expression requires a subquery executor")
 
+        link_type = SubLinkType(node.subLinkType)
+
         # Check if the subquery is uncorrelated and can be cached.
         correlated = self._is_correlated(node.subselect)
         cache_key = id(node)
 
         if correlated:
+            if link_type == SubLinkType.EXISTS_SUBLINK:
+                lookup = self._get_exists_lookup(node.subselect)
+                if lookup is not None:
+                    outer_refs, inner_columns, value_set = lookup
+                    key = []
+                    for outer_ref in outer_refs:
+                        value = self._eval_lookup_ref(outer_ref, row)
+                        if value is None:
+                            return False
+                        key.append(value)
+                    if not inner_columns:
+                        return bool(value_set)
+                    return tuple(key) in value_set
+
             # Build qualified outer row context for correlated references.
             # The inner query's ExprEvaluator resolves qualified ColumnRefs
             # (e.g., "e1.dept") against this context, eliminating the need
@@ -380,8 +417,6 @@ class ExprEvaluator:
             result = self._subquery_executor(subselect, outer_row=outer_context)
         else:
             subselect = node.subselect
-
-        link_type = SubLinkType(node.subLinkType)
 
         if link_type == SubLinkType.EXPR_SUBLINK:
             # Scalar subquery: (SELECT COUNT(*) FROM ...)
@@ -431,6 +466,269 @@ class ExprEvaluator:
             return value
 
         raise ValueError(f"Unsupported subquery type: {link_type.name}")
+
+    def _eval_lookup_ref(self, node: Any, row: dict[str, Any]) -> Any:
+        cache_key = ("lookup_ref", id(node))
+        cached: Any = self._subquery_cache.get(cache_key)
+        if cached is None:
+            if isinstance(node, ColumnRef):
+                cached = ("column", self._column_ref_keys(node))
+            elif isinstance(node, TypeCast) and isinstance(node.arg, ColumnRef):
+                cached = (
+                    "cast_column",
+                    self._column_ref_keys(node.arg),
+                    node.typeName.names[-1].sval.lower(),
+                )
+            else:
+                cached = ("eval", node)
+            self._subquery_cache[cache_key] = cached
+
+        kind = cached[0]
+        if kind == "column":
+            return self._lookup_column(row, cached[1])
+        if kind == "cast_column":
+            value = self._lookup_column(row, cached[1])
+            if value is None:
+                return None
+            return _cast_value(value, cached[2])
+        return self.evaluate(cached[1], row)
+
+    @staticmethod
+    def _column_ref_keys(node: ColumnRef) -> tuple[str | None, str]:
+        fields = node.fields
+        qualified = None
+        if len(fields) >= 2 and hasattr(fields[0], "sval"):
+            qualified = f"{fields[0].sval}.{fields[-1].sval}"
+        return qualified, fields[-1].sval
+
+    @staticmethod
+    def _lookup_column(row: dict[str, Any], keys: tuple[str | None, str]) -> Any:
+        qualified, col_name = keys
+        if qualified is not None and qualified in row:
+            return row[qualified]
+        return row.get(col_name)
+
+    def _get_exists_lookup(
+        self, subselect: SelectStmt
+    ) -> tuple[list[Any], list[str], set[tuple[Any, ...]]] | None:
+        """Build a cached key set for decorrelated expression EXISTS."""
+        cache_key = ("exists_lookup", id(subselect))
+        cached = self._subquery_cache.get(cache_key)
+        if cached is _EXISTS_LOOKUP_UNSUPPORTED:
+            return None
+        if cached is not None:
+            return cached
+
+        spec = self._build_exists_lookup_select(subselect)
+        if spec is None:
+            self._subquery_cache[cache_key] = _EXISTS_LOOKUP_UNSUPPORTED
+            return None
+
+        outer_refs, inner_columns, lookup_select = spec
+        result = self._subquery_executor(lookup_select)
+        value_set: set[tuple[Any, ...]] = set()
+        for result_row in result.rows:
+            values = tuple(result_row.get(col) for col in inner_columns)
+            if all(value is not None for value in values):
+                value_set.add(values)
+
+        lookup = (outer_refs, inner_columns, value_set)
+        self._subquery_cache[cache_key] = lookup
+        return lookup
+
+    def _build_exists_lookup_select(
+        self, subselect: SelectStmt
+    ) -> tuple[list[Any], list[str], SelectStmt] | None:
+        """Convert simple correlated EXISTS into an inner-key SELECT."""
+        if subselect.fromClause is None or subselect.whereClause is None:
+            return None
+        if subselect.withClause is not None:
+            return None
+        if subselect.op is not None and subselect.op.name != "SETOP_NONE":
+            return None
+        if (
+            subselect.groupClause is not None
+            or subselect.havingClause is not None
+            or subselect.distinctClause
+            or subselect.sortClause is not None
+            or subselect.limitCount is not None
+            or subselect.limitOffset is not None
+            or subselect.windowClause is not None
+        ):
+            return None
+        if self._contains_func_call(subselect.targetList):
+            return None
+
+        inner_tables = self._collect_inner_tables(subselect.fromClause)
+        if not inner_tables:
+            return None
+
+        outer_refs: list[Any] = []
+        inner_refs: list[ColumnRef] = []
+        residual_nodes: list[Any] = []
+
+        for conjunct in self._flatten_and(subselect.whereClause):
+            parsed = self._parse_correlated_equality(conjunct, inner_tables)
+            if parsed is None:
+                if self._has_correlated_ref(conjunct, inner_tables):
+                    return None
+                residual_nodes.append(conjunct)
+                continue
+            outer_ref, inner_ref = parsed
+            outer_refs.append(outer_ref)
+            inner_refs.append(inner_ref)
+
+        if not inner_refs:
+            return None
+
+        inner_columns: list[str] = []
+        target_list: list[ResTarget] = []
+        for index, inner_ref in enumerate(inner_refs):
+            name = f"__exists_key_{index}"
+            inner_columns.append(name)
+            target_list.append(ResTarget(val=inner_ref, name=name))
+
+        where_clause = self._rebuild_and(residual_nodes) if residual_nodes else None
+        kwargs = {}
+        for slot in subselect.__slots__:
+            kwargs[slot] = getattr(subselect, slot, None)
+        kwargs["targetList"] = tuple(target_list)
+        kwargs["whereClause"] = where_clause
+        kwargs["sortClause"] = None
+        kwargs["limitCount"] = None
+        kwargs["limitOffset"] = None
+        lookup_select = SelectStmt(**kwargs)
+        return outer_refs, inner_columns, lookup_select
+
+    def _parse_correlated_equality(
+        self, node: Any, inner_tables: set[str]
+    ) -> tuple[Any, ColumnRef] | None:
+        if not isinstance(node, A_Expr):
+            return None
+        if A_Expr_Kind(node.kind) != A_Expr_Kind.AEXPR_OP:
+            return None
+        if not node.name or not hasattr(node.name[0], "sval"):
+            return None
+        if node.name[0].sval != "=":
+            return None
+
+        left_inner = isinstance(node.lexpr, ColumnRef) and self._is_inner_ref(
+            node.lexpr, inner_tables
+        )
+        right_inner = isinstance(node.rexpr, ColumnRef) and self._is_inner_ref(
+            node.rexpr, inner_tables
+        )
+        left_outer = self._has_correlated_ref(node.lexpr, inner_tables)
+        right_outer = self._has_correlated_ref(node.rexpr, inner_tables)
+        left_uses_inner = self._has_inner_ref(node.lexpr, inner_tables)
+        right_uses_inner = self._has_inner_ref(node.rexpr, inner_tables)
+
+        if (
+            left_inner
+            and right_outer
+            and not right_uses_inner
+            and isinstance(node.lexpr, ColumnRef)
+        ):
+            return node.rexpr, node.lexpr
+        if (
+            right_inner
+            and left_outer
+            and not left_uses_inner
+            and isinstance(node.rexpr, ColumnRef)
+        ):
+            return node.lexpr, node.rexpr
+        return None
+
+    @staticmethod
+    def _is_inner_ref(node: ColumnRef, inner_tables: set[str]) -> bool:
+        return (
+            len(node.fields) >= 2
+            and hasattr(node.fields[0], "sval")
+            and node.fields[0].sval in inner_tables
+        )
+
+    @staticmethod
+    def _is_outer_ref(node: ColumnRef, inner_tables: set[str]) -> bool:
+        return (
+            len(node.fields) >= 2
+            and hasattr(node.fields[0], "sval")
+            and node.fields[0].sval not in inner_tables
+        )
+
+    def _has_inner_ref(self, node: Any, inner_tables: set[str]) -> bool:
+        if isinstance(node, ColumnRef):
+            return (
+                len(node.fields) >= 2
+                and hasattr(node.fields[0], "sval")
+                and node.fields[0].sval in inner_tables
+            )
+        for child in self._iter_ast_children(node):
+            if self._has_inner_ref(child, inner_tables):
+                return True
+        return False
+
+    def _collect_inner_tables(self, from_clause: Any) -> set[str]:
+        tables: set[str] = set()
+
+        def visit(node: Any) -> None:
+            if isinstance(node, RangeVar):
+                tables.add(node.relname)
+                if node.alias is not None:
+                    tables.add(node.alias.aliasname)
+            alias = getattr(node, "alias", None)
+            if alias is not None:
+                tables.add(alias.aliasname)
+            for child in self._iter_ast_children(node):
+                visit(child)
+
+        visit(from_clause)
+        return tables
+
+    @staticmethod
+    def _flatten_and(node: Any) -> list[Any]:
+        if (
+            isinstance(node, BoolExpr)
+            and BoolExprType(node.boolop) == BoolExprType.AND_EXPR
+        ):
+            result: list[Any] = []
+            for arg in node.args:
+                result.extend(ExprEvaluator._flatten_and(arg))
+            return result
+        return [node]
+
+    @staticmethod
+    def _rebuild_and(nodes: list[Any]) -> Any:
+        if len(nodes) == 1:
+            return nodes[0]
+        return BoolExpr(boolop=BoolExprType.AND_EXPR, args=tuple(nodes))
+
+    def _contains_func_call(self, node: Any) -> bool:
+        if isinstance(node, FuncCall):
+            return True
+        for child in self._iter_ast_children(node):
+            if self._contains_func_call(child):
+                return True
+        return False
+
+    @staticmethod
+    def _iter_ast_children(node: Any) -> list[Any]:
+        if node is None or isinstance(node, str | int | float | bool | bytes):
+            return []
+        if isinstance(node, list | tuple):
+            return [item for item in node if item is not None]
+        slots = getattr(node, "__slots__", None)
+        if slots is None:
+            return []
+        children: list[Any] = []
+        for slot in slots:
+            child = getattr(node, slot, None)
+            if child is None:
+                continue
+            if isinstance(child, list | tuple):
+                children.extend(item for item in child if item is not None)
+            else:
+                children.append(child)
+        return children
 
     def _build_correlated_context(
         self, subselect: Any, outer_row: dict[str, Any]
@@ -483,15 +781,8 @@ class ExprEvaluator:
                     col_name = node.fields[-1].sval
                     refs.append((qualifier, col_name))
             return
-        if isinstance(node, tuple | list):
-            for item in node:
-                self._walk_for_correlated(item, inner_tables, refs)
-            return
-        if hasattr(node, "__slots__") and isinstance(node.__slots__, dict):
-            for slot in node.__slots__:
-                val = getattr(node, slot, None)
-                if val is not None:
-                    self._walk_for_correlated(val, inner_tables, refs)
+        for child in self._iter_ast_children(node):
+            self._walk_for_correlated(child, inner_tables, refs)
 
     @staticmethod
     def _value_to_const(val: Any) -> A_Const:
@@ -983,7 +1274,10 @@ _CAST_MAP: dict[str, type] = {
     "numeric": float,
     "text": str,
     "varchar": str,
+    "bpchar": str,
     "char": str,
+    "character": str,
+    "character varying": str,
     "boolean": bool,
     "bool": bool,
     "date": str,

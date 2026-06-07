@@ -1206,6 +1206,13 @@ class Engine:
         """
         self._cancel_token.cancel()
 
+    def _clear_statement_read_caches(self) -> None:
+        for table in self._tables.values():
+            document_store = getattr(table, "document_store", None)
+            clear_cache = getattr(document_store, "clear_read_cache", None)
+            if clear_cache is not None:
+                clear_cache()
+
     def sql(self, query: str, params: list[Any] | None = None) -> Any:
         """Execute a SQL query against the engine's storage.
 
@@ -1215,8 +1222,26 @@ class Engine:
         from uqa.sql.compiler import SQLCompiler
 
         self._cancel_token.reset()
+        self._clear_statement_read_caches()
         compiler = SQLCompiler(self)
         return compiler.execute(query, params=params)
+
+    def sql_script(self, script: str) -> Any:
+        """Execute a SQL script containing one or more statements."""
+        from pglast import split
+
+        result = None
+        for statement in split(script):
+            query = str(statement).strip()
+            if query:
+                result = self.sql(query)
+        return result
+
+    def sql_file(self, path: str | Any) -> Any:
+        """Execute SQL statements from a file."""
+        from pathlib import Path
+
+        return self.sql_script(Path(path).read_text())
 
     def close(self) -> None:
         """Close the engine and clean up resources.
