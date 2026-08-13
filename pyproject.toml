@@ -8,7 +8,7 @@ include = ["uqa*"]
 [project]
 name = "uqa"
 version = "0.25.15"
-description = "Unified Query Algebra — a multi-paradigm database engine unifying relational, text, vector, graph, and geospatial queries"
+description = "Deprecated Python implementation of Unified Query Algebra; use cognica-io/uqa-rs for Rust, Python, WebAssembly, and Node.js"
 license = "AGPL-3.0-only"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -28,7 +28,7 @@ keywords = [
     "bm25",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 7 - Inactive",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
@@ -53,9 +53,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/cognica-io/uqa"
+Homepage = "https://github.com/cognica-io/uqa-rs"
 Repository = "https://github.com/cognica-io/uqa"
-Issues = "https://github.com/cognica-io/uqa/issues"
+Issues = "https://github.com/cognica-io/uqa-rs/issues"
+Successor = "https://github.com/cognica-io/uqa-rs"
 
 [project.optional-dependencies]
 dev = [

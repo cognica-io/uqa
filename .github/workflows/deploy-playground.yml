@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "playground/**"
+      - "llms.txt"
   workflow_dispatch:
 
 permissions:
@@ -38,9 +39,10 @@ jobs:
           git worktree add gh-pages-branch origin/gh-pages
           rm -rf gh-pages-branch/playground
           cp -r playground/dist gh-pages-branch/playground
+          cp llms.txt gh-pages-branch/llms.txt
           cd gh-pages-branch
-          git add playground
+          git add playground llms.txt
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git diff --cached --quiet || git commit -m "Deploy UQA Playground"
+          git diff --cached --quiet || git commit -m "Deploy UQA Playground and llms.txt"
           git push origin HEAD:gh-pages

@@ -1,8 +1,11 @@
+> [!WARNING]
+> **This Python implementation is deprecated and no longer maintained.** Use [`cognica-io/uqa-rs`](https://github.com/cognica-io/uqa-rs) instead. It is actively maintained and supports Rust, Python, WebAssembly, and Node.js.
+
 # UQA — Unified Query Algebra
 
 A multi-paradigm database engine that unifies **relational**, **text retrieval**, **vector search**, **graph query**, and **geospatial** paradigms under a single algebraic structure, using posting lists as the universal abstraction. SQL interface targets **PostgreSQL 17** compatibility.
 
-> **Background:** The unified query algebra theory behind this project is already deployed in production as [Cognica Database](https://cognica.io), a commercial multi-paradigm database engine built in C++20/23. UQA is the standalone Python implementation of that theory, open-sourced under AGPL-3.0. It is under active development and serves both as a production-ready embeddable database and as a reference implementation for the underlying algebraic framework.
+> **Background:** The unified query algebra theory behind this project is already deployed in production as [Cognica Database](https://cognica.io), a commercial multi-paradigm database engine built in C++20/23. This repository contains the original standalone Python implementation, open-sourced under AGPL-3.0, and is retained as a historical reference. For maintained Rust, Python, WebAssembly, and Node.js packages, use [`cognica-io/uqa-rs`](https://github.com/cognica-io/uqa-rs).
 
 ## Background
 
